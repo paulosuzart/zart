@@ -135,3 +135,37 @@ generate-grafana-dashboard:
     @echo "  - zart_poll_interval_seconds"
     @echo "  - zart_executions_total"
     @echo "  - zart_events_delivered_total"
+
+# ── Examples (M9) ─────────────────────────────────────────────────────────────
+
+# Run the brewery-finder example (sequential steps, macros, structured output)
+# Usage: just example-brewery-finder [DATABASE_URL]
+example-brewery-finder db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-brewery-finder
+
+# Run the approval-workflow example (human-in-the-loop with wait_for_event)
+# Usage: just example-approval [DATABASE_URL]
+example-approval db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-approval-workflow
+
+# Run the parallel-steps example (schedule_step + wait_all)
+# Usage: just example-parallel [DATABASE_URL]
+example-parallel db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-parallel-steps
+
+# Run all examples sequentially (requires PostgreSQL and internet)
+run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
+    just example-brewery-finder {{db_url}}
+    just example-approval {{db_url}}
+    just example-parallel {{db_url}}
+
+# Run integration tests for examples (requires PostgreSQL and internet)
+test-examples:
+    cargo test -p zart-examples -- --include-ignored --test-threads=1
+
+# Check that examples compile without running them
+check-examples:
+    cargo check -p zart-examples --all-targets

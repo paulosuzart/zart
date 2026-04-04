@@ -1,5 +1,12 @@
 [workspace]
-members = ["crates/scheduler", "crates/zart", "crates/zart-cli", "crates/zart-api", "crates/zart-macros"]
+members = [
+    "crates/scheduler",
+    "crates/zart",
+    "crates/zart-cli",
+    "crates/zart-api",
+    "crates/zart-macros",
+    "examples",
+]
 resolver = "2"
 
 [workspace.package]
