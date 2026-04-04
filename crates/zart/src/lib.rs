@@ -39,6 +39,7 @@
 //! }
 //! ```
 
+pub mod api_trait;
 pub mod context;
 pub mod durable;
 pub mod error;
@@ -46,6 +47,7 @@ pub mod registry;
 pub mod retry;
 pub mod worker;
 
+pub use api_trait::{DurableApi, into_durable_api};
 pub use context::{StepHandle, TaskContext};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
@@ -58,6 +60,7 @@ pub use worker::{Worker, WorkerConfig};
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
     pub use crate::{
+        api_trait::DurableApi,
         context::{StepHandle, TaskContext},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},

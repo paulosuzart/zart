@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+// Maximum duration for `wait_with_timeout` as per the spec.
+const MAX_WAIT_SECS: u64 = 30;
+
 /// High-level entry point for durable executions.
 ///
 /// Wraps the underlying [`Scheduler`] and coordinates:
@@ -123,5 +126,67 @@ impl<S: Scheduler> DurableScheduler<S> {
 
             tokio::time::sleep(interval).await;
         }
+    }
+
+    /// Like [`wait`](Self::wait) but caps the maximum wait at 30 seconds.
+    ///
+    /// Returns [`SchedulerError::WaitTimedOut`] if the execution does not
+    /// reach a terminal state within `max_duration` (or 30 s, whichever is less).
+    pub async fn wait_with_timeout(
+        &self,
+        execution_id: &str,
+        max_duration: Duration,
+    ) -> Result<ExecutionRecord, SchedulerError> {
+        let capped = max_duration.min(Duration::from_secs(MAX_WAIT_SECS));
+        self.wait(execution_id, capped, None).await
+    }
+
+    /// Cancel a running or scheduled durable execution.
+    ///
+    /// Returns `true` if the execution was found and cancelled, `false` if it
+    /// was already in a terminal state or did not exist.
+    pub async fn cancel(&self, execution_id: &str) -> Result<bool, SchedulerError> {
+        Ok(self.scheduler.cancel_execution(execution_id).await?)
+    }
+
+    /// Deliver an external event to a waiting execution.
+    ///
+    /// Atomically injects `payload` into the execution's task state under
+    /// `event_name` and reschedules the task for immediate pickup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::ExecutionNotFound`] if no scheduled task for
+    /// the given execution ID was found (not waiting or does not exist).
+    pub async fn offer_event(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), SchedulerError> {
+        let found = self
+            .scheduler
+            .reschedule_with_event(execution_id, event_name, payload)
+            .await?;
+        if !found {
+            return Err(SchedulerError::ExecutionNotFound(execution_id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// List durable execution records with optional filters.
+    ///
+    /// Results are ordered by `scheduled_at DESC`.
+    pub async fn list_executions(
+        &self,
+        status: Option<ExecutionStatus>,
+        task_name: Option<String>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
+        Ok(self
+            .scheduler
+            .list_executions(status, task_name.as_deref(), limit, offset)
+            .await?)
     }
 }

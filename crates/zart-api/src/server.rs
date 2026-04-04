@@ -1,29 +1,37 @@
 //! HTTP server setup and lifecycle management.
 
 use crate::routes;
+use crate::state::AppState;
 use axum::Router;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+use zart::DurableApi;
 
 /// The Zart API server.
 ///
 /// Wraps an Axum router and exposes durable execution management over HTTP.
-/// Fully implemented in M5.
 pub struct ApiServer {
     /// TCP address to bind, e.g. `"0.0.0.0:8080"`.
     addr: String,
+    /// The durable execution backend.
+    durable: Arc<dyn DurableApi>,
 }
 
 impl ApiServer {
     /// Create a new API server bound to `addr`.
-    pub fn new(addr: impl Into<String>) -> Self {
-        Self { addr: addr.into() }
+    pub fn new(addr: impl Into<String>, durable: Arc<dyn DurableApi>) -> Self {
+        Self {
+            addr: addr.into(),
+            durable,
+        }
     }
 
     /// Build the Axum router with all API routes and middleware.
     pub fn router(&self) -> Router {
-        routes::api_router()
+        let state = AppState::new(self.durable.clone());
+        routes::api_router(state)
             .layer(TraceLayer::new_for_http())
             .layer(CorsLayer::permissive())
     }
@@ -42,11 +50,59 @@ impl ApiServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult};
+    use std::time::Duration;
+    use zart::error::SchedulerError;
+
+    struct NullApi;
+
+    #[async_trait]
+    impl DurableApi for NullApi {
+        async fn start(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<ScheduleResult, SchedulerError> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _: &str) -> Result<bool, SchedulerError> {
+            unimplemented!()
+        }
+        async fn status(&self, _: &str) -> Result<ExecutionRecord, SchedulerError> {
+            unimplemented!()
+        }
+        async fn wait(
+            &self,
+            _: &str,
+            _: Duration,
+            _: Option<Duration>,
+        ) -> Result<ExecutionRecord, SchedulerError> {
+            unimplemented!()
+        }
+        async fn offer_event(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<(), SchedulerError> {
+            unimplemented!()
+        }
+        async fn list_executions(
+            &self,
+            _: Option<ExecutionStatus>,
+            _: Option<String>,
+            _: usize,
+            _: usize,
+        ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
+            unimplemented!()
+        }
+    }
 
     #[test]
     fn server_builds_router() {
-        let server = ApiServer::new("0.0.0.0:8080");
-        // Just ensure the router can be constructed without panicking.
+        let server = ApiServer::new("0.0.0.0:8080", Arc::new(NullApi));
         let _ = server.router();
     }
 }

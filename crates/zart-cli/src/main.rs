@@ -178,12 +178,17 @@ async fn main() {
                 Arc::new(TaskRegistry::new());
             let durable = DurableScheduler::new(scheduler, registry);
 
-            durable.cancel(&execution_id).await.unwrap_or_else(|e| {
+            let cancelled = durable.cancel(&execution_id).await.unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
 
-            println!("Execution '{execution_id}' cancelled.");
+            if cancelled {
+                println!("Execution '{execution_id}' cancelled.");
+            } else {
+                eprintln!("Execution '{execution_id}' not found or already in a terminal state.");
+                std::process::exit(1);
+            }
         }
 
         Commands::Wait {

@@ -168,13 +168,44 @@ pub trait Scheduler: Send + Sync {
         Ok(0)
     }
 
-    /// Cancel all scheduled tasks for a durable execution and mark it as cancelled.
+    /// Cancel a running or scheduled durable execution.
     ///
-    /// Only tasks in `scheduled` state are cancelled; tasks already `picked_up`
-    /// or in a terminal state are left unchanged.
-    async fn cancel_execution(&self, execution_id: &str) -> Result<(), StorageError> {
+    /// Marks the execution as `cancelled` and cancels any scheduled (not yet
+    /// running) task associated with it. Returns `true` if the execution was
+    /// found and transitioned to cancelled, `false` otherwise.
+    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
         let _ = execution_id;
-        Ok(())
+        Ok(false)
+    }
+
+    /// List durable execution records with optional filters.
+    ///
+    /// Filters by `status` and/or `task_name` when provided. Results are
+    /// ordered by `scheduled_at DESC` and paginated with `limit`/`offset`.
+    async fn list_executions(
+        &self,
+        status: Option<ExecutionStatus>,
+        task_name: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ExecutionRecord>, StorageError> {
+        let _ = (status, task_name, limit, offset);
+        Ok(vec![])
+    }
+
+    /// Atomically inject an event payload into a waiting execution's task state
+    /// and reschedule the task for immediate execution.
+    ///
+    /// Returns `true` if a scheduled task for the execution was found and
+    /// updated, `false` if no such task exists (execution unknown or not waiting).
+    async fn reschedule_with_event(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        let _ = (execution_id, event_name, payload);
+        Ok(false)
     }
 }
 

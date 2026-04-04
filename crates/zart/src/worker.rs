@@ -318,6 +318,36 @@ async fn dispatch_task<S: Scheduler + 'static>(
             }
         }
 
+        // Control-flow: a step is waiting for an external event.
+        // Persist state with a far-future execution time to avoid busy-looping.
+        // `offer_event` will atomically reset the execution time to NOW().
+        Err(TaskError::StepFailed {
+            source: StepError::WaitingForEvent { ref event },
+            ..
+        }) => {
+            // Park 24 h in the future; offer_event will wake it up earlier.
+            let exec_time = chrono::Utc::now() + chrono::Duration::hours(24);
+            info!(
+                task_id = %task.task_id,
+                event = %event,
+                "Step waiting for event — parking task",
+            );
+            let state_json = match serde_json::to_value(&ctx.state) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(task_id = %task.task_id, error = %e, "Failed to serialize execution state");
+                    return;
+                }
+            };
+            if let Err(e) = ctx
+                .scheduler
+                .update_task_state(&task.task_id, state_json, exec_time, &ctx.lock_token)
+                .await
+            {
+                error!(task_id = %task.task_id, error = %e, "Failed to park task for event wait");
+            }
+        }
+
         Err(err) => {
             error!(task_id = %task.task_id, error = %err, "Task failed");
             if let Err(e) = ctx

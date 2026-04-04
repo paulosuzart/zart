@@ -1,16 +1,29 @@
-//! Route definitions for the Zart HTTP API.
-//!
-//! All handler functions are stubs that will be filled in during M5.
+//! Route definitions and handler implementations for the Zart HTTP API.
 
 use axum::{
-    Router,
+    Json, Router,
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
+use scheduler::ExecutionStatus;
+use std::time::Duration;
+use zart::error::SchedulerError;
 
-/// Construct the versioned API router.
-pub fn api_router() -> Router {
+use crate::{
+    models::{
+        ErrorResponse, ExecutionResponse, ListQuery, StartExecutionRequest, StartExecutionResponse,
+        WaitQuery,
+    },
+    state::AppState,
+};
+
+/// Maximum wait allowed by the `wait` endpoint (seconds).
+const MAX_WAIT_SECS: u64 = 30;
+
+/// Construct the versioned API router with the given application state.
+pub fn api_router(state: AppState) -> Router {
     Router::new()
         // Execution management
         .route("/api/v1/executions", get(list_executions))
@@ -31,7 +44,10 @@ pub fn api_router() -> Router {
         )
         // Health check
         .route("/healthz", get(healthz))
+        .with_state(state)
 }
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// `GET /healthz` — liveness probe.
 async fn healthz() -> impl IntoResponse {
@@ -39,51 +55,206 @@ async fn healthz() -> impl IntoResponse {
 }
 
 /// `GET /api/v1/executions` — list executions with optional filters.
-async fn list_executions() -> impl IntoResponse {
-    // TODO(M5): query executions from the database with pagination.
-    StatusCode::NOT_IMPLEMENTED
+async fn list_executions(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Response {
+    let status = q
+        .status
+        .as_deref()
+        .and_then(|s| s.parse::<ExecutionStatus>().ok());
+
+    match state
+        .durable
+        .list_executions(status, q.task_name, q.limit, q.offset)
+        .await
+    {
+        Ok(records) => {
+            let body: Vec<ExecutionResponse> = records.into_iter().map(Into::into).collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => scheduler_error_response(e),
+    }
 }
 
 /// `POST /api/v1/executions` — start a new durable execution.
-async fn start_execution() -> impl IntoResponse {
-    // TODO(M5): deserialize body, call DurableScheduler::start.
-    StatusCode::NOT_IMPLEMENTED
+async fn start_execution(
+    State(state): State<AppState>,
+    Json(req): Json<StartExecutionRequest>,
+) -> Response {
+    match state
+        .durable
+        .start(&req.execution_id, &req.task_name, req.payload)
+        .await
+    {
+        Ok(result) => {
+            let body = StartExecutionResponse {
+                execution_id: req.execution_id,
+                task_id: result.task_id,
+            };
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
+        Err(e) => scheduler_error_response(e),
+    }
 }
 
 /// `GET /api/v1/executions/:execution_id` — get execution status and step progress.
-async fn get_execution() -> impl IntoResponse {
-    // TODO(M5): fetch execution record and serialise as JSON.
-    StatusCode::NOT_IMPLEMENTED
+async fn get_execution(
+    State(state): State<AppState>,
+    Path(execution_id): Path<String>,
+) -> Response {
+    match state.durable.status(&execution_id).await {
+        Ok(record) => {
+            let body: ExecutionResponse = record.into();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(SchedulerError::ExecutionNotFound(_)) => not_found(&execution_id),
+        Err(e) => scheduler_error_response(e),
+    }
 }
 
 /// `POST /api/v1/executions/:execution_id/cancel` — cancel a running execution.
-async fn cancel_execution() -> impl IntoResponse {
-    // TODO(M5): call DurableScheduler::cancel.
-    StatusCode::NOT_IMPLEMENTED
+async fn cancel_execution(
+    State(state): State<AppState>,
+    Path(execution_id): Path<String>,
+) -> Response {
+    match state.durable.cancel(&execution_id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => not_found(&execution_id),
+        Err(e) => scheduler_error_response(e),
+    }
 }
 
 /// `GET /api/v1/executions/:execution_id/wait` — long-poll until completion.
-async fn wait_execution() -> impl IntoResponse {
-    // TODO(M5): poll with exponential backoff and return when terminal.
-    StatusCode::NOT_IMPLEMENTED
+///
+/// Accepts an optional `timeout_secs` query parameter (max 30, default 30).
+async fn wait_execution(
+    State(state): State<AppState>,
+    Path(execution_id): Path<String>,
+    Query(q): Query<WaitQuery>,
+) -> Response {
+    let secs = q.timeout_secs.unwrap_or(MAX_WAIT_SECS).min(MAX_WAIT_SECS);
+    let timeout = Duration::from_secs(secs);
+
+    match state.durable.wait(&execution_id, timeout, None).await {
+        Ok(record) => {
+            let body: ExecutionResponse = record.into();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(SchedulerError::ExecutionNotFound(_)) => not_found(&execution_id),
+        Err(SchedulerError::WaitTimedOut(_)) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(ErrorResponse {
+                error: format!("execution '{execution_id}' did not complete within {secs}s"),
+            }),
+        )
+            .into_response(),
+        Err(e) => scheduler_error_response(e),
+    }
 }
 
 /// `POST /api/v1/events/:execution_id/:event_name` — deliver an event.
-async fn offer_event() -> impl IntoResponse {
-    // TODO(M5): call DurableScheduler::offer_event.
-    StatusCode::NOT_IMPLEMENTED
+async fn offer_event(
+    State(state): State<AppState>,
+    Path((execution_id, event_name)): Path<(String, String)>,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    match state
+        .durable
+        .offer_event(&execution_id, &event_name, payload)
+        .await
+    {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(SchedulerError::ExecutionNotFound(_)) => not_found(&execution_id),
+        Err(e) => scheduler_error_response(e),
+    }
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn not_found(execution_id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: format!("execution '{execution_id}' not found"),
+        }),
+    )
+        .into_response()
+}
+
+fn scheduler_error_response(e: SchedulerError) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: e.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult};
+    use std::sync::Arc;
     use tower::ServiceExt;
+    use zart::{DurableApi, error::SchedulerError};
+
+    struct NullApi;
+
+    #[async_trait]
+    impl DurableApi for NullApi {
+        async fn start(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<ScheduleResult, SchedulerError> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _: &str) -> Result<bool, SchedulerError> {
+            unimplemented!()
+        }
+        async fn status(&self, _: &str) -> Result<ExecutionRecord, SchedulerError> {
+            unimplemented!()
+        }
+        async fn wait(
+            &self,
+            _: &str,
+            _: Duration,
+            _: Option<Duration>,
+        ) -> Result<ExecutionRecord, SchedulerError> {
+            unimplemented!()
+        }
+        async fn offer_event(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<(), SchedulerError> {
+            unimplemented!()
+        }
+        async fn list_executions(
+            &self,
+            _: Option<ExecutionStatus>,
+            _: Option<String>,
+            _: usize,
+            _: usize,
+        ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
+            unimplemented!()
+        }
+    }
+
+    fn test_app() -> axum::Router {
+        let state = AppState::new(Arc::new(NullApi));
+        api_router(state).layer(tower_http::trace::TraceLayer::new_for_http())
+    }
 
     #[tokio::test]
     async fn healthz_returns_200() {
-        let app = api_router();
+        let app = test_app();
         let response = app
             .oneshot(
                 Request::builder()

@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod integration {
     use scheduler::{ExecutionStatus, PostgresScheduler, Scheduler as _};
+    use serde::{Deserialize, Serialize};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -242,7 +243,172 @@ mod integration {
         assert_eq!(attempt_counter.load(Ordering::SeqCst), 3);
     }
 
-    // ── M4 tests ──────────────────────────────────────────────────────────────
+    // ── Event-driven execution ────────────────────────────────────────────────
+
+    /// A task that waits for an external "approve" event before continuing.
+    struct WaitEventTask;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct ApprovalPayload {
+        approved: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl TaskHandler for WaitEventTask {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run<S: scheduler::Scheduler>(
+            &self,
+            ctx: &mut TaskContext<S>,
+            _data: Self::Data,
+        ) -> Result<Self::Output, TaskError> {
+            let approval: ApprovalPayload = ctx
+                .wait_for_event("approve", Some(Duration::from_secs(30)))
+                .await?;
+            Ok(serde_json::json!({ "approved": approval.approved }))
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn wait_for_event_resumes_execution_after_offer_event() {
+        let scheduler = setup().await;
+
+        let mut registry = TaskRegistry::new();
+        registry.register("wait-event-task", WaitEventTask);
+        let registry = Arc::new(registry);
+
+        let execution_id = format!("test-event-{}", Uuid::new_v4());
+        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+
+        durable
+            .start(&execution_id, "wait-event-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+
+        // Give the worker time to pick up the task and park it waiting for the event.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Deliver the event.
+        durable
+            .offer_event(
+                &execution_id,
+                "approve",
+                serde_json::json!({ "approved": true }),
+            )
+            .await
+            .expect("offer_event failed");
+
+        // Now wait for the execution to complete.
+        let record = durable
+            .wait(&execution_id, Duration::from_secs(10), None)
+            .await
+            .expect("wait failed");
+
+        worker.stop();
+
+        assert_eq!(record.status, ExecutionStatus::Completed);
+        let result = record.result.expect("expected a result");
+        assert_eq!(result["approved"], true);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn cancel_stops_execution_before_completion() {
+        let scheduler = setup().await;
+
+        let mut registry = TaskRegistry::new();
+        registry.register("wait-event-task", WaitEventTask);
+        let registry = Arc::new(registry);
+
+        let execution_id = format!("test-cancel-{}", Uuid::new_v4());
+        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+
+        durable
+            .start(&execution_id, "wait-event-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        // Give the worker a moment to pick it up and park it.
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let cancelled = durable.cancel(&execution_id).await.expect("cancel failed");
+        assert!(cancelled, "expected execution to be cancelled");
+
+        let record = durable.status(&execution_id).await.expect("status failed");
+        assert_eq!(record.status, ExecutionStatus::Cancelled);
+
+        worker.stop();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn wait_with_timeout_returns_error_when_execution_does_not_complete() {
+        let scheduler = setup().await;
+
+        let mut registry = TaskRegistry::new();
+        registry.register("wait-event-task", WaitEventTask);
+        let registry = Arc::new(registry);
+
+        let execution_id = format!("test-timeout-{}", Uuid::new_v4());
+        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+
+        durable
+            .start(&execution_id, "wait-event-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+
+        // Wait with a very short timeout — execution is blocked on an event.
+        let result = durable
+            .wait_with_timeout(&execution_id, Duration::from_millis(300))
+            .await;
+
+        worker.stop();
+
+        assert!(
+            matches!(result, Err(zart::SchedulerError::WaitTimedOut(_))),
+            "expected WaitTimedOut, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn list_executions_returns_started_executions() {
+        let scheduler = setup().await;
+
+        let registry: Arc<TaskRegistry<PostgresScheduler>> = Arc::new(TaskRegistry::new());
+        let durable = DurableScheduler::new(scheduler.clone(), registry);
+
+        let base_id = Uuid::new_v4().to_string();
+        let id_a = format!("test-list-a-{base_id}");
+        let id_b = format!("test-list-b-{base_id}");
+
+        durable
+            .start(&id_a, "no-op-task", serde_json::json!({}))
+            .await
+            .expect("start a failed");
+        durable
+            .start(&id_b, "no-op-task", serde_json::json!({}))
+            .await
+            .expect("start b failed");
+
+        let all = durable
+            .list_executions(None, Some("no-op-task".to_string()), 100, 0)
+            .await
+            .expect("list failed");
+
+        let ids: Vec<&str> = all.iter().map(|r| r.execution_id.as_str()).collect();
+        assert!(ids.contains(&id_a.as_str()), "id_a not in list");
+        assert!(ids.contains(&id_b.as_str()), "id_b not in list");
+    }
+
+    // ── Parallel steps ────────────────────────────────────────────────────────
 
     /// A task that schedules three steps in parallel and waits for all of them.
     struct ParallelTask;
@@ -266,9 +432,8 @@ mod integration {
             Ok(serde_json::json!({ "sum": sum }))
         }
     }
-
     #[tokio::test]
-    #[ignore = "requires PostgreSQL — run with: just test-m4-integration"]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn parallel_steps_all_complete_and_sum_results() {
         let scheduler = setup().await;
 
@@ -299,7 +464,7 @@ mod integration {
     }
 
     #[tokio::test]
-    #[ignore = "requires PostgreSQL — run with: just test-m4-integration"]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn cancel_stops_execution_before_it_runs() {
         let scheduler = setup().await;
 
@@ -323,7 +488,7 @@ mod integration {
     }
 
     #[tokio::test]
-    #[ignore = "requires PostgreSQL — run with: just test-m4-integration"]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn recurring_fixed_delay_task_runs_multiple_times() {
         use scheduler::Recurrence;
 
@@ -393,7 +558,7 @@ mod integration {
     }
 
     #[tokio::test]
-    #[ignore = "requires PostgreSQL — run with: just test-m4-integration"]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn step_exhausts_retries_and_fails_execution() {
         let scheduler = setup().await;
 
@@ -515,7 +680,7 @@ mod integration {
     /// Handler finishes successfully but the execution was already cancelled while
     /// it was running.  The worker must NOT overwrite the `cancelled` status.
     #[tokio::test]
-    #[ignore = "requires PostgreSQL — run with: just test-m4-integration"]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn cancelled_execution_not_overwritten_when_handler_succeeds() {
         let scheduler = setup().await;
         let started = Arc::new(tokio::sync::Notify::new());
@@ -567,7 +732,7 @@ mod integration {
     /// update_task_state, which would set it back to `scheduled` and allow it to
     /// be picked up again.
     #[tokio::test]
-    #[ignore = "requires PostgreSQL — run with: just test-m4-integration"]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn cancelled_execution_not_requeued_on_step_scheduled() {
         let scheduler = setup().await;
         let started = Arc::new(tokio::sync::Notify::new());

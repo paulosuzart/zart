@@ -78,6 +78,8 @@ pub enum StepStatus {
     Scheduled,
     /// The step completed successfully (result is stored in DB).
     Completed,
+    /// The step is blocked waiting for an external event via `wait_for_event`.
+    WaitingForEvent,
 }
 
 /// Persisted record for a single step within a durable execution.
@@ -95,6 +97,10 @@ pub struct StepRecord {
     pub retry_config: Option<RetryConfig>,
     /// Per-attempt history for observability.
     pub attempts: Vec<StepAttempt>,
+    /// For event-waiting steps: UTC deadline after which the wait times out.
+    /// `None` means the step waits indefinitely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // ── Execution state ──────────────────────────────────────────────────────────
@@ -111,6 +117,10 @@ pub struct ExecutionState {
     pub data: serde_json::Value,
     /// How many times the entire durable execution has been retried.
     pub retry_count: usize,
+    /// Buffered external events delivered via `offer_event`, keyed by event name.
+    /// Consumed by `wait_for_event` on re-entry.
+    #[serde(default)]
+    pub pending_events: HashMap<String, serde_json::Value>,
 }
 
 // ── TaskContext ───────────────────────────────────────────────────────────────
@@ -302,6 +312,7 @@ impl<S: Scheduler> TaskContext<S> {
                         retry_attempt: 0,
                         retry_config: Some(retry_config),
                         attempts: vec![],
+                        event_deadline: None,
                     },
                 );
                 Err(StepError::Scheduled {
@@ -309,6 +320,12 @@ impl<S: Scheduler> TaskContext<S> {
                     next_execution: None,
                 })
             }
+
+            // Should not occur: event-waiting steps must use `wait_for_event`.
+            Some((StepStatus::WaitingForEvent, _, _)) => Err(StepError::Failed {
+                step: step_name.to_string(),
+                reason: "step is in WaitingForEvent state; use wait_for_event instead".to_string(),
+            }),
         }
     }
 
@@ -535,18 +552,112 @@ impl<S: Scheduler> TaskContext<S> {
 
     /// Wait for an external event to be delivered to this execution.
     ///
-    /// Blocks until [`DurableScheduler::offer_event`] is called with the matching
-    /// `event_name` and `execution_id`. Optionally times out after `timeout`.
+    /// The step is identified internally by `"__event_{event_name}"`.
+    ///
+    /// # Control flow
+    ///
+    /// - **First call** (step absent): registers the step as `WaitingForEvent`,
+    ///   persists the optional deadline, and returns `Err(StepError::WaitingForEvent)`.
+    ///   The worker will park the task with a far-future execution time.
+    /// - **Subsequent calls with no event yet**: returns `Err(StepError::WaitingForEvent)`
+    ///   again so the task stays parked. If the deadline has passed, returns
+    ///   `Err(StepError::Timeout)`.
+    /// - **After `offer_event`**: the event payload is in `pending_events`. The step
+    ///   is marked `Completed`, the payload deserialized, and `Ok(T)` returned.
+    /// - **Already completed**: returns the cached result without re-deserializing
+    ///   from the live event map.
     pub async fn wait_for_event<T>(
         &mut self,
-        _event_name: &str,
-        _timeout: Option<std::time::Duration>,
+        event_name: &str,
+        timeout: Option<std::time::Duration>,
     ) -> Result<T, StepError>
     where
         T: for<'de> Deserialize<'de>,
     {
-        // TODO(M5): implement event waiting.
-        todo!("Implement in M5")
+        let step_key = format!("__event_{event_name}");
+
+        let snapshot = self
+            .state
+            .steps
+            .get(&step_key)
+            .map(|r| (r.status.clone(), r.result.clone(), r.event_deadline));
+
+        match snapshot {
+            // ── Already completed — return cached result ───────────────────
+            Some((StepStatus::Completed, Some(v), _)) => {
+                serde_json::from_value(v).map_err(|e| StepError::Failed {
+                    step: step_key,
+                    reason: format!("failed to deserialize event result: {e}"),
+                })
+            }
+
+            Some((StepStatus::Completed, None, _)) => Err(StepError::Failed {
+                step: step_key,
+                reason: "event step completed but result is missing".to_string(),
+            }),
+
+            // ── Waiting — check deadline and pending_events ────────────────
+            Some((StepStatus::WaitingForEvent, _, deadline)) => {
+                if deadline.is_some_and(|dl| chrono::Utc::now() > dl) {
+                    return Err(StepError::Timeout {
+                        step: step_key,
+                        // Approximate; exact duration isn't tracked.
+                        duration: timeout.unwrap_or(std::time::Duration::ZERO),
+                    });
+                }
+
+                if let Some(payload) = self.state.pending_events.remove(event_name) {
+                    let result: T =
+                        serde_json::from_value(payload.clone()).map_err(|e| StepError::Failed {
+                            step: step_key.clone(),
+                            reason: format!("failed to deserialize event payload: {e}"),
+                        })?;
+                    let record = self
+                        .state
+                        .steps
+                        .get_mut(&step_key)
+                        .expect("step must exist");
+                    record.status = StepStatus::Completed;
+                    record.result = Some(payload);
+                    Ok(result)
+                } else {
+                    Err(StepError::WaitingForEvent {
+                        event: event_name.to_string(),
+                    })
+                }
+            }
+
+            // ── Absent — first call, register the step ────────────────────
+            None => {
+                let deadline = timeout.and_then(|d| {
+                    chrono::Duration::from_std(d)
+                        .ok()
+                        .map(|cd| chrono::Utc::now() + cd)
+                });
+
+                self.state.steps.insert(
+                    step_key,
+                    StepRecord {
+                        status: StepStatus::WaitingForEvent,
+                        result: None,
+                        in_task_id: None,
+                        retry_attempt: 0,
+                        retry_config: None,
+                        attempts: vec![],
+                        event_deadline: deadline,
+                    },
+                );
+
+                Err(StepError::WaitingForEvent {
+                    event: event_name.to_string(),
+                })
+            }
+
+            // Shouldn't occur for event steps, but treat like absent.
+            Some((StepStatus::Scheduled, _, _)) => Err(StepError::WaitingForEvent {
+                event: event_name.to_string(),
+            }),
+        }
     }
 
     /// Returns the original JSON payload provided when the execution was started.
@@ -697,6 +808,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
         let result = ctx
@@ -717,6 +829,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
         let result: Result<i32, _> = ctx
@@ -739,6 +852,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
         let _ = ctx
@@ -765,6 +879,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
 
@@ -810,6 +925,7 @@ mod tests {
                 retry_attempt: 2, // max_attempts = 2, so next would be attempt 3 which is > max
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
 
@@ -852,6 +968,7 @@ mod tests {
                     error: Some("first failure".to_string()),
                     result: None,
                 }],
+                event_deadline: None,
             },
         );
 
@@ -884,6 +1001,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
         let result = ctx
@@ -906,6 +1024,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
         let result = ctx
@@ -940,6 +1059,7 @@ mod tests {
                 in_task_id: None,
                 retry_attempt: 1,
                 retry_config: Some(RetryConfig::fixed(2, Duration::from_millis(500))),
+                event_deadline: None,
                 attempts: vec![
                     StepAttempt {
                         attempt_number: 1,
@@ -968,7 +1088,7 @@ mod tests {
         assert_eq!(record.retry_attempt, 1);
     }
 
-    // ── M4: schedule_step + wait_all ─────────────────────────────────────────
+    // ── schedule_step + wait_all ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn schedule_step_registers_as_scheduled() {
@@ -1014,6 +1134,7 @@ mod tests {
                 retry_attempt: 0,
                 retry_config: None,
                 attempts: vec![],
+                event_deadline: None,
             },
         );
 
@@ -1047,5 +1168,115 @@ mod tests {
         let record = ctx.state.steps.get("s").unwrap();
         assert_eq!(record.attempts.len(), 1);
         assert_eq!(record.attempts[0].status, AttemptStatus::Completed);
+    }
+
+    // ── wait_for_event ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn wait_for_event_returns_waiting_on_first_call() {
+        let mut ctx = make_ctx();
+        let result: Result<serde_json::Value, _> = ctx.wait_for_event("my-event", None).await;
+        assert!(
+            matches!(result, Err(StepError::WaitingForEvent { ref event }) if event == "my-event")
+        );
+        // The step should now be registered.
+        let step = ctx.state.steps.get("__event_my-event").unwrap();
+        assert_eq!(step.status, StepStatus::WaitingForEvent);
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_still_waiting_when_no_event_in_pending() {
+        let mut ctx = make_ctx();
+        // Pre-register step in WaitingForEvent state.
+        ctx.state.steps.insert(
+            "__event_my-event".to_string(),
+            StepRecord {
+                status: StepStatus::WaitingForEvent,
+                result: None,
+                in_task_id: None,
+                retry_attempt: 0,
+                retry_config: None,
+                attempts: vec![],
+                event_deadline: None,
+            },
+        );
+
+        let result: Result<serde_json::Value, _> = ctx.wait_for_event("my-event", None).await;
+        assert!(matches!(result, Err(StepError::WaitingForEvent { .. })));
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_returns_payload_when_event_is_pending() {
+        let mut ctx = make_ctx();
+        ctx.state.steps.insert(
+            "__event_approve".to_string(),
+            StepRecord {
+                status: StepStatus::WaitingForEvent,
+                result: None,
+                in_task_id: None,
+                retry_attempt: 0,
+                retry_config: None,
+                attempts: vec![],
+                event_deadline: None,
+            },
+        );
+        ctx.state
+            .pending_events
+            .insert("approve".to_string(), serde_json::json!({"approved": true}));
+
+        let result: Result<serde_json::Value, StepError> =
+            ctx.wait_for_event("approve", None).await;
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        assert_eq!(val["approved"], true);
+
+        // Step must be marked completed and pending_events cleared.
+        let step = ctx.state.steps.get("__event_approve").unwrap();
+        assert_eq!(step.status, StepStatus::Completed);
+        assert!(!ctx.state.pending_events.contains_key("approve"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_returns_cached_result_when_completed() {
+        let mut ctx = make_ctx();
+        ctx.state.steps.insert(
+            "__event_done".to_string(),
+            StepRecord {
+                status: StepStatus::Completed,
+                result: Some(serde_json::json!(42)),
+                in_task_id: None,
+                retry_attempt: 0,
+                retry_config: None,
+                attempts: vec![],
+                event_deadline: None,
+            },
+        );
+
+        let result: Result<i32, StepError> = ctx.wait_for_event("done", None).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_returns_timeout_when_deadline_passed() {
+        let mut ctx = make_ctx();
+        // Set a deadline in the past.
+        let past = chrono::Utc::now() - chrono::Duration::seconds(1);
+        ctx.state.steps.insert(
+            "__event_late".to_string(),
+            StepRecord {
+                status: StepStatus::WaitingForEvent,
+                result: None,
+                in_task_id: None,
+                retry_attempt: 0,
+                retry_config: None,
+                attempts: vec![],
+                event_deadline: Some(past),
+            },
+        );
+
+        let result: Result<serde_json::Value, StepError> = ctx
+            .wait_for_event("late", Some(Duration::from_secs(1)))
+            .await;
+        assert!(matches!(result, Err(StepError::Timeout { .. })));
     }
 }

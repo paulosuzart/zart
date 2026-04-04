@@ -429,8 +429,23 @@ impl Scheduler for PostgresScheduler {
         Ok(result.rows_affected() as usize)
     }
 
-    async fn cancel_execution(&self, execution_id: &str) -> Result<(), StorageError> {
-        // Cancel any pending tasks for this execution.
+    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
+        // Mark the execution record as cancelled.
+        let exec_rows = sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE execution_id = $1
+              AND status IN ('scheduled', 'running')
+            "#,
+        )
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        // Also cancel any not-yet-running task for this execution.
         sqlx::query(
             r#"
             UPDATE zart_tasks
@@ -443,20 +458,102 @@ impl Scheduler for PostgresScheduler {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        // Mark the execution record itself as cancelled.
-        sqlx::query(
+        Ok(exec_rows > 0)
+    }
+
+    async fn list_executions(
+        &self,
+        status: Option<ExecutionStatus>,
+        task_name: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ExecutionRecord>, StorageError> {
+        let status_str: Option<String> = status.map(|s| s.to_string());
+
+        let rows: Vec<(
+            String,
+            String,
+            serde_json::Value,
+            Option<serde_json::Value>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            i32,
+        )> = sqlx::query_as(
             r#"
-            UPDATE zart_executions
-            SET status = 'cancelled', updated_at = NOW()
-            WHERE execution_id = $1
+            SELECT execution_id, task_name, payload, result, status,
+                   scheduled_at, completed_at, version
+            FROM zart_executions
+            WHERE ($1::TEXT IS NULL OR status    = $1)
+              AND ($2::TEXT IS NULL OR task_name = $2)
+            ORDER BY scheduled_at DESC
+            LIMIT $3 OFFSET $4
             "#,
         )
-        .bind(execution_id)
-        .execute(&self.pool)
+        .bind(&status_str)
+        .bind(task_name)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        Ok(())
+        rows.into_iter()
+            .map(
+                |(eid, tname, payload, result, status_str, scheduled_at, completed_at, version)| {
+                    let status = status_str.parse::<ExecutionStatus>().map_err(|e| {
+                        StorageError::Database(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e,
+                        )))
+                    })?;
+                    Ok(ExecutionRecord {
+                        execution_id: eid,
+                        task_name: tname,
+                        payload,
+                        status,
+                        result,
+                        scheduled_at,
+                        completed_at,
+                        version,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    async fn reschedule_with_event(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        // Build a single-key JSON object `{ "<event_name>": <payload> }` and
+        // merge it into `state->'pending_events'` atomically.
+        let event_obj = serde_json::json!({ event_name: payload });
+
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET state = jsonb_set(
+                    state,
+                    '{pending_events}',
+                    COALESCE(state->'pending_events', '{}') || $1::jsonb
+                ),
+                execution_time = NOW(),
+                updated_at     = NOW()
+            WHERE execution_id = $2
+              AND status = 'scheduled'
+            "#,
+        )
+        .bind(&event_obj)
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        Ok(rows_affected > 0)
     }
 
     async fn get_execution(
