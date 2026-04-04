@@ -34,6 +34,10 @@ test-integration:
 test-crate crate:
     cargo test -p {{ crate }}
 
+# Run macro tests only (no PostgreSQL required)
+test-macros:
+    cargo test -p zart-macros
+
 # ── Lint ───────────────────────────────────────────────────────────────────────
 
 # Run clippy on all crates with strict settings

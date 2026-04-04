@@ -2553,8 +2553,13 @@ dependencies = [
 name = "zart-macros"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "proc-macro2",
  "quote",
+ "scheduler",
+ "serde",
+ "serde_json",
  "syn",
  "tokio",
  "zart",

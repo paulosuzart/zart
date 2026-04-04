@@ -388,6 +388,7 @@ impl<S: Scheduler> TaskContext<S> {
                         retry_attempt: 0,
                         retry_config: None,
                         attempts: vec![],
+                        event_deadline: None,
                     },
                 );
                 true
@@ -517,6 +518,14 @@ impl<S: Scheduler> TaskContext<S> {
                             next_execution: None,
                         });
                     }
+                }
+
+                // ── Waiting for event: not supported in wait_all ───────────────
+                Some((StepStatus::WaitingForEvent, _, _)) => {
+                    return Err(StepError::Failed {
+                        step: handle.step_name.clone(),
+                        reason: "event-waiting steps cannot be used with wait_all; use wait_for_event directly".to_string(),
+                    });
                 }
 
                 // ── Step not registered: programming error ─────────────────────

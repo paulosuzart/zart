@@ -85,15 +85,6 @@ impl<S: Scheduler> DurableScheduler<S> {
             .ok_or_else(|| SchedulerError::ExecutionNotFound(execution_id.to_string()))
     }
 
-    /// Cancel a durable execution and its pending tasks.
-    ///
-    /// Only tasks in `scheduled` state are cancelled. Tasks already being
-    /// executed by a worker are not interrupted.
-    pub async fn cancel(&self, execution_id: &str) -> Result<(), SchedulerError> {
-        self.scheduler.cancel_execution(execution_id).await?;
-        Ok(())
-    }
-
     /// Block until the execution reaches a terminal state (completed, failed,
     /// or cancelled), polling every `poll_interval` (default: 500 ms).
     ///
