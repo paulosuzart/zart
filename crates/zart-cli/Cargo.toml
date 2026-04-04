@@ -1,0 +1,22 @@
+[package]
+name = "zart-cli"
+description = "Command-line interface for Zart — migrate, schedule, inspect, and manage durable executions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zart"
+path = "src/main.rs"
+
+[dependencies]
+zart.workspace = true
+scheduler.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
