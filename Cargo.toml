@@ -1,5 +1,5 @@
 [workspace]
-members = ["scheduler", "zart", "zart-cli", "zart-api", "zart-macros"]
+members = ["crates/scheduler", "crates/zart", "crates/zart-cli", "crates/zart-api", "crates/zart-macros"]
 resolver = "2"
 
 [workspace.package]
@@ -11,9 +11,9 @@ repository = "https://github.com/zart-rs/zart"
 
 [workspace.dependencies]
 # Internal crates
-scheduler = { path = "scheduler" }
-zart = { path = "zart" }
-zart-macros = { path = "zart-macros" }
+scheduler = { path = "crates/scheduler" }
+zart = { path = "crates/zart" }
+zart-macros = { path = "crates/zart-macros" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
