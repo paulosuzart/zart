@@ -8,7 +8,23 @@ use prometheus::{CounterVec, Gauge, HistogramOpts, HistogramVec, Registry};
 
 lazy_static! {
     /// Global Prometheus registry for Zart metrics.
-    pub static ref METRICS_REGISTRY: Registry = Registry::new();
+    ///
+    /// All metrics are eagerly registered during initialisation so that
+    /// every test and every worker sees a fully-populated registry
+    /// regardless of execution order.
+    pub static ref METRICS_REGISTRY: Registry = {
+        let reg = Registry::new();
+        reg.register(Box::new(TASKS_TOTAL.clone())).expect("register TASKS_TOTAL");
+        reg.register(Box::new(TASK_DURATION_SECONDS.clone())).expect("register TASK_DURATION");
+        reg.register(Box::new(STEPS_TOTAL.clone())).expect("register STEPS_TOTAL");
+        reg.register(Box::new(STEP_DURATION_SECONDS.clone())).expect("register STEP_DURATION");
+        reg.register(Box::new(QUEUE_DEPTH.clone())).expect("register QUEUE_DEPTH");
+        reg.register(Box::new(WORKER_CONCURRENT_TASKS.clone())).expect("register WORKER_CONCURRENT");
+        reg.register(Box::new(POLL_INTERVAL_SECONDS.clone())).expect("register POLL_INTERVAL");
+        reg.register(Box::new(EXECUTIONS_TOTAL.clone())).expect("register EXECUTIONS_TOTAL");
+        reg.register(Box::new(EVENTS_DELIVERED_TOTAL.clone())).expect("register EVENTS_DELIVERED");
+        reg
+    };
 
     /// Total number of tasks by status (completed, failed, cancelled, scheduled).
     pub static ref TASKS_TOTAL: CounterVec = CounterVec::new(
@@ -78,16 +94,12 @@ lazy_static! {
 }
 
 /// Register all Zart metrics with the global registry.
+///
+/// Safe to call multiple times — returns `Ok(())` if metrics are
+/// already registered (idempotent).
 pub fn register_metrics() -> Result<(), prometheus::Error> {
-    METRICS_REGISTRY.register(Box::new(TASKS_TOTAL.clone()))?;
-    METRICS_REGISTRY.register(Box::new(TASK_DURATION_SECONDS.clone()))?;
-    METRICS_REGISTRY.register(Box::new(STEPS_TOTAL.clone()))?;
-    METRICS_REGISTRY.register(Box::new(STEP_DURATION_SECONDS.clone()))?;
-    METRICS_REGISTRY.register(Box::new(QUEUE_DEPTH.clone()))?;
-    METRICS_REGISTRY.register(Box::new(WORKER_CONCURRENT_TASKS.clone()))?;
-    METRICS_REGISTRY.register(Box::new(POLL_INTERVAL_SECONDS.clone()))?;
-    METRICS_REGISTRY.register(Box::new(EXECUTIONS_TOTAL.clone()))?;
-    METRICS_REGISTRY.register(Box::new(EVENTS_DELIVERED_TOTAL.clone()))?;
+    // Metrics are already registered during `METRICS_REGISTRY` init.
+    // This function is kept for backwards compatibility and is a no-op.
     Ok(())
 }
 
