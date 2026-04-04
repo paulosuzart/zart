@@ -24,7 +24,7 @@ pub mod postgres;
 
 pub use error::StorageError;
 pub use recurrence::Recurrence;
-pub use types::{FetchedTask, ScheduleResult, TaskStatus};
+pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, TaskStatus};
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresScheduler;
@@ -109,6 +109,52 @@ pub trait Scheduler: Send + Sync {
 
     /// Run database migrations required by this backend.
     async fn run_migrations(&self) -> Result<(), StorageError>;
+
+    // ── Durable execution tracking ─────────────────────────────────────────
+
+    /// Insert a new durable execution record into `zart_executions`.
+    ///
+    /// Uses `ON CONFLICT DO NOTHING` so that calling `start_execution` twice
+    /// with the same `execution_id` is a safe no-op (idempotency key).
+    async fn start_execution(
+        &self,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (execution_id, task_name, payload);
+        Ok(())
+    }
+
+    /// Mark a durable execution as successfully completed.
+    async fn complete_execution(
+        &self,
+        execution_id: &str,
+        result: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (execution_id, result);
+        Ok(())
+    }
+
+    /// Mark a durable execution as failed.
+    async fn fail_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), StorageError> {
+        let _ = execution_id;
+        Ok(())
+    }
+
+    /// Fetch a durable execution record by ID.
+    ///
+    /// Returns `None` if no execution with the given ID exists.
+    async fn get_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<ExecutionRecord>, StorageError> {
+        let _ = execution_id;
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

@@ -43,12 +43,14 @@
 //! ```
 
 pub mod context;
+pub mod durable;
 pub mod error;
 pub mod registry;
 pub mod retry;
 pub mod worker;
 
 pub use context::TaskContext;
+pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use registry::{TaskHandler, TaskRegistry};
 pub use retry::RetryConfig;
@@ -60,10 +62,11 @@ pub use worker::{Worker, WorkerConfig};
 pub mod prelude {
     pub use crate::{
         context::TaskContext,
+        durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
         registry::{TaskHandler, TaskRegistry},
         retry::RetryConfig,
         worker::{Worker, WorkerConfig},
     };
-    pub use scheduler::Scheduler;
+    pub use scheduler::{ExecutionRecord, ExecutionStatus, Scheduler};
 }

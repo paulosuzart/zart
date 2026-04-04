@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
+use crate::{ExecutionRecord, ExecutionStatus, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
 
 /// A [`Scheduler`] backed by a PostgreSQL database.
 ///
@@ -327,5 +327,107 @@ impl Scheduler for PostgresScheduler {
             .run(&self.pool)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))
+    }
+
+    async fn start_execution(
+        &self,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            INSERT INTO zart_executions (execution_id, task_name, payload)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (execution_id) DO NOTHING
+            "#,
+        )
+        .bind(execution_id)
+        .bind(task_name)
+        .bind(&payload)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    async fn complete_execution(
+        &self,
+        execution_id: &str,
+        result: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET status       = 'completed',
+                result       = $1,
+                completed_at = NOW(),
+                updated_at   = NOW()
+            WHERE execution_id = $2
+            "#,
+        )
+        .bind(&result)
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    async fn fail_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET status     = 'failed',
+                updated_at = NOW()
+            WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    async fn get_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<ExecutionRecord>, StorageError> {
+        let row: Option<(String, String, serde_json::Value, Option<serde_json::Value>, String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, i32)> =
+            sqlx::query_as(
+                r#"
+                SELECT execution_id, task_name, payload, result, status,
+                       scheduled_at, completed_at, version
+                FROM zart_executions
+                WHERE execution_id = $1
+                "#,
+            )
+            .bind(execution_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        match row {
+            None => Ok(None),
+            Some((eid, task_name, payload, result, status_str, scheduled_at, completed_at, version)) => {
+                let status = status_str
+                    .parse::<ExecutionStatus>()
+                    .map_err(|e| StorageError::Database(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e))))?;
+                Ok(Some(ExecutionRecord {
+                    execution_id: eid,
+                    task_name,
+                    payload,
+                    status,
+                    result,
+                    scheduled_at,
+                    completed_at,
+                    version,
+                }))
+            }
+        }
     }
 }

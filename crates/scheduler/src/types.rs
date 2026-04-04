@@ -51,3 +51,53 @@ pub enum TaskStatus {
     /// Cancelled before execution.
     Cancelled,
 }
+
+/// The lifecycle status of a durable execution record in `zart_executions`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStatus {
+    Scheduled,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl std::fmt::Display for ExecutionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scheduled => write!(f, "scheduled"),
+            Self::Running => write!(f, "running"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl std::str::FromStr for ExecutionStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "scheduled" => Ok(Self::Scheduled),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(format!("unknown execution status: {other}")),
+        }
+    }
+}
+
+/// A durable execution record fetched from `zart_executions`.
+#[derive(Debug, Clone)]
+pub struct ExecutionRecord {
+    pub execution_id: String,
+    pub task_name: String,
+    pub payload: serde_json::Value,
+    pub status: ExecutionStatus,
+    pub result: Option<serde_json::Value>,
+    pub scheduled_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub version: i32,
+}

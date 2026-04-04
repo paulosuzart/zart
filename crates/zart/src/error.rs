@@ -101,6 +101,27 @@ pub enum StepError {
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// Converts a [`StepError`] into a [`TaskError::StepFailed`].
+///
+/// This enables the `?` operator in task handlers that return
+/// `Result<_, TaskError>` when calling `ctx.step(...)`.
+///
+/// [`StepError::Scheduled`] is a control-flow signal, not a real failure —
+/// the worker inspects the wrapped variant and handles it specially.
+impl From<StepError> for TaskError {
+    fn from(e: StepError) -> Self {
+        let step = match &e {
+            StepError::Scheduled { step } => step.clone(),
+            StepError::Failed { step, .. } => step.clone(),
+            StepError::RetryExhausted { step, .. } => step.clone(),
+            StepError::Timeout { step, .. } => step.clone(),
+            StepError::WaitingForEvent { event } => event.clone(),
+            StepError::Other(_) => "unknown".to_string(),
+        };
+        TaskError::StepFailed { step, source: e }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

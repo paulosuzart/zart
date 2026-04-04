@@ -146,7 +146,7 @@ impl<S: Scheduler> TaskContext<S> {
                         reason: format!("failed to deserialize cached result: {e}"),
                     }
                 })?;
-                return Ok(result);
+                Ok(result)
             }
 
             // Step scheduled — execute the lambda now.
@@ -170,7 +170,7 @@ impl<S: Scheduler> TaskContext<S> {
                         retry_attempt: 0,
                     },
                 );
-                return Ok(result);
+                Ok(result)
             }
 
             // Step not yet seen — schedule it.
@@ -184,9 +184,9 @@ impl<S: Scheduler> TaskContext<S> {
                         retry_attempt: 0,
                     },
                 );
-                return Err(StepError::Scheduled {
+                Err(StepError::Scheduled {
                     step: step_name.to_string(),
-                });
+                })
             }
         }
     }

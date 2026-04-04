@@ -19,6 +19,8 @@
 
 use clap::{Parser, Subcommand};
 use scheduler::Scheduler as _;
+use std::sync::Arc;
+use zart::{DurableScheduler, TaskRegistry};
 
 /// Zart — Durable Execution Framework CLI
 #[derive(Parser)]
@@ -103,22 +105,13 @@ async fn main() {
 
     match cli.command {
         Commands::Migrate => {
-            let url = cli.database_url.unwrap_or_else(|| {
-                eprintln!("error: DATABASE_URL must be set (or pass --database-url)");
-                std::process::exit(1);
-            });
-
-            let pool = sqlx::PgPool::connect(&url).await.unwrap_or_else(|e| {
-                eprintln!("error: could not connect to database: {e}");
-                std::process::exit(1);
-            });
-
+            let url = require_db_url(cli.database_url);
+            let pool = connect(&url).await;
             let scheduler = scheduler::PostgresScheduler::new(pool);
             scheduler.run_migrations().await.unwrap_or_else(|e| {
                 eprintln!("error: migrations failed: {e}");
                 std::process::exit(1);
             });
-
             println!("Migrations applied successfully.");
         }
 
@@ -127,20 +120,55 @@ async fn main() {
             task_name,
             data,
         } => {
-            // TODO(M2): parse data JSON, connect to Postgres, schedule task.
-            let _execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let _data: serde_json::Value = serde_json::from_str(&data).unwrap_or_else(|e| {
-                eprintln!("Invalid JSON payload: {e}");
+            let payload: serde_json::Value = serde_json::from_str(&data).unwrap_or_else(|e| {
+                eprintln!("error: invalid JSON payload: {e}");
                 std::process::exit(1);
             });
-            eprintln!("zart schedule {task_name} — not yet implemented (M2)");
-            std::process::exit(1);
+
+            let execution_id =
+                execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+            let url = require_db_url(cli.database_url);
+            let pool = connect(&url).await;
+            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
+                Arc::new(TaskRegistry::new());
+            let durable = DurableScheduler::new(scheduler, registry);
+
+            durable
+                .start(&execution_id, &task_name, payload)
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to schedule execution: {e}");
+                    std::process::exit(1);
+                });
+
+            println!("Scheduled execution '{execution_id}' for task '{task_name}'.");
         }
 
         Commands::Status { execution_id } => {
-            // TODO(M2): connect to Postgres, fetch and display execution status.
-            eprintln!("zart status {execution_id} — not yet implemented (M2)");
-            std::process::exit(1);
+            let url = require_db_url(cli.database_url);
+            let pool = connect(&url).await;
+            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
+                Arc::new(TaskRegistry::new());
+            let durable = DurableScheduler::new(scheduler, registry);
+
+            let record = durable.status(&execution_id).await.unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+
+            println!("execution_id : {}", record.execution_id);
+            println!("task_name    : {}", record.task_name);
+            println!("status       : {}", record.status);
+            println!("scheduled_at : {}", record.scheduled_at);
+            if let Some(at) = record.completed_at {
+                println!("completed_at : {at}");
+            }
+            if let Some(result) = record.result {
+                println!("result       : {result}");
+            }
         }
 
         Commands::Cancel { execution_id } => {
@@ -158,4 +186,18 @@ async fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn require_db_url(url: Option<String>) -> String {
+    url.unwrap_or_else(|| {
+        eprintln!("error: DATABASE_URL must be set (or pass --database-url)");
+        std::process::exit(1);
+    })
+}
+
+async fn connect(url: &str) -> sqlx::PgPool {
+    sqlx::PgPool::connect(url).await.unwrap_or_else(|e| {
+        eprintln!("error: could not connect to database: {e}");
+        std::process::exit(1);
+    })
 }
