@@ -10,6 +10,7 @@ use axum::{
 use scheduler::ExecutionStatus;
 use std::time::Duration;
 use zart::error::SchedulerError;
+use zart::metrics::gather_metrics;
 
 use crate::{
     models::{
@@ -42,8 +43,11 @@ pub fn api_router(state: AppState) -> Router {
             "/api/v1/events/{execution_id}/{event_name}",
             post(offer_event),
         )
-        // Health check
+        // Health checks
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        // Observability
+        .route("/metrics", get(metrics))
         .with_state(state)
 }
 
@@ -52,6 +56,26 @@ pub fn api_router(state: AppState) -> Router {
 /// `GET /healthz` — liveness probe.
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+/// `GET /readyz` — readiness probe (checks if the service is ready to accept requests).
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    // Check if the durable API is available
+    if state.durable.is_ready() {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    }
+}
+
+/// `GET /metrics` — Prometheus metrics endpoint.
+async fn metrics() -> impl IntoResponse {
+    let metrics = gather_metrics();
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")],
+        metrics,
+    )
 }
 
 /// `GET /api/v1/executions` — list executions with optional filters.
@@ -259,6 +283,36 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readyz_returns_200() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_returns_200() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
                     .body(Body::empty())
                     .unwrap(),
             )

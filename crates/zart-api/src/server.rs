@@ -4,6 +4,7 @@ use crate::routes;
 use crate::state::AppState;
 use axum::Router;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -17,6 +18,8 @@ pub struct ApiServer {
     addr: String,
     /// The durable execution backend.
     durable: Arc<dyn DurableApi>,
+    /// CancellationToken for graceful shutdown.
+    cancellation: Option<CancellationToken>,
 }
 
 impl ApiServer {
@@ -25,6 +28,20 @@ impl ApiServer {
         Self {
             addr: addr.into(),
             durable,
+            cancellation: None,
+        }
+    }
+
+    /// Create a new API server with a cancellation token for graceful shutdown.
+    pub fn with_cancellation(
+        addr: impl Into<String>,
+        durable: Arc<dyn DurableApi>,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            addr: addr.into(),
+            durable,
+            cancellation: Some(cancellation),
         }
     }
 
@@ -43,7 +60,22 @@ impl ApiServer {
         info!(addr = %self.addr, "Zart API server starting");
         let router = self.router();
         let listener = tokio::net::TcpListener::bind(&self.addr).await?;
-        axum::serve(listener, router).await
+
+        // Move cancellation token into a variable we can control
+        let cancellation = self.cancellation;
+
+        if let Some(cancellation) = cancellation {
+            info!("Zart API server configured with graceful shutdown");
+            // Create the shutdown signal future and keep cancellation alive
+            let shutdown_signal = async move {
+                cancellation.cancelled().await;
+            };
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal)
+                .await
+        } else {
+            axum::serve(listener, router).await
+        }
     }
 }
 

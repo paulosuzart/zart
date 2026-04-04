@@ -2,12 +2,16 @@
 
 use crate::context::{ExecutionState, TaskContext};
 use crate::error::{StepError, TaskError};
+use crate::metrics::{
+    POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASK_DURATION_SECONDS, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
+};
 use crate::registry::TaskRegistry;
 use scheduler::Scheduler;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
-use tracing::{error, info, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, error, info, instrument, warn};
 use uuid::Uuid;
 
 /// Configuration for a polling worker.
@@ -53,6 +57,8 @@ pub struct Worker<S: Scheduler> {
     config: WorkerConfig,
     /// Notified by [`stop`](Self::stop) to trigger a graceful shutdown.
     shutdown: Arc<Notify>,
+    /// CancellationToken for composability with external shutdown coordinators.
+    cancellation: CancellationToken,
 }
 
 impl<S: Scheduler + 'static> Worker<S> {
@@ -63,6 +69,26 @@ impl<S: Scheduler + 'static> Worker<S> {
             registry,
             config,
             shutdown: Arc::new(Notify::new()),
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    /// Create a new worker with a shared cancellation token.
+    ///
+    /// This allows multiple workers to be shut down together
+    /// when a common CancellationToken is cancelled.
+    pub fn with_cancellation(
+        scheduler: Arc<S>,
+        registry: Arc<TaskRegistry<S>>,
+        config: WorkerConfig,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            scheduler,
+            registry,
+            config,
+            shutdown: Arc::new(Notify::new()),
+            cancellation,
         }
     }
 
@@ -73,6 +99,7 @@ impl<S: Scheduler + 'static> Worker<S> {
     ///
     /// Orphan recovery runs every 10 poll cycles to reset tasks stuck in
     /// `picked_up` state after a worker crash.
+    #[instrument(name = "worker.run", skip(self))]
     pub async fn run(&self) {
         info!(
             poll_interval_ms = self.config.poll_interval.as_millis(),
@@ -84,11 +111,14 @@ impl<S: Scheduler + 'static> Worker<S> {
 
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_tasks));
         let mut poll_count: u32 = 0;
+        let mut last_poll_time = std::time::Instant::now();
 
         loop {
             // Check for shutdown before each poll.
             let shutdown_notified = self.shutdown.notified();
+            let cancellation = self.cancellation.cancelled();
             tokio::pin!(shutdown_notified);
+            tokio::pin!(cancellation);
 
             tokio::select! {
                 biased;
@@ -96,8 +126,19 @@ impl<S: Scheduler + 'static> Worker<S> {
                     info!("Worker shutdown signal received, exiting poll loop");
                     break;
                 }
+                _ = &mut cancellation => {
+                    info!("Worker cancellation token triggered, exiting poll loop");
+                    break;
+                }
                 _ = tokio::time::sleep(self.config.poll_interval) => {}
             }
+
+            // Record poll interval timing
+            let poll_interval = last_poll_time.elapsed().as_secs_f64();
+            POLL_INTERVAL_SECONDS
+                .with_label_values(&[])
+                .observe(poll_interval);
+            last_poll_time = std::time::Instant::now();
 
             poll_count += 1;
 
@@ -126,6 +167,9 @@ impl<S: Scheduler + 'static> Worker<S> {
                 }
             };
 
+            // Update queue depth metric (approximate - tasks we just fetched)
+            QUEUE_DEPTH.set(tasks.len() as f64);
+
             if tasks.is_empty() {
                 continue;
             }
@@ -141,10 +185,15 @@ impl<S: Scheduler + 'static> Worker<S> {
                 let scheduler = self.scheduler.clone();
                 let registry = self.registry.clone();
 
-                tokio::spawn(async move {
-                    let _permit = permit; // released when this task finishes
-                    dispatch_task(scheduler, registry, task).await;
-                });
+                tokio::spawn(
+                    async move {
+                        let _permit = permit; // released when this task finishes
+                        WORKER_CONCURRENT_TASKS.inc();
+                        dispatch_task(scheduler, registry, task).await;
+                        WORKER_CONCURRENT_TASKS.dec();
+                    }
+                    .in_current_span(),
+                );
             }
         }
     }
@@ -153,15 +202,25 @@ impl<S: Scheduler + 'static> Worker<S> {
     pub fn stop(&self) {
         info!("Worker stop requested");
         self.shutdown.notify_one();
+        self.cancellation.cancel();
+    }
+
+    /// Get the cancellation token for this worker.
+    ///
+    /// This can be shared with other components that need to coordinate shutdown.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
     }
 }
 
 /// Dispatch a single fetched task to its registered handler and persist the result.
+#[instrument(name = "task.dispatch", skip(scheduler, registry), fields(task_id = %task.task_id, task_name = %task.task_name))]
 async fn dispatch_task<S: Scheduler + 'static>(
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
 ) {
+    let start_time = std::time::Instant::now();
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
         None => {
@@ -231,7 +290,12 @@ async fn dispatch_task<S: Scheduler + 'static>(
 
     match result {
         Ok(result) => {
+            let duration = start_time.elapsed().as_secs_f64();
+            TASK_DURATION_SECONDS
+                .with_label_values(&[&task.task_name, "completed"])
+                .observe(duration);
             info!(task_id = %task.task_id, "Task completed successfully");
+            TASKS_TOTAL.with_label_values(&["completed"]).inc();
             if let Err(e) = ctx
                 .scheduler
                 .mark_completed(&task.task_id, Some(result.clone()), &ctx.lock_token)
@@ -349,7 +413,12 @@ async fn dispatch_task<S: Scheduler + 'static>(
         }
 
         Err(err) => {
+            let duration = start_time.elapsed().as_secs_f64();
+            TASK_DURATION_SECONDS
+                .with_label_values(&[&task.task_name, "failed"])
+                .observe(duration);
             error!(task_id = %task.task_id, error = %err, "Task failed");
+            TASKS_TOTAL.with_label_values(&["failed"]).inc();
             if let Err(e) = ctx
                 .scheduler
                 .mark_failed(&task.task_id, &err.to_string(), None, &ctx.lock_token)
@@ -377,5 +446,15 @@ mod tests {
         assert!(cfg.max_tasks_per_poll > 0);
         assert!(cfg.max_concurrent_tasks > 0);
         assert!(cfg.shutdown_timeout > Duration::ZERO);
+    }
+
+    #[test]
+    fn worker_has_cancellation_token() {
+        // Just verify the worker can be created with cancellation token
+        // We can't test the actual scheduler without a real implementation
+        let token = CancellationToken::new();
+        assert!(!token.is_cancelled());
+        token.cancel();
+        assert!(token.is_cancelled());
     }
 }

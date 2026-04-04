@@ -58,6 +58,12 @@ pub trait DurableApi: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<ExecutionRecord>, SchedulerError>;
+
+    /// Check if the API is ready to serve requests.
+    /// Default implementation always returns `true`.
+    fn is_ready(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]

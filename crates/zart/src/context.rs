@@ -1,6 +1,7 @@
 //! Task execution context — the interface through which durable step execution is managed.
 
 use crate::error::StepError;
+use crate::metrics::{STEP_DURATION_SECONDS, STEPS_TOTAL};
 use crate::retry::RetryConfig;
 use scheduler::Scheduler;
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::instrument;
 
 // ── Internal type alias ───────────────────────────────────────────────────────
 
@@ -178,6 +180,7 @@ impl<S: Scheduler> TaskContext<S> {
     /// - **Step `Scheduled`**: runs the lambda. On success, persists `Completed`.
     /// - **Step `Completed`**: deserializes the stored result and returns `Ok(T)`
     ///   immediately (lambda not called).
+    #[instrument(name = "step.execute", skip(self, step_fn), fields(step_name = step_name))]
     pub async fn step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
@@ -256,6 +259,16 @@ impl<S: Scheduler> TaskContext<S> {
                             result: Some(serialized),
                         });
 
+                        // Record metrics
+                        let duration =
+                            (completed_at - started_at).num_milliseconds() as f64 / 1000.0;
+                        STEP_DURATION_SECONDS
+                            .with_label_values(&[step_name, "completed"])
+                            .observe(duration);
+                        STEPS_TOTAL
+                            .with_label_values(&["completed", step_name])
+                            .inc();
+
                         Ok(result)
                     }
 
@@ -289,12 +302,16 @@ impl<S: Scheduler> TaskContext<S> {
                             })
                         } else if retry_config.max_attempts > 0 {
                             // Retries were configured and all exhausted.
+                            STEPS_TOTAL
+                                .with_label_values(&["retry_exhausted", step_name])
+                                .inc();
                             Err(StepError::RetryExhausted {
                                 step: step_name.to_string(),
                                 attempts: next_attempt,
                             })
                         } else {
                             // No retries configured — propagate the original error.
+                            STEPS_TOTAL.with_label_values(&["failed", step_name]).inc();
                             Err(e)
                         }
                     }

@@ -38,6 +38,14 @@ test-crate crate:
 test-macros:
     cargo test -p zart-macros
 
+# Run observability-specific tests (metrics, tracing, logging)
+test-observability:
+    cargo test -p zart metrics
+    cargo test -p zart logging
+    cargo test -p zart-api metrics
+    cargo test -p zart-api healthz
+    cargo test -p zart-api readyz
+
 # ── Lint ───────────────────────────────────────────────────────────────────────
 
 # Run clippy on all crates with strict settings
@@ -103,3 +111,27 @@ ci-integration:
     just up
     DATABASE_URL=postgres://zart:zart@localhost:5432/zart just test-integration
     just down
+
+# ── Observability ──────────────────────────────────────────────────────────────
+
+# Start a development server with observability enabled
+# Usage: just dev-server [PORT]
+dev-server port='8080':
+    @echo "Starting Zart API server on port {{port}} with observability"
+    @echo "Metrics available at: http://localhost:{{port}}/metrics"
+    @echo "Health checks: http://localhost:{{port}}/healthz, http://localhost:{{port}}/readyz"
+    RUST_LOG=info cargo run -p zart-api -- --port {{port}}
+
+# Generate a Grafana dashboard JSON for Prometheus metrics
+generate-grafana-dashboard:
+    @echo "Grafana dashboard generation not yet implemented"
+    @echo "Metrics available:"
+    @echo "  - zart_tasks_total"
+    @echo "  - zart_task_duration_seconds"
+    @echo "  - zart_steps_total"
+    @echo "  - zart_step_duration_seconds"
+    @echo "  - zart_queue_depth"
+    @echo "  - zart_worker_concurrent_tasks"
+    @echo "  - zart_poll_interval_seconds"
+    @echo "  - zart_executions_total"
+    @echo "  - zart_events_delivered_total"

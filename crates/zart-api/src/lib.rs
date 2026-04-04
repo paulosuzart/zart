@@ -10,6 +10,8 @@
 //! GET    /api/v1/executions/:execution_id/wait     — Long-poll until completion
 //! POST   /api/v1/events/:execution_id/:event_name  — Deliver an event
 //! GET    /healthz                                  — Liveness probe
+//! GET    /readyz                                   — Readiness probe
+//! GET    /metrics                                  — Prometheus metrics
 //! ```
 //!
 //! # Usage
