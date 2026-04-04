@@ -70,12 +70,16 @@ pub enum TaskError {
 /// and are not real failures.
 #[derive(Debug, Error)]
 pub enum StepError {
-    /// **Control-flow**: the step has been scheduled for the first time.
+    /// **Control-flow**: the step has been scheduled (first time) or a retry is pending.
     ///
     /// The runtime catches this, persists state, and returns early from the handler.
-    /// The task will be re-scheduled so that the step can execute on the next pick-up.
+    /// The task will be re-scheduled at `next_execution` (or immediately if `None`).
     #[error("Step '{step}' is being scheduled (control flow)")]
-    Scheduled { step: String },
+    Scheduled {
+        step: String,
+        /// When the task should next execute. `None` means immediately.
+        next_execution: Option<chrono::DateTime<chrono::Utc>>,
+    },
 
     /// The step lambda returned a user-visible failure.
     #[error("Step '{step}' failed: {reason}")]
@@ -111,7 +115,7 @@ pub enum StepError {
 impl From<StepError> for TaskError {
     fn from(e: StepError) -> Self {
         let step = match &e {
-            StepError::Scheduled { step } => step.clone(),
+            StepError::Scheduled { step, .. } => step.clone(),
             StepError::Failed { step, .. } => step.clone(),
             StepError::RetryExhausted { step, .. } => step.clone(),
             StepError::Timeout { step, .. } => step.clone(),
@@ -136,6 +140,7 @@ mod tests {
     fn step_error_scheduled_is_control_flow() {
         let err = StepError::Scheduled {
             step: "send-email".to_string(),
+            next_execution: None,
         };
         assert!(err.to_string().contains("send-email"));
     }

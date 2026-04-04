@@ -19,25 +19,22 @@
 //!
 //! ```rust,no_run
 //! use zart::prelude::*;
+//! use async_trait::async_trait;
 //! use scheduler::Scheduler;
 //!
 //! struct MyTask;
 //!
+//! #[async_trait]
 //! impl TaskHandler for MyTask {
 //!     type Data = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
-//!     fn run<'life0, 'life1, 'async_trait, S: Scheduler>(
-//!         &'life0 self,
-//!         ctx: &'life1 mut TaskContext<S>,
+//!     async fn run<S: Scheduler>(
+//!         &self,
+//!         _ctx: &mut TaskContext<S>,
 //!         data: Self::Data,
-//!     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Output, TaskError>> + Send + 'async_trait>>
-//!     where
-//!         'life0: 'async_trait,
-//!         'life1: 'async_trait,
-//!         Self: 'async_trait,
-//!     {
-//!         Box::pin(async move { Ok(data) })
+//!     ) -> Result<Self::Output, TaskError> {
+//!         Ok(data)
 //!     }
 //! }
 //! ```

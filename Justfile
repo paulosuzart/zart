@@ -34,6 +34,14 @@ test-integration:
 test-crate crate:
     cargo test -p {{ crate }}
 
+# Run M3 unit tests (retries + timeouts) — no PostgreSQL required
+test-m3:
+    cargo test -p zart -- m3
+
+# Run M3 integration tests — requires PostgreSQL (just up first)
+test-m3-integration:
+    cargo test -p zart -- m3 --include-ignored --test-threads=1
+
 # ── Lint ───────────────────────────────────────────────────────────────────────
 
 # Run clippy on all crates with strict settings

@@ -1,6 +1,40 @@
 //! Retry configuration for steps and durable executions.
 
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// Serde helpers for [`Duration`] stored as milliseconds.
+mod duration_millis {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(d.as_millis() as u64)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let millis = u64::deserialize(d)?;
+        Ok(Duration::from_millis(millis))
+    }
+}
+
+/// Serde helpers for `Option<Duration>` stored as optional milliseconds.
+mod duration_millis_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(opt: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        match opt {
+            Some(d) => s.serialize_some(&(d.as_millis() as u64)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        let opt = Option::<u64>::deserialize(d)?;
+        Ok(opt.map(Duration::from_millis))
+    }
+}
 
 /// Policy controlling how a step or execution is retried on failure.
 ///
@@ -19,7 +53,7 @@ use std::time::Duration;
 /// // Retry 5 times with exponential backoff starting at 1 second.
 /// let exp = RetryConfig::exponential(5, Duration::from_secs(1));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (does not count the initial attempt).
     ///
@@ -27,6 +61,7 @@ pub struct RetryConfig {
     pub max_attempts: usize,
 
     /// Delay before the first retry.
+    #[serde(with = "duration_millis")]
     pub initial_delay: Duration,
 
     /// Multiplier applied to `initial_delay` after each retry.
@@ -37,6 +72,7 @@ pub struct RetryConfig {
     /// Optional cap on the computed delay.
     ///
     /// Without a cap, exponential backoff can produce arbitrarily large delays.
+    #[serde(with = "duration_millis_opt")]
     pub max_delay: Option<Duration>,
 }
 

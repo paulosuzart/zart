@@ -16,28 +16,25 @@ use std::collections::HashMap;
 ///
 /// ```rust,ignore
 /// use zart::prelude::*;
-/// use scheduler::Scheduler;
+/// use async_trait::async_trait;
 ///
 /// struct GreetTask;
 ///
+/// #[async_trait]
 /// impl TaskHandler for GreetTask {
 ///     type Data = String;
 ///     type Output = String;
 ///
-///     fn run<'life0, 'life1, 'async_trait, S: Scheduler>(
-///         &'life0 self,
-///         ctx: &'life1 mut TaskContext<S>,
+///     async fn run<S: Scheduler>(
+///         &self,
+///         _ctx: &mut TaskContext<S>,
 ///         data: Self::Data,
-///     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Output, TaskError>> + Send + 'async_trait>>
-///     where
-///         'life0: 'async_trait,
-///         'life1: 'async_trait,
-///         Self: 'async_trait,
-///     {
-///         Box::pin(async move { Ok(format!("Hello, {}!", data)) })
+///     ) -> Result<Self::Output, TaskError> {
+///         Ok(format!("Hello, {}!", data))
 ///     }
 /// }
 /// ```
+#[async_trait]
 pub trait TaskHandler: Send + Sync + 'static {
     /// The deserialized input type this task expects.
     type Data: serde::de::DeserializeOwned + Send + Sync;
@@ -48,20 +45,11 @@ pub trait TaskHandler: Send + Sync + 'static {
     ///
     /// The `ctx` provides the step API and access to the execution state.
     /// `data` is the deserialized input payload provided when the execution was started.
-    ///
-    /// This method is generic over `S: Scheduler` so that the same handler can be
-    /// used with any scheduler backend. The concrete `S` is fixed by the registry.
-    fn run<'life0, 'life1, 'async_trait, S: Scheduler>(
-        &'life0 self,
-        ctx: &'life1 mut TaskContext<S>,
+    async fn run<S: Scheduler>(
+        &self,
+        ctx: &mut TaskContext<S>,
         data: Self::Data,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self::Output, TaskError>> + Send + 'async_trait>,
-    >
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait;
+    ) -> Result<Self::Output, TaskError>;
 
     /// Maximum number of times the entire task (not individual steps) is retried
     /// before being marked as `dead`. Defaults to `0` (no retries).
@@ -263,27 +251,17 @@ mod tests {
 
     struct EchoTask;
 
+    #[async_trait]
     impl TaskHandler for EchoTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn run<'life0, 'life1, 'async_trait, S: Scheduler>(
-            &'life0 self,
-            _ctx: &'life1 mut TaskContext<S>,
+        async fn run<S: Scheduler>(
+            &self,
+            _ctx: &mut TaskContext<S>,
             data: Self::Data,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = Result<Self::Output, TaskError>>
-                    + Send
-                    + 'async_trait,
-            >,
-        >
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            Self: 'async_trait,
-        {
-            Box::pin(async move { Ok(data) })
+        ) -> Result<Self::Output, TaskError> {
+            Ok(data)
         }
     }
 

@@ -183,13 +183,19 @@ async fn dispatch_task<S: Scheduler + 'static>(
             }
         }
 
-        // Control-flow: a step was just scheduled for the first time.
-        // Persist the updated state (step is now SCHEDULED) and re-queue immediately.
+        // Control-flow: a step was just scheduled (first time) or a retry is pending.
+        // Persist the updated state and re-queue at `next_execution` (or immediately).
         Err(TaskError::StepFailed {
-            source: StepError::Scheduled { ref step },
+            source: StepError::Scheduled { ref step, ref next_execution },
             ..
         }) => {
-            info!(task_id = %task.task_id, step = %step, "Step scheduled — persisting state and re-queuing");
+            let exec_time = next_execution.unwrap_or_else(chrono::Utc::now);
+            info!(
+                task_id = %task.task_id,
+                step = %step,
+                next_execution = %exec_time,
+                "Step scheduled — persisting state and re-queuing",
+            );
             let state_json = match serde_json::to_value(&ctx.state) {
                 Ok(v) => v,
                 Err(e) => {
@@ -199,7 +205,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
             };
             if let Err(e) = ctx
                 .scheduler
-                .update_task_state(&task.task_id, state_json, chrono::Utc::now(), &ctx.lock_token)
+                .update_task_state(&task.task_id, state_json, exec_time, &ctx.lock_token)
                 .await
             {
                 error!(task_id = %task.task_id, error = %e, "Failed to update task state");
