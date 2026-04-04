@@ -583,6 +583,41 @@
       margin: 0 auto;
     }
 
+    /* ── Rotating word ─────────────────────────────────────── */
+    #hero-word {
+      display: inline-block;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    #hero-word.exiting {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    #hero-word.entering {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    .hero-sub-variant { display: none; }
+    .hero-sub-variant.active { display: block; }
+
+    /* Stack both code windows in the same grid cell so they cross-fade */
+    .hero-code-stack {
+      display: grid;
+    }
+    .hero-code-variant {
+      grid-area: 1 / 1;
+      opacity: 0;
+      transition: opacity 0.45s ease;
+      pointer-events: none;
+    }
+    .hero-code-variant.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    #hero-eyebrow-text {
+      transition: opacity 0.2s ease;
+    }
+    #hero-eyebrow-text.fading { opacity: 0; }
+
     /* ────────────────────────────────────────
        FOOTER
     ──────────────────────────────────────── */
@@ -658,11 +693,19 @@
   <div class="container">
     <div class="hero-inner">
       <div class="hero-text">
-        <div class="hero-eyebrow">Durable Execution for Rust</div>
-        <h1>Workflows that <em>survive failure</em></h1>
-        <p class="hero-sub">
+        <div class="hero-eyebrow"><span id="hero-eyebrow-text">Durable Execution for Rust</span></div>
+        <h1><span id="hero-word">Workflows</span> that <em>survive failure</em></h1>
+        <p class="hero-sub hero-sub-variant active" data-variant="workflow">
           Write async Rust functions where every step is automatically persisted to a database.
           Process restarts, crashes, and timeouts become non-events — completed work is never repeated.
+        </p>
+        <p class="hero-sub hero-sub-variant" data-variant="agent">
+          Give your AI agent durable memory across turns. Schedule long-running work, check status
+          later, deliver approvals — all via CLI or HTTP. The workflow runs independently of the agent loop.
+        </p>
+        <p class="hero-sub hero-sub-variant" data-variant="pipeline">
+          Define data pipelines where each transformation step persists its result. Recover from
+          mid-run failures without reprocessing what already completed.
         </p>
         <div class="hero-actions">
           <a href="/getting-started/" class="btn btn-primary">
@@ -677,14 +720,18 @@
       </div>
 
       <div class="hero-code">
-        <div class="code-window">
-          <div class="code-window-bar">
-            <span class="dot dot-red"></span>
-            <span class="dot dot-amber"></span>
-            <span class="dot dot-green"></span>
-            <span class="code-window-filename">checkout_flow.rs</span>
-          </div>
-          <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_wait_event</span>&#125;;
+        <div class="hero-code-stack">
+
+        <!-- Workflow / Pipeline variant -->
+        <div class="hero-code-variant active" data-variant="workflow">
+          <div class="code-window">
+            <div class="code-window-bar">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-amber"></span>
+              <span class="dot dot-green"></span>
+              <span class="code-window-filename">checkout_flow.rs</span>
+            </div>
+            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_wait_event</span>&#125;;
 
 <span class="attr">#[zart_durable("checkout", timeout = "10m")]</span>
 <span class="kw">async fn</span> <span class="fn">checkout</span>(order: <span class="ty">Order</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Receipt</span>&gt; &#123;
@@ -704,7 +751,42 @@
 
   <span class="ty">Ok</span>(<span class="ty">Receipt</span>::<span class="fn">from</span>(charge))
 &#125;</code></pre>
+          </div>
         </div>
+
+        <!-- AI agent variant -->
+        <div class="hero-code-variant" data-variant="agent">
+          <div class="code-window">
+            <div class="code-window-bar">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-amber"></span>
+              <span class="dot dot-green"></span>
+              <span class="code-window-filename">agent_session.sh</span>
+            </div>
+            <pre><code><span class="cmt"># Turn 1 — agent schedules a multi-step pipeline</span>
+$ zart schedule data-pipeline \
+    --data '<span class="str">&#123;"dataset":"sales-q4-2025"&#125;</span>' \
+    --id pipeline-001
+<span class="cmt"># scheduled | execution_id: pipeline-001</span>
+
+<span class="cmt"># Agent continues other work. Pipeline runs independently.</span>
+
+<span class="cmt"># Turn 2 — agent checks in later (different session)</span>
+$ zart status pipeline-001
+<span class="cmt"># &#123;"status":"waiting","step":"await-approval"&#125;</span>
+
+<span class="cmt"># Turn 3 — human approves; agent delivers the event</span>
+$ zart event pipeline-001 approval \
+    --data '<span class="str">&#123;"approved":true,"by":"alice"&#125;</span>'
+<span class="cmt"># delivered</span>
+
+<span class="cmt"># Turn 4 — agent collects the result</span>
+$ zart wait pipeline-001
+<span class="cmt"># &#123;"status":"completed","rows_written":48291&#125;</span></code></pre>
+          </div>
+        </div>
+
+        </div><!-- /hero-code-stack -->
       </div>
     </div>
   </div>
@@ -999,14 +1081,12 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
 </footer>
 
 <script>
-  // Main tab switching
+  // ── Tab switching ────────────────────────────────────────
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const tabId = btn.dataset.tab;
-
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-
       btn.classList.add('active');
       document.getElementById('tab-' + tabId)?.classList.add('active');
     });
@@ -1017,14 +1097,82 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
     btn.addEventListener('click', () => {
       const subId = btn.dataset.sub;
       const wrapper = btn.closest('.tab-code-window');
-
       wrapper.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
       wrapper.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
-
       btn.classList.add('active');
       document.getElementById('sub-' + subId)?.classList.add('active');
     });
   });
+
+  // ── Hero word rotation ───────────────────────────────────
+  const VARIANTS = [
+    {
+      word:    'Workflows',
+      variant: 'workflow',
+      eyebrow: 'Durable Execution for Rust',
+    },
+    {
+      word:    'AI agents',
+      variant: 'agent',
+      eyebrow: 'LLM Agent Infrastructure',
+    },
+    {
+      word:    'Pipelines',
+      variant: 'pipeline',
+      eyebrow: 'Durable Execution for Rust',
+    },
+  ];
+
+  let currentIdx = 0;
+  const wordEl    = document.getElementById('hero-word');
+  const eyebrowEl = document.getElementById('hero-eyebrow-text');
+
+  function activateVariant(variant) {
+    document.querySelectorAll('.hero-sub-variant').forEach(el => {
+      el.classList.toggle('active', el.dataset.variant === variant);
+    });
+    // Code windows: agent gets its own, everything else uses workflow
+    const codeVariant = variant === 'agent' ? 'agent' : 'workflow';
+    document.querySelectorAll('.hero-code-variant').forEach(el => {
+      el.classList.toggle('active', el.dataset.variant === codeVariant);
+    });
+  }
+
+  function scheduleNext() {
+    // Agent variant lingers longer so the CLI calls are readable
+    const dwell = VARIANTS[currentIdx].variant === 'agent' ? 6500 : 3800;
+    setTimeout(rotateHero, dwell);
+  }
+
+  function rotateHero() {
+    const next = VARIANTS[(currentIdx + 1) % VARIANTS.length];
+
+    // Step 1 — exit current word
+    wordEl.classList.add('exiting');
+    eyebrowEl.classList.add('fading');
+
+    setTimeout(() => {
+      // Step 2 — swap content while invisible
+      wordEl.textContent = next.word;
+      eyebrowEl.textContent = next.eyebrow;
+      wordEl.classList.remove('exiting');
+      wordEl.classList.add('entering');
+      activateVariant(next.variant);
+
+      // Step 3 — enter new word
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          wordEl.classList.remove('entering');
+          eyebrowEl.classList.remove('fading');
+        });
+      });
+
+      currentIdx = (currentIdx + 1) % VARIANTS.length;
+      scheduleNext();
+    }, 280);
+  }
+
+  scheduleNext();
 </script>
 
 </body>
