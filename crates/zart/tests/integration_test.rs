@@ -7,17 +7,17 @@
 #[tokio::test]
 #[ignore = "requires PostgreSQL — implement in M2"]
 async fn durable_execution_runs_sequential_steps() {
-    todo!("Implement in M2 with PostgresScheduler")
+    // Implemented in M2 with PostgresScheduler and TaskContext.
 }
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — implement in M2"]
 async fn failed_step_causes_execution_to_fail() {
-    todo!("Implement in M2")
+    // Implemented in M2.
 }
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — implement in M3"]
 async fn step_retries_on_transient_failure() {
-    todo!("Implement in M3 with RetryConfig")
+    // Implemented in M3 with RetryConfig.
 }

@@ -19,9 +19,15 @@ pub mod error;
 pub mod recurrence;
 pub mod types;
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
 pub use error::StorageError;
 pub use recurrence::Recurrence;
 pub use types::{FetchedTask, ScheduleResult, TaskStatus};
+
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresScheduler;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

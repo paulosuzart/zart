@@ -18,6 +18,7 @@
 //! - `ZART_CONFIG` — path to a TOML config file (optional)
 
 use clap::{Parser, Subcommand};
+use scheduler::Scheduler as _;
 
 /// Zart — Durable Execution Framework CLI
 #[derive(Parser)]
@@ -102,9 +103,23 @@ async fn main() {
 
     match cli.command {
         Commands::Migrate => {
-            // TODO(M1): connect to Postgres, run migrations.
-            eprintln!("zart migrate — not yet implemented (M1)");
-            std::process::exit(1);
+            let url = cli.database_url.unwrap_or_else(|| {
+                eprintln!("error: DATABASE_URL must be set (or pass --database-url)");
+                std::process::exit(1);
+            });
+
+            let pool = sqlx::PgPool::connect(&url).await.unwrap_or_else(|e| {
+                eprintln!("error: could not connect to database: {e}");
+                std::process::exit(1);
+            });
+
+            let scheduler = scheduler::PostgresScheduler::new(pool);
+            scheduler.run_migrations().await.unwrap_or_else(|e| {
+                eprintln!("error: migrations failed: {e}");
+                std::process::exit(1);
+            });
+
+            println!("Migrations applied successfully.");
         }
 
         Commands::Schedule {

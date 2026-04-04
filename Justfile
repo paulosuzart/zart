@@ -26,8 +26,9 @@ test:
     cargo test --workspace
 
 # Run all tests including those that require a running PostgreSQL instance
+# Uses --test-threads=1 so PostgreSQL integration tests don't race each other via SKIP LOCKED.
 test-integration:
-    cargo test --workspace -- --include-ignored
+    cargo test --workspace -- --include-ignored --test-threads=1
 
 # Run tests for a specific crate
 test-crate crate:
