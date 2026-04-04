@@ -1,14 +1,7 @@
 name: Deploy to Vercel
 
 on:
-  push:
-    branches: [feat/webpage]
-    paths:
-      - 'webpage/**'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'webpage/**'
+  workflow_dispatch:
 
 jobs:
   deploy:
