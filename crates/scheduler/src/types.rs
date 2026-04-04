@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::Recurrence;
+
 /// A task that has been fetched from the database and is ready for execution.
 ///
 /// The `lock_token` must be passed back when completing or failing the task
@@ -23,6 +25,8 @@ pub struct FetchedTask {
     pub lock_token: String,
     /// The durable execution this task belongs to, if any.
     pub execution_id: Option<String>,
+    /// Recurrence configuration, if this is a recurring task.
+    pub recurrence: Option<Recurrence>,
 }
 
 /// The result of successfully scheduling a task.

@@ -26,7 +26,10 @@ pub struct DurableScheduler<S: Scheduler> {
 impl<S: Scheduler> DurableScheduler<S> {
     /// Create a new `DurableScheduler`.
     pub fn new(scheduler: Arc<S>, registry: Arc<TaskRegistry<S>>) -> Self {
-        Self { scheduler, registry }
+        Self {
+            scheduler,
+            registry,
+        }
     }
 
     /// Start a new durable execution with a typed input value.
@@ -77,6 +80,15 @@ impl<S: Scheduler> DurableScheduler<S> {
             .get_execution(execution_id)
             .await?
             .ok_or_else(|| SchedulerError::ExecutionNotFound(execution_id.to_string()))
+    }
+
+    /// Cancel a durable execution and its pending tasks.
+    ///
+    /// Only tasks in `scheduled` state are cancelled. Tasks already being
+    /// executed by a worker are not interrupted.
+    pub async fn cancel(&self, execution_id: &str) -> Result<(), SchedulerError> {
+        self.scheduler.cancel_execution(execution_id).await?;
+        Ok(())
     }
 
     /// Block until the execution reaches a terminal state (completed, failed,

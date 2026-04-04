@@ -5,7 +5,34 @@ use crate::retry::RetryConfig;
 use scheduler::Scheduler;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+
+// ── Internal type alias ───────────────────────────────────────────────────────
+
+/// A boxed, one-shot async function that yields a JSON-serialized step result.
+/// Used internally by [`StepHandle`] to store a pending step lambda.
+type PendingFn = Box<
+    dyn FnOnce() -> Pin<
+            Box<dyn Future<Output = Result<serde_json::Value, StepError>> + Send + 'static>,
+        > + Send
+        + 'static,
+>;
+
+// ── StepHandle ────────────────────────────────────────────────────────────────
+
+/// A handle to a step registered for parallel execution via [`TaskContext::schedule_step`].
+///
+/// Collect handles from multiple `schedule_step` calls and pass them to
+/// [`TaskContext::wait_all`] to execute them and collect results.
+pub struct StepHandle<T> {
+    pub(crate) step_name: String,
+    /// The step lambda wrapped to produce a JSON value. `None` if the step is
+    /// already completed (result is cached in state).
+    pub(crate) pending: Option<PendingFn>,
+    pub(crate) _marker: std::marker::PhantomData<fn() -> T>,
+}
 
 // ── Attempt history ──────────────────────────────────────────────────────────
 
@@ -141,11 +168,7 @@ impl<S: Scheduler> TaskContext<S> {
     /// - **Step `Scheduled`**: runs the lambda. On success, persists `Completed`.
     /// - **Step `Completed`**: deserializes the stored result and returns `Ok(T)`
     ///   immediately (lambda not called).
-    pub async fn step<T, F, Fut>(
-        &mut self,
-        step_name: &str,
-        step_fn: F,
-    ) -> Result<T, StepError>
+    pub async fn step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
         F: FnOnce() -> Fut,
@@ -173,9 +196,11 @@ impl<S: Scheduler> TaskContext<S> {
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         // Clone what we need so we don't hold an immutable borrow into the async call.
-        let snapshot = self.state.steps.get(step_name).map(|r| {
-            (r.status.clone(), r.result.clone(), r.retry_attempt)
-        });
+        let snapshot = self
+            .state
+            .steps
+            .get(step_name)
+            .map(|r| (r.status.clone(), r.result.clone(), r.retry_attempt));
 
         match snapshot {
             // ── COMPLETED: return the cached result ───────────────────────────
@@ -199,12 +224,11 @@ impl<S: Scheduler> TaskContext<S> {
 
                 match outcome {
                     Ok(result) => {
-                        let serialized = serde_json::to_value(&result).map_err(|e| {
-                            StepError::Failed {
+                        let serialized =
+                            serde_json::to_value(&result).map_err(|e| StepError::Failed {
                                 step: step_name.to_string(),
                                 reason: format!("failed to serialize result: {e}"),
-                            }
-                        })?;
+                            })?;
 
                         let record = self
                             .state
@@ -315,6 +339,180 @@ impl<S: Scheduler> TaskContext<S> {
                 })?
         })
         .await
+    }
+
+    /// Register a step for parallel execution without waiting for it to complete.
+    ///
+    /// Unlike [`step`](Self::step), this method does **not** block. All registered
+    /// steps run when [`wait_all`](Self::wait_all) is called.
+    ///
+    /// # Re-entry behaviour
+    ///
+    /// - **Step absent**: registers it as `Scheduled` and stores the lambda.
+    /// - **Step `Scheduled`**: stores the lambda for execution in `wait_all`.
+    /// - **Step `Completed`**: discards the lambda; `wait_all` will return the cached result.
+    pub fn schedule_step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> StepHandle<T>
+    where
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, StepError>> + Send + 'static,
+    {
+        let step_name_str = step_name.to_string();
+
+        let is_scheduled = match self.state.steps.get(step_name) {
+            None => {
+                // First encounter: register as Scheduled.
+                self.state.steps.insert(
+                    step_name.to_string(),
+                    StepRecord {
+                        status: StepStatus::Scheduled,
+                        result: None,
+                        in_task_id: None,
+                        retry_attempt: 0,
+                        retry_config: None,
+                        attempts: vec![],
+                    },
+                );
+                true
+            }
+            Some(record) => record.status == StepStatus::Scheduled,
+        };
+
+        let pending: Option<PendingFn> = if is_scheduled {
+            let name_for_err = step_name_str.clone();
+            Some(Box::new(move || {
+                Box::pin(async move {
+                    let result = step_fn().await?;
+                    serde_json::to_value(result).map_err(|e| StepError::Failed {
+                        step: name_for_err,
+                        reason: format!("serialize error: {e}"),
+                    })
+                })
+            }))
+        } else {
+            // Step is already Completed — no need to run the lambda.
+            None
+        };
+
+        StepHandle {
+            step_name: step_name_str,
+            pending,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Wait for all handles returned by [`schedule_step`](Self::schedule_step) to complete.
+    ///
+    /// Steps that are `Scheduled` have their lambdas executed sequentially in
+    /// the order supplied. Steps already `Completed` return their cached results.
+    ///
+    /// Returns `Ok(results)` where each element corresponds to one handle in order.
+    /// An individual step failure appears as `Err(StepError)` inside the `Vec`;
+    /// the outer `Err` is reserved for control-flow or programming errors.
+    pub async fn wait_all<T>(
+        &mut self,
+        handles: Vec<StepHandle<T>>,
+    ) -> Result<Vec<Result<T, StepError>>, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+    {
+        let mut results = Vec::with_capacity(handles.len());
+
+        for handle in handles {
+            let snapshot = self
+                .state
+                .steps
+                .get(&handle.step_name)
+                .map(|r| (r.status.clone(), r.result.clone(), r.retry_attempt));
+
+            match snapshot {
+                // ── Already completed: return cached result ────────────────────
+                Some((StepStatus::Completed, Some(json_val), _)) => {
+                    let val = serde_json::from_value(json_val).map_err(|e| StepError::Failed {
+                        step: handle.step_name.clone(),
+                        reason: format!("deserialize error: {e}"),
+                    })?;
+                    results.push(Ok(val));
+                }
+
+                Some((StepStatus::Completed, None, _)) => {
+                    return Err(StepError::Failed {
+                        step: handle.step_name.clone(),
+                        reason: "step completed but result is missing".to_string(),
+                    });
+                }
+
+                // ── Scheduled: execute the lambda ──────────────────────────────
+                Some((StepStatus::Scheduled, _, retry_attempt)) => {
+                    if let Some(pending_fn) = handle.pending {
+                        let started_at = chrono::Utc::now();
+                        let json_result = pending_fn().await;
+                        let completed_at = chrono::Utc::now();
+
+                        match json_result {
+                            Ok(json_val) => {
+                                let record = self
+                                    .state
+                                    .steps
+                                    .get_mut(&handle.step_name)
+                                    .expect("step must exist in state");
+                                record.status = StepStatus::Completed;
+                                record.result = Some(json_val.clone());
+                                record.attempts.push(StepAttempt {
+                                    attempt_number: retry_attempt + 1,
+                                    started_at,
+                                    completed_at: Some(completed_at),
+                                    status: AttemptStatus::Completed,
+                                    error: None,
+                                    result: Some(json_val.clone()),
+                                });
+
+                                let val = serde_json::from_value(json_val).map_err(|e| {
+                                    StepError::Failed {
+                                        step: handle.step_name.clone(),
+                                        reason: format!("deserialize error: {e}"),
+                                    }
+                                })?;
+                                results.push(Ok(val));
+                            }
+                            Err(e) => {
+                                let record = self
+                                    .state
+                                    .steps
+                                    .get_mut(&handle.step_name)
+                                    .expect("step must exist in state");
+                                record.attempts.push(StepAttempt {
+                                    attempt_number: retry_attempt + 1,
+                                    started_at,
+                                    completed_at: Some(completed_at),
+                                    status: AttemptStatus::Failed,
+                                    error: Some(e.to_string()),
+                                    result: None,
+                                });
+                                results.push(Err(e));
+                            }
+                        }
+                    } else {
+                        // This should not happen in normal usage (schedule_step always
+                        // stores a pending fn for Scheduled steps). Treat as re-queue signal.
+                        return Err(StepError::Scheduled {
+                            step: handle.step_name.clone(),
+                            next_execution: None,
+                        });
+                    }
+                }
+
+                // ── Step not registered: programming error ─────────────────────
+                None => {
+                    return Err(StepError::Failed {
+                        step: handle.step_name.clone(),
+                        reason: "step not found — call schedule_step before wait_all".to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Suspend execution for `duration`, resuming at `now + duration`.
@@ -586,7 +784,10 @@ mod tests {
         // Should return Scheduled (control-flow) with a delay since retries remain.
         assert!(matches!(
             result,
-            Err(StepError::Scheduled { next_execution: Some(_), .. })
+            Err(StepError::Scheduled {
+                next_execution: Some(_),
+                ..
+            })
         ));
 
         // Retry attempt counter must be bumped.
@@ -686,11 +887,9 @@ mod tests {
             },
         );
         let result = ctx
-            .step_with_timeout(
-                "fast-step",
-                Duration::from_secs(5),
-                || async { Ok::<i32, StepError>(10) },
-            )
+            .step_with_timeout("fast-step", Duration::from_secs(5), || async {
+                Ok::<i32, StepError>(10)
+            })
             .await;
         assert_eq!(result.unwrap(), 10);
     }
@@ -710,14 +909,10 @@ mod tests {
             },
         );
         let result = ctx
-            .step_with_timeout(
-                "slow-step",
-                Duration::from_millis(1),
-                || async {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    Ok::<i32, StepError>(99)
-                },
-            )
+            .step_with_timeout("slow-step", Duration::from_millis(1), || async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok::<i32, StepError>(99)
+            })
             .await;
         assert!(matches!(result, Err(StepError::Timeout { .. })));
     }
@@ -771,5 +966,86 @@ mod tests {
         let record = back.steps.get("s").unwrap();
         assert_eq!(record.attempts.len(), 2);
         assert_eq!(record.retry_attempt, 1);
+    }
+
+    // ── M4: schedule_step + wait_all ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn schedule_step_registers_as_scheduled() {
+        let mut ctx = make_ctx();
+        let _handle = ctx.schedule_step("par-step", || async { Ok::<i32, StepError>(1) });
+        let record = ctx.state.steps.get("par-step").unwrap();
+        assert_eq!(record.status, StepStatus::Scheduled);
+    }
+
+    #[tokio::test]
+    async fn wait_all_executes_scheduled_steps_and_returns_results() {
+        let mut ctx = make_ctx();
+        let h1 = ctx.schedule_step("s1", || async { Ok::<i32, StepError>(10) });
+        let h2 = ctx.schedule_step("s2", || async { Ok::<i32, StepError>(20) });
+
+        let results = ctx.wait_all(vec![h1, h2]).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].as_ref().unwrap(), &10);
+        assert_eq!(results[1].as_ref().unwrap(), &20);
+    }
+
+    #[tokio::test]
+    async fn wait_all_marks_steps_completed_after_execution() {
+        let mut ctx = make_ctx();
+        let h = ctx.schedule_step("s1", || async { Ok::<i32, StepError>(42) });
+        ctx.wait_all(vec![h]).await.unwrap();
+
+        let record = ctx.state.steps.get("s1").unwrap();
+        assert_eq!(record.status, StepStatus::Completed);
+        assert_eq!(record.result, Some(serde_json::json!(42)));
+    }
+
+    #[tokio::test]
+    async fn wait_all_returns_cached_result_for_completed_steps() {
+        let mut ctx = make_ctx();
+        // Pre-populate a completed step.
+        ctx.state.steps.insert(
+            "done".to_string(),
+            StepRecord {
+                status: StepStatus::Completed,
+                result: Some(serde_json::json!(99)),
+                in_task_id: None,
+                retry_attempt: 0,
+                retry_config: None,
+                attempts: vec![],
+            },
+        );
+
+        // schedule_step should detect the step is completed and not wrap the fn.
+        let h = ctx.schedule_step("done", || async {
+            Ok::<i32, StepError>(0) // unreachable
+        });
+        let results = ctx.wait_all(vec![h]).await.unwrap();
+        assert_eq!(results[0].as_ref().unwrap(), &99);
+    }
+
+    #[tokio::test]
+    async fn wait_all_collects_step_failures_in_results() {
+        let mut ctx = make_ctx();
+        let h = ctx.schedule_step("fail-step", || async {
+            Err::<i32, _>(StepError::Failed {
+                step: "fail-step".to_string(),
+                reason: "bang".to_string(),
+            })
+        });
+        let results = ctx.wait_all(vec![h]).await.unwrap();
+        assert!(results[0].is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_all_records_attempt_on_success() {
+        let mut ctx = make_ctx();
+        let h = ctx.schedule_step("s", || async { Ok::<i32, StepError>(7) });
+        ctx.wait_all(vec![h]).await.unwrap();
+
+        let record = ctx.state.steps.get("s").unwrap();
+        assert_eq!(record.attempts.len(), 1);
+        assert_eq!(record.attempts[0].status, AttemptStatus::Completed);
     }
 }

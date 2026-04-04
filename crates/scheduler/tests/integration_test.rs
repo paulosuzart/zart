@@ -24,10 +24,7 @@ mod postgres_tests {
             .expect("failed to connect to PostgreSQL");
 
         let scheduler = PostgresScheduler::new(pool.clone());
-        scheduler
-            .run_migrations()
-            .await
-            .expect("migrations failed");
+        scheduler.run_migrations().await.expect("migrations failed");
 
         (pool, scheduler)
     }
@@ -50,7 +47,12 @@ mod postgres_tests {
         let task_id = format!("test-schedule-now-{}", Uuid::new_v4());
 
         let result = scheduler
-            .schedule_now(&task_id, "test-task", serde_json::json!({"key": "value"}), None)
+            .schedule_now(
+                &task_id,
+                "test-task",
+                serde_json::json!({"key": "value"}),
+                None,
+            )
             .await
             .expect("schedule_now failed");
 
@@ -71,7 +73,11 @@ mod postgres_tests {
         assert_eq!(fetched.attempt, 1);
 
         scheduler
-            .mark_completed(&task_id, Some(serde_json::json!("done")), &fetched.lock_token)
+            .mark_completed(
+                &task_id,
+                Some(serde_json::json!("done")),
+                &fetched.lock_token,
+            )
             .await
             .expect("mark_completed failed");
 
@@ -92,10 +98,8 @@ mod postgres_tests {
         let now = chrono::Utc::now();
 
         // Poll twice concurrently — only one should get the task.
-        let (poll_a, poll_b) = tokio::join!(
-            scheduler.poll_due(now, 5),
-            scheduler.poll_due(now, 5),
-        );
+        let (poll_a, poll_b) =
+            tokio::join!(scheduler.poll_due(now, 5), scheduler.poll_due(now, 5),);
 
         let tasks_a = poll_a.expect("poll A failed");
         let tasks_b = poll_b.expect("poll B failed");
@@ -222,7 +226,9 @@ mod postgres_tests {
         // Full recurring task logic is implemented in M4.
         let (pool, scheduler) = setup().await;
         let task_id = format!("test-recurring-{}", Uuid::new_v4());
-        let recurrence = scheduler::Recurrence::FixedDelay { duration_ms: 60_000 };
+        let recurrence = scheduler::Recurrence::FixedDelay {
+            duration_ms: 60_000,
+        };
 
         scheduler
             .schedule_at(

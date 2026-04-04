@@ -125,8 +125,7 @@ async fn main() {
                 std::process::exit(1);
             });
 
-            let execution_id =
-                execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
@@ -172,18 +171,52 @@ async fn main() {
         }
 
         Commands::Cancel { execution_id } => {
-            // TODO(M4): connect to Postgres, cancel execution.
-            eprintln!("zart cancel {execution_id} — not yet implemented (M4)");
-            std::process::exit(1);
+            let url = require_db_url(cli.database_url);
+            let pool = connect(&url).await;
+            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
+                Arc::new(TaskRegistry::new());
+            let durable = DurableScheduler::new(scheduler, registry);
+
+            durable.cancel(&execution_id).await.unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+
+            println!("Execution '{execution_id}' cancelled.");
         }
 
         Commands::Wait {
             execution_id,
-            timeout_secs: _,
+            timeout_secs,
         } => {
-            // TODO(M4): poll until completion or timeout.
-            eprintln!("zart wait {execution_id} — not yet implemented (M4)");
-            std::process::exit(1);
+            let url = require_db_url(cli.database_url);
+            let pool = connect(&url).await;
+            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
+                Arc::new(TaskRegistry::new());
+            let durable = DurableScheduler::new(scheduler, registry);
+
+            let record = durable
+                .wait(
+                    &execution_id,
+                    std::time::Duration::from_secs(timeout_secs),
+                    None,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+
+            println!("execution_id : {}", record.execution_id);
+            println!("status       : {}", record.status);
+            if let Some(at) = record.completed_at {
+                println!("completed_at : {at}");
+            }
+            if let Some(result) = record.result {
+                println!("result       : {result}");
+            }
         }
     }
 }

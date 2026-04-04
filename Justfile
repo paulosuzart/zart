@@ -25,22 +25,14 @@ check:
 test:
     cargo test --workspace
 
-# Run all tests including those that require a running PostgreSQL instance
-# Uses --test-threads=1 so PostgreSQL integration tests don't race each other via SKIP LOCKED.
+# Run all tests including those that require a running PostgreSQL instance.
+# Uses --test-threads=1 so integration tests don't race each other via SKIP LOCKED.
 test-integration:
     cargo test --workspace -- --include-ignored --test-threads=1
 
-# Run tests for a specific crate
+# Run tests for a specific crate only
 test-crate crate:
     cargo test -p {{ crate }}
-
-# Run M3 unit tests (retries + timeouts) — no PostgreSQL required
-test-m3:
-    cargo test -p zart -- m3
-
-# Run M3 integration tests — requires PostgreSQL (just up first)
-test-m3-integration:
-    cargo test -p zart -- m3 --include-ignored --test-threads=1
 
 # ── Lint ───────────────────────────────────────────────────────────────────────
 

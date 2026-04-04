@@ -137,10 +137,7 @@ pub trait Scheduler: Send + Sync {
     }
 
     /// Mark a durable execution as failed.
-    async fn fail_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<(), StorageError> {
+    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
         let _ = execution_id;
         Ok(())
     }
@@ -154,6 +151,30 @@ pub trait Scheduler: Send + Sync {
     ) -> Result<Option<ExecutionRecord>, StorageError> {
         let _ = execution_id;
         Ok(None)
+    }
+
+    /// Reset tasks that have been stuck in `picked_up` state longer than `stale_timeout`.
+    ///
+    /// A task becomes an orphan when the worker that locked it crashes without
+    /// releasing the lock. This method resets orphans back to `scheduled` so they
+    /// can be picked up again.
+    ///
+    /// Returns the number of tasks recovered.
+    async fn recover_orphans(
+        &self,
+        stale_timeout: std::time::Duration,
+    ) -> Result<usize, StorageError> {
+        let _ = stale_timeout;
+        Ok(0)
+    }
+
+    /// Cancel all scheduled tasks for a durable execution and mark it as cancelled.
+    ///
+    /// Only tasks in `scheduled` state are cancelled; tasks already `picked_up`
+    /// or in a terminal state are left unchanged.
+    async fn cancel_execution(&self, execution_id: &str) -> Result<(), StorageError> {
+        let _ = execution_id;
+        Ok(())
     }
 }
 

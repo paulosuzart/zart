@@ -14,7 +14,10 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::{ExecutionRecord, ExecutionStatus, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
+use crate::{
+    ExecutionRecord, ExecutionStatus, FetchedTask, Recurrence, ScheduleResult, Scheduler,
+    StorageError,
+};
 
 /// A [`Scheduler`] backed by a PostgreSQL database.
 ///
@@ -97,10 +100,17 @@ impl Scheduler for PostgresScheduler {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         // SELECT with SKIP LOCKED to avoid contention between concurrent workers.
-        let rows: Vec<(String, String, serde_json::Value, serde_json::Value, i32, Option<String>)> =
-            sqlx::query_as(
-                r#"
-                SELECT task_id, task_name, data, state, attempt, execution_id
+        let rows: Vec<(
+            String,
+            String,
+            serde_json::Value,
+            serde_json::Value,
+            i32,
+            Option<String>,
+            Option<serde_json::Value>,
+        )> = sqlx::query_as(
+            r#"
+                SELECT task_id, task_name, data, state, attempt, execution_id, recurrence
                 FROM zart_tasks
                 WHERE status = 'scheduled'
                   AND execution_time <= $1
@@ -108,12 +118,12 @@ impl Scheduler for PostgresScheduler {
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
                 "#,
-            )
-            .bind(now)
-            .bind(limit as i64)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        )
+        .bind(now)
+        .bind(limit as i64)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         if rows.is_empty() {
             tx.rollback()
@@ -124,7 +134,7 @@ impl Scheduler for PostgresScheduler {
 
         let mut fetched = Vec::with_capacity(rows.len());
 
-        for (task_id, task_name, data, state, attempt, execution_id) in rows {
+        for (task_id, task_name, data, state, attempt, execution_id, recurrence_json) in rows {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
@@ -145,6 +155,8 @@ impl Scheduler for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
+            let recurrence = recurrence_json.and_then(|v| serde_json::from_value(v).ok());
+
             fetched.push(FetchedTask {
                 task_id,
                 task_name,
@@ -154,6 +166,7 @@ impl Scheduler for PostgresScheduler {
                 attempt: attempt as usize + 1,
                 lock_token,
                 execution_id,
+                recurrence,
             });
         }
 
@@ -374,10 +387,7 @@ impl Scheduler for PostgresScheduler {
         Ok(())
     }
 
-    async fn fail_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<(), StorageError> {
+    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
         sqlx::query(
             r#"
             UPDATE zart_executions
@@ -393,30 +403,106 @@ impl Scheduler for PostgresScheduler {
         Ok(())
     }
 
+    async fn recover_orphans(
+        &self,
+        stale_timeout: std::time::Duration,
+    ) -> Result<usize, StorageError> {
+        let threshold = Utc::now()
+            - chrono::Duration::from_std(stale_timeout).unwrap_or(chrono::Duration::seconds(300));
+
+        let result = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status     = 'scheduled',
+                locked_at  = NULL,
+                worker_id  = NULL,
+                updated_at = NOW()
+            WHERE status    = 'picked_up'
+              AND locked_at < $1
+            "#,
+        )
+        .bind(threshold)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn cancel_execution(&self, execution_id: &str) -> Result<(), StorageError> {
+        // Cancel any pending tasks for this execution.
+        sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE execution_id = $1 AND status = 'scheduled'
+            "#,
+        )
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // Mark the execution record itself as cancelled.
+        sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(())
+    }
+
     async fn get_execution(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionRecord>, StorageError> {
-        let row: Option<(String, String, serde_json::Value, Option<serde_json::Value>, String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, i32)> =
-            sqlx::query_as(
-                r#"
+        let row: Option<(
+            String,
+            String,
+            serde_json::Value,
+            Option<serde_json::Value>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            i32,
+        )> = sqlx::query_as(
+            r#"
                 SELECT execution_id, task_name, payload, result, status,
                        scheduled_at, completed_at, version
                 FROM zart_executions
                 WHERE execution_id = $1
                 "#,
-            )
-            .bind(execution_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        )
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         match row {
             None => Ok(None),
-            Some((eid, task_name, payload, result, status_str, scheduled_at, completed_at, version)) => {
-                let status = status_str
-                    .parse::<ExecutionStatus>()
-                    .map_err(|e| StorageError::Database(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e))))?;
+            Some((
+                eid,
+                task_name,
+                payload,
+                result,
+                status_str,
+                scheduled_at,
+                completed_at,
+                version,
+            )) => {
+                let status = status_str.parse::<ExecutionStatus>().map_err(|e| {
+                    StorageError::Database(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e,
+                    )))
+                })?;
                 Ok(Some(ExecutionRecord {
                     execution_id: eid,
                     task_name,

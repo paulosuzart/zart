@@ -46,7 +46,7 @@ pub mod registry;
 pub mod retry;
 pub mod worker;
 
-pub use context::TaskContext;
+pub use context::{StepHandle, TaskContext};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use registry::{TaskHandler, TaskRegistry};
@@ -58,7 +58,7 @@ pub use worker::{Worker, WorkerConfig};
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
     pub use crate::{
-        context::TaskContext,
+        context::{StepHandle, TaskContext},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
         registry::{TaskHandler, TaskRegistry},
