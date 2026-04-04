@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Format check ─────────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ── Clippy (lint) ─────────────────────────────────────────────────────────────
+  clippy:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ── Build ─────────────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace (debug)
+        run: cargo build --workspace
+
+  # ── Unit tests ────────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run unit tests (no PostgreSQL required)
+        run: cargo test --workspace
+
+  # ── Integration tests (with PostgreSQL) ───────────────────────────────────────
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: zart
+          POSTGRES_PASSWORD: zart
+          POSTGRES_DB: zart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U zart -d zart"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgres://zart:zart@localhost:5432/zart
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run all tests (including integration)
+        run: cargo test --workspace -- --include-ignored
+
+  # ── Documentation ─────────────────────────────────────────────────────────────
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build documentation
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"

@@ -1,0 +1,27 @@
+[package]
+name = "scheduler"
+description = "Core scheduling primitives for Zart — task polling, skip-lock, and storage backend abstraction"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+cron.workspace = true
+tokio = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+
+[features]
+postgres = ["dep:sqlx", "dep:tokio"]
+
+[dev-dependencies]
+tokio.workspace = true
+tokio-test.workspace = true
