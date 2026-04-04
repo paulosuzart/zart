@@ -1,0 +1,253 @@
+---
+title: HTTP API Endpoints
+description: REST API reference for managing Zart executions and delivering events.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+:::caution[Coming Soon]
+The Zart HTTP API server is currently in development. The endpoints documented here represent the planned interface. Subscribe to the GitHub repository for release announcements.
+:::
+
+The Zart HTTP API server (`zart-server`) exposes a REST interface for scheduling executions, delivering events, and querying status — enabling any language or system to integrate with Zart workflows.
+
+## Base URL
+
+```
+http://localhost:7700/api/v1
+```
+
+All endpoints return JSON. All request bodies must be `Content-Type: application/json`.
+
+---
+
+## Executions
+
+### `POST /api/v1/executions`
+
+Schedule a new workflow execution.
+
+**Request:**
+
+```json
+{
+  "task":             "onboarding",
+  "data":             { "user_id": "u123", "email": "user@example.com" },
+  "idempotency_key":  "signup-u123"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `task` | string | yes | Registered task handler name |
+| `data` | object | yes | Input data (must match handler's `Data` type) |
+| `idempotency_key` | string | no | Stable ID — duplicate calls with same key are safe |
+
+**Response `201 Created`:**
+
+```json
+{
+  "execution_id": "exec-7f3a9b2c",
+  "task":         "onboarding",
+  "status":       "pending",
+  "created_at":   "2026-04-04T10:23:11Z"
+}
+```
+
+---
+
+### `GET /api/v1/executions/:id`
+
+Get the current status of an execution.
+
+**Response `200 OK`:**
+
+```json
+{
+  "execution_id":       "exec-7f3a9b2c",
+  "task":               "onboarding",
+  "status":             "running",
+  "steps_completed":    2,
+  "current_step":       "provision-resources",
+  "waiting_for_event":  null,
+  "started_at":         "2026-04-04T10:23:15Z",
+  "completed_at":       null,
+  "output":             null,
+  "error":              null
+}
+```
+
+**Status values:**
+
+| Status | Description |
+|---|---|
+| `pending` | Scheduled, waiting for a worker to claim it |
+| `running` | Currently being processed by a worker |
+| `waiting` | Durably paused — sleeping or waiting for event |
+| `completed` | Finished successfully |
+| `failed` | Exhausted retries or returned an error |
+| `cancelled` | Explicitly cancelled |
+
+---
+
+### `GET /api/v1/executions`
+
+List executions with optional filtering.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `status` | string | Filter by status |
+| `task` | string | Filter by task name |
+| `limit` | integer | Max results (default: 50, max: 500) |
+| `offset` | integer | Pagination offset |
+| `order` | `asc` \| `desc` | Sort by `created_at` (default: `desc`) |
+
+**Example:**
+
+```
+GET /api/v1/executions?status=running&task=onboarding&limit=20
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "executions": [
+    {
+      "execution_id": "exec-7f3a9b2c",
+      "task":         "onboarding",
+      "status":       "running",
+      "started_at":   "2026-04-04T10:23:15Z"
+    }
+  ],
+  "total":  1,
+  "limit":  20,
+  "offset": 0
+}
+```
+
+---
+
+### `GET /api/v1/executions/:id/wait`
+
+Long-poll for execution completion. Blocks until the execution completes or the timeout expires.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `timeout` | integer | Seconds to wait (default: 30, max: 3600) |
+
+**Response `200 OK` (completed):**
+
+```json
+{
+  "execution_id": "exec-7f3a9b2c",
+  "status":       "completed",
+  "output":       { "customer_id": "cus_abc123" },
+  "completed_at": "2026-04-04T10:24:30Z"
+}
+```
+
+**Response `202 Accepted` (still running after timeout):**
+
+```json
+{
+  "execution_id": "exec-7f3a9b2c",
+  "status":       "running",
+  "message":      "Timeout reached. Execution is still running."
+}
+```
+
+---
+
+### `POST /api/v1/executions/:id/cancel`
+
+Cancel a pending or running execution.
+
+**Response `200 OK`:**
+
+```json
+{
+  "execution_id": "exec-7f3a9b2c",
+  "status":       "cancelled"
+}
+```
+
+---
+
+## Events
+
+### `POST /api/v1/events/:id/:event_name`
+
+Deliver an event to an execution that is waiting for it via `ctx.wait_for_event()`.
+
+**Request:**
+
+```json
+{
+  "approved": true,
+  "reviewer": "jane@example.com",
+  "notes":    "Looks good, proceed."
+}
+```
+
+The request body becomes the event payload. It must be valid JSON and match the expected type in the workflow.
+
+**Response `200 OK`:**
+
+```json
+{
+  "status":       "delivered",
+  "execution_id": "exec-7f3a9b2c",
+  "event_name":   "manager-approval"
+}
+```
+
+**Response `404 Not Found`** — execution does not exist.
+
+**Response `409 Conflict`** — execution is not waiting for this event.
+
+---
+
+## Error Responses
+
+All error responses follow the same shape:
+
+```json
+{
+  "error": {
+    "code":    "execution_not_found",
+    "message": "No execution found with ID exec-7f3a9b2c"
+  }
+}
+```
+
+**Error codes:**
+
+| Code | HTTP Status | Description |
+|---|---|---|
+| `execution_not_found` | 404 | Execution ID does not exist |
+| `task_not_registered` | 422 | Task name has no registered handler |
+| `invalid_data` | 422 | Request body failed validation |
+| `not_waiting_for_event` | 409 | Execution is not in a waiting state for that event |
+| `execution_already_exists` | 409 | Idempotency key conflicts with a different task |
+| `internal_error` | 500 | Unexpected server error |
+
+---
+
+## Authentication
+
+The HTTP API will support bearer token authentication:
+
+```http
+Authorization: Bearer your-api-token
+```
+
+Tokens are configured via the server's configuration file or environment variables.
+
+<Aside type="note">
+Authentication is planned for the initial release of the HTTP server. Development deployments may run without authentication for simplicity.
+</Aside>

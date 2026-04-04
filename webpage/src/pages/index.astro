@@ -1,0 +1,1031 @@
+---
+// Zart Landing Page — custom marketing page, not a Starlight doc page
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zart — Workflows that survive failure</title>
+  <meta name="description" content="Durable execution for Rust. Write workflows that automatically persist every step to a database, survive process restarts, and never re-run completed work." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --brand:        oklch(63% 0.26 285);
+      --brand-low:    oklch(20% 0.09 285);
+      --brand-high:   oklch(82% 0.18 285);
+      --brand-dim:    oklch(45% 0.18 285);
+
+      --bg:           oklch(9%  0.014 285);
+      --bg-card:      oklch(12% 0.022 285);
+      --bg-elevated:  oklch(15% 0.028 285);
+      --bg-code:      oklch(11% 0.018 285);
+
+      --text:         oklch(94% 0.006 285);
+      --text-muted:   oklch(65% 0.04  285);
+      --text-faint:   oklch(45% 0.03  285);
+
+      --border:       oklch(22% 0.04  285);
+      --border-dim:   oklch(18% 0.03  285);
+
+      --radius-sm:    6px;
+      --radius:       10px;
+      --radius-lg:    16px;
+      --radius-xl:    24px;
+
+      --font-sans:    'Instrument Sans', system-ui, sans-serif;
+      --font-display: 'Playfair Display', Georgia, serif;
+      --font-mono:    'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+      --max-w:        1200px;
+      --section-gap: 7rem;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* ── Layout utils ── */
+    .container { max-width: var(--max-w); margin: 0 auto; padding: 0 1.5rem; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+    /* ────────────────────────────────────────
+       NAV
+    ──────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      border-bottom: 1px solid var(--border-dim);
+      background: oklch(9% 0.014 285 / 0.85);
+      backdrop-filter: blur(20px) saturate(1.4);
+      -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 60px;
+      gap: 1rem;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 1.15rem;
+      letter-spacing: -0.03em;
+    }
+
+    .logo-box {
+      width: 30px;
+      height: 30px;
+      background: var(--brand);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Georgia, serif;
+      font-size: 17px;
+      font-weight: 700;
+      color: white;
+      flex-shrink: 0;
+      box-shadow: 0 2px 12px oklch(63% 0.26 285 / 0.4);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      padding: 0.4rem 0.75rem;
+      border-radius: var(--radius-sm);
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .nav-links a:hover { color: var(--text); background: var(--bg-card); }
+
+    .nav-cta {
+      background: var(--brand);
+      color: white !important;
+      padding: 0.4rem 1rem !important;
+      border-radius: var(--radius-sm) !important;
+      font-weight: 600 !important;
+      box-shadow: 0 2px 10px oklch(63% 0.26 285 / 0.35);
+      transition: opacity 0.15s !important;
+    }
+    .nav-cta:hover { opacity: 0.9; background: transparent !important; }
+
+    /* ────────────────────────────────────────
+       HERO
+    ──────────────────────────────────────── */
+    .hero {
+      padding: 6rem 0 4rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -200px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 900px;
+      height: 600px;
+      background: radial-gradient(ellipse at center, oklch(63% 0.26 285 / 0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      align-items: center;
+    }
+
+    @media (max-width: 900px) {
+      .hero-inner { grid-template-columns: 1fr; }
+      .hero-code { order: -1; }
+    }
+
+    .hero-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--brand-low);
+      border: 1px solid oklch(63% 0.26 285 / 0.3);
+      color: var(--brand-high);
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      padding: 0.35rem 0.8rem;
+      border-radius: 100px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-eyebrow::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--brand);
+      border-radius: 50%;
+      box-shadow: 0 0 6px var(--brand);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.85); }
+    }
+
+    .hero h1 {
+      font-family: var(--font-display);
+      font-size: clamp(2.4rem, 5vw, 3.8rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin-bottom: 1.25rem;
+      color: var(--text);
+    }
+
+    .hero h1 em {
+      font-style: italic;
+      color: var(--brand-high);
+    }
+
+    .hero-sub {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      line-height: 1.7;
+      margin-bottom: 2rem;
+      max-width: 46ch;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.7rem 1.4rem;
+      border-radius: var(--radius-sm);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--brand);
+      color: white;
+      box-shadow: 0 3px 16px oklch(63% 0.26 285 / 0.4);
+    }
+    .btn-primary:hover {
+      background: oklch(68% 0.26 285);
+      box-shadow: 0 4px 22px oklch(63% 0.26 285 / 0.55);
+      transform: translateY(-1px);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover {
+      color: var(--text);
+      border-color: var(--brand);
+      background: var(--brand-low);
+    }
+
+    /* ── Code window ── */
+    .code-window {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: 0 24px 64px oklch(0% 0 0 / 0.5), 0 0 0 1px oklch(63% 0.26 285 / 0.08);
+    }
+
+    .code-window-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    .dot-red   { background: #ff5f57; }
+    .dot-amber { background: #febc2e; }
+    .dot-green { background: #28c840; }
+
+    .code-window-filename {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-faint);
+    }
+
+    .code-window pre {
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      tab-size: 2;
+    }
+
+    /* Syntax tokens */
+    .kw  { color: oklch(72% 0.2 300); }   /* keywords: use, async, fn, let, Ok  */
+    .mac { color: oklch(78% 0.22 55);  }   /* macros: z_step!, z_wait_event! */
+    .str { color: oklch(76% 0.18 145); }   /* strings */
+    .cmt { color: var(--text-faint); font-style: italic; }
+    .ty  { color: oklch(80% 0.16 220); }   /* types: Order, Receipt, Result */
+    .fn  { color: oklch(80% 0.2 55);   }   /* function names */
+    .attr { color: oklch(72% 0.2 300); }   /* attributes */
+    .lit { color: oklch(78% 0.18 55);  }   /* literals */
+
+    /* ────────────────────────────────────────
+       DIVIDER STRIP
+    ──────────────────────────────────────── */
+    .strip {
+      border-top: 1px solid var(--border-dim);
+      border-bottom: 1px solid var(--border-dim);
+      padding: 1.25rem 0;
+      background: var(--bg-card);
+    }
+
+    .strip-inner {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .strip-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    .strip-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 0.3rem 0.7rem;
+      border-radius: 100px;
+    }
+
+    .pill svg { width: 14px; height: 14px; opacity: 0.7; }
+
+    /* ────────────────────────────────────────
+       FEATURES
+    ──────────────────────────────────────── */
+    .features {
+      padding: var(--section-gap) 0;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 3.5rem;
+    }
+
+    .section-label {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--brand);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.75rem;
+    }
+
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--text);
+      margin-bottom: 0.75rem;
+    }
+
+    .section-sub {
+      font-size: 1rem;
+      color: var(--text-muted);
+      max-width: 56ch;
+      margin: 0 auto;
+      line-height: 1.7;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+    }
+
+    @media (max-width: 900px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px) { .features-grid { grid-template-columns: 1fr; } }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+
+    .feature-card:hover {
+      border-color: oklch(63% 0.26 285 / 0.4);
+      transform: translateY(-2px);
+    }
+
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      background: var(--brand-low);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1rem;
+      font-size: 1.1rem;
+    }
+
+    .feature-name {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.01em;
+    }
+
+    .feature-desc {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    /* ────────────────────────────────────────
+       CODE SECTION / TABS
+    ──────────────────────────────────────── */
+    .code-section {
+      padding: var(--section-gap) 0;
+      border-top: 1px solid var(--border-dim);
+    }
+
+    .tabs-wrapper {
+      margin-top: 2.5rem;
+    }
+
+    .tab-list {
+      display: flex;
+      gap: 0.25rem;
+      border-bottom: 1px solid var(--border-dim);
+      margin-bottom: 0;
+      list-style: none;
+      overflow-x: auto;
+      padding-bottom: 0;
+    }
+
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-faint);
+      font-family: var(--font-sans);
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 0.65rem 1rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover { color: var(--text-muted); }
+    .tab-btn.active {
+      color: var(--brand-high);
+      border-bottom-color: var(--brand);
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .tab-code-window {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+      overflow: hidden;
+    }
+
+    /* Sub-tabs for Rust API */
+    .sub-tabs {
+      display: flex;
+      gap: 0.25rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    .sub-tab-btn {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 0.3rem 0.75rem;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: all 0.15s;
+    }
+
+    .sub-tab-btn:hover { color: var(--text-muted); background: var(--bg-card); }
+    .sub-tab-btn.active {
+      color: var(--brand-high);
+      background: var(--brand-low);
+      border-color: oklch(63% 0.26 285 / 0.3);
+    }
+
+    .sub-panel { display: none; }
+    .sub-panel.active { display: block; }
+
+    .coming-soon-panel {
+      padding: 3rem 2rem;
+      text-align: center;
+    }
+
+    .coming-soon-badge {
+      display: inline-block;
+      background: oklch(55% 0.2 55 / 0.15);
+      border: 1px solid oklch(55% 0.2 55 / 0.4);
+      color: oklch(78% 0.18 55);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.3rem 0.75rem;
+      border-radius: 100px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 1rem;
+    }
+
+    .coming-soon-panel h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .coming-soon-panel p {
+      font-size: 0.875rem;
+      color: var(--text-faint);
+      max-width: 40ch;
+      margin: 0 auto;
+    }
+
+    /* ────────────────────────────────────────
+       FOOTER
+    ──────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border-dim);
+      padding: 2.5rem 0;
+      margin-top: var(--section-gap);
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .footer-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      text-decoration: none;
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .footer-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .footer-links a {
+      color: var(--text-faint);
+      text-decoration: none;
+      font-size: 0.85rem;
+      transition: color 0.15s;
+    }
+
+    .footer-links a:hover { color: var(--text-muted); }
+
+    .footer-copy {
+      font-size: 0.8rem;
+      color: var(--text-faint);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navigation ── -->
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">
+        <div class="logo-box">Z</div>
+        Zart
+      </a>
+      <ul class="nav-links">
+        <li><a href="/getting-started/">Docs</a></li>
+        <li><a href="/features/">Features</a></li>
+        <li><a href="/rust-api/overview/">API</a></li>
+        <li><a href="https://github.com/your-org/zart" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="/getting-started/" class="nav-cta">Get Started</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Hero ── -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-inner">
+      <div class="hero-text">
+        <div class="hero-eyebrow">Durable Execution for Rust</div>
+        <h1>Workflows that <em>survive failure</em></h1>
+        <p class="hero-sub">
+          Write async Rust functions where every step is automatically persisted to a database.
+          Process restarts, crashes, and timeouts become non-events — completed work is never repeated.
+        </p>
+        <div class="hero-actions">
+          <a href="/getting-started/" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Get Started
+          </a>
+          <a href="https://github.com/your-org/zart" class="btn btn-ghost" target="_blank" rel="noopener">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            View on GitHub
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-code">
+        <div class="code-window">
+          <div class="code-window-bar">
+            <span class="dot dot-red"></span>
+            <span class="dot dot-amber"></span>
+            <span class="dot dot-green"></span>
+            <span class="code-window-filename">checkout_flow.rs</span>
+          </div>
+          <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_wait_event</span>&#125;;
+
+<span class="attr">#[zart_durable("checkout", timeout = "10m")]</span>
+<span class="kw">async fn</span> <span class="fn">checkout</span>(order: <span class="ty">Order</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Receipt</span>&gt; &#123;
+
+  <span class="cmt">// Persisted — never charged twice on retry</span>
+  <span class="kw">let</span> charge = <span class="mac">z_step!</span>(<span class="str">"charge"</span>, || <span class="kw">async</span> &#123;
+    stripe.<span class="fn">charge</span>(&amp;order.card, order.total).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="cmt">// Persisted — never sent twice even if process dies</span>
+  <span class="mac">z_step!</span>(<span class="str">"receipt"</span>, || <span class="kw">async</span> &#123;
+    mailer.<span class="fn">send</span>(&amp;order.email, &amp;charge).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="cmt">// Durable wait — survives restarts, times out after 24h</span>
+  <span class="mac">z_wait_event!</span>(<span class="str">"shipped"</span>, timeout = <span class="str">"24h"</span>).<span class="kw">await</span>?;
+
+  <span class="ty">Ok</span>(<span class="ty">Receipt</span>::<span class="fn">from</span>(charge))
+&#125;</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Divider strip ── -->
+<div class="strip">
+  <div class="container">
+    <div class="strip-inner">
+      <span class="strip-label">Storage backends</span>
+      <div class="strip-divider"></div>
+      <span class="pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+        PostgreSQL
+      </span>
+      <span class="pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+        SQLite
+      </span>
+      <span class="pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+        MySQL
+      </span>
+      <span class="pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        Custom
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Features ── -->
+<section class="features">
+  <div class="container">
+    <div class="section-header">
+      <span class="section-label">Why Zart</span>
+      <h2 class="section-title">Everything durable execution needs</h2>
+      <p class="section-sub">
+        Built for production Rust services. Every feature is designed to make distributed workflows reliable by default.
+      </p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <div class="feature-name">State Recovery</div>
+        <p class="feature-desc">
+          Each step's result is persisted before moving on. On restart, completed steps are replayed from storage — never re-executed.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔄</div>
+        <div class="feature-name">Smart Retries</div>
+        <p class="feature-desc">
+          Per-step retry policies with fixed, linear, or exponential backoff. Configure max attempts, delay, and jitter independently per step.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⚙️</div>
+        <div class="feature-name">Concurrent Workers</div>
+        <p class="feature-desc">
+          Multiple workers compete for tasks using <code>SKIP LOCKED</code> — zero contention, no coordination required, horizontal scaling out of the box.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🗄️</div>
+        <div class="feature-name">Pluggable Storage</div>
+        <p class="feature-desc">
+          PostgreSQL for production, SQLite for embedded or dev environments, MySQL for enterprise. Swap backends without changing workflow code.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-name">Idempotency Built-in</div>
+        <p class="feature-desc">
+          Execution IDs prevent duplicate scheduling. A charge step that already succeeded will never fire again — even if the scheduler is called twice.
+        </p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📡</div>
+        <div class="feature-name">Events &amp; Async Waits</div>
+        <p class="feature-desc">
+          Workflows can durably wait for external signals — webhooks, human approvals, or other services — with configurable timeouts and automatic resumption.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Code section ── -->
+<section class="code-section">
+  <div class="container">
+    <div class="section-header">
+      <span class="section-label">Multiple interfaces</span>
+      <h2 class="section-title">Use Zart your way</h2>
+      <p class="section-sub">
+        Whether you prefer ergonomic macros, explicit trait implementations, CLI tooling, or REST — Zart has you covered.
+      </p>
+    </div>
+
+    <div class="tabs-wrapper">
+      <ul class="tab-list" role="tablist">
+        <li><button class="tab-btn active" role="tab" data-tab="rust-api">Rust API</button></li>
+        <li><button class="tab-btn" role="tab" data-tab="cli">CLI</button></li>
+        <li><button class="tab-btn" role="tab" data-tab="ai-agent">AI Agent</button></li>
+        <li><button class="tab-btn" role="tab" data-tab="http-api">HTTP API</button></li>
+      </ul>
+
+      <!-- Rust API tab -->
+      <div class="tab-panel active" id="tab-rust-api">
+        <div class="tab-code-window">
+          <div class="sub-tabs">
+            <button class="sub-tab-btn active" data-sub="task-handler">TaskHandler</button>
+            <button class="sub-tab-btn" data-sub="macros">Macros</button>
+          </div>
+
+          <!-- TaskHandler sub-panel -->
+          <div class="sub-panel active" id="sub-task-handler">
+            <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">TaskHandler</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
+<span class="kw">use</span> async_trait::async_trait;
+
+<span class="kw">struct</span> <span class="ty">OnboardingTask</span>;
+
+<span class="attr">#[async_trait]</span>
+<span class="kw">impl</span> <span class="ty">TaskHandler</span> <span class="kw">for</span> <span class="ty">OnboardingTask</span> &#123;
+    <span class="kw">type</span> <span class="ty">Data</span>   = <span class="ty">OnboardingData</span>;
+    <span class="kw">type</span> <span class="ty">Output</span> = ();
+
+    <span class="kw">async fn</span> <span class="fn">run</span>(
+        &amp;<span class="kw">self</span>,
+        ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>&lt;<span class="kw">impl</span> <span class="ty">Scheduler</span>&gt;,
+        data: <span class="ty">OnboardingData</span>,
+    ) -> <span class="ty">Result</span>&lt;(), <span class="ty">TaskError</span>&gt; &#123;
+        <span class="cmt">// Step 1 — send welcome email</span>
+        ctx.<span class="fn">step</span>(<span class="str">"send-email"</span>, || <span class="kw">async</span> &#123;
+            <span class="fn">send_welcome_email</span>(&amp;data.email).<span class="kw">await</span>
+        &#125;).<span class="kw">await</span>?;
+
+        <span class="cmt">// Step 2 — set up billing (with 3 retries, exponential backoff)</span>
+        ctx.<span class="fn">step_with_retry</span>(
+            <span class="str">"setup-billing"</span>,
+            <span class="ty">RetryConfig</span>::<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">2</span>)),
+            || <span class="kw">async</span> &#123; <span class="fn">setup_stripe_customer</span>(&amp;data.email).<span class="kw">await</span> &#125;,
+        ).<span class="kw">await</span>?;
+
+        <span class="cmt">// Step 3 — wait for email verification (up to 48h)</span>
+        <span class="kw">let</span> _: <span class="ty">VerifyPayload</span> = ctx.<span class="fn">wait_for_event</span>(
+            <span class="str">"email-verified"</span>,
+            <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">172800</span>)),
+        ).<span class="kw">await</span>?;
+
+        <span class="ty">Ok</span>(())
+    &#125;
+
+    <span class="kw">fn</span> <span class="fn">max_retries</span>(&amp;<span class="kw">self</span>) -> <span class="ty">usize</span> &#123; <span class="lit">3</span> &#125;
+    <span class="kw">fn</span> <span class="fn">timeout</span>(&amp;<span class="kw">self</span>) -> <span class="ty">Option</span>&lt;<span class="ty">Duration</span>&gt; &#123;
+        <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">600</span>))
+    &#125;
+&#125;</code></pre>
+          </div>
+
+          <!-- Macros sub-panel -->
+          <div class="sub-panel" id="sub-macros">
+            <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>, <span class="mac">z_wait_event</span>&#125;;
+
+<span class="cmt">/// Proc-macro turns this async fn into a full durable TaskHandler</span>
+<span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
+<span class="kw">async fn</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
+
+    <span class="cmt">// Each step auto-persists its result</span>
+    <span class="mac">z_step!</span>(<span class="str">"send-email"</span>, || <span class="kw">async</span> &#123;
+        <span class="fn">send_welcome_email</span>(&amp;data.email).<span class="kw">await</span>
+    &#125;).<span class="kw">await</span>?;
+
+    <span class="cmt">// Step with retry: 3 attempts, exponential backoff starting at 2s</span>
+    <span class="mac">z_step_with_retry!</span>(
+        <span class="str">"setup-billing"</span>,
+        retries = <span class="lit">3</span>,
+        backoff = <span class="str">"exponential"</span>,
+        delay = <span class="str">"2s"</span>,
+        || <span class="kw">async</span> &#123; <span class="fn">setup_stripe_customer</span>(&amp;data.email).<span class="kw">await</span> &#125;
+    ).<span class="kw">await</span>?;
+
+    <span class="cmt">// Durable wait — workflow suspends here, survives any restart</span>
+    <span class="kw">let</span> event: <span class="ty">VerifyPayload</span> =
+        <span class="mac">z_wait_event!</span>(<span class="str">"email-verified"</span>, timeout = <span class="str">"48h"</span>).<span class="kw">await</span>?;
+
+    <span class="ty">Ok</span>(())
+&#125;</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLI tab -->
+      <div class="tab-panel" id="tab-cli">
+        <div class="tab-code-window">
+          <div class="coming-soon-panel">
+            <div class="coming-soon-badge">Coming Soon</div>
+            <h3>CLI tooling in development</h3>
+            <p>Manage executions, deliver events, run migrations, and inspect status — all from the terminal.</p>
+            <pre style="margin-top:1.5rem;text-align:left;padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;color:var(--text-muted);background:var(--bg-elevated);border-radius:var(--radius);border:1px solid var(--border-dim);"><code><span class="cmt"># Run database migrations</span>
+zart migrate
+
+<span class="cmt"># Schedule a new execution</span>
+zart schedule onboarding --data <span class="str">'&#123;"email":"user@example.com"&#125;'</span>
+
+<span class="cmt"># Check execution status</span>
+zart status exec-abc-123
+
+<span class="cmt"># Deliver an event to a waiting execution</span>
+zart event exec-abc-123 email-verified --data <span class="str">'&#123;"token":"xyz"&#125;'</span>
+
+<span class="cmt"># Wait for an execution to complete</span>
+zart wait exec-abc-123 --timeout <span class="lit">3600</span></code></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Agent tab -->
+      <div class="tab-panel" id="tab-ai-agent">
+        <div class="tab-code-window">
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="cmt"># An AI agent orchestrates a multi-step data pipeline</span>
+<span class="cmt"># Step 1: Schedule the pipeline — get an execution ID back</span>
+$ zart schedule data-pipeline \
+    --data <span class="str">'&#123;"dataset":"sales-q4","output":"s3://bucket/report"&#125;'</span> \
+    --id pipeline-001
+
+<span class="cmt"># exec_id: pipeline-001 | status: running</span>
+
+<span class="cmt"># Agent continues with other tasks while pipeline runs...</span>
+
+<span class="cmt"># Step 2: Check status asynchronously</span>
+$ zart status pipeline-001
+<span class="cmt"># &#123;"status":"waiting","step":"await-approval","started_at":"..."&#125;</span>
+
+<span class="cmt"># Step 3: Human reviews; agent delivers approval event</span>
+$ zart event pipeline-001 approved \
+    --data <span class="str">'&#123;"reviewer":"agent-007","notes":"Looks good"&#125;'</span>
+
+<span class="cmt"># Step 4: Wait for final completion with 1h timeout</span>
+$ zart wait pipeline-001 --timeout <span class="lit">3600</span>
+<span class="cmt"># &#123;"status":"completed","output":&#123;"rows":42891,"location":"..."&#125;&#125;</span></code></pre>
+        </div>
+      </div>
+
+      <!-- HTTP API tab -->
+      <div class="tab-panel" id="tab-http-api">
+        <div class="tab-code-window">
+          <div class="coming-soon-panel">
+            <div class="coming-soon-badge">Coming Soon</div>
+            <h3>REST API in development</h3>
+            <p>HTTP endpoints for scheduling, status, event delivery, and execution management.</p>
+            <pre style="margin-top:1.5rem;text-align:left;padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;color:var(--text-muted);background:var(--bg-elevated);border-radius:var(--radius);border:1px solid var(--border-dim);"><code><span class="cmt"># Schedule an execution</span>
+<span class="kw">POST</span> /api/v1/executions
+&#123;
+  <span class="str">"task"</span>: <span class="str">"onboarding"</span>,
+  <span class="str">"data"</span>: &#123; <span class="str">"email"</span>: <span class="str">"user@example.com"</span> &#125;,
+  <span class="str">"idempotency_key"</span>: <span class="str">"signup-u123"</span>
+&#125;
+
+<span class="cmt"># Deliver an event</span>
+<span class="kw">POST</span> /api/v1/events/exec-abc-123/email-verified
+&#123; <span class="str">"token"</span>: <span class="str">"xyz789"</span> &#125;
+
+<span class="cmt"># Query status</span>
+<span class="kw">GET</span> /api/v1/executions/exec-abc-123</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <a href="/" class="footer-logo">
+        <div class="logo-box" style="width:24px;height:24px;font-size:13px;border-radius:5px;">Z</div>
+        Zart
+      </a>
+      <ul class="footer-links">
+        <li><a href="/getting-started/">Docs</a></li>
+        <li><a href="/features/">Features</a></li>
+        <li><a href="/rust-api/overview/">API Reference</a></li>
+        <li><a href="/deployment/options/">Deployment</a></li>
+        <li><a href="https://github.com/your-org/zart" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+      <p class="footer-copy">Built with Rust &amp; persisted to disk.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Main tab switching
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tabId = btn.dataset.tab;
+
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+
+      btn.classList.add('active');
+      document.getElementById('tab-' + tabId)?.classList.add('active');
+    });
+  });
+
+  // Sub-tab switching (Rust API)
+  document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const subId = btn.dataset.sub;
+      const wrapper = btn.closest('.tab-code-window');
+
+      wrapper.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+      wrapper.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
+
+      btn.classList.add('active');
+      document.getElementById('sub-' + subId)?.classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>

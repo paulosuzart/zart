@@ -1,0 +1,181 @@
+/* ── Fonts ─────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+/* ── Brand tokens ──────────────────────────────────────────── */
+:root {
+  --sl-color-accent-low:  oklch(20% 0.09 285);
+  --sl-color-accent:      oklch(63% 0.26 285);
+  --sl-color-accent-high: oklch(82% 0.18 285);
+
+  --sl-font:      'Instrument Sans', system-ui, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+  /* Typography scale */
+  --sl-text-base: 1rem;
+  --sl-line-height: 1.75;
+
+  /* Readable content width — 72ch is ~65–70 chars of prose */
+  --sl-content-width: 46rem;
+}
+
+/* ── Dark mode ─────────────────────────────────────────────── */
+:root[data-theme='dark'] {
+  --sl-color-accent-low:        oklch(18% 0.08 285);
+  --sl-color-accent:            oklch(63% 0.26 285);
+  --sl-color-accent-high:       oklch(85% 0.16 285);
+  --sl-color-bg:                oklch(9%  0.014 285);
+  --sl-color-bg-nav:            oklch(10% 0.018 285 / 0.92);
+  --sl-color-bg-sidebar:        oklch(11% 0.016 285);
+  --sl-color-bg-inline-code:    oklch(17% 0.07 285);
+  --sl-color-hairline-light:    oklch(22% 0.05 285);
+  --sl-color-hairline:          oklch(18% 0.04 285);
+  --sl-color-text:              oklch(93% 0.006 285);
+  --sl-color-text-accent:       oklch(85% 0.16 285);
+}
+
+/* ── Body typography ───────────────────────────────────────── */
+body {
+  font-family: var(--sl-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tighten heading tracking slightly */
+h1, h2, h3, h4 {
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+/* Comfortable reading measure for paragraphs */
+.sl-markdown-content p,
+.sl-markdown-content li {
+  line-height: 1.8;
+  max-width: 68ch;
+}
+
+/* ── Code blocks ───────────────────────────────────────────── */
+/* Force JetBrains Mono through all layers Expressive Code may apply */
+pre, code,
+.expressive-code pre,
+.expressive-code code,
+.expressive-code .ec-line {
+  font-family: var(--sl-font-mono) !important;
+  font-feature-settings: 'liga' 1, 'calt' 1;
+  font-size: 0.875rem;
+  line-height: 1.65;
+}
+
+/* Code window frame — tighter padding, cleaner look */
+.expressive-code .frame {
+  border-radius: 8px;
+}
+
+/* ── Inline code ───────────────────────────────────────────── */
+:not(pre) > code {
+  font-family: var(--sl-font-mono);
+  font-size: 0.875em;
+  background: var(--sl-color-bg-inline-code, oklch(17% 0.07 285));
+  color: var(--sl-color-accent-high);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────── */
+.site-title {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+[data-theme='dark'] a[aria-current='page'] {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  border-inline-start-color: var(--sl-color-accent);
+}
+
+[data-theme='dark'] .right-sidebar a[aria-current='true'] {
+  color: var(--sl-color-accent-high);
+}
+
+/* Sidebar group labels */
+.sl-sidebar-group-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--sl-color-gray-3);
+  padding-block: 0.75rem 0.25rem;
+}
+
+/* ── Asides / callouts ─────────────────────────────────────── */
+.starlight-aside {
+  border-radius: 8px;
+  border-inline-start-width: 3px;
+}
+
+/* ── Tables ────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-block: 1.5rem;
+  font-size: 0.9rem;
+}
+
+th {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.6rem 1rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+td {
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+/* ── Badges ────────────────────────────────────────────────── */
+.badge {
+  font-family: var(--sl-font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* ── Placeholder boxes ─────────────────────────────────────── */
+.placeholder-box {
+  border: 1px dashed var(--sl-color-accent);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  text-align: center;
+}
+
+/* ── Links ─────────────────────────────────────────────────── */
+a {
+  transition: color 0.15s ease;
+}
+
+nav a:hover {
+  color: var(--sl-color-accent-high);
+}
+
+/* ── Section spacing — give headings more room to breathe ──── */
+.sl-markdown-content h2 {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content h2:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.sl-markdown-content h3 {
+  margin-top: 2rem;
+}

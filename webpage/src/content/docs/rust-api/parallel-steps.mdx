@@ -1,0 +1,185 @@
+---
+title: Parallel Steps — wait_all
+description: Fan out work across multiple concurrent sub-tasks and durably wait for all to complete.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Zart supports running multiple steps in parallel via `ctx.schedule_step()` and `ctx.wait_all()`. Each scheduled step becomes an independent task in the scheduler — it can run on a different worker node and is fully durable.
+
+## Basic Usage
+
+```rust
+use zart::{TaskHandler, TaskContext, TaskError, Scheduler};
+use async_trait::async_trait;
+
+pub struct OnboardingTask;
+
+#[async_trait]
+impl TaskHandler for OnboardingTask {
+    type Data   = OnboardingData;
+    type Output = ();
+
+    async fn run(
+        &self,
+        ctx: &mut TaskContext<impl Scheduler>,
+        data: OnboardingData,
+    ) -> Result<(), TaskError> {
+        // Schedule three parallel steps
+        let h1 = ctx.schedule_step("send-email", || async {
+            send_email(&data.email).await
+        });
+        let h2 = ctx.schedule_step("setup-billing", || async {
+            setup_stripe_customer(&data.email).await
+        });
+        let h3 = ctx.schedule_step("provision-resources", || async {
+            provision_aws(&data.user_id).await
+        });
+
+        // Durably wait for all three to complete
+        let _results = ctx.wait_all(vec![h1, h2, h3]).await?;
+
+        // This line only runs after all three succeed
+        ctx.step("send-ready-notification", || async {
+            notify_user_ready(&data.email).await
+        }).await?;
+
+        Ok(())
+    }
+}
+```
+
+## How It Works
+
+Each `ctx.schedule_step()` call:
+
+1. Inserts a new child task into `zart_executions` with a reference back to the parent.
+2. Returns a `StepHandle` — a token identifying that scheduled task.
+3. The child task can be picked up by **any available worker**, potentially running on a different machine.
+
+`ctx.wait_all(handles)`:
+
+1. Marks the parent execution as **waiting** in the database.
+2. Returns the parent to the queue — no worker thread is blocked.
+3. When all child tasks complete, the scheduler re-queues the parent.
+4. On resumption, `wait_all` returns the collected results.
+
+<Aside type="tip">
+`wait_all` is fully durable. If the parent process restarts while waiting, the parent is simply not re-scheduled until all children complete. Child tasks continue running independently.
+</Aside>
+
+## Getting Results
+
+Each scheduled step returns its output through the `wait_all` result vector, in the same order as the handles:
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct EmailResult { message_id: String }
+
+#[derive(Serialize, Deserialize)]
+struct BillingResult { customer_id: String }
+
+#[derive(Serialize, Deserialize)]
+struct ProvisionResult { instance_id: String }
+
+// ...
+let h1 = ctx.schedule_step("send-email", || async {
+    send_email(&data.email).await
+});
+let h2 = ctx.schedule_step("setup-billing", || async {
+    setup_stripe(&data.email).await
+});
+
+let results = ctx.wait_all(vec![h1, h2]).await?;
+let email_result:   EmailResult   = results[0].deserialize()?;
+let billing_result: BillingResult = results[1].deserialize()?;
+
+println!("Customer ID: {}", billing_result.customer_id);
+```
+
+## Error Handling
+
+If any child task fails (returns `Err`), `wait_all` returns that error. Other in-flight tasks are **not cancelled** — they run to completion (or failure), but their results are not returned to the parent.
+
+```rust
+let results = ctx.wait_all(vec![h1, h2, h3]).await;
+match results {
+    Ok(outputs) => { /* all succeeded */ }
+    Err(e) => {
+        // At least one child failed
+        // The parent can retry — already-completed children won't re-run
+        return Err(e);
+    }
+}
+```
+
+<Aside type="note">
+Because each child step is independently persisted, re-running the parent after a partial failure will skip already-completed children and only retry the failed ones.
+</Aside>
+
+## Dynamic Fan-Out
+
+Schedule a variable number of parallel tasks based on runtime data:
+
+```rust
+#[async_trait]
+impl TaskHandler for ProcessRegionsTask {
+    type Data   = MultiRegionJob;
+    type Output = Vec<RegionResult>;
+
+    async fn run(
+        &self,
+        ctx: &mut TaskContext<impl Scheduler>,
+        data: MultiRegionJob,
+    ) -> Result<Self::Output, TaskError> {
+        // Schedule one task per region dynamically
+        let handles: Vec<_> = data.regions
+            .iter()
+            .map(|region| {
+                let region = region.clone();
+                ctx.schedule_step(
+                    &format!("process-{region}"),
+                    move || {
+                        let r = region.clone();
+                        async move { process_region(&r).await }
+                    },
+                )
+            })
+            .collect();
+
+        let raw_results = ctx.wait_all(handles).await?;
+        let results: Vec<RegionResult> = raw_results
+            .into_iter()
+            .map(|r| r.deserialize())
+            .collect::<Result<_, _>>()?;
+
+        Ok(results)
+    }
+}
+```
+
+## Nesting Parallel Steps
+
+Parallel steps can themselves schedule further parallel steps, creating a tree of concurrent work:
+
+```rust
+// Parent: fans out to two pipelines
+ctx.schedule_step("pipeline-a", || async { run_pipeline_a().await });
+ctx.schedule_step("pipeline-b", || async { run_pipeline_b().await });
+
+// Inside run_pipeline_a — further parallelism
+ctx.schedule_step("pipeline-a-step-1", || async { ... });
+ctx.schedule_step("pipeline-a-step-2", || async { ... });
+```
+
+Each level is fully durable and can span multiple worker nodes.
+
+## Comparison to `ctx.step()`
+
+| | `ctx.step()` | `ctx.schedule_step()` + `wait_all` |
+|---|---|---|
+| Execution | Sequential, in-process | Parallel, potentially cross-worker |
+| Durability | Yes | Yes |
+| Result storage | Yes | Yes |
+| Best for | Sequential work | Independent, parallelizable work |
+| Blocking | Awaits immediately | Awaits all at `wait_all` |

@@ -1,0 +1,187 @@
+---
+title: Durable Loops
+description: Iterate over collections and implement polling loops that survive process restarts.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Regular Rust loops are not durable — if your process restarts mid-loop, all progress is lost and the loop starts over. Zart solves this by giving each iteration a unique step name that is persisted to the database.
+
+## The Core Pattern
+
+The key insight is simple: **give each iteration a unique step name**. Zart checks whether a step has already been completed before calling the closure.
+
+```rust
+#[zart_durable("batch-processor")]
+async fn process_batch(data: BatchData) -> Result<BatchResult> {
+    // First, fetch items — this step is itself persisted
+    let items = z_step!("fetch-items", || async {
+        db.fetch_pending_items().await
+    }).await?;
+
+    // Each iteration gets a unique step name
+    for (i, item) in items.iter().enumerate() {
+        z_step!(&format!("process-item-{i}"), || async {
+            processor.handle(item).await
+        }).await?;
+    }
+
+    Ok(BatchResult { processed: items.len() })
+}
+```
+
+If the process restarts after processing items 0–3, Zart will skip steps `"process-item-0"` through `"process-item-3"` (returning their stored results immediately) and resume from `"process-item-4"`.
+
+<Aside type="tip">
+Always fetch the list of items in a step too. That way the exact same list is used on replay — even if the underlying data changes between attempts.
+</Aside>
+
+## Using `z_durable_loop!`
+
+The `z_durable_loop!` macro wraps this pattern for you:
+
+```rust
+use zart_macros::{zart_durable, z_durable_loop};
+
+#[zart_durable("batch-processor")]
+async fn process_batch(data: BatchData) -> Result<()> {
+    let items = z_step!("fetch-items", || async {
+        db.fetch_pending_items().await
+    }).await?;
+
+    z_durable_loop!("process-item", items, |i, item| async move {
+        // i is the zero-based iteration index
+        // step name becomes "process-item-0", "process-item-1", etc.
+        processor.handle(&item).await
+    }).await?;
+
+    Ok(())
+}
+```
+
+## Polling Loops
+
+Sometimes you need to poll an external service until a condition is met. Use `ctx.sleep()` between polls to introduce a durable wait:
+
+```rust
+use zart::{TaskHandler, TaskContext, TaskError, Scheduler};
+use zart_macros::z_step;
+use std::time::Duration;
+
+#[zart_durable("wait-for-job", timeout = "6h")]
+async fn wait_for_job(data: JobData) -> Result<JobResult> {
+    let mut attempt = 0u32;
+
+    loop {
+        let status = z_step!(&format!("check-status-{attempt}"), || async {
+            api.get_job_status(&data.job_id).await
+        }).await?;
+
+        if status.is_complete() {
+            return Ok(JobResult { output: status.output });
+        }
+
+        if status.is_failed() {
+            return Err(TaskError::custom("Job failed externally"));
+        }
+
+        // Durable wait — process can restart, timer continues
+        ctx.sleep(Duration::from_secs(300)).await?; // 5 minutes
+        attempt += 1;
+    }
+}
+```
+
+<Aside type="note">
+The `attempt` counter must be part of the step name to ensure each check is a unique step. If you reuse the same step name, Zart will return the first result on every iteration.
+</Aside>
+
+## Accumulating Results
+
+Collect results across iterations into a final value:
+
+```rust
+#[zart_durable("transform-records")]
+async fn transform_records(data: TransformJob) -> Result<TransformSummary> {
+    let records = z_step!("fetch-records", || async {
+        db.get_records(&data.query).await
+    }).await?;
+
+    let mut results = Vec::with_capacity(records.len());
+
+    for (i, record) in records.iter().enumerate() {
+        let output = z_step!(&format!("transform-{i}"), || async {
+            transformer.apply(record).await
+        }).await?;
+        results.push(output);
+    }
+
+    z_step!("write-results", || async {
+        db.bulk_insert(&results).await
+    }).await?;
+
+    Ok(TransformSummary {
+        total:   records.len(),
+        written: results.len(),
+    })
+}
+```
+
+## Chunked Processing
+
+For very large datasets, process in chunks to limit memory usage while keeping each chunk's work durable:
+
+```rust
+#[zart_durable("process-large-dataset")]
+async fn process_large_dataset(data: DatasetJob) -> Result<()> {
+    let chunk_count = z_step!("get-chunk-count", || async {
+        db.count_chunks(&data.dataset_id).await
+    }).await?;
+
+    for chunk_idx in 0..chunk_count {
+        // Fetch and process each chunk durably
+        z_step!(&format!("process-chunk-{chunk_idx}"), || async {
+            let chunk = db.get_chunk(&data.dataset_id, chunk_idx).await?;
+            processor.process_chunk(chunk).await
+        }).await?;
+    }
+
+    Ok(())
+}
+```
+
+## Retry-Until Pattern
+
+Sometimes you want to keep retrying a step until it succeeds, with configurable backoff:
+
+```rust
+use zart_macros::z_step_with_retry;
+
+#[zart_durable("provision-with-retry")]
+async fn provision(data: ProvisionRequest) -> Result<ProvisionResult> {
+    // Try up to 10 times with exponential backoff capped at 5 minutes
+    let result = z_step_with_retry!(
+        "provision-resource",
+        retries   = 10,
+        backoff   = "exponential",
+        delay     = "5s",
+        max_delay = "5m",
+        || async { cloud.provision(&data.config).await }
+    ).await?;
+
+    Ok(result)
+}
+```
+
+## Important: Step Name Uniqueness
+
+Step names within a single execution must be unique. Here are the rules:
+
+- Static steps: use a descriptive string like `"send-email"`.
+- Loop iterations: append the index like `"process-item-{i}"`.
+- Nested loops: combine indices like `"row-{r}-col-{c}"`.
+- Conditional branches: use distinct names like `"path-a-step"` vs `"path-b-step"`.
+
+<Aside type="caution">
+Never reuse a step name for different operations. If two different logical steps share the same name, the second will receive the persisted result of the first — leading to subtle bugs.
+</Aside>

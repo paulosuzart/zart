@@ -1,0 +1,197 @@
+---
+title: Using Zart with LLM Agents
+description: How AI agents can orchestrate long-running workflows using Zart's CLI and HTTP API.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+LLM agents — whether Claude, GPT-4, or a custom system — are naturally well-suited to orchestrating durable workflows. Agents can schedule long-running tasks, check on them asynchronously, deliver events when external conditions are met, and resume work across many conversation turns.
+
+## Why Agents and Durable Execution Fit Together
+
+A typical LLM agent operates in short bursts: it receives a message, takes some actions via tool calls, and produces output. Long-running work (data pipelines, multi-step approvals, infrastructure provisioning) cannot happen inside a single agent turn.
+
+Zart solves this by:
+
+1. **Decoupling scheduling from execution** — the agent schedules work and immediately gets an execution ID back.
+2. **Persistent state** — the agent can check in on the execution later, even in a different conversation.
+3. **Event delivery** — the agent can push signals (approvals, data, results) to waiting workflows.
+4. **Status polling** — the agent can determine what stage a workflow is at and decide what to do next.
+
+## Example: AI-Orchestrated Data Pipeline
+
+An agent that ingests a dataset, transforms it, waits for human approval, then publishes.
+
+```bash
+# Turn 1: Agent schedules the pipeline
+$ zart schedule data-pipeline \
+    --data '{"dataset":"sales-q4-2025","output":"s3://bucket/report.csv"}' \
+    --id pipeline-sales-q4
+
+# Scheduled. execution_id: pipeline-sales-q4 | status: pending
+
+# Agent stores the execution ID and proceeds with other tasks.
+# The pipeline runs independently — no agent loop needed.
+```
+
+```bash
+# Turn 2 (later): Agent checks status
+$ zart status pipeline-sales-q4
+
+# {
+#   "execution_id": "pipeline-sales-q4",
+#   "task": "data-pipeline",
+#   "status": "waiting",
+#   "waiting_for_event": "human-approval",
+#   "step": "await-approval",
+#   "steps_completed": 4,
+#   "started_at": "2026-04-04T10:00:00Z"
+# }
+
+# Agent knows the pipeline finished transformation and is waiting for approval.
+# Agent presents summary to the human user.
+```
+
+```bash
+# Turn 3: Human approves; agent delivers the event
+$ zart event pipeline-sales-q4 human-approval \
+    --data '{"approved":true,"reviewer":"alice@example.com","notes":"Looks great"}'
+
+# Event delivered to pipeline-sales-q4: human-approval
+```
+
+```bash
+# Turn 4: Agent waits for final completion
+$ zart wait pipeline-sales-q4 --timeout 300
+
+# {
+#   "status": "completed",
+#   "output": {
+#     "rows_written": 48291,
+#     "location": "s3://bucket/report.csv",
+#     "duration_ms": 14200
+#   }
+# }
+```
+
+## Tool Integration
+
+For agents using a tool-calling API, expose Zart operations as tools:
+
+```json
+{
+  "tools": [
+    {
+      "name": "schedule_workflow",
+      "description": "Schedule a durable workflow execution. Returns an execution ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string", "description": "Task name to schedule" },
+          "data": { "type": "object", "description": "Input data for the workflow" },
+          "id":   { "type": "string", "description": "Optional stable execution ID" }
+        },
+        "required": ["task", "data"]
+      }
+    },
+    {
+      "name": "check_execution_status",
+      "description": "Check the current status of a workflow execution.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "execution_id": { "type": "string" }
+        },
+        "required": ["execution_id"]
+      }
+    },
+    {
+      "name": "deliver_event",
+      "description": "Deliver an event to a workflow that is waiting for one.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "execution_id": { "type": "string" },
+          "event_name":   { "type": "string" },
+          "data":         { "type": "object" }
+        },
+        "required": ["execution_id", "event_name"]
+      }
+    }
+  ]
+}
+```
+
+Each tool call maps directly to a CLI command or HTTP API endpoint.
+
+## Patterns for Agent Workflows
+
+### Fire and Forget
+
+Schedule work and don't wait. Useful when the result isn't needed in the same conversation turn.
+
+```bash
+zart schedule nightly-report \
+  --data '{"date":"2026-04-04"}' \
+  --id nightly-2026-04-04
+# Done. Check back tomorrow.
+```
+
+### Polling
+
+The agent periodically checks status until completion:
+
+```
+Loop:
+  status = zart status <exec-id>
+  if status == "completed": return result
+  if status == "failed":    handle failure
+  wait 30 seconds, continue
+```
+
+### Human-in-the-Loop
+
+The agent pauses work pending a human decision:
+
+1. Agent schedules workflow.
+2. Workflow reaches a `wait_for_event("approval")` step.
+3. Agent reports to the user: "The pipeline is ready for review. Should I approve it?"
+4. User says yes.
+5. Agent delivers the event: `zart event <id> approval --data '{"approved":true}'`.
+6. Workflow resumes.
+
+### Long Multi-Day Workflows
+
+The agent can manage workflows that span days or weeks — checking in on them across multiple conversation sessions by storing the execution ID:
+
+```
+Session 1: schedule onboarding for user-789 → exec-id: onboarding-789
+Session 2: check status of onboarding-789 → waiting for email verification
+Session 3: user verified email → deliver email-verified event to onboarding-789
+Session 4: check onboarding-789 → completed
+```
+
+<Aside type="tip">
+Instruct your agent to store execution IDs in memory, a database, or its context window so they can be referenced across turns and sessions.
+</Aside>
+
+## HTTP API for Agents
+
+When deploying as a web service, the HTTP API is often more convenient than the CLI:
+
+```bash
+# Schedule
+curl -X POST https://your-app/api/v1/executions \
+  -H "Content-Type: application/json" \
+  -d '{"task":"data-pipeline","data":{"dataset":"sales-q4"}}'
+
+# Status
+curl https://your-app/api/v1/executions/pipeline-sales-q4
+
+# Deliver event
+curl -X POST https://your-app/api/v1/events/pipeline-sales-q4/approval \
+  -H "Content-Type: application/json" \
+  -d '{"approved":true}'
+```
+
+See [HTTP API Endpoints](/http-api/endpoints/) for the full reference.

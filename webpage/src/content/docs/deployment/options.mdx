@@ -1,0 +1,245 @@
+---
+title: Deployment Options
+description: Three ways to deploy Zart workers — embedded, sidecar, and CLI.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Zart workers are flexible: they can run inside your application process, as a separate container, or via a standalone CLI. Choose the strategy that fits your infrastructure.
+
+## 1. Rust Embedded
+
+The simplest deployment: run the worker inside your application binary using a background `tokio` task.
+
+```rust
+use zart::{Worker, WorkerConfig, TaskRegistry};
+use zart_postgres::PostgresScheduler;
+use std::time::Duration;
+use tokio::signal;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let scheduler = PostgresScheduler::connect(
+        &std::env::var("DATABASE_URL")?
+    ).await?;
+
+    // Register all your task handlers
+    let mut registry = TaskRegistry::new();
+    registry.register("onboarding", OnboardingTask::new());
+    registry.register("checkout",   CheckoutTask::new());
+    registry.register("report-gen", ReportTask::new());
+
+    // Build the worker
+    let worker = Worker::new(
+        scheduler.clone(),
+        registry,
+        WorkerConfig {
+            poll_interval:        Duration::from_secs(5),
+            max_tasks_per_poll:   10,
+            max_concurrent_tasks: 16,
+            shutdown_timeout:     Duration::from_secs(30),
+        },
+    );
+
+    // Spawn worker as a background task — doesn't block your app
+    let worker_handle = tokio::spawn(async move {
+        worker.run().await
+    });
+
+    // Your web server / app logic runs here alongside the worker
+    run_axum_server(scheduler).await?;
+
+    // Graceful shutdown
+    worker_handle.abort();
+    Ok(())
+}
+```
+
+**Best for:**
+
+- Monoliths and smaller services
+- Development and testing
+- When you want the simplest possible setup
+- Applications where all tasks are handled in one binary
+
+<Aside type="tip">
+The worker's `tokio` tasks run on the same runtime as your application. `max_concurrent_tasks` limits how many workflow executions run simultaneously, preventing the worker from starving your HTTP handlers.
+</Aside>
+
+---
+
+## 2. Sidecar Container
+
+Run a dedicated `zart-worker` container alongside your application container. The application schedules tasks via the shared database; the sidecar executes them.
+
+**Docker Compose example:**
+
+```yaml
+services:
+  app:
+    image: your-app:latest
+    environment:
+      DATABASE_URL: postgres://zart:secret@db:5432/myapp
+    depends_on: [db]
+
+  zart-worker:
+    image: your-app:latest         # same image, different entrypoint
+    command: ["zart-worker"]       # separate binary that only runs the worker
+    environment:
+      DATABASE_URL: postgres://zart:secret@db:5432/myapp
+    depends_on: [db]
+    deploy:
+      replicas: 3                  # scale workers independently
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB:       myapp
+      POSTGRES_USER:     zart
+      POSTGRES_PASSWORD: secret
+```
+
+**Kubernetes Deployment:**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zart-worker
+spec:
+  replicas: 5          # horizontal scale — SKIP LOCKED handles contention
+  selector:
+    matchLabels:
+      app: zart-worker
+  template:
+    metadata:
+      labels:
+        app: zart-worker
+    spec:
+      containers:
+        - name: worker
+          image: your-app:latest
+          command: ["zart-worker"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: url
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+```
+
+**Best for:**
+
+- Kubernetes and Docker Compose deployments
+- When you want to scale workers independently from the application
+- Microservices architectures
+- When workers need different resource profiles from the web tier
+
+---
+
+## 3. CLI Mode
+
+Use the `zart` CLI for ad-hoc executions, migrations, operator tasks, and scripting.
+
+```bash
+# Run migrations before every deploy
+zart migrate
+
+# Trigger a one-off workflow execution
+zart schedule report-gen \
+  --data '{"month":"2026-03","format":"pdf"}' \
+  --id report-2026-03
+
+# Check status
+zart status report-2026-03
+
+# Wait for it to finish (timeout after 10 min)
+zart wait report-2026-03 --timeout 600
+```
+
+**Best for:**
+
+- Database migrations in CI/CD
+- Development and debugging
+- One-off operational tasks
+- AI agent integration (see [LLM Agents](/llm-agents/overview/))
+- Scripts and cron jobs that schedule work
+
+---
+
+## Database Requirements
+
+| Database | Crate | Notes |
+|---|---|---|
+| PostgreSQL 14+ | `zart-postgres` | Recommended for production. Uses `SKIP LOCKED`, advisory locks, and `LISTEN/NOTIFY` for efficient polling. |
+| SQLite 3.35+ | `zart-sqlite` | Great for embedded systems, CLI tools, and single-process dev environments. No concurrent workers. |
+| MySQL 8+ | `zart-mysql` | Enterprise / existing MySQL infrastructure. Uses `SELECT … FOR UPDATE SKIP LOCKED`. |
+
+### Connection Pooling
+
+The Postgres and MySQL backends use `sqlx`'s built-in connection pool. Configure pool size via the `WorkerConfig`:
+
+```rust
+let scheduler = PostgresScheduler::connect_with_pool(
+    &database_url,
+    PoolConfig {
+        max_connections: 20,
+        min_connections: 2,
+        acquire_timeout: Duration::from_secs(30),
+    },
+).await?;
+```
+
+---
+
+## Graceful Shutdown
+
+All deployment modes support graceful shutdown. When a shutdown signal is received:
+
+1. The worker stops polling for new tasks.
+2. In-flight tasks are allowed to complete (up to `shutdown_timeout`).
+3. Tasks still running after the timeout are re-queued for another worker.
+
+```rust
+WorkerConfig {
+    shutdown_timeout: Duration::from_secs(30), // wait up to 30s for tasks to finish
+    // ...
+}
+```
+
+In Docker / Kubernetes, set `terminationGracePeriodSeconds` to at least `shutdown_timeout + 10` to give the pod time to drain cleanly.
+
+---
+
+## Health Checks
+
+Expose the worker's health via a simple HTTP endpoint:
+
+```rust
+// Axum example
+async fn worker_health(State(worker): State<Arc<Worker>>) -> impl IntoResponse {
+    if worker.is_healthy() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+```
+
+Kubernetes liveness probe:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 15
+```

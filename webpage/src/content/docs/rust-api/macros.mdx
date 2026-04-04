@@ -1,0 +1,205 @@
+---
+title: Macros
+description: Ergonomic proc-macros for writing durable workflows as plain async functions.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The `zart-macros` crate provides a set of proc-macros that transform ordinary Rust async functions into full `TaskHandler` implementations — no trait boilerplate required.
+
+```toml
+[dependencies]
+zart        = "0.1"
+zart-macros = "0.1"
+```
+
+## `#[zart_durable]`
+
+Annotate an async function to make it a durable workflow. The macro generates the `TaskHandler` impl, registers the output type, and wires up the `TaskContext`.
+
+```rust
+use zart_macros::zart_durable;
+
+#[zart_durable("checkout", timeout = "10m")]
+async fn checkout(order: Order) -> Result<Receipt> {
+    // workflow body
+    Ok(Receipt { /* ... */ })
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `"name"` | string | yes | Task name used when scheduling |
+| `timeout` | duration string | no | Wall-clock timeout, e.g. `"30m"`, `"2h"`, `"90s"` |
+| `retries` | integer | no | Max task-level retries (default: 0) |
+
+The function's first argument is the workflow input data (must impl `Deserialize`). The return type must be `Result<T>` where `T` impls `Serialize`.
+
+## `z_step!`
+
+Execute a named, persisted step. The closure is only called the first time; on replay the stored result is returned immediately.
+
+```rust
+use zart_macros::z_step;
+
+let charge_result = z_step!("charge-card", || async {
+    stripe.charge(&card, amount).await
+}).await?;
+```
+
+The step name must be a unique string within the execution. For dynamic names (e.g., in loops), use string interpolation:
+
+```rust
+for (i, item) in items.iter().enumerate() {
+    z_step!(&format!("process-item-{i}"), || async {
+        process(item).await
+    }).await?;
+}
+```
+
+## `z_step_with_retry!`
+
+Like `z_step!` but with an inline retry policy.
+
+```rust
+use zart_macros::z_step_with_retry;
+
+z_step_with_retry!(
+    "call-payment-api",
+    retries = 5,
+    backoff = "exponential",
+    delay   = "2s",
+    || async { payment_api.charge().await }
+).await?;
+```
+
+**Retry parameters:**
+
+| Parameter | Values | Description |
+|---|---|---|
+| `retries` | integer | Max number of retry attempts |
+| `backoff` | `"none"`, `"fixed"`, `"exponential"` | Retry strategy |
+| `delay` | duration string | Initial delay (or fixed delay for `"fixed"`) |
+| `max_delay` | duration string | Cap for exponential backoff |
+
+## `z_wait_event!`
+
+Suspend the workflow until an external event is delivered. The process can restart freely; the workflow resumes when the event arrives.
+
+```rust
+use zart_macros::z_wait_event;
+
+let approval: ApprovalPayload =
+    z_wait_event!("manager-approval", timeout = "24h").await?;
+
+println!("Approved by: {}", approval.reviewer);
+```
+
+Returns `Err` if the timeout expires before the event is delivered.
+
+## `z_durable_loop!`
+
+A loop construct whose iteration counter is persisted. Even if the process restarts mid-loop, already-completed iterations are skipped.
+
+```rust
+use zart_macros::{zart_durable, z_durable_loop, z_step};
+
+#[zart_durable("batch-job")]
+async fn batch_job(batch: BatchInput) -> Result<()> {
+    z_durable_loop!("process-items", batch.items, |i, item| async move {
+        z_step!(&format!("item-{i}"), || async {
+            processor.handle(&item).await
+        }).await
+    }).await?;
+    Ok(())
+}
+```
+
+## Side-by-Side: Macros vs. Manual
+
+The two styles are fully equivalent. Choose the one that fits your team's preferences.
+
+**With macros (recommended for most workflows):**
+
+```rust
+use zart_macros::{zart_durable, z_step, z_step_with_retry, z_wait_event};
+
+#[zart_durable("onboarding", timeout = "50h", retries = 3)]
+async fn onboarding(data: OnboardingData) -> Result<OnboardingResult> {
+    z_step!("send-email", || async {
+        send_welcome_email(&data.email).await
+    }).await?;
+
+    let customer_id: String = z_step_with_retry!(
+        "create-stripe-customer",
+        retries = 3, backoff = "exponential", delay = "2s",
+        || async { create_stripe_customer(&data.email).await }
+    ).await?;
+
+    let _: VerifyPayload =
+        z_wait_event!("email-verified", timeout = "48h").await?;
+
+    Ok(OnboardingResult { customer_id })
+}
+```
+
+**Manually implementing the trait:**
+
+```rust
+use zart::{TaskHandler, TaskContext, TaskError, RetryConfig, Scheduler};
+use async_trait::async_trait;
+use std::time::Duration;
+
+pub struct OnboardingTask;
+
+#[async_trait]
+impl TaskHandler for OnboardingTask {
+    type Data   = OnboardingData;
+    type Output = OnboardingResult;
+
+    async fn run(
+        &self,
+        ctx: &mut TaskContext<impl Scheduler>,
+        data: OnboardingData,
+    ) -> Result<Self::Output, TaskError> {
+        ctx.step("send-email", || async {
+            send_welcome_email(&data.email).await.map_err(TaskError::from)
+        }).await?;
+
+        let customer_id: String = ctx.step_with_retry(
+            "create-stripe-customer",
+            RetryConfig::exponential(3, Duration::from_secs(2)),
+            || async { create_stripe_customer(&data.email).await.map_err(TaskError::from) },
+        ).await?;
+
+        let _: VerifyPayload = ctx.wait_for_event(
+            "email-verified",
+            Some(Duration::from_secs(172_800)),
+        ).await?;
+
+        Ok(OnboardingResult { customer_id })
+    }
+
+    fn max_retries(&self) -> usize { 3 }
+    fn timeout(&self) -> Option<Duration> { Some(Duration::from_secs(180_000)) }
+}
+```
+
+<Aside type="tip">
+The macro style generates exactly this trait impl at compile time. You can inspect what it generates by running `cargo expand` on your crate.
+</Aside>
+
+## Duration Strings
+
+Both `#[zart_durable]` and `z_wait_event!` accept human-readable duration strings:
+
+| String | Duration |
+|---|---|
+| `"30s"` | 30 seconds |
+| `"5m"` | 5 minutes |
+| `"2h"` | 2 hours |
+| `"1d"` | 1 day |
+| `"1h30m"` | 1 hour 30 minutes |
+| `"2d12h"` | 2 days 12 hours |

@@ -1,0 +1,232 @@
+---
+title: Wait for Event
+description: Durably suspend workflows to wait for external signals — webhooks, human approvals, or service callbacks.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`ctx.wait_for_event()` suspends a workflow until an external system delivers a named event. The suspension is fully durable — the execution can survive unlimited process restarts while waiting.
+
+## In the Workflow
+
+```rust
+use zart::{TaskHandler, TaskContext, TaskError, Scheduler};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+#[derive(Deserialize, Serialize)]
+struct ApprovalPayload {
+    approved: bool,
+    reviewer: String,
+    notes:    Option<String>,
+}
+
+async fn run(
+    &self,
+    ctx: &mut TaskContext<impl Scheduler>,
+    data: OrderData,
+) -> Result<(), TaskError> {
+    // Process order steps...
+    ctx.step("validate-order", || async {
+        validate(&data).await
+    }).await?;
+
+    // Wait up to 24 hours for manager approval
+    let approval: ApprovalPayload = ctx.wait_for_event(
+        "manager-approval",
+        Some(Duration::from_secs(86400)), // 24h timeout
+    ).await?;
+
+    if !approval.approved {
+        return Err(TaskError::custom(
+            format!("Order rejected by {}", approval.reviewer)
+        ));
+    }
+
+    // Fulfillment continues after approval...
+    ctx.step("fulfill-order", || async {
+        fulfill(&data).await
+    }).await?;
+
+    Ok(())
+}
+```
+
+## Delivering the Event — Rust API
+
+From anywhere in your application that has access to a `DurableScheduler`:
+
+```rust
+use zart::DurableScheduler;
+
+// External system (e.g., a web handler) delivers the event
+async fn handle_approval_webhook(
+    scheduler: &impl DurableScheduler,
+    execution_id: &str,
+    body: ApprovalPayload,
+) -> anyhow::Result<()> {
+    scheduler.offer_event(
+        execution_id,
+        "manager-approval",
+        serde_json::to_value(&body)?,
+    ).await?;
+    Ok(())
+}
+```
+
+## Delivering the Event — HTTP API
+
+When the HTTP API is available, deliver events via REST:
+
+```http
+POST /api/v1/events/exec-abc-123/manager-approval
+Content-Type: application/json
+
+{
+  "approved": true,
+  "reviewer": "jane@example.com",
+  "notes": "Looks good, proceed."
+}
+```
+
+Response:
+
+```json
+{
+  "status": "delivered",
+  "execution_id": "exec-abc-123",
+  "event_name": "manager-approval"
+}
+```
+
+## Delivering the Event — CLI
+
+```bash
+zart event exec-abc-123 manager-approval \
+  --data '{"approved":true,"reviewer":"jane@example.com"}'
+```
+
+## Timeout Behaviour
+
+If the timeout expires before the event is delivered, `wait_for_event` returns `Err(TaskError::EventTimeout)`.
+
+```rust
+let result = ctx.wait_for_event::<ApprovalPayload>(
+    "approval",
+    Some(Duration::from_secs(3600)),
+).await;
+
+match result {
+    Ok(payload) => { /* event received */ }
+    Err(TaskError::EventTimeout) => {
+        // Auto-approve, cancel, or escalate
+        ctx.step("auto-escalate", || async {
+            escalate_to_vp(&data.order_id).await
+        }).await?;
+    }
+    Err(e) => return Err(e),
+}
+```
+
+To wait indefinitely, pass `None` as the timeout:
+
+```rust
+// No timeout — waits forever
+let payload: MyPayload = ctx.wait_for_event("confirm", None).await?;
+```
+
+<Aside type="caution">
+Passing `None` means the execution will wait forever if the event never arrives. Make sure there is a task-level `timeout()` or an external process that will eventually deliver the event or cancel the execution.
+</Aside>
+
+## Use Cases
+
+### Human-in-the-Loop Approval
+
+Pause a workflow pending review by a human. Resume it when they click "Approve" in your UI.
+
+```rust
+let approval: ReviewDecision = ctx.wait_for_event(
+    "review-decision",
+    Some(Duration::from_secs(7 * 86400)), // 1 week
+).await?;
+```
+
+### Webhook Response
+
+Call an external API asynchronously and wait for a webhook callback:
+
+```rust
+// Step 1: trigger the async job
+let job_id: String = ctx.step("trigger-job", || async {
+    external_api.start_job(&data).await
+}).await?;
+
+// Step 2: wait for their webhook to call back with the result
+let result: JobWebhookPayload = ctx.wait_for_event(
+    &format!("job-complete-{job_id}"),
+    Some(Duration::from_secs(3600)),
+).await?;
+```
+
+Your webhook endpoint then calls `scheduler.offer_event(exec_id, &event_name, payload)`.
+
+### Two-Factor Authentication
+
+Pause account actions until the user confirms via email or SMS:
+
+```rust
+ctx.step("send-2fa-code", || async {
+    sms.send_code(&data.phone, &code).await
+}).await?;
+
+let _: TwoFactorConfirm = ctx.wait_for_event(
+    "2fa-confirmed",
+    Some(Duration::from_secs(600)), // 10 minute window
+).await?;
+```
+
+### Waiting for External Job Completion
+
+Integrate with systems that notify you when work is done rather than polling:
+
+```rust
+// Start a long-running ML training job
+let run_id: String = ctx.step("start-training", || async {
+    ml_platform.start_training_run(&data.config).await
+}).await?;
+
+// Wait for the platform to POST back when training finishes
+let metrics: TrainingMetrics = ctx.wait_for_event(
+    "training-complete",
+    Some(Duration::from_secs(6 * 3600)), // 6 hour max
+).await?;
+
+println!("Accuracy: {:.2}%", metrics.accuracy * 100.0);
+```
+
+## Multiple Events in Sequence
+
+You can call `wait_for_event` multiple times in a single workflow:
+
+```rust
+// First: payment authorization
+let auth: PaymentAuth = ctx.wait_for_event(
+    "payment-authorized",
+    Some(Duration::from_secs(900)),
+).await?;
+
+// Process payment...
+
+// Second: shipment confirmation
+let tracking: ShipmentInfo = ctx.wait_for_event(
+    "order-shipped",
+    Some(Duration::from_secs(5 * 86400)),
+).await?;
+
+println!("Tracking: {}", tracking.tracking_number);
+```
+
+<Aside type="tip">
+Each `wait_for_event` call creates a unique checkpoint in the execution. Replaying the workflow after a restart will skip already-received events using their stored payloads.
+</Aside>

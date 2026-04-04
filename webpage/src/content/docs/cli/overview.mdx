@@ -1,0 +1,175 @@
+---
+title: CLI Overview
+description: Command-line tooling for managing Zart executions, migrations, and events.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+:::caution[Coming Soon]
+The Zart CLI is currently in development. The commands documented here represent the planned interface. Subscribe to the GitHub repository for release announcements.
+:::
+
+The `zart` CLI lets you manage durable executions from the terminal — perfect for development workflows, operator tooling, and AI agent integration.
+
+## Installation
+
+```bash
+cargo install zart-cli
+```
+
+Or download a pre-built binary from the [GitHub releases page](https://github.com/your-org/zart/releases).
+
+## Configuration
+
+The CLI reads database configuration from the environment:
+
+```bash
+export DATABASE_URL="postgres://user:pass@localhost/mydb"
+```
+
+Or use a `.env` file in the working directory. All commands respect the `--database-url` flag to override the environment variable:
+
+```bash
+zart --database-url "postgres://..." status exec-abc-123
+```
+
+## Commands
+
+### `zart migrate`
+
+Run database migrations to create or update the Zart schema. Safe to run on every deploy — migrations are idempotent.
+
+```bash
+zart migrate
+# Applied 3 migrations successfully.
+```
+
+### `zart schedule`
+
+Schedule a new workflow execution.
+
+```bash
+zart schedule <task-name> [--data <json>] [--id <execution-id>]
+```
+
+```bash
+# Schedule with auto-generated execution ID
+zart schedule onboarding --data '{"email":"user@example.com","user_id":"u123"}'
+
+# Schedule with explicit ID (idempotent — safe to run twice)
+zart schedule checkout \
+  --data '{"order_id":"ord-456","total":9900}' \
+  --id checkout-ord-456
+```
+
+Output:
+```
+Scheduled execution: exec-7f3a9b2c
+Task:  onboarding
+Status: pending
+```
+
+### `zart status`
+
+Query the current status of an execution.
+
+```bash
+zart status <execution-id> [--verbose]
+```
+
+```bash
+zart status exec-7f3a9b2c
+# execution_id: exec-7f3a9b2c
+# task:         onboarding
+# status:       running
+# started_at:   2026-04-04T10:23:11Z
+# steps:        2 completed, 1 running
+
+zart status exec-7f3a9b2c --verbose
+# ... includes per-step details and attempt history
+```
+
+### `zart cancel`
+
+Cancel a pending or running execution.
+
+```bash
+zart cancel <execution-id>
+```
+
+```bash
+zart cancel exec-7f3a9b2c
+# Cancelled execution: exec-7f3a9b2c
+```
+
+### `zart wait`
+
+Block until an execution completes (or fails), with an optional timeout.
+
+```bash
+zart wait <execution-id> [--timeout <seconds>]
+```
+
+```bash
+# Wait up to 60 seconds, then print final status
+zart wait exec-7f3a9b2c --timeout 60
+# {"status":"completed","output":{"customer_id":"cus_abc"}}
+```
+
+Exits with code `0` on success, `1` on failure, `2` on timeout.
+
+### `zart event`
+
+Deliver an event to a waiting execution.
+
+```bash
+zart event <execution-id> <event-name> [--data <json>]
+```
+
+```bash
+zart event exec-7f3a9b2c email-verified \
+  --data '{"token":"tk_xyz789","verified_at":"2026-04-04T10:25:00Z"}'
+# Event delivered to exec-7f3a9b2c: email-verified
+```
+
+### `zart list`
+
+List executions with optional filtering.
+
+```bash
+zart list [--status <status>] [--task <task-name>] [--limit <n>]
+```
+
+```bash
+# List all running executions
+zart list --status running
+
+# List recent onboarding executions
+zart list --task onboarding --limit 20
+```
+
+Status values: `pending`, `running`, `waiting`, `completed`, `failed`.
+
+## Global Flags
+
+| Flag | Description |
+|---|---|
+| `--database-url <url>` | Database connection string (overrides `DATABASE_URL`) |
+| `--json` | Output as JSON instead of human-readable text |
+| `--quiet` | Suppress non-error output |
+| `--help` | Show help text |
+| `--version` | Show CLI version |
+
+## Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Execution failed or command error |
+| `2` | Timeout (for `zart wait`) |
+| `3` | Execution not found |
+
+## Next Steps
+
+- [LLM Agents](/llm-agents/overview/) — using the CLI from AI agent loops
+- [Deployment Options](/deployment/options/) — running workers alongside your app

@@ -1,0 +1,133 @@
+---
+title: Getting Started
+description: Add durable execution to your Rust project in minutes.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Here is a complete durable workflow in Zart. Every step persists its result — if your process dies and restarts, completed steps are skipped and the workflow continues from where it stopped.
+
+```rust
+// 1. Define your workflow
+struct OnboardingTask;
+
+#[async_trait]
+impl TaskHandler for OnboardingTask {
+    type Data   = OnboardingData;
+    type Output = ();
+
+    async fn run(&self, ctx: &mut TaskContext<impl Scheduler>, data: OnboardingData)
+        -> Result<(), TaskError>
+    {
+        // Each step runs exactly once — result is stored in the DB
+        ctx.step("send-email", || async {
+            send_welcome_email(&data.email).await
+        }).await?;
+
+        // Retry up to 3× with exponential backoff if billing fails
+        ctx.step_with_retry(
+            "setup-billing",
+            RetryConfig::exponential(3, Duration::from_secs(2)),
+            || async { setup_stripe_customer(&data.email).await },
+        ).await?;
+
+        Ok(())
+    }
+}
+
+// 2. Register and run a worker
+let mut registry = TaskRegistry::new();
+registry.register("onboarding", OnboardingTask);
+
+Worker::new(scheduler, registry, WorkerConfig::default()).run().await;
+
+// 3. Schedule an execution (idempotent — safe to call twice with the same ID)
+scheduler.start_typed("signup-user-42", "onboarding", &OnboardingData {
+    user_id: "u-42".into(),
+    email: "alice@example.com".into(),
+}).await?;
+```
+
+<Aside type="tip" title="What makes Zart different?">
+Unlike message queues or job frameworks, Zart persists the *result* of each step. If your server crashes after charging a card but before sending a receipt, Zart resumes from the receipt step — the charge is **never retried**.
+</Aside>
+
+## Prerequisites
+
+- Rust 1.75 or later
+- A supported database: **PostgreSQL** (recommended), **SQLite** (dev/embedded), or **MySQL**
+- `tokio` runtime
+
+## Installation
+
+```toml
+# Cargo.toml
+[dependencies]
+zart          = "0.1"
+zart-macros   = "0.1"   # optional — ergonomic proc-macro layer
+async-trait   = "0.1"
+tokio         = { version = "1", features = ["full"] }
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+
+# Pick one storage backend:
+zart-postgres = "0.1"   # PostgreSQL
+# zart-sqlite = "0.1"   # SQLite
+# zart-mysql  = "0.1"   # MySQL
+```
+
+## Run Migrations
+
+```bash
+export DATABASE_URL="postgres://user:pass@localhost/mydb"
+zart migrate
+```
+
+This creates the `zart_executions`, `zart_tasks`, and `zart_events` tables. Migrations are idempotent — safe to run on every deploy.
+
+## Start a Worker
+
+```rust
+use zart::{TaskRegistry, Worker, WorkerConfig};
+use zart_postgres::PostgresScheduler;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let scheduler = Arc::new(PostgresScheduler::new(pool));
+
+    let mut registry = TaskRegistry::new();
+    registry.register("onboarding", OnboardingTask);
+
+    Worker::new(scheduler, Arc::new(registry), WorkerConfig::default())
+        .run()
+        .await;
+
+    Ok(())
+}
+```
+
+## Schedule an Execution
+
+Call this from anywhere — a web handler, a CLI command, a test:
+
+```rust
+let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+
+durable.start_typed(
+    "signup-user-42",   // idempotency key — safe to call twice
+    "onboarding",
+    &OnboardingData { user_id: "u-42".into(), email: "alice@example.com".into() },
+).await?;
+
+// Optionally wait for it to finish
+let status = durable.wait("signup-user-42", None).await?;
+```
+
+## Next Steps
+
+- [TaskHandler Trait](/rust-api/task-handler/) — full reference for `ctx.step()`, retries, sleeps, and events
+- [Macros](/rust-api/macros/) — the `#[zart_durable]` proc-macro layer for less boilerplate
+- [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `wait_all`
+- [Wait for Event](/rust-api/wait-for-event/) — human-in-the-loop and webhook patterns
+- [Deployment Options](/deployment/options/) — embedded, sidecar, and CLI modes

@@ -1,0 +1,141 @@
+---
+title: Java SDK
+description: Planned Java SDK for Zart durable execution.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+:::note[Planned]
+The Zart Java SDK is planned for a future release. This page describes the intended design. If you're interested in contributing or being an early tester, open an issue on [GitHub](https://github.com/your-org/zart).
+:::
+
+The Java SDK will provide a first-class durable execution experience for Java and Kotlin applications, with an API mirroring the Rust library.
+
+## Planned Design
+
+The Java SDK will use annotations and a fluent builder pattern consistent with modern Java idioms.
+
+### Handler Interface
+
+```java
+import io.zart.TaskHandler;
+import io.zart.TaskContext;
+import io.zart.annotations.DurableTask;
+
+@DurableTask(name = "onboarding", timeout = "30m", retries = 3)
+public class OnboardingTask implements TaskHandler<OnboardingData, Void> {
+
+    private final EmailService emailService;
+    private final BillingService billingService;
+
+    public OnboardingTask(EmailService emailService, BillingService billingService) {
+        this.emailService = emailService;
+        this.billingService = billingService;
+    }
+
+    @Override
+    public Void run(TaskContext ctx, OnboardingData data) throws TaskException {
+
+        // Persisted step — never runs twice
+        ctx.step("send-welcome-email", () ->
+            emailService.sendWelcome(data.getEmail())
+        );
+
+        // Step with retry policy
+        String customerId = ctx.stepWithRetry(
+            "setup-billing",
+            RetryConfig.exponential(3, Duration.ofSeconds(2)),
+            () -> billingService.createCustomer(data.getEmail())
+        );
+
+        // Durable wait — JVM can restart, workflow resumes
+        VerifyEvent event = ctx.waitForEvent(
+            "email-verified",
+            VerifyEvent.class,
+            Duration.ofHours(48)
+        );
+
+        return null;
+    }
+}
+```
+
+### Scheduling
+
+```java
+import io.zart.ZartScheduler;
+
+ZartScheduler scheduler = ZartScheduler.builder()
+    .postgresUrl(System.getenv("DATABASE_URL"))
+    .build();
+
+scheduler.schedule("onboarding", OnboardingData.builder()
+    .userId("u123")
+    .email("user@example.com")
+    .build());
+```
+
+### Spring Boot Integration
+
+```java
+@Configuration
+public class ZartConfig {
+
+    @Bean
+    public ZartScheduler zartScheduler(DataSource dataSource) {
+        return ZartScheduler.fromDataSource(dataSource);
+    }
+
+    @Bean
+    public ZartWorker zartWorker(
+        ZartScheduler scheduler,
+        OnboardingTask onboardingTask
+    ) {
+        return ZartWorker.builder()
+            .scheduler(scheduler)
+            .register("onboarding", onboardingTask)
+            .pollInterval(Duration.ofSeconds(5))
+            .concurrency(16)
+            .build();
+    }
+}
+```
+
+### Kotlin Coroutines
+
+The SDK will include a Kotlin extension that integrates with coroutines:
+
+```kotlin
+// Idiomatic Kotlin API
+scheduler.schedule("checkout") {
+    CheckoutData(orderId = "ord-456", total = 9900)
+}
+
+class CheckoutTask : SuspendingTaskHandler<CheckoutData, Receipt> {
+    override suspend fun run(ctx: TaskContext, data: CheckoutData): Receipt {
+        val charge = ctx.step("charge") {
+            stripe.charge(data.card, data.total)
+        }
+
+        val _ = ctx.waitForEvent<ShippedEvent>("shipped", timeout = 24.hours)
+
+        return Receipt.from(charge)
+    }
+}
+```
+
+## Planned Features
+
+- **Full parity with Rust SDK** — all `TaskContext` methods, `RetryConfig` variants, event delivery
+- **Spring Boot auto-configuration** — zero-config setup via `spring-boot-starter-zart`
+- **Quarkus extension** — native image support via GraalVM
+- **Micrometer metrics** — execution counters, step durations, failure rates
+- **OpenTelemetry tracing** — distributed trace context propagation across steps
+
+## Interoperability
+
+The Java SDK will share the same database schema as the Rust library. You can run a Rust worker and a Java worker against the same PostgreSQL instance, processing tasks from the same queue. This makes it straightforward to migrate parts of your system between languages incrementally.
+
+## Timeline
+
+The Java SDK is planned after the core Rust library stabilizes at 1.0. Watch the GitHub repository for updates.
