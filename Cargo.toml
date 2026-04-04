@@ -49,7 +49,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 clap = { version = "4", features = ["derive", "env"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "sqlite", "chrono", "json", "uuid", "migrate"] }
 
 # Proc-macro utilities (only used by zart-macros, kept here for consistency)
 proc-macro2 = "1"

@@ -21,6 +21,7 @@ sqlx = { workspace = true, optional = true }
 
 [features]
 postgres = ["dep:sqlx", "dep:tokio"]
+sqlite = ["dep:sqlx", "dep:tokio"]
 
 [dev-dependencies]
 tokio.workspace = true

@@ -21,6 +21,6 @@ tokio.workspace = true
 tokio.workspace = true
 tokio-test.workspace = true
 tracing-subscriber.workspace = true
-scheduler = { workspace = true, features = ["postgres"] }
+scheduler = { workspace = true, features = ["postgres", "sqlite"] }
 sqlx.workspace = true
 uuid.workspace = true

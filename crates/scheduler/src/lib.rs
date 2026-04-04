@@ -22,12 +22,18 @@ pub mod types;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 pub use error::StorageError;
 pub use recurrence::Recurrence;
 pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, TaskStatus};
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresScheduler;
+
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteScheduler;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
