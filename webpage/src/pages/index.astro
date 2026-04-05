@@ -526,6 +526,11 @@
       border-bottom: 1px solid var(--border-dim);
     }
 
+    @keyframes subtab-glow {
+      0%, 100% { box-shadow: 0 0 0 0 oklch(63% 0.26 285 / 0); }
+      50%       { box-shadow: 0 0 8px 3px oklch(63% 0.26 285 / 0.45); }
+    }
+
     .sub-tab-btn {
       background: none;
       border: 1px solid transparent;
@@ -537,6 +542,11 @@
       cursor: pointer;
       border-radius: var(--radius-sm);
       transition: all 0.15s;
+      animation: subtab-glow 2s ease-in-out infinite;
+    }
+
+    .sub-tab-btn:nth-child(2) {
+      animation-delay: 0.6s;
     }
 
     .sub-tab-btn:hover { color: var(--text-muted); background: var(--bg-card); }
@@ -544,6 +554,7 @@
       color: var(--brand-high);
       background: var(--brand-low);
       border-color: oklch(63% 0.26 285 / 0.3);
+      animation: none;
     }
 
     .sub-panel { display: none; }
@@ -899,12 +910,12 @@ $ zart wait pipeline-001
       <div class="tab-panel active" id="tab-rust-api">
         <div class="tab-code-window">
           <div class="sub-tabs">
-            <button class="sub-tab-btn active" data-sub="task-handler">TaskHandler</button>
-            <button class="sub-tab-btn" data-sub="macros">Macros</button>
+            <button class="sub-tab-btn active" data-sub="macros">Macros</button>
+            <button class="sub-tab-btn" data-sub="task-handler">TaskHandler</button>
           </div>
 
           <!-- TaskHandler sub-panel -->
-          <div class="sub-panel active" id="sub-task-handler">
+          <div class="sub-panel" id="sub-task-handler">
             <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">TaskHandler</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
 <span class="kw">use</span> async_trait::async_trait;
 
@@ -949,7 +960,7 @@ $ zart wait pipeline-001
           </div>
 
           <!-- Macros sub-panel -->
-          <div class="sub-panel" id="sub-macros">
+          <div class="sub-panel active" id="sub-macros">
             <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>, <span class="mac">z_wait_event</span>&#125;;
 
 <span class="cmt">/// Proc-macro turns this async fn into a full durable TaskHandler</span>
@@ -983,11 +994,7 @@ $ zart wait pipeline-001
       <!-- CLI tab -->
       <div class="tab-panel" id="tab-cli">
         <div class="tab-code-window">
-          <div class="coming-soon-panel">
-            <div class="coming-soon-badge">Coming Soon</div>
-            <h3>CLI tooling in development</h3>
-            <p>Manage executions, deliver events, run migrations, and inspect status — all from the terminal.</p>
-            <pre style="margin-top:1.5rem;text-align:left;padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;color:var(--text-muted);background:var(--bg-elevated);border-radius:var(--radius);border:1px solid var(--border-dim);"><code><span class="cmt"># Run database migrations</span>
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="cmt"># Run database migrations</span>
 zart migrate
 
 <span class="cmt"># Schedule a new execution</span>
@@ -1001,7 +1008,6 @@ zart event exec-abc-123 email-verified --data <span class="str">'&#123;"token":"
 
 <span class="cmt"># Wait for an execution to complete</span>
 zart wait exec-abc-123 --timeout <span class="lit">3600</span></code></pre>
-          </div>
         </div>
       </div>
 
