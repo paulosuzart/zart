@@ -174,27 +174,13 @@ let worker = Worker::new(scheduler, registry, WorkerConfig {
 
 ---
 
-## 7. Pluggable Storage
+## 7. PostgreSQL Storage
 
-Swap databases without changing any workflow code. All storage backends implement the same `Scheduler` trait.
+All workflow state is persisted to PostgreSQL via the `zart-postgres` crate. No extra infrastructure — just a database you already have.
 
-| Backend | Crate | Use Case |
-|---|---|---|
-| PostgreSQL | `zart-postgres` | Production — recommended |
-| SQLite | `zart-sqlite` | Dev, embedded, edge |
-| MySQL | `zart-mysql` | Enterprise / existing infra |
-| Custom | `zart` (trait) | Bring your own storage |
-
-Implement the `Scheduler` trait yourself to integrate with any data store:
-
-```rust
-use zart::Scheduler;
-
-struct MyCustomScheduler { /* ... */ }
-
-impl Scheduler for MyCustomScheduler {
-    // implement poll_due, claim, complete, fail, etc.
-}
+```toml
+[dependencies]
+zart-postgres = "0.1"
 ```
 
 ---

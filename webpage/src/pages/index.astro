@@ -45,7 +45,7 @@
       --section-gap: 7rem;
     }
 
-    html { scroll-behavior: smooth; }
+    html { scroll-behavior: smooth; overflow-x: hidden; }
 
     body {
       font-family: var(--font-sans);
@@ -72,6 +72,7 @@
       position: sticky;
       top: 0;
       z-index: 100;
+      /* needed for absolute mobile dropdown */
       border-bottom: 1px solid var(--border-dim);
       background: oklch(9% 0.014 285 / 0.85);
       backdrop-filter: blur(20px) saturate(1.4);
@@ -143,6 +144,49 @@
     }
     .nav-cta:hover { opacity: 0.9; background: transparent !important; }
 
+    .nav-hamburger {
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 5px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0.4rem;
+      border-radius: var(--radius-sm);
+    }
+    .nav-hamburger span {
+      display: block;
+      width: 22px;
+      height: 2px;
+      background: var(--text-muted);
+      border-radius: 2px;
+      transition: all 0.2s;
+    }
+
+    @media (max-width: 640px) {
+      .nav-hamburger { display: flex; }
+      .nav-links {
+        display: none;
+        position: absolute;
+        top: 60px;
+        left: 0;
+        right: 0;
+        flex-direction: column;
+        background: oklch(12% 0.022 285 / 0.98);
+        backdrop-filter: blur(20px);
+        border-bottom: 1px solid var(--border-dim);
+        padding: 0.75rem 1rem;
+        gap: 0.25rem;
+        z-index: 99;
+      }
+      .nav-links.open { display: flex; }
+      .nav-links li { width: 100%; }
+      .nav-links a { display: block; padding: 0.6rem 0.75rem; }
+      .nav-cta { text-align: center; }
+    }
+
     /* ────────────────────────────────────────
        HERO
     ──────────────────────────────────────── */
@@ -171,9 +215,12 @@
       align-items: center;
     }
 
+    /* Prevent grid children from overflowing their column */
+    .hero-text, .hero-code { min-width: 0; }
+
     @media (max-width: 900px) {
-      .hero-inner { grid-template-columns: 1fr; }
-      .hero-code { order: -1; }
+      .hero-inner { grid-template-columns: 1fr; gap: 2rem; }
+      .hero-code { order: 2; }
     }
 
     .hero-eyebrow {
@@ -281,6 +328,7 @@
       border: 1px solid var(--border);
       border-radius: var(--radius-lg);
       overflow: hidden;
+      max-width: 100%;
       box-shadow: 0 24px 64px oklch(0% 0 0 / 0.5), 0 0 0 1px oklch(63% 0.26 285 / 0.08);
     }
 
@@ -312,6 +360,7 @@
     .code-window pre {
       padding: 1.25rem 1.5rem;
       overflow-x: auto;
+      max-width: 100%;
       font-family: var(--font-mono);
       font-size: 0.82rem;
       line-height: 1.7;
@@ -613,9 +662,14 @@
     /* Stack both code windows in the same grid cell so they cross-fade */
     .hero-code-stack {
       display: grid;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
     }
     .hero-code-variant {
       grid-area: 1 / 1;
+      min-width: 0;
+      max-width: 100%;
       opacity: 0;
       transition: opacity 0.45s ease;
       pointer-events: none;
@@ -628,6 +682,28 @@
       transition: opacity 0.2s ease;
     }
     #hero-eyebrow-text.fading { opacity: 0; }
+
+    /* ── Mobile global fixes ── */
+    @media (max-width: 640px) {
+      :root { --section-gap: 4rem; }
+
+      .hero { padding: 3rem 0 2.5rem; }
+
+      .hero-sub { font-size: 1rem; }
+
+      .hero-actions { flex-direction: column; align-items: flex-start; }
+      .hero-actions .btn { width: 100%; justify-content: center; }
+
+      .strip-inner {
+        gap: 0.75rem;
+      }
+      .strip-divider { display: none; }
+
+      .code-window pre { font-size: 0.75rem; padding: 1rem; }
+
+      .footer-inner { flex-direction: column; align-items: flex-start; gap: 1rem; }
+      .footer-links { flex-wrap: wrap; gap: 1rem; }
+    }
 
     /* ────────────────────────────────────────
        FOOTER
@@ -688,7 +764,10 @@
         <div class="logo-box">Z</div>
         Zart
       </a>
-      <ul class="nav-links">
+      <button class="nav-hamburger" id="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links" id="nav-links">
         <li><a href="/getting-started/">Docs</a></li>
         <li><a href="/features/">Features</a></li>
         <li><a href="/rust-api/overview/">API</a></li>
@@ -807,23 +886,11 @@ $ zart wait pipeline-001
 <div class="strip">
   <div class="container">
     <div class="strip-inner">
-      <span class="strip-label">Storage backends</span>
+      <span class="strip-label">Storage backend</span>
       <div class="strip-divider"></div>
       <span class="pill">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
         PostgreSQL
-      </span>
-      <span class="pill">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
-        SQLite
-      </span>
-      <span class="pill">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
-        MySQL
-      </span>
-      <span class="pill">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-        Custom
       </span>
     </div>
   </div>
@@ -864,9 +931,9 @@ $ zart wait pipeline-001
       </div>
       <div class="feature-card">
         <div class="feature-icon">🗄️</div>
-        <div class="feature-name">Pluggable Storage</div>
+        <div class="feature-name">PostgreSQL Storage</div>
         <p class="feature-desc">
-          PostgreSQL for production, SQLite for embedded or dev environments, MySQL for enterprise. Swap backends without changing workflow code.
+          All workflow state is persisted to PostgreSQL. Production-grade durability with no extra infrastructure — just a database you already have.
         </p>
       </div>
       <div class="feature-card">
@@ -1066,6 +1133,15 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
   </div>
 </section>
 
+<!-- ── Bottom CTA ── -->
+<section style="padding: 5rem 0; text-align: center; border-top: 1px solid var(--border-dim);">
+  <div class="container">
+    <h2 style="font-family: var(--font-display); font-size: clamp(1.6rem, 3vw, 2.2rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 0.75rem;">Ready to build?</h2>
+    <p style="color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; max-width: 44ch; margin-inline: auto;">Everything you need to get your first durable workflow running in minutes.</p>
+    <a href="/getting-started/" class="btn btn-primary">Read the docs →</a>
+  </div>
+</section>
+
 <!-- ── Footer ── -->
 <footer>
   <div class="container">
@@ -1087,6 +1163,21 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
 </footer>
 
 <script>
+  // ── Mobile nav toggle ────────────────────────────────────
+  const navToggle = document.getElementById('nav-toggle');
+  const navLinks  = document.getElementById('nav-links');
+  navToggle?.addEventListener('click', () => {
+    const open = navLinks.classList.toggle('open');
+    navToggle.setAttribute('aria-expanded', String(open));
+  });
+  // Close nav when a link is clicked
+  navLinks?.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => {
+      navLinks.classList.remove('open');
+      navToggle?.setAttribute('aria-expanded', 'false');
+    });
+  });
+
   // ── Tab switching ────────────────────────────────────────
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {

@@ -38,37 +38,8 @@ export default defineConfig({
           ],
         },
 
-        // ── Deploy & Integrate ──────────────────────────────────
-        {
-          label: 'Deploy & Integrate',
-          items: [
-            { label: 'Deployment Options',         link: '/deployment/options' },
-            { label: 'Using Zart with AI Agents',  link: '/llm-agents/overview' },
-          ],
-        },
-
-        // ── Coming Soon (collapsed by default) ─────────────────
-        {
-          label: 'Coming Soon',
-          collapsed: true,
-          items: [
-            {
-              label: 'CLI',
-              badge: { text: 'Soon', variant: 'caution' },
-              link: '/cli/overview',
-            },
-            {
-              label: 'Java SDK',
-              badge: { text: 'Planned', variant: 'note' },
-              link: '/java-sdk/overview',
-            },
-            {
-              label: 'HTTP API Reference',
-              badge: { text: 'Soon', variant: 'caution' },
-              link: '/http-api/endpoints',
-            },
-          ],
-        },
+        // ── Deploy & Integrate and Coming Soon sections hidden for now ──
+        // Content preserved in: /deployment/, /llm-agents/, /cli/, /java-sdk/, /http-api/
       ],
     }),
   ],
