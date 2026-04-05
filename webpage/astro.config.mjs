@@ -38,6 +38,16 @@ export default defineConfig({
           ],
         },
 
+        // ── Examples ───────────────────────────────────────────
+        {
+          label: 'Examples',
+          items: [
+            { label: 'Brewery Finder',    link: '/examples/brewery-finder' },
+            { label: 'Approval Workflow', link: '/examples/approval-workflow' },
+            { label: 'Parallel Steps',    link: '/examples/parallel-steps' },
+          ],
+        },
+
         // ── Deploy & Integrate and Coming Soon sections hidden for now ──
         // Content preserved in: /deployment/, /llm-agents/, /cli/, /java-sdk/, /http-api/
       ],

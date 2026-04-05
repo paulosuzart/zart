@@ -1,0 +1,174 @@
+---
+title: Approval Workflow
+description: A human-in-the-loop durable workflow that pauses for an external event before continuing.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+This example shows how to pause a durable execution and wait for a human decision before proceeding. The workflow validates a resource-access request, parks itself waiting for manager approval, then either provisions the resource or records the rejection — depending on what the manager decides.
+
+**Features demonstrated:** `TaskHandler` trait, `ctx.step()`, `ctx.wait_for_event()`, `durable.offer_event()`.
+
+## Data types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApprovalRequest {
+    requester_name: String,
+    resource: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApprovalDecision {
+    approved: bool,
+    reviewer: String,
+    comment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApprovalOutput {
+    decision: String,   // "approved" | "rejected"
+    requester: String,
+    resource: String,
+    reviewer: String,
+    comment: String,
+}
+```
+
+## The workflow
+
+This example uses the `TaskHandler` trait directly (without the `#[zart_durable]` macro) to show the underlying mechanics.
+
+```rust
+struct ApprovalTask;
+
+#[async_trait]
+impl TaskHandler for ApprovalTask {
+    type Data   = ApprovalRequest;
+    type Output = ApprovalOutput;
+
+    async fn run<S: Scheduler>(
+        &self,
+        ctx: &mut TaskContext<S>,
+        data: Self::Data,
+    ) -> Result<Self::Output, TaskError> {
+        // Step 1: validate the request
+        ctx.step("validate-request", || {
+            let request = data.clone();
+            async move {
+                if request.requester_name.is_empty() {
+                    return Err(StepError::Failed {
+                        step: "validate-request".into(),
+                        reason: "requester name is required".into(),
+                    });
+                }
+                Ok(format!(
+                    "Validated request from {} for {}",
+                    request.requester_name, request.resource
+                ))
+            }
+        }).await?;
+
+        // Step 2: park until a manager delivers the approval event
+        // The task is stored in the DB with a far-future execution time.
+        // offer_event() wakes it up with the typed payload.
+        let decision: ApprovalDecision = ctx
+            .wait_for_event("manager-approval", Some(Duration::from_secs(120)))
+            .await?;
+
+        // Step 3: act on the decision
+        if decision.approved {
+            ctx.step("process-approved", || {
+                let resource = data.resource.clone();
+                let requester = data.requester_name.clone();
+                async move {
+                    // In a real system: provision the resource here
+                    Ok(format!("Provisioned {} for {}", resource, requester))
+                }
+            }).await?;
+        }
+
+        Ok(ApprovalOutput {
+            decision: if decision.approved { "approved" } else { "rejected" }.into(),
+            requester: data.requester_name,
+            resource: data.resource,
+            reviewer: decision.reviewer,
+            comment: decision.comment,
+        })
+    }
+}
+```
+
+## Starting the workflow and delivering the event
+
+```rust
+let mut registry = TaskRegistry::new();
+registry.register("approval-task", ApprovalTask);
+let registry = Arc::new(registry);
+
+let durable = DurableScheduler::new(sched.clone(), registry.clone());
+let execution_id = "approval-demo-1";
+
+// Start the workflow — it will run step 1, then park at wait_for_event
+durable
+    .start_typed(execution_id, "approval-task", &ApprovalRequest {
+        requester_name: "Bob".into(),
+        resource: "staging-environment".into(),
+        reason: "Need to test the new deployment pipeline".into(),
+    })
+    .await?;
+
+// ... later, when the manager clicks "Approve" in your UI or API ...
+let decision = ApprovalDecision {
+    approved: true,
+    reviewer: "Manager Carol".into(),
+    comment: "Looks good — proceed!".into(),
+};
+durable
+    .offer_event(execution_id, "manager-approval", serde_json::to_value(&decision)?)
+    .await?;
+
+// The workflow resumes automatically and runs step 3
+let record = durable.wait(execution_id, Duration::from_secs(60), None).await?;
+let output: ApprovalOutput = serde_json::from_value(record.result.unwrap())?;
+println!("Decision: {} by {}", output.decision, output.reviewer);
+```
+
+## What you'll see
+
+```
+=== Zart Approval Workflow Example ===
+
+Starting execution 'approval-demo-...'...
+  Requester: Bob
+  Resource:  staging-environment
+  Reason:    Need to test the new deployment pipeline
+
+Execution is waiting for manager approval...
+(Simulating manager delivering the event after 2 seconds)
+
+Delivering approval event...
+Approval received! Processing approved request...
+
+Execution completed!
+  Decision:  approved
+  Requester: Bob
+  Resource:  staging-environment
+  Reviewer:  Manager Carol
+  Comment:   Looks good — proceed!
+```
+
+<Aside type="tip">
+The timeout passed to `wait_for_event` (120 s here) is how long the workflow will wait before failing with a timeout error. Set it to `None` to wait indefinitely.
+</Aside>
+
+## Key concepts
+
+**`ctx.wait_for_event(name, timeout)`** — suspends the durable execution. The task record is written back to the database with a far-future `scheduled_at` time so workers ignore it. The execution does not consume a worker thread while it waits.
+
+**`durable.offer_event(execution_id, event_name, payload)`** — delivers the event. Zart writes the payload into the task's step results under the event name, resets `scheduled_at` to now, and the next worker poll picks it up.
+
+**Resumption is durable** — if the worker crashes between receiving the event and running step 3, the workflow resumes from the event receipt on restart. The `wait_for_event` step result is already persisted.
+
+**Use cases** — manager approval flows, interactive onboarding, integration with external review systems, human-in-the-loop AI agent chains.
