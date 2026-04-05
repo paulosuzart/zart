@@ -144,6 +144,35 @@ pub async fn schedule_coordinator<S: Scheduler>(
         .await
 }
 
+/// Insert a wait_for_event step task row.
+///
+/// If `deadline` is `None`, the task is scheduled for the far future (year 9999)
+/// so it effectively never fires unless `offer_event` arrives first.
+pub async fn schedule_wait_for_event_task<S: Scheduler>(
+    scheduler: &S,
+    task_id: &str,
+    task_name: &str,
+    execution_id: &str,
+    event_name: &str,
+    next_body_segment: usize,
+    data: serde_json::Value,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<ScheduleResult, StorageError> {
+    let execution_time = deadline.unwrap_or_else(|| {
+        chrono::DateTime::<chrono::Utc>::MAX_UTC
+    });
+    let metadata = serde_json::json!({
+        "mode":         "step",
+        "step_type":    "wait_for_event",
+        "execution_id": execution_id,
+        "step_name":    event_name,
+        "segment":      next_body_segment,
+    });
+    scheduler
+        .schedule_at(task_id, task_name, execution_time, data, None, Some(execution_id), metadata)
+        .await
+}
+
 /// Schedule a sleep continuation task.
 pub async fn schedule_sleep_task<S: Scheduler>(
     scheduler: &S,

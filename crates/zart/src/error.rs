@@ -100,10 +100,6 @@ pub enum StepError {
         duration: std::time::Duration,
     },
 
-    /// **Control-flow**: the step is waiting for an external event that hasn't arrived yet.
-    #[error("Waiting for event '{event}' (control flow)")]
-    WaitingForEvent { event: String },
-
     /// Any other error from user code.
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -129,7 +125,6 @@ impl From<StepError> for TaskError {
             StepError::Failed { step, .. } => step.clone(),
             StepError::RetryExhausted { step, .. } => step.clone(),
             StepError::Timeout { step, .. } => step.clone(),
-            StepError::WaitingForEvent { event } => event.clone(),
             StepError::StepExecuted { step } => step.clone(),
             StepError::Other(_) => "unknown".to_string(),
         };

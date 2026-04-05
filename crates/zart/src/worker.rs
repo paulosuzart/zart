@@ -337,6 +337,17 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
         return;
     }
 
+    // ── WaitForEvent deadline tasks ───────────────────────────────────────────
+    // When the deadline fires before offer_event arrives, fail the execution.
+    if matches!(
+        exec_mode,
+        ExecutionMode::Step { ref step_type, .. }
+        if *step_type == crate::execution_model::StepKind::WaitForEvent
+    ) {
+        dispatch_wait_for_event(scheduler, task).await;
+        return;
+    }
+
     let start_time = std::time::Instant::now();
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
@@ -514,29 +525,6 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
             let _ = next_execution; // execution_time is on the child step task
         }
 
-        // Control-flow: a step is waiting for an external event.
-        Err(TaskError::StepFailed {
-            source: StepError::WaitingForEvent { ref event },
-            ..
-        }) => {
-            let exec_time = chrono::Utc::now() + chrono::Duration::hours(24);
-            info!(event = %event, "Step waiting for event — parking task");
-            let state_json = match serde_json::to_value(&ctx.state) {
-                Ok(v) => v,
-                Err(e) => {
-                    error!(error = %e, "Failed to serialize execution state");
-                    return;
-                }
-            };
-            if let Err(e) = ctx
-                .scheduler
-                .update_task_state(&task.task_id, state_json, exec_time, &ctx.lock_token)
-                .await
-            {
-                error!(error = %e, "Failed to park task for event wait");
-            }
-        }
-
         Err(err) => {
             let duration = start_time.elapsed().as_secs_f64();
             TASK_DURATION_SECONDS
@@ -681,6 +669,33 @@ async fn dispatch_sleep_continuation<S: Scheduler + DurableStorage + 'static>(
     } else {
         info!(next_segment, "Sleep continuation: next body scheduled");
     }
+}
+
+// ── WaitForEvent deadline dispatch ───────────────────────────────────────────
+
+/// Handle a wait_for_event step task whose deadline has fired.
+///
+/// The event never arrived before the deadline, so we mark the step task
+/// failed and fail the entire execution.
+async fn dispatch_wait_for_event<S: Scheduler + DurableStorage + 'static>(
+    scheduler: Arc<S>,
+    task: scheduler::FetchedTask,
+) {
+    let execution_id = task
+        .execution_id
+        .as_deref()
+        .unwrap_or(&task.task_id)
+        .to_string();
+    let step_name = task
+        .metadata
+        .get("step_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    info!(step = %step_name, "wait_for_event deadline exceeded — failing execution");
+    let _ = scheduler
+        .mark_failed(&task.task_id, "event deadline exceeded", None, &task.lock_token)
+        .await;
+    let _ = scheduler.fail_execution(&execution_id).await;
 }
 
 #[cfg(test)]
@@ -884,5 +899,40 @@ mod tests {
         let heartbeat_interval = Some(Duration::ZERO);
         let effective = heartbeat_interval.filter(|d| !d.is_zero());
         assert!(effective.is_none());
+    }
+
+    // ── dispatch_wait_for_event ───────────────────────────────────────────────
+
+    /// When a wait_for_event deadline fires, `dispatch_wait_for_event` must call
+    /// `mark_failed` on the step task and `fail_execution` on the execution.
+    #[tokio::test]
+    async fn dispatch_wait_for_event_marks_failed_and_fails_execution() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+
+        let task = make_fetched_task(
+            "exec-1:step:approval",
+            serde_json::json!({
+                "mode": "step",
+                "step_type": "wait_for_event",
+                "step_name": "approval",
+                "segment": 2,
+            }),
+        );
+
+        dispatch_wait_for_event(scheduler, task).await;
+
+        let log = calls.lock().unwrap();
+        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
+        let fail_execs: Vec<_> = log.iter().filter(|c| c.is_fail_execution()).collect();
+
+        assert_eq!(failures.len(), 1, "step task must be marked failed");
+        assert_eq!(fail_execs.len(), 1, "execution must be failed");
+
+        if let crate::test_helpers::Call::MarkFailed { task_id, .. } = &failures[0] {
+            assert_eq!(task_id, "exec-1:step:approval");
+        }
+        if let crate::test_helpers::Call::FailExecution { execution_id } = &fail_execs[0] {
+            assert_eq!(execution_id, "exec-1");
+        }
     }
 }

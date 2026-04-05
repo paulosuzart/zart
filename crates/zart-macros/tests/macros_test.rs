@@ -138,6 +138,15 @@ impl DurableStorage for MockScheduler {
             .cloned()
             .unwrap_or(None))
     }
+
+    async fn complete_event_step_and_schedule_body(
+        &self,
+        _execution_id: &str,
+        _event_name: &str,
+        _payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        Ok(true)
+    }
 }
 
 /// Construct a fresh TaskContext backed by the MockScheduler.
@@ -219,20 +228,20 @@ async fn z_step_with_retry_first_call_returns_scheduled() {
 // ── z_wait_event! tests ───────────────────────────────────────────────────────
 
 /// `z_wait_event!` must expand to `ctx.wait_for_event(name, None)` when no
-/// timeout is given. Returns `WaitingForEvent` on first call.
+/// timeout is given. On first call (step row absent), returns `Scheduled`.
 #[tokio::test]
 async fn z_wait_event_no_timeout_returns_waiting() {
     let mut ctx = make_ctx();
     let result: Result<String, StepError> = z_wait_event!("approval").await;
 
     assert!(
-        matches!(result, Err(StepError::WaitingForEvent { ref event }) if event == "approval"),
-        "expected WaitingForEvent, got: {result:?}"
+        matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "approval"),
+        "expected Scheduled (step task created), got: {result:?}"
     );
 }
 
 /// `z_wait_event!` with `timeout = "1h"` passes `Some(Duration::from_secs(3600))`
-/// to `wait_for_event`. Behaviour is still `WaitingForEvent` on first call.
+/// to `wait_for_event`. On first call, returns `Scheduled`.
 #[tokio::test]
 async fn z_wait_event_with_timeout_returns_waiting() {
     let mut ctx = make_ctx();
@@ -240,8 +249,8 @@ async fn z_wait_event_with_timeout_returns_waiting() {
         z_wait_event!("manager-approval", timeout = "1h").await;
 
     assert!(
-        matches!(result, Err(StepError::WaitingForEvent { .. })),
-        "expected WaitingForEvent, got: {result:?}"
+        matches!(result, Err(StepError::Scheduled { .. })),
+        "expected Scheduled (step task created), got: {result:?}"
     );
 }
 

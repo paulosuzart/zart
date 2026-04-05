@@ -675,38 +675,70 @@ impl DurableStorage for PostgresScheduler {
             .collect()
     }
 
-    async fn reschedule_with_event(
+    async fn complete_event_step_and_schedule_body(
         &self,
         execution_id: &str,
         event_name: &str,
         payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
-        // Build a single-key JSON object `{ "<event_name>": <payload> }` and
-        // merge it into `state->'pending_events'` atomically.
-        let event_obj = serde_json::json!({ event_name: payload });
+        let mut tx = self.pool.begin().await.map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let rows_affected = sqlx::query(
+        // Mark the wait_for_event step task completed (only if still 'scheduled' — i.e.
+        // the deadline worker has not yet picked it up).
+        let row: Option<(String, serde_json::Value, i32)> = sqlx::query_as(
             r#"
             UPDATE zart_tasks
-            SET state = jsonb_set(
-                    state,
-                    '{pending_events}',
-                    COALESCE(state->'pending_events', '{}') || $1::jsonb
-                ),
-                execution_time = NOW(),
-                updated_at     = NOW()
-            WHERE execution_id = $2
-              AND status = 'scheduled'
+            SET status       = 'completed',
+                result       = $3,
+                completed_at = NOW(),
+                updated_at   = NOW()
+            WHERE execution_id           = $1
+              AND metadata->>'step_type' = 'wait_for_event'
+              AND metadata->>'step_name' = $2
+              AND status                 = 'scheduled'
+            RETURNING task_name, data, (metadata->>'segment')::int
             "#,
         )
-        .bind(&event_obj)
         .bind(execution_id)
-        .execute(&self.pool)
+        .bind(event_name)
+        .bind(&payload)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?
-        .rows_affected();
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        Ok(rows_affected > 0)
+        let (task_name, data, next_segment) = match row {
+            None => {
+                tx.rollback().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+                return Ok(false);
+            }
+            Some((t, d, s)) => (t, d, s as usize),
+        };
+
+        let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
+        let body_metadata = serde_json::json!({
+            "mode": "body",
+            "execution_id": execution_id,
+            "segment": next_segment,
+        });
+
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, execution_id, metadata)
+            VALUES ($1, $2, NOW(), $3, $4, $5)
+            ON CONFLICT (task_id) DO NOTHING
+            "#,
+        )
+        .bind(&next_body_task_id)
+        .bind(&task_name)
+        .bind(&data)
+        .bind(execution_id)
+        .bind(&body_metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(true)
     }
 
     async fn reset_execution(

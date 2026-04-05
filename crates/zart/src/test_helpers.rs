@@ -50,6 +50,13 @@ pub enum Call {
     CheckWaitAllChildren {
         task_ids: Vec<String>,
     },
+    CompleteEventStepAndScheduleBody {
+        execution_id: String,
+        event_name: String,
+    },
+    FailExecution {
+        execution_id: String,
+    },
 }
 
 impl Call {
@@ -64,6 +71,12 @@ impl Call {
     }
     pub fn is_mark_failed(&self) -> bool {
         matches!(self, Self::MarkFailed { .. })
+    }
+    pub fn is_complete_event_step(&self) -> bool {
+        matches!(self, Self::CompleteEventStepAndScheduleBody { .. })
+    }
+    pub fn is_fail_execution(&self) -> bool {
+        matches!(self, Self::FailExecution { .. })
     }
 }
 
@@ -288,5 +301,25 @@ impl DurableStorage for RecordingScheduler {
             task_ids: wait_for_task_ids.to_vec(),
         });
         Ok(self.wait_all_response.clone())
+    }
+
+    async fn complete_event_step_and_schedule_body(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        _payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        self.calls.lock().unwrap().push(Call::CompleteEventStepAndScheduleBody {
+            execution_id: execution_id.to_string(),
+            event_name: event_name.to_string(),
+        });
+        Ok(true)
+    }
+
+    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
+        self.calls.lock().unwrap().push(Call::FailExecution {
+            execution_id: execution_id.to_string(),
+        });
+        Ok(())
     }
 }
