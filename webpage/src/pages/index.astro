@@ -678,10 +678,6 @@
       opacity: 1;
       pointer-events: auto;
     }
-    #hero-eyebrow-text {
-      transition: opacity 0.2s ease;
-    }
-    #hero-eyebrow-text.fading { opacity: 0; }
 
     /* ── Mobile global fixes ── */
     @media (max-width: 640px) {
@@ -771,7 +767,7 @@
         <li><a href="/getting-started/">Docs</a></li>
         <li><a href="/features/">Features</a></li>
         <li><a href="/rust-api/overview/">API</a></li>
-        <li><a href="https://github.com/your-org/zart" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://github.com/paulosuzart/zart" target="_blank" rel="noopener">GitHub</a></li>
         <li><a href="/getting-started/" class="nav-cta">Get Started</a></li>
       </ul>
     </div>
@@ -784,25 +780,28 @@
     <div class="hero-inner">
       <div class="hero-text">
         <div class="hero-eyebrow"><span id="hero-eyebrow-text">Durable Execution for Rust</span></div>
-        <h1><span id="hero-word">Workflows</span> that <em>survive failure</em></h1>
-        <p class="hero-sub hero-sub-variant active" data-variant="workflow">
-          Write async Rust functions where every step is automatically persisted to a database.
-          Process restarts, crashes, and timeouts become non-events — completed work is never repeated.
+        <h1><span id="hero-word">Payments</span> that <em>survive failure</em></h1>
+        <p class="hero-sub hero-sub-variant active" data-variant="payments">
+          Write payment flows where every step is persisted before moving on. A charge that succeeds
+          is never repeated — even if your process crashes immediately after. Completed steps are
+          replayed from the database, never re-executed.
         </p>
-        <p class="hero-sub hero-sub-variant" data-variant="agent">
-          Give your AI agent durable memory across turns. Schedule long-running work, check status
-          later, deliver approvals — all via CLI or HTTP. The workflow runs independently of the agent loop.
+        <p class="hero-sub hero-sub-variant" data-variant="onboarding">
+          Build onboarding flows where each step — welcome email, billing setup, resource provisioning —
+          persists its result. If the process dies mid-flow, restart from exactly where it stopped.
+          No duplicate emails, no double-charges.
         </p>
-        <p class="hero-sub hero-sub-variant" data-variant="pipeline">
-          Define data pipelines where each transformation step persists its result. Recover from
-          mid-run failures without reprocessing what already completed.
+        <p class="hero-sub hero-sub-variant" data-variant="agents">
+          Give your Rust agents durable execution out of the box. Each tool call result is persisted
+          before the next one runs. Agent crashes, timeouts, and restarts become non-events — completed
+          work is never repeated, and agents can resume from their last successful step.
         </p>
         <div class="hero-actions">
           <a href="/getting-started/" class="btn btn-primary">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Get Started
           </a>
-          <a href="https://github.com/your-org/zart" class="btn btn-ghost" target="_blank" rel="noopener">
+          <a href="https://github.com/paulosuzart/zart" class="btn btn-ghost" target="_blank" rel="noopener">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
             View on GitHub
           </a>
@@ -812,8 +811,8 @@
       <div class="hero-code">
         <div class="hero-code-stack">
 
-        <!-- Workflow / Pipeline variant -->
-        <div class="hero-code-variant active" data-variant="workflow">
+        <!-- Payments variant -->
+        <div class="hero-code-variant active" data-variant="payments">
           <div class="code-window">
             <div class="code-window-bar">
               <span class="dot dot-red"></span>
@@ -844,35 +843,79 @@
           </div>
         </div>
 
-        <!-- AI agent variant -->
-        <div class="hero-code-variant" data-variant="agent">
+        <!-- Onboarding variant -->
+        <div class="hero-code-variant" data-variant="onboarding">
           <div class="code-window">
             <div class="code-window-bar">
               <span class="dot dot-red"></span>
               <span class="dot dot-amber"></span>
               <span class="dot dot-green"></span>
-              <span class="code-window-filename">agent_session.sh</span>
+              <span class="code-window-filename">onboarding.rs</span>
             </div>
-            <pre><code><span class="cmt"># Turn 1 — agent schedules a multi-step pipeline</span>
-$ zart schedule data-pipeline \
-    --data '<span class="str">&#123;"dataset":"sales-q4-2025"&#125;</span>' \
-    --id pipeline-001
-<span class="cmt"># scheduled | execution_id: pipeline-001</span>
+            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_wait_event</span>&#125;;
 
-<span class="cmt"># Agent continues other work. Pipeline runs independently.</span>
+<span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
+<span class="kw">async fn</span> <span class="fn">onboard</span>(user: <span class="ty">NewUser</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Welcome</span>&gt; &#123;
 
-<span class="cmt"># Turn 2 — agent checks in later (different session)</span>
-$ zart status pipeline-001
-<span class="cmt"># &#123;"status":"waiting","step":"await-approval"&#125;</span>
+  <span class="cmt">// Welcome email — never sent twice on restart</span>
+  <span class="mac">z_step!</span>(<span class="str">"welcome"</span>, || <span class="kw">async</span> &#123;
+    email.<span class="fn">send</span>(&amp;user.email, <span class="str">"Welcome!"</span>).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
 
-<span class="cmt"># Turn 3 — human approves; agent delivers the event</span>
-$ zart event pipeline-001 approval \
-    --data '<span class="str">&#123;"approved":true,"by":"alice"&#125;</span>'
-<span class="cmt"># delivered</span>
+  <span class="cmt">// Billing setup — with automatic retries</span>
+  <span class="mac">z_step_with_retry!</span>(<span class="str">"billing"</span>, retries = <span class="lit">3</span>, || <span class="kw">async</span> &#123;
+    stripe.<span class="fn">create_customer</span>(&amp;user).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
 
-<span class="cmt"># Turn 4 — agent collects the result</span>
-$ zart wait pipeline-001
-<span class="cmt"># &#123;"status":"completed","rows_written":48291&#125;</span></code></pre>
+  <span class="cmt">// Durable wait for email verification (48h)</span>
+  <span class="kw">let</span> _: <span class="ty">Verified</span> = <span class="mac">z_wait_event!</span>(
+    <span class="str">"email-confirmed"</span>, timeout = <span class="str">"48h"</span>
+  ).<span class="kw">await</span>?;
+
+  <span class="cmt">// Provision resources — runs only once</span>
+  <span class="mac">z_step!</span>(<span class="str">"provision"</span>, || <span class="kw">async</span> &#123;
+    aws.<span class="fn">create_workspace</span>(&amp;user).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="ty">Ok</span>(<span class="ty">Welcome</span>::<span class="fn">for_user</span>(&amp;user))
+&#125;</code></pre>
+          </div>
+        </div>
+
+        <!-- Agents variant -->
+        <div class="hero-code-variant" data-variant="agents">
+          <div class="code-window">
+            <div class="code-window-bar">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-amber"></span>
+              <span class="dot dot-green"></span>
+              <span class="code-window-filename">agent_task.rs</span>
+            </div>
+            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>&#125;;
+<span class="kw">use</span> my_agent_sdk::&#123;<span class="ty">Agent</span>, <span class="ty">ToolCall</span>&#125;;
+
+<span class="attr">#[zart_durable("agent-research", timeout = "60m")]</span>
+<span class="kw">async fn</span> <span class="fn">research_agent</span>(query: <span class="ty">ResearchQuery</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Report</span>&gt; &#123;
+
+  <span class="kw">let</span> agent = <span class="ty">Agent</span>::<span class="fn">new</span>(<span class="str">"gpt-4"</span>);
+
+  <span class="cmt">// Each tool call persists — never repeated on crash</span>
+  <span class="kw">let</span> sources = <span class="mac">z_step!</span>(<span class="str">"search"</span>, || <span class="kw">async</span> &#123;
+    agent.<span class="fn">call</span>(&amp;<span class="ty">ToolCall</span>::<span class="fn">search</span>(&amp;query)).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="cmt">// Analysis step — result stored before continuing</span>
+  <span class="kw">let</span> analysis = <span class="mac">z_step!</span>(<span class="str">"analyze"</span>, || <span class="kw">async</span> &#123;
+    agent.<span class="fn">call</span>(&amp;<span class="ty">ToolCall</span>::<span class="fn">analyze</span>(&amp;sources)).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="cmt">// Synthesize final report — only runs once</span>
+  <span class="mac">z_step!</span>(<span class="str">"synthesize"</span>, || <span class="kw">async</span> &#123;
+    agent.<span class="fn">call</span>(&amp;<span class="ty">ToolCall</span>::<span class="fn">report</span>(&amp;analysis)).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="ty">Ok</span>(<span class="ty">Report</span>::<span class="fn">from</span>(analysis))
+&#125;</code></pre>
           </div>
         </div>
 
@@ -958,32 +1001,55 @@ $ zart wait pipeline-001
 <section class="code-section">
   <div class="container">
     <div class="section-header">
-      <span class="section-label">Multiple interfaces</span>
+      <span class="section-label">Two styles</span>
       <h2 class="section-title">Use Zart your way</h2>
       <p class="section-sub">
-        Whether you prefer ergonomic macros, explicit trait implementations, CLI tooling, or REST — Zart has you covered.
+        Whether you prefer ergonomic macros or explicit trait implementations — Zart has you covered.
       </p>
     </div>
 
     <div class="tabs-wrapper">
       <ul class="tab-list" role="tablist">
-        <li><button class="tab-btn active" role="tab" data-tab="rust-api">Rust API</button></li>
-        <li><button class="tab-btn" role="tab" data-tab="cli">CLI</button></li>
-        <li><button class="tab-btn" role="tab" data-tab="ai-agent">AI Agent</button></li>
-        <li><button class="tab-btn" role="tab" data-tab="http-api">HTTP API</button></li>
+        <li><button class="tab-btn active" role="tab" data-tab="macros">Macros</button></li>
+        <li><button class="tab-btn" role="tab" data-tab="task-handler">TaskHandler</button></li>
       </ul>
 
-      <!-- Rust API tab -->
-      <div class="tab-panel active" id="tab-rust-api">
+      <!-- Macros tab -->
+      <div class="tab-panel active" id="tab-macros">
         <div class="tab-code-window">
-          <div class="sub-tabs">
-            <button class="sub-tab-btn active" data-sub="macros">Macros</button>
-            <button class="sub-tab-btn" data-sub="task-handler">TaskHandler</button>
-          </div>
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>, <span class="mac">z_wait_event</span>&#125;;
 
-          <!-- TaskHandler sub-panel -->
-          <div class="sub-panel" id="sub-task-handler">
-            <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">TaskHandler</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
+<span class="cmt">/// Proc-macro turns this async fn into a full durable TaskHandler</span>
+<span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
+<span class="kw">async fn</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
+
+    <span class="cmt">// Each step auto-persists its result</span>
+    <span class="mac">z_step!</span>(<span class="str">"send-email"</span>, || <span class="kw">async</span> &#123;
+        <span class="fn">send_welcome_email</span>(&amp;data.email).<span class="kw">await</span>
+    &#125;).<span class="kw">await</span>?;
+
+    <span class="cmt">// Step with retry: 3 attempts, exponential backoff starting at 2s</span>
+    <span class="mac">z_step_with_retry!</span>(
+        <span class="str">"setup-billing"</span>,
+        retries = <span class="lit">3</span>,
+        backoff = <span class="str">"exponential"</span>,
+        delay = <span class="str">"2s"</span>,
+        || <span class="kw">async</span> &#123; <span class="fn">setup_stripe_customer</span>(&amp;data.email).<span class="kw">await</span> &#125;
+    ).<span class="kw">await</span>?;
+
+    <span class="cmt">// Durable wait — workflow suspends here, survives any restart</span>
+    <span class="kw">let</span> event: <span class="ty">VerifyPayload</span> =
+        <span class="mac">z_wait_event!</span>(<span class="str">"email-verified"</span>, timeout = <span class="str">"48h"</span>).<span class="kw">await</span>?;
+
+    <span class="ty">Ok</span>(())
+&#125;</code></pre>
+        </div>
+      </div>
+
+      <!-- TaskHandler tab -->
+      <div class="tab-panel" id="tab-task-handler">
+        <div class="tab-code-window">
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">TaskHandler</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
 <span class="kw">use</span> async_trait::async_trait;
 
 <span class="kw">struct</span> <span class="ty">OnboardingTask</span>;
@@ -1024,109 +1090,6 @@ $ zart wait pipeline-001
         <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">600</span>))
     &#125;
 &#125;</code></pre>
-          </div>
-
-          <!-- Macros sub-panel -->
-          <div class="sub-panel active" id="sub-macros">
-            <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>, <span class="mac">z_wait_event</span>&#125;;
-
-<span class="cmt">/// Proc-macro turns this async fn into a full durable TaskHandler</span>
-<span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
-<span class="kw">async fn</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
-
-    <span class="cmt">// Each step auto-persists its result</span>
-    <span class="mac">z_step!</span>(<span class="str">"send-email"</span>, || <span class="kw">async</span> &#123;
-        <span class="fn">send_welcome_email</span>(&amp;data.email).<span class="kw">await</span>
-    &#125;).<span class="kw">await</span>?;
-
-    <span class="cmt">// Step with retry: 3 attempts, exponential backoff starting at 2s</span>
-    <span class="mac">z_step_with_retry!</span>(
-        <span class="str">"setup-billing"</span>,
-        retries = <span class="lit">3</span>,
-        backoff = <span class="str">"exponential"</span>,
-        delay = <span class="str">"2s"</span>,
-        || <span class="kw">async</span> &#123; <span class="fn">setup_stripe_customer</span>(&amp;data.email).<span class="kw">await</span> &#125;
-    ).<span class="kw">await</span>?;
-
-    <span class="cmt">// Durable wait — workflow suspends here, survives any restart</span>
-    <span class="kw">let</span> event: <span class="ty">VerifyPayload</span> =
-        <span class="mac">z_wait_event!</span>(<span class="str">"email-verified"</span>, timeout = <span class="str">"48h"</span>).<span class="kw">await</span>?;
-
-    <span class="ty">Ok</span>(())
-&#125;</code></pre>
-          </div>
-        </div>
-      </div>
-
-      <!-- CLI tab -->
-      <div class="tab-panel" id="tab-cli">
-        <div class="tab-code-window">
-          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="cmt"># Run database migrations</span>
-zart migrate
-
-<span class="cmt"># Schedule a new execution</span>
-zart schedule onboarding --data <span class="str">'&#123;"email":"user@example.com"&#125;'</span>
-
-<span class="cmt"># Check execution status</span>
-zart status exec-abc-123
-
-<span class="cmt"># Deliver an event to a waiting execution</span>
-zart event exec-abc-123 email-verified --data <span class="str">'&#123;"token":"xyz"&#125;'</span>
-
-<span class="cmt"># Wait for an execution to complete</span>
-zart wait exec-abc-123 --timeout <span class="lit">3600</span></code></pre>
-        </div>
-      </div>
-
-      <!-- AI Agent tab -->
-      <div class="tab-panel" id="tab-ai-agent">
-        <div class="tab-code-window">
-          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="cmt"># An AI agent orchestrates a multi-step data pipeline</span>
-<span class="cmt"># Step 1: Schedule the pipeline — get an execution ID back</span>
-$ zart schedule data-pipeline \
-    --data <span class="str">'&#123;"dataset":"sales-q4","output":"s3://bucket/report"&#125;'</span> \
-    --id pipeline-001
-
-<span class="cmt"># exec_id: pipeline-001 | status: running</span>
-
-<span class="cmt"># Agent continues with other tasks while pipeline runs...</span>
-
-<span class="cmt"># Step 2: Check status asynchronously</span>
-$ zart status pipeline-001
-<span class="cmt"># &#123;"status":"waiting","step":"await-approval","started_at":"..."&#125;</span>
-
-<span class="cmt"># Step 3: Human reviews; agent delivers approval event</span>
-$ zart event pipeline-001 approved \
-    --data <span class="str">'&#123;"reviewer":"agent-007","notes":"Looks good"&#125;'</span>
-
-<span class="cmt"># Step 4: Wait for final completion with 1h timeout</span>
-$ zart wait pipeline-001 --timeout <span class="lit">3600</span>
-<span class="cmt"># &#123;"status":"completed","output":&#123;"rows":42891,"location":"..."&#125;&#125;</span></code></pre>
-        </div>
-      </div>
-
-      <!-- HTTP API tab -->
-      <div class="tab-panel" id="tab-http-api">
-        <div class="tab-code-window">
-          <div class="coming-soon-panel">
-            <div class="coming-soon-badge">Coming Soon</div>
-            <h3>REST API in development</h3>
-            <p>HTTP endpoints for scheduling, status, event delivery, and execution management.</p>
-            <pre style="margin-top:1.5rem;text-align:left;padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;color:var(--text-muted);background:var(--bg-elevated);border-radius:var(--radius);border:1px solid var(--border-dim);"><code><span class="cmt"># Schedule an execution</span>
-<span class="kw">POST</span> /api/v1/executions
-&#123;
-  <span class="str">"task"</span>: <span class="str">"onboarding"</span>,
-  <span class="str">"data"</span>: &#123; <span class="str">"email"</span>: <span class="str">"user@example.com"</span> &#125;,
-  <span class="str">"idempotency_key"</span>: <span class="str">"signup-u123"</span>
-&#125;
-
-<span class="cmt"># Deliver an event</span>
-<span class="kw">POST</span> /api/v1/events/exec-abc-123/email-verified
-&#123; <span class="str">"token"</span>: <span class="str">"xyz789"</span> &#125;
-
-<span class="cmt"># Query status</span>
-<span class="kw">GET</span> /api/v1/executions/exec-abc-123</code></pre>
-          </div>
         </div>
       </div>
     </div>
@@ -1154,8 +1117,7 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
         <li><a href="/getting-started/">Docs</a></li>
         <li><a href="/features/">Features</a></li>
         <li><a href="/rust-api/overview/">API Reference</a></li>
-        <li><a href="/deployment/options/">Deployment</a></li>
-        <li><a href="https://github.com/your-org/zart" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://github.com/paulosuzart/zart" target="_blank" rel="noopener">GitHub</a></li>
       </ul>
       <p class="footer-copy">Built with Rust &amp; persisted to disk.</p>
     </div>
@@ -1189,55 +1151,36 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
     });
   });
 
-  // Sub-tab switching (Rust API)
-  document.querySelectorAll('.sub-tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const subId = btn.dataset.sub;
-      const wrapper = btn.closest('.tab-code-window');
-      wrapper.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
-      wrapper.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('sub-' + subId)?.classList.add('active');
-    });
-  });
-
   // ── Hero word rotation ───────────────────────────────────
   const VARIANTS = [
     {
-      word:    'Workflows',
-      variant: 'workflow',
-      eyebrow: 'Durable Execution for Rust',
+      word:    'Payments',
+      variant: 'payments',
     },
     {
-      word:    'AI agents',
-      variant: 'agent',
-      eyebrow: 'LLM Agent Infrastructure',
+      word:    'Onboardings',
+      variant: 'onboarding',
     },
     {
-      word:    'Pipelines',
-      variant: 'pipeline',
-      eyebrow: 'Durable Execution for Rust',
+      word:    'Agents',
+      variant: 'agents',
     },
   ];
 
   let currentIdx = 0;
   const wordEl    = document.getElementById('hero-word');
-  const eyebrowEl = document.getElementById('hero-eyebrow-text');
 
   function activateVariant(variant) {
     document.querySelectorAll('.hero-sub-variant').forEach(el => {
       el.classList.toggle('active', el.dataset.variant === variant);
     });
-    // Code windows: agent gets its own, everything else uses workflow
-    const codeVariant = variant === 'agent' ? 'agent' : 'workflow';
     document.querySelectorAll('.hero-code-variant').forEach(el => {
-      el.classList.toggle('active', el.dataset.variant === codeVariant);
+      el.classList.toggle('active', el.dataset.variant === variant);
     });
   }
 
   function scheduleNext() {
-    // Agent variant lingers longer so the CLI calls are readable
-    const dwell = VARIANTS[currentIdx].variant === 'agent' ? 6500 : 3800;
+    const dwell = 6500;
     setTimeout(rotateHero, dwell);
   }
 
@@ -1246,12 +1189,10 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
 
     // Step 1 — exit current word
     wordEl.classList.add('exiting');
-    eyebrowEl.classList.add('fading');
 
     setTimeout(() => {
       // Step 2 — swap content while invisible
       wordEl.textContent = next.word;
-      eyebrowEl.textContent = next.eyebrow;
       wordEl.classList.remove('exiting');
       wordEl.classList.add('entering');
       activateVariant(next.variant);
@@ -1260,7 +1201,6 @@ $ zart wait pipeline-001 --timeout <span class="lit">3600</span>
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           wordEl.classList.remove('entering');
-          eyebrowEl.classList.remove('fading');
         });
       });
 

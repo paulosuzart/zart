@@ -49,7 +49,7 @@ export default defineConfig({
         },
 
         // ── Deploy & Integrate and Coming Soon sections hidden for now ──
-        // Content preserved in: /deployment/, /llm-agents/, /cli/, /java-sdk/, /http-api/
+        // Content preserved in: /deployment/, /java-sdk/, /http-api/
       ],
     }),
   ],

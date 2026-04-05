@@ -75,9 +75,14 @@ zart-postgres = "0.1"
 
 ## Run Migrations
 
-```bash
-export DATABASE_URL="postgres://user:pass@localhost/mydb"
-zart migrate
+```rust
+use sqlx::{PgPool, migrate::MigrateDatabase};
+
+// In your application startup code
+let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+
+// Run migrations programmatically
+sqlx::migrate!("./migrations").run(&pool).await?;
 ```
 
 This creates the `zart_executions`, `zart_tasks`, and `zart_events` tables. Migrations are idempotent — safe to run on every deploy.
@@ -106,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
 
 ## Schedule an Execution
 
-Call this from anywhere — a web handler, a CLI command, a test:
+Call this from anywhere — a web handler, a background task, a test:
 
 ```rust
 let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
@@ -127,4 +132,4 @@ let status = durable.wait("signup-user-42", None).await?;
 - [Macros](/rust-api/macros/) — the `#[zart_durable]` proc-macro layer for less boilerplate
 - [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `wait_all`
 - [Wait for Event](/rust-api/wait-for-event/) — human-in-the-loop and webhook patterns
-- [Deployment Options](/deployment/options/) — embedded, sidecar, and CLI modes
+- [PostgreSQL Storage](/features/#7-postgresql-storage) — how workflow state is persisted

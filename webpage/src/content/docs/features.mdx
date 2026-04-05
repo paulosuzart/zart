@@ -199,11 +199,6 @@ scheduler.offer_event(execution_id, "payment-received", payload).await?;
 POST /api/v1/events/{execution_id}/{event_name}
 ```
 
-**CLI:**
-```bash
-zart event <exec-id> <event-name> --data '{...}'
-```
-
 Events can carry arbitrary JSON payloads. The waiting `wait_for_event` call deserializes the payload into the expected type automatically.
 
 Events time out gracefully — if no event arrives within the specified window, `wait_for_event` returns `Err(TaskError::EventTimeout)`, allowing the workflow to take a fallback path.
@@ -231,12 +226,6 @@ println!("Status: {:?}", exec.status);
 println!("Steps:  {}", exec.completed_steps);
 ```
 
-Or via CLI (coming soon):
-
-```bash
-zart status exec-abc-123 --verbose
-```
-
 <Aside type="tip">
 Step-level error messages are persisted even for steps that eventually succeed on retry. This gives you a full audit trail of what was attempted and when.
 </Aside>
@@ -245,7 +234,7 @@ Step-level error messages are persisted even for steps that eventually succeed o
 
 ## 10. Task Heartbeats
 
-Long-running steps — LLM agent calls, data pipelines, video processing — can take minutes or even hours. Without heartbeats, Zart's orphan recovery would detect these tasks as "stuck" and reset them back to `scheduled`, causing duplicate execution.
+Long-running steps — external API calls, data pipelines, video processing — can take minutes or even hours. Without heartbeats, Zart's orphan recovery would detect these tasks as "stuck" and reset them back to `scheduled`, causing duplicate execution.
 
 **How it works:**
 
@@ -255,7 +244,7 @@ When a worker picks up a task, it locks the row with `locked_at`. A background h
 Worker picks up task → locked_at = T
     ↓
 Heartbeat loop: every 100s → UPDATE locked_at = NOW()
-    ↓ (handler runs for 20 minutes — LLM call, data pipeline, etc.)
+    ↓ (handler runs for 20 minutes — external API call, data pipeline, etc.)
 Heartbeat continues renewing...
     ↓
 Handler returns → heartbeat cancelled → result persisted

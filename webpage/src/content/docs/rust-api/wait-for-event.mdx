@@ -99,13 +99,6 @@ Response:
 }
 ```
 
-## Delivering the Event — CLI
-
-```bash
-zart event exec-abc-123 manager-approval \
-  --data '{"approved":true,"reviewer":"jane@example.com"}'
-```
-
 ## Timeout Behaviour
 
 If the timeout expires before the event is delivered, `wait_for_event` returns `Err(TaskError::EventTimeout)`.

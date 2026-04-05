@@ -171,4 +171,4 @@ The timeout passed to `wait_for_event` (120 s here) is how long the workflow wil
 
 **Resumption is durable** — if the worker crashes between receiving the event and running step 3, the workflow resumes from the event receipt on restart. The `wait_for_event` step result is already persisted.
 
-**Use cases** — manager approval flows, interactive onboarding, integration with external review systems, human-in-the-loop AI agent chains.
+**Use cases** — manager approval flows, interactive onboarding, integration with external review systems, human-in-the-loop decision workflows.

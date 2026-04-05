@@ -1,11 +1,11 @@
 ---
 title: Deployment Options
-description: Three ways to deploy Zart workers — embedded, sidecar, and CLI.
+description: Two ways to deploy Zart workers — embedded and sidecar.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Zart workers are flexible: they can run inside your application process, as a separate container, or via a standalone CLI. Choose the strategy that fits your infrastructure.
+Zart workers are flexible: they can run inside your application process or as a separate container. Choose the strategy that fits your infrastructure.
 
 ## 1. Rust Embedded
 
@@ -144,47 +144,15 @@ spec:
 
 ---
 
-## 3. CLI Mode
-
-Use the `zart` CLI for ad-hoc executions, migrations, operator tasks, and scripting.
-
-```bash
-# Run migrations before every deploy
-zart migrate
-
-# Trigger a one-off workflow execution
-zart schedule report-gen \
-  --data '{"month":"2026-03","format":"pdf"}' \
-  --id report-2026-03
-
-# Check status
-zart status report-2026-03
-
-# Wait for it to finish (timeout after 10 min)
-zart wait report-2026-03 --timeout 600
-```
-
-**Best for:**
-
-- Database migrations in CI/CD
-- Development and debugging
-- One-off operational tasks
-- AI agent integration (see [LLM Agents](/llm-agents/overview/))
-- Scripts and cron jobs that schedule work
-
----
-
 ## Database Requirements
 
 | Database | Crate | Notes |
 |---|---|---|
 | PostgreSQL 14+ | `zart-postgres` | Recommended for production. Uses `SKIP LOCKED`, advisory locks, and `LISTEN/NOTIFY` for efficient polling. |
-| SQLite 3.35+ | `zart-sqlite` | Great for embedded systems, CLI tools, and single-process dev environments. No concurrent workers. |
-| MySQL 8+ | `zart-mysql` | Enterprise / existing MySQL infrastructure. Uses `SELECT … FOR UPDATE SKIP LOCKED`. |
 
 ### Connection Pooling
 
-The Postgres and MySQL backends use `sqlx`'s built-in connection pool. Configure pool size via the `WorkerConfig`:
+The PostgreSQL backend uses `sqlx`'s built-in connection pool. Configure pool size via the `WorkerConfig`:
 
 ```rust
 let scheduler = PostgresScheduler::connect_with_pool(
