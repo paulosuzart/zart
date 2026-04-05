@@ -191,7 +191,7 @@
        HERO
     ──────────────────────────────────────── */
     .hero {
-      padding: 6rem 0 4rem;
+      padding: 3rem 0 3rem;
       position: relative;
       overflow: hidden;
     }
@@ -237,7 +237,7 @@
       border-radius: 100px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1rem;
     }
 
     .hero-eyebrow::before {
@@ -261,7 +261,7 @@
       font-weight: 800;
       line-height: 1.1;
       letter-spacing: -0.03em;
-      margin-bottom: 1.25rem;
+      margin-bottom: 1rem;
       color: var(--text);
     }
 
@@ -274,7 +274,7 @@
       font-size: 1.1rem;
       color: var(--text-muted);
       line-height: 1.7;
-      margin-bottom: 2rem;
+      margin-bottom: 1.25rem;
       max-width: 46ch;
     }
 
@@ -336,7 +336,7 @@
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.75rem 1rem;
+      padding: 0.5rem 1rem;
       background: var(--bg-elevated);
       border-bottom: 1px solid var(--border-dim);
     }
@@ -358,12 +358,12 @@
     }
 
     .code-window pre {
-      padding: 1.25rem 1.5rem;
+      padding: 1rem 1.25rem;
       overflow-x: auto;
       max-width: 100%;
       font-family: var(--font-mono);
       font-size: 0.82rem;
-      line-height: 1.7;
+      line-height: 1.65;
       tab-size: 2;
     }
 
@@ -780,8 +780,14 @@
     <div class="hero-inner">
       <div class="hero-text">
         <div class="hero-eyebrow"><span id="hero-eyebrow-text">Durable Execution for Rust</span></div>
-        <h1><span id="hero-word">Payments</span> that <em>survive failure</em></h1>
-        <p class="hero-sub hero-sub-variant active" data-variant="payments">
+        <h1><span id="hero-word">Agents</span> that <em>survive failure</em></h1>
+        <p class="hero-sub hero-sub-variant active" data-variant="agents">
+          Give your Rust AI agents durable execution out of the box. Each LLM tool call result is
+          persisted before the next one runs. Agent crashes, API timeouts, and restarts become
+          non-events — completed work is never repeated, and agents resume from their last
+          successful step.
+        </p>
+        <p class="hero-sub hero-sub-variant" data-variant="payments">
           Write payment flows where every step is persisted before moving on. A charge that succeeds
           is never repeated — even if your process crashes immediately after. Completed steps are
           replayed from the database, never re-executed.
@@ -790,11 +796,6 @@
           Build onboarding flows where each step — welcome email, billing setup, resource provisioning —
           persists its result. If the process dies mid-flow, restart from exactly where it stopped.
           No duplicate emails, no double-charges.
-        </p>
-        <p class="hero-sub hero-sub-variant" data-variant="agents">
-          Give your Rust agents durable execution out of the box. Each tool call result is persisted
-          before the next one runs. Agent crashes, timeouts, and restarts become non-events — completed
-          work is never repeated, and agents can resume from their last successful step.
         </p>
         <div class="hero-actions">
           <a href="/getting-started/" class="btn btn-primary">
@@ -811,8 +812,47 @@
       <div class="hero-code">
         <div class="hero-code-stack">
 
+        <!-- Agents variant -->
+        <div class="hero-code-variant active" data-variant="agents">
+          <div class="code-window">
+            <div class="code-window-bar">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-amber"></span>
+              <span class="dot dot-green"></span>
+              <span class="code-window-filename">brewery_finder.rs</span>
+            </div>
+            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>&#125;;
+<span class="kw">use</span> radkit::&#123;models::providers::OpenAILlm, agent::LlmFunction&#125;;
+
+<span class="attr">#[zart_durable("ai-brewery-finder", timeout = "10m")]</span>
+<span class="kw">async fn</span> <span class="fn">brewery_finder</span>(query: <span class="ty">String</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Report</span>&gt; &#123;
+
+  <span class="kw">let</span> llm = OpenAILlm::from_env(<span class="str">"gpt-4o"</span>)?;
+
+  <span class="cmt">// Extract city from natural language — persisted</span>
+  <span class="kw">let</span> city = <span class="mac">z_step_with_retry!</span>(<span class="str">"extract"</span>, retries = <span class="lit">3</span>, || <span class="kw">async</span> &#123;
+    <span class="kw">let</span> fn = LlmFunction::&lt;City&gt;::new(llm.clone());
+    fn.run(&amp;query).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="cmt">// Fetch brewery data — retries on transient failure</span>
+  <span class="kw">let</span> data = <span class="mac">z_step_with_retry!</span>(<span class="str">"fetch"</span>, retries = <span class="lit">3</span>, || <span class="kw">async</span> &#123;
+    reqwest::get(&amp;api_url(&amp;city)).<span class="kw">await</span>?.<span class="kw">await</span>.json().<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="cmt">// LLM summary — only runs if fetch succeeded</span>
+  <span class="kw">let</span> summary = <span class="mac">z_step!</span>(<span class="str">"summarize"</span>, || <span class="kw">async</span> &#123;
+    LlmFunction::&lt;Summary&gt;::new(llm)
+      .run(&amp;format_prompt(&amp;data)).<span class="kw">await</span>
+  &#125;).<span class="kw">await</span>?;
+
+  <span class="ty">Ok</span>(<span class="ty">Report</span>::<span class="fn">new</span>(&amp;summary))
+&#125;</code></pre>
+          </div>
+        </div>
+
         <!-- Payments variant -->
-        <div class="hero-code-variant active" data-variant="payments">
+        <div class="hero-code-variant" data-variant="payments">
           <div class="code-window">
             <div class="code-window-bar">
               <span class="dot dot-red"></span>
@@ -878,43 +918,6 @@
   &#125;).<span class="kw">await</span>?;
 
   <span class="ty">Ok</span>(<span class="ty">Welcome</span>::<span class="fn">for_user</span>(&amp;user))
-&#125;</code></pre>
-          </div>
-        </div>
-
-        <!-- Agents variant -->
-        <div class="hero-code-variant" data-variant="agents">
-          <div class="code-window">
-            <div class="code-window-bar">
-              <span class="dot dot-red"></span>
-              <span class="dot dot-amber"></span>
-              <span class="dot dot-green"></span>
-              <span class="code-window-filename">agent_task.rs</span>
-            </div>
-            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>&#125;;
-<span class="kw">use</span> my_agent_sdk::&#123;<span class="ty">Agent</span>, <span class="ty">ToolCall</span>&#125;;
-
-<span class="attr">#[zart_durable("agent-research", timeout = "60m")]</span>
-<span class="kw">async fn</span> <span class="fn">research_agent</span>(query: <span class="ty">ResearchQuery</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Report</span>&gt; &#123;
-
-  <span class="kw">let</span> agent = <span class="ty">Agent</span>::<span class="fn">new</span>(<span class="str">"gpt-4"</span>);
-
-  <span class="cmt">// Each tool call persists — never repeated on crash</span>
-  <span class="kw">let</span> sources = <span class="mac">z_step!</span>(<span class="str">"search"</span>, || <span class="kw">async</span> &#123;
-    agent.<span class="fn">call</span>(&amp;<span class="ty">ToolCall</span>::<span class="fn">search</span>(&amp;query)).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Analysis step — result stored before continuing</span>
-  <span class="kw">let</span> analysis = <span class="mac">z_step!</span>(<span class="str">"analyze"</span>, || <span class="kw">async</span> &#123;
-    agent.<span class="fn">call</span>(&amp;<span class="ty">ToolCall</span>::<span class="fn">analyze</span>(&amp;sources)).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Synthesize final report — only runs once</span>
-  <span class="mac">z_step!</span>(<span class="str">"synthesize"</span>, || <span class="kw">async</span> &#123;
-    agent.<span class="fn">call</span>(&amp;<span class="ty">ToolCall</span>::<span class="fn">report</span>(&amp;analysis)).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="ty">Ok</span>(<span class="ty">Report</span>::<span class="fn">from</span>(analysis))
 &#125;</code></pre>
           </div>
         </div>
@@ -1154,16 +1157,16 @@
   // ── Hero word rotation ───────────────────────────────────
   const VARIANTS = [
     {
+      word:    'Agents',
+      variant: 'agents',
+    },
+    {
       word:    'Payments',
       variant: 'payments',
     },
     {
       word:    'Onboardings',
       variant: 'onboarding',
-    },
-    {
-      word:    'Agents',
-      variant: 'agents',
     },
   ];
 
