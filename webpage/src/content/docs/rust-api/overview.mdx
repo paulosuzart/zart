@@ -18,7 +18,7 @@ Zart's Rust API is organized into three layers that build on each other. You can
 │  (zart)            Durable steps, retries, events, sleep  │
 ├─────────────────────────────────────────────────────────┤
 │  Scheduler Layer    Scheduler, DurableScheduler, Worker   │
-│  (zart + backend)  PostgreSQL / SQLite / MySQL polling    │
+│  (zart + backend)  PostgreSQL polling via SKIP LOCKED      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -31,7 +31,6 @@ Responsible for persisting and claiming executions. Implements `SKIP LOCKED` pol
 | `Scheduler` | Trait — poll for due tasks, mark complete/failed |
 | `DurableScheduler` | Trait — schedule new executions, deliver events |
 | `PostgresScheduler` | Concrete — PostgreSQL backend |
-| `SqliteScheduler` | Concrete — SQLite backend |
 | `Worker` | Drives the poll loop, dispatches to `TaskRegistry` |
 
 ### Execution Layer
