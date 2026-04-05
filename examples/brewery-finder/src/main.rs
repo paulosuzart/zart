@@ -13,8 +13,9 @@ use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use zart::prelude::*;
+use uuid::Uuid;
 use zart::error::StepError;
+use zart::prelude::*;
 use zart::retry::RetryConfig;
 use zart_macros::{z_step, z_step_with_retry, zart_durable};
 
@@ -44,18 +45,25 @@ struct FinderOutput {
 
 // ── API response types ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ZipInfo {
+#[derive(Debug, Clone, Deserialize)]
+struct PlaceInfo {
     #[serde(rename = "place name")]
     place_name: String,
     state: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ZipResponse {
+    places: Vec<PlaceInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BreweryRaw {
     name: String,
+    #[serde(default)]
     brewery_type: Option<String>,
     city: Option<String>,
+    #[serde(default)]
     state: Option<String>,
 }
 
@@ -69,7 +77,7 @@ async fn brewery_finder(
     let client = reqwest::Client::new();
 
     // Step 1: Look up ZIP code via Zippopotamus API (with retries)
-    let zip_info = z_step_with_retry!(
+    let (city, state) = z_step_with_retry!(
         "lookup-zip",
         RetryConfig::exponential(3, Duration::from_secs(1)),
         || {
@@ -83,21 +91,23 @@ async fn brewery_finder(
                     .map_err(|e| StepError::Failed {
                         step: "lookup-zip".to_string(),
                         reason: e.to_string(),
-                    })?
-                    .json::<ZipInfo>()
+                    })?;
+                let zip_resp: ZipResponse = resp
+                    .json()
                     .await
                     .map_err(|e| StepError::Failed {
                         step: "lookup-zip".to_string(),
                         reason: format!("failed to parse response: {e}"),
                     })?;
-                Ok(resp)
+                let place = zip_resp.places.first().ok_or_else(|| StepError::Failed {
+                    step: "lookup-zip".to_string(),
+                    reason: format!("no place found for ZIP {zip}"),
+                })?;
+                Ok((place.place_name.clone(), place.state.clone()))
             }
         }
     )
     .await?;
-
-    let city = zip_info.place_name.clone();
-    let state = zip_info.state.clone();
 
     // Step 2: Find breweries in the city via Open Brewery DB (with retries)
     let raw_breweries = z_step_with_retry!(
@@ -183,16 +193,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(registry);
 
     // Start durable execution
-    let execution_id = "brewery-finder-demo";
+    let execution_id = format!("brewery-finder-demo-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone(), registry.clone());
 
     let input = FinderInput {
-        zip_code: "90210".to_string(),
+        zip_code: "97209".to_string(), // Portland, OR — lots of breweries
     };
 
-    println!("Starting execution '{execution_id}' for ZIP {}...", input.zip_code);
+    println!(
+        "Starting execution '{execution_id}' for ZIP {}...",
+        input.zip_code
+    );
     durable
-        .start_typed(execution_id, "brewery-finder", &input)
+        .start_typed(&execution_id, "brewery-finder", &input)
         .await?;
 
     // Run worker
@@ -207,10 +220,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
+    // Wait a moment for the worker to start polling
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Check initial status
+    let initial_status = durable.status(&execution_id).await?;
+    println!("Initial execution status: {:?}\n", initial_status.status);
+
     // Wait for completion
-    println!("Worker started, waiting for execution to complete...\n");
+    println!("Waiting for execution to complete...\n");
     let record = durable
-        .wait(execution_id, Duration::from_secs(60), None)
+        .wait(&execution_id, Duration::from_secs(60), None)
         .await?;
 
     worker.stop();
@@ -240,6 +260,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             eprintln!("Execution ended with status: {:?}", record.status);
+            if let Some(result) = &record.result {
+                eprintln!("Result: {}", result);
+            }
         }
     }
 

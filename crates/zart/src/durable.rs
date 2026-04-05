@@ -51,18 +51,42 @@ impl<S: Scheduler> DurableScheduler<S> {
     }
 
     /// Start a new durable execution with a raw JSON payload.
+    ///
+    /// If an execution with this ID already exists and is in a terminal state
+    /// (completed, failed, cancelled), it will be reset to "scheduled" so it
+    /// can be retried. If it exists and is **not** in a terminal state,
+    /// [`SchedulerError::ExecutionAlreadyExists`] is returned.
     pub async fn start(
         &self,
         execution_id: &str,
         task_name: &str,
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
-        // 1. Insert the high-level execution record (idempotent).
-        self.scheduler
-            .start_execution(execution_id, task_name, payload.clone())
-            .await?;
+        // Check if execution already exists.
+        if let Some(existing) = self.scheduler.get_execution(execution_id).await? {
+            match existing.status {
+                // Still running — don't create a duplicate.
+                ExecutionStatus::Scheduled | ExecutionStatus::Running => {
+                    return Err(SchedulerError::ExecutionAlreadyExists(
+                        execution_id.to_string(),
+                        existing.status,
+                    ));
+                }
+                // Terminal state — reset so we can retry.
+                ExecutionStatus::Completed
+                | ExecutionStatus::Failed
+                | ExecutionStatus::Cancelled => {
+                    self.scheduler.reset_execution(execution_id, payload.clone()).await?;
+                }
+            }
+        } else {
+            // First time — insert the record.
+            self.scheduler
+                .start_execution(execution_id, task_name, payload.clone())
+                .await?;
+        }
 
-        // 2. Schedule the root task that drives the execution.
+        // Schedule the root task that drives the execution.
         let task_id = Uuid::new_v4().to_string();
         let result = self
             .scheduler

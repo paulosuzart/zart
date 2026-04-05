@@ -27,6 +27,10 @@ pub enum SchedulerError {
     #[error("Execution '{0}' not found")]
     ExecutionNotFound(String),
 
+    /// An execution with this ID already exists and is not in a terminal state.
+    #[error("Execution '{0}' already exists (status: {1})")]
+    ExecutionAlreadyExists(String, scheduler::ExecutionStatus),
+
     /// Serialization or deserialization of task data failed.
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),

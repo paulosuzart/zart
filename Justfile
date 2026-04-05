@@ -95,7 +95,7 @@ logs:
 
 # Run database migrations (requires PostgreSQL to be running)
 migrate:
-    cargo run -p zart-cli -- migrate
+    DATABASE_URL=postgres://zart:zart@localhost:5432/zart cargo run -p zart-cli -- migrate
 
 # ── Combined Workflows ─────────────────────────────────────────────────────────
 

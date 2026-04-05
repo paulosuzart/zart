@@ -613,4 +613,28 @@ impl Scheduler for PostgresScheduler {
             }
         }
     }
+
+    async fn reset_execution(
+        &self,
+        execution_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET status       = 'scheduled',
+                payload      = $1,
+                result       = NULL,
+                completed_at = NULL,
+                updated_at   = NOW()
+            WHERE execution_id = $2
+            "#,
+        )
+        .bind(&payload)
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
 }

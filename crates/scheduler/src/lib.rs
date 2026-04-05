@@ -207,6 +207,18 @@ pub trait Scheduler: Send + Sync {
         let _ = (execution_id, event_name, payload);
         Ok(false)
     }
+
+    /// Reset a terminal execution so it can be retried.
+    ///
+    /// Sets status back to "scheduled", clears result/completed_at.
+    /// No-op for executions that don't exist.
+    async fn reset_execution(
+        &self,
+        _execution_id: &str,
+        _payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
