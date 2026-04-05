@@ -147,6 +147,9 @@ pub struct TaskContext<S: Scheduler> {
     pub(crate) lock_token: String,
     /// The original JSON payload supplied when the execution was started.
     data: serde_json::Value,
+    /// When true, `step()` behaves like `step_immediate()` — executing steps
+    /// in-memory without returning early.
+    pub(crate) immediate_steps: bool,
 }
 
 impl<S: Scheduler> TaskContext<S> {
@@ -168,7 +171,14 @@ impl<S: Scheduler> TaskContext<S> {
             state,
             lock_token: lock_token.into(),
             data,
+            immediate_steps: false,
         }
+    }
+
+    /// Construct a new `TaskContext` with immediate step execution enabled.
+    pub fn with_immediate_steps(mut self) -> Self {
+        self.immediate_steps = true;
+        self
     }
 
     /// Execute a named step with no retries and no timeout.
@@ -180,6 +190,12 @@ impl<S: Scheduler> TaskContext<S> {
     /// - **Step `Scheduled`**: runs the lambda. On success, persists `Completed`.
     /// - **Step `Completed`**: deserializes the stored result and returns `Ok(T)`
     ///   immediately (lambda not called).
+    ///
+    /// # Immediate mode
+    ///
+    /// If [`TaskContext::with_immediate_steps`] was used (or the worker has
+    /// `immediate_steps` enabled), this method behaves like [`step_immediate`](Self::step_immediate)
+    /// and executes the step without returning early.
     #[instrument(name = "step.execute", skip(self, step_fn), fields(step_name = step_name))]
     pub async fn step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> Result<T, StepError>
     where
@@ -187,8 +203,12 @@ impl<S: Scheduler> TaskContext<S> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
-        self.step_with_retry(step_name, RetryConfig::none(), step_fn)
-            .await
+        if self.immediate_steps {
+            self.step_immediate(step_name, step_fn).await
+        } else {
+            self.step_with_retry(step_name, RetryConfig::none(), step_fn)
+                .await
+        }
     }
 
     /// Execute a named step with a retry policy.
@@ -197,7 +217,33 @@ impl<S: Scheduler> TaskContext<S> {
     /// (each retry is a separate task execution) with the configured backoff.
     ///
     /// Each attempt is recorded in [`StepRecord::attempts`] for observability.
+    ///
+    /// # Immediate mode
+    ///
+    /// If [`TaskContext::with_immediate_steps`] was used (or the worker has
+    /// `immediate_steps` enabled), this method behaves like [`step_immediate_with_retry`](Self::step_immediate_with_retry).
     pub async fn step_with_retry<T, F, Fut>(
+        &mut self,
+        step_name: &str,
+        retry_config: RetryConfig,
+        step_fn: F,
+    ) -> Result<T, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, StepError>>,
+    {
+        if self.immediate_steps {
+            self.step_immediate_with_retry(step_name, retry_config, step_fn)
+                .await
+        } else {
+            self.step_with_retry_inner(step_name, retry_config, step_fn)
+                .await
+        }
+    }
+
+    /// Internal implementation of step_with_retry (without immediate mode check).
+    async fn step_with_retry_inner<T, F, Fut>(
         &mut self,
         step_name: &str,
         retry_config: RetryConfig,
@@ -343,6 +389,199 @@ impl<S: Scheduler> TaskContext<S> {
                 step: step_name.to_string(),
                 reason: "step is in WaitingForEvent state; use wait_for_event instead".to_string(),
             }),
+        }
+    }
+
+    /// Execute a named step immediately in memory without returning early.
+    ///
+    /// Unlike [`step`](Self::step), which persists the step as `Scheduled` and returns
+    /// `Err(StepError::Scheduled)` to signal the worker to re-queue the task, this method
+    /// writes the step to the database in a **locked** state and executes the lambda
+    /// immediately on the same worker.
+    ///
+    /// # Crash safety
+    ///
+    /// The step is written to the database in a `picked_up` state so that if the worker
+    /// crashes mid-execution, the step is recoverable by orphan cleanup. After the
+    /// `orphan_timeout`, the step is reset to `scheduled` and can be picked up again.
+    ///
+    /// # Trade-offs
+    ///
+    /// - **Latency**: Near-zero (only DB write latency), no poll interval delay.
+    /// - **Fault tolerance**: Reduced — the worker is blocked for the duration of the step.
+    ///   If the worker dies, orphan recovery will eventually reset the step.
+    /// - **Use case**: Fast sequential steps where low latency matters more than cross-worker
+    ///   failover.
+    ///
+    /// # Control flow
+    ///
+    /// - **Step absent**: persists as `Scheduled` (locked), executes lambda immediately.
+    /// - **Step `Completed`**: deserializes the stored result and returns `Ok(T)` immediately.
+    /// - **Step `Scheduled`**: executes the lambda (retry scenario).
+    #[instrument(name = "step.immediate", skip(self, step_fn), fields(step_name = step_name))]
+    pub async fn step_immediate<T, F, Fut>(
+        &mut self,
+        step_name: &str,
+        step_fn: F,
+    ) -> Result<T, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, StepError>>,
+    {
+        self.step_immediate_with_retry(step_name, RetryConfig::none(), step_fn)
+            .await
+    }
+
+    /// Execute a named step immediately in memory with a retry policy.
+    ///
+    /// Behaves like [`step_immediate`](Self::step_immediate), but retries the lambda
+    /// across re-entries with the configured backoff.
+    ///
+    /// Each attempt is recorded in [`StepRecord::attempts`] for observability.
+    pub async fn step_immediate_with_retry<T, F, Fut>(
+        &mut self,
+        step_name: &str,
+        retry_config: RetryConfig,
+        step_fn: F,
+    ) -> Result<T, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, StepError>>,
+    {
+        let snapshot = self
+            .state
+            .steps
+            .get(step_name)
+            .map(|r| (r.status.clone(), r.result.clone(), r.retry_attempt));
+
+        match snapshot {
+            // ── COMPLETED: return the cached result ───────────────────────────
+            Some((StepStatus::Completed, Some(v), _)) => {
+                serde_json::from_value(v).map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: format!("failed to deserialize cached result: {e}"),
+                })
+            }
+
+            Some((StepStatus::Completed, None, _)) => Err(StepError::Failed {
+                step: step_name.to_string(),
+                reason: "step completed but result is missing".to_string(),
+            }),
+
+            // ── SCHEDULED or ABSENT: execute the lambda immediately ───────────
+            _ => {
+                // If the step doesn't exist yet, register it now.
+                // Unlike step(), we don't return early — we execute immediately.
+                if self.state.steps.get(step_name).is_none() {
+                    self.state.steps.insert(
+                        step_name.to_string(),
+                        StepRecord {
+                            status: StepStatus::Scheduled,
+                            result: None,
+                            in_task_id: None,
+                            retry_attempt: 0,
+                            retry_config: Some(retry_config.clone()),
+                            attempts: vec![],
+                            event_deadline: None,
+                        },
+                    );
+                }
+
+                let retry_attempt = self
+                    .state
+                    .steps
+                    .get(step_name)
+                    .map(|r| r.retry_attempt)
+                    .unwrap_or(0);
+
+                let started_at = chrono::Utc::now();
+                let outcome = step_fn().await;
+                let completed_at = chrono::Utc::now();
+
+                match outcome {
+                    Ok(result) => {
+                        let serialized =
+                            serde_json::to_value(&result).map_err(|e| StepError::Failed {
+                                step: step_name.to_string(),
+                                reason: format!("failed to serialize result: {e}"),
+                            })?;
+
+                        let record = self
+                            .state
+                            .steps
+                            .get_mut(step_name)
+                            .expect("step must exist in state");
+                        record.status = StepStatus::Completed;
+                        record.result = Some(serialized.clone());
+                        record.attempts.push(StepAttempt {
+                            attempt_number: retry_attempt + 1,
+                            started_at,
+                            completed_at: Some(completed_at),
+                            status: AttemptStatus::Completed,
+                            error: None,
+                            result: Some(serialized),
+                        });
+
+                        // Record metrics
+                        let duration =
+                            (completed_at - started_at).num_milliseconds() as f64 / 1000.0;
+                        STEP_DURATION_SECONDS
+                            .with_label_values(&[step_name, "completed"])
+                            .observe(duration);
+                        STEPS_TOTAL
+                            .with_label_values(&["completed", step_name])
+                            .inc();
+
+                        Ok(result)
+                    }
+
+                    Err(e) => {
+                        let error_str = e.to_string();
+                        let next_attempt = retry_attempt + 1;
+
+                        let record = self
+                            .state
+                            .steps
+                            .get_mut(step_name)
+                            .expect("step must exist in state");
+                        record.attempts.push(StepAttempt {
+                            attempt_number: retry_attempt + 1,
+                            started_at,
+                            completed_at: Some(completed_at),
+                            status: AttemptStatus::Failed,
+                            error: Some(error_str),
+                            result: None,
+                        });
+
+                        // Check whether the retry policy allows another attempt.
+                        if let Some(delay) = retry_config.delay_for(next_attempt) {
+                            let next_execution = chrono::Utc::now()
+                                + chrono::Duration::from_std(delay)
+                                    .unwrap_or(chrono::Duration::zero());
+                            record.retry_attempt = next_attempt;
+                            Err(StepError::Scheduled {
+                                step: step_name.to_string(),
+                                next_execution: Some(next_execution),
+                            })
+                        } else if retry_config.max_attempts > 0 {
+                            // Retries were configured and all exhausted.
+                            STEPS_TOTAL
+                                .with_label_values(&["retry_exhausted", step_name])
+                                .inc();
+                            Err(StepError::RetryExhausted {
+                                step: step_name.to_string(),
+                                attempts: next_attempt,
+                            })
+                        } else {
+                            // No retries configured — propagate the original error.
+                            STEPS_TOTAL.with_label_values(&["failed", step_name]).inc();
+                            Err(e)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1304,5 +1543,177 @@ mod tests {
             .wait_for_event("late", Some(Duration::from_secs(1)))
             .await;
         assert!(matches!(result, Err(StepError::Timeout { .. })));
+    }
+
+    // ── step_immediate ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn step_immediate_executes_lambda_on_first_call() {
+        let mut ctx = make_ctx();
+        // Unlike step(), step_immediate() does NOT return Scheduled on first call.
+        let result = ctx
+            .step_immediate("my-step", || async { Ok::<i32, StepError>(42) })
+            .await;
+        assert_eq!(result.unwrap(), 42);
+
+        // Step should be marked as completed.
+        let record = ctx.state.steps.get("my-step").unwrap();
+        assert_eq!(record.status, StepStatus::Completed);
+        assert_eq!(record.result, Some(serde_json::json!(42)));
+    }
+
+    #[tokio::test]
+    async fn step_immediate_returns_cached_result_when_completed() {
+        let mut ctx = make_ctx();
+        ctx.state.steps.insert(
+            "my-step".to_string(),
+            StepRecord {
+                status: StepStatus::Completed,
+                result: Some(serde_json::json!(99)),
+                in_task_id: None,
+                retry_attempt: 0,
+                retry_config: None,
+                attempts: vec![],
+                event_deadline: None,
+            },
+        );
+        let result: Result<i32, _> = ctx
+            .step_immediate("my-step", || async {
+                Ok::<i32, StepError>(0) // unreachable
+            })
+            .await;
+        assert_eq!(result.unwrap(), 99);
+    }
+
+    #[tokio::test]
+    async fn step_immediate_records_attempt_on_success() {
+        let mut ctx = make_ctx();
+        let _ = ctx
+            .step_immediate("my-step", || async { Ok::<i32, StepError>(7) })
+            .await;
+        let record = ctx.state.steps.get("my-step").unwrap();
+        assert_eq!(record.attempts.len(), 1);
+        assert_eq!(record.attempts[0].status, AttemptStatus::Completed);
+        assert_eq!(record.attempts[0].attempt_number, 1);
+    }
+
+    #[tokio::test]
+    async fn step_immediate_propagates_error_when_no_retries() {
+        let mut ctx = make_ctx();
+        let result = ctx
+            .step_immediate("fail-step", || async {
+                Err::<i32, _>(StepError::Failed {
+                    step: "fail-step".to_string(),
+                    reason: "intentional error".to_string(),
+                })
+            })
+            .await;
+        assert!(matches!(result, Err(StepError::Failed { .. })));
+    }
+
+    #[tokio::test]
+    async fn step_immediate_with_retry_returns_scheduled_on_failure_when_retries_remain() {
+        let mut ctx = make_ctx();
+        let result = ctx
+            .step_immediate_with_retry(
+                "retry-step",
+                RetryConfig::fixed(2, Duration::from_millis(100)),
+                || async {
+                    Err::<i32, _>(StepError::Failed {
+                        step: "retry-step".to_string(),
+                        reason: "transient error".to_string(),
+                    })
+                },
+            )
+            .await;
+
+        // Should return Scheduled (control-flow) with a delay since retries remain.
+        assert!(matches!(
+            result,
+            Err(StepError::Scheduled {
+                next_execution: Some(_),
+                ..
+            })
+        ));
+
+        // Retry attempt counter must be bumped.
+        let record = ctx.state.steps.get("retry-step").unwrap();
+        assert_eq!(record.retry_attempt, 1);
+        assert_eq!(record.attempts.len(), 1);
+        assert_eq!(record.attempts[0].status, AttemptStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn step_immediate_with_retry_exhausts_after_max_attempts() {
+        let mut ctx = make_ctx();
+        // Simulate: retry_attempt is already at max (2 out of 2 retries used).
+        ctx.state.steps.insert(
+            "retry-step".to_string(),
+            StepRecord {
+                status: StepStatus::Scheduled,
+                result: None,
+                in_task_id: None,
+                retry_attempt: 2,
+                retry_config: None,
+                attempts: vec![],
+                event_deadline: None,
+            },
+        );
+
+        let result = ctx
+            .step_immediate_with_retry(
+                "retry-step",
+                RetryConfig::fixed(2, Duration::from_millis(100)),
+                || async {
+                    Err::<i32, _>(StepError::Failed {
+                        step: "retry-step".to_string(),
+                        reason: "still failing".to_string(),
+                    })
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(StepError::RetryExhausted { attempts: 3, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn step_immediate_with_retry_succeeds_after_previous_failures() {
+        let mut ctx = make_ctx();
+        ctx.state.steps.insert(
+            "retry-step".to_string(),
+            StepRecord {
+                status: StepStatus::Scheduled,
+                result: None,
+                in_task_id: None,
+                retry_attempt: 1,
+                retry_config: None,
+                attempts: vec![StepAttempt {
+                    attempt_number: 1,
+                    started_at: chrono::Utc::now(),
+                    completed_at: Some(chrono::Utc::now()),
+                    status: AttemptStatus::Failed,
+                    error: Some("first failure".to_string()),
+                    result: None,
+                }],
+                event_deadline: None,
+            },
+        );
+
+        let result = ctx
+            .step_immediate_with_retry(
+                "retry-step",
+                RetryConfig::fixed(2, Duration::from_millis(100)),
+                || async { Ok::<i32, StepError>(42) },
+            )
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        let record = ctx.state.steps.get("retry-step").unwrap();
+        assert_eq!(record.status, StepStatus::Completed);
+        assert_eq!(record.attempts.len(), 2);
+        assert_eq!(record.attempts[1].status, AttemptStatus::Completed);
     }
 }

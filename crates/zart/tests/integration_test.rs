@@ -779,4 +779,188 @@ mod integration {
             record.status
         );
     }
+
+    // ── step_immediate tests ──────────────────────────────────────────────────
+
+    /// A task that uses step_immediate for all steps (no re-queue behavior).
+    struct ImmediateTask;
+
+    #[async_trait::async_trait]
+    impl TaskHandler for ImmediateTask {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run<S: scheduler::Scheduler>(
+            &self,
+            ctx: &mut TaskContext<S>,
+            _data: Self::Data,
+        ) -> Result<Self::Output, TaskError> {
+            let step1: i32 = ctx.step_immediate("step-one", || async { Ok(21i32) }).await?;
+            let step2: i32 = ctx.step_immediate("step-two", || async { Ok(step1 * 2) }).await?;
+
+            Ok(serde_json::json!({ "answer": step2 }))
+        }
+    }
+
+    /// Tests that step_immediate executes steps without returning early,
+    /// completing the entire durable execution in one go.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn step_immediate_completes_without_requeue() {
+        let scheduler = setup().await;
+        let registry = Arc::new({
+            let mut r = TaskRegistry::new();
+            r.register("immediate-task", ImmediateTask);
+            r
+        });
+
+        let execution_id = format!("test-step-immediate-{}", Uuid::new_v4());
+        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        durable
+            .start(&execution_id, "immediate-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (_worker, handle) = spawn_worker(scheduler.clone(), registry);
+
+        // Wait for the execution to complete.
+        let result = durable
+            .wait_with_timeout(&execution_id, Duration::from_secs(5))
+            .await;
+
+        assert!(result.is_ok(), "execution should complete: {:?}", result);
+        let record = result.unwrap();
+        assert_eq!(record.status, ExecutionStatus::Completed);
+        assert_eq!(record.result, Some(serde_json::json!({ "answer": 42 })));
+
+        // Clean up.
+        let worker = _worker;
+        worker.stop();
+        let _ = handle.await;
+    }
+
+    /// A task that uses the worker-level immediate_steps config.
+    struct RegularStepTask;
+
+    #[async_trait::async_trait]
+    impl TaskHandler for RegularStepTask {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run<S: scheduler::Scheduler>(
+            &self,
+            ctx: &mut TaskContext<S>,
+            _data: Self::Data,
+        ) -> Result<Self::Output, TaskError> {
+            // With immediate_steps enabled, this should execute without re-queue.
+            let step1: i32 = ctx.step("step-one", || async { Ok(10i32) }).await?;
+            let step2: i32 = ctx.step("step-two", || async { Ok(step1 + 5) }).await?;
+
+            Ok(serde_json::json!({ "result": step2 }))
+        }
+    }
+
+    /// Tests that the worker-level immediate_steps config makes all step() calls
+    /// behave like step_immediate().
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn worker_immediate_steps_config() {
+        let scheduler = setup().await;
+        let registry = Arc::new({
+            let mut r = TaskRegistry::new();
+            r.register("regular-step-task", RegularStepTask);
+            r
+        });
+
+        let execution_id = format!("test-worker-immediate-{}", Uuid::new_v4());
+        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        durable
+            .start(&execution_id, "regular-step-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        // Create worker with immediate_steps enabled.
+        let config = WorkerConfig {
+            poll_interval: Duration::from_millis(100),
+            max_tasks_per_poll: 10,
+            max_concurrent_tasks: 4,
+            shutdown_timeout: Duration::from_secs(5),
+            orphan_timeout: Duration::from_secs(30),
+            immediate_steps: true, // Enable immediate mode.
+        };
+        let worker = Arc::new(Worker::new(scheduler.clone(), registry, config));
+        let w = worker.clone();
+        let handle = tokio::spawn(async move { w.run().await });
+
+        // Wait for the execution to complete.
+        let result = durable
+            .wait_with_timeout(&execution_id, Duration::from_secs(5))
+            .await;
+
+        assert!(result.is_ok(), "execution should complete: {:?}", result);
+        let record = result.unwrap();
+        assert_eq!(record.status, ExecutionStatus::Completed);
+        assert_eq!(record.result, Some(serde_json::json!({ "result": 15 })));
+
+        // Clean up.
+        worker.stop();
+        let _ = handle.await;
+    }
+
+    /// A task whose step_immediate fails and exhausts retries.
+    struct FailingImmediateTask;
+
+    #[async_trait::async_trait]
+    impl TaskHandler for FailingImmediateTask {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run<S: scheduler::Scheduler>(
+            &self,
+            ctx: &mut TaskContext<S>,
+            _data: Self::Data,
+        ) -> Result<Self::Output, TaskError> {
+            ctx.step_immediate("fail-step", || async {
+                Err::<i32, _>(StepError::Failed {
+                    step: "fail-step".to_string(),
+                    reason: "intentional failure".to_string(),
+                })
+            })
+            .await?;
+
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    /// Tests that step_immediate propagates failures correctly.
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn step_immediate_failure_propagates() {
+        let scheduler = setup().await;
+        let registry = Arc::new({
+            let mut r = TaskRegistry::new();
+            r.register("failing-immediate-task", FailingImmediateTask);
+            r
+        });
+
+        let execution_id = format!("test-step-immediate-fail-{}", Uuid::new_v4());
+        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        durable
+            .start(&execution_id, "failing-immediate-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (_worker, handle) = spawn_worker(scheduler.clone(), registry);
+
+        // Wait for the execution to fail.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let record = durable.status(&execution_id).await.expect("status failed");
+        assert_eq!(record.status, ExecutionStatus::Failed);
+
+        // Clean up.
+        let worker = _worker;
+        worker.stop();
+        let _ = handle.await;
+    }
 }

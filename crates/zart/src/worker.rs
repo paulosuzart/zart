@@ -32,6 +32,18 @@ pub struct WorkerConfig {
     /// Tasks stuck in `picked_up` state longer than this are considered orphaned
     /// and will be reset to `scheduled` by the orphan recovery loop.
     pub orphan_timeout: Duration,
+
+    /// When enabled, steps scheduled via `step()` are executed immediately in-memory
+    /// without returning early. This reduces latency between sequential steps but
+    /// blocks the worker for the duration of each step.
+    ///
+    /// This is equivalent to using `step_immediate()` for all steps, but applies
+    /// globally to the entire durable execution.
+    ///
+    /// **Trade-off**: lower latency vs. reduced fault tolerance. The worker cannot
+    /// pick up other tasks while a step is executing. If the worker crashes, orphan
+    /// recovery will eventually reset the in-flight step.
+    pub immediate_steps: bool,
 }
 
 impl Default for WorkerConfig {
@@ -42,6 +54,7 @@ impl Default for WorkerConfig {
             max_concurrent_tasks: 16,
             shutdown_timeout: Duration::from_secs(30),
             orphan_timeout: Duration::from_secs(300),
+            immediate_steps: false, // Disabled by default for maximum fault tolerance.
         }
     }
 }
@@ -184,12 +197,13 @@ impl<S: Scheduler + 'static> Worker<S> {
 
                 let scheduler = self.scheduler.clone();
                 let registry = self.registry.clone();
+                let immediate_steps = self.config.immediate_steps;
 
                 tokio::spawn(
                     async move {
                         let _permit = permit; // released when this task finishes
                         WORKER_CONCURRENT_TASKS.inc();
-                        dispatch_task(scheduler, registry, task).await;
+                        dispatch_task_with_immediate(scheduler, registry, task, immediate_steps).await;
                         WORKER_CONCURRENT_TASKS.dec();
                     }
                     .in_current_span(),
@@ -214,6 +228,10 @@ impl<S: Scheduler + 'static> Worker<S> {
 }
 
 /// Dispatch a single fetched task to its registered handler and persist the result.
+///
+/// This is a convenience wrapper that calls [`dispatch_task_with_immediate`] with
+/// `immediate_steps = false`.
+#[allow(dead_code)]
 #[instrument(
     name = "task.dispatch",
     skip(scheduler, registry, task),
@@ -228,6 +246,26 @@ async fn dispatch_task<S: Scheduler + 'static>(
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
+) {
+    dispatch_task_with_immediate(scheduler, registry, task, false).await
+}
+
+/// Dispatch a single fetched task with optional immediate step execution.
+#[instrument(
+    name = "task.dispatch",
+    skip(scheduler, registry, task),
+    fields(
+        task_id = %task.task_id,
+        task_name = %task.task_name,
+        execution_id = task.execution_id.as_deref().unwrap_or("-"),
+        attempt = task.attempt,
+    ),
+)]
+async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
+    scheduler: Arc<S>,
+    registry: Arc<TaskRegistry<S>>,
+    task: scheduler::FetchedTask,
+    immediate_steps: bool,
 ) {
     let start_time = std::time::Instant::now();
     let handler = match registry.get_handler(&task.task_name) {
@@ -261,6 +299,11 @@ async fn dispatch_task<S: Scheduler + 'static>(
         task.lock_token.clone(),
         task.data.clone(),
     );
+
+    // Apply immediate_steps mode if configured.
+    if immediate_steps {
+        ctx = ctx.with_immediate_steps();
+    }
 
     let result = handler.execute(&mut ctx, task.data).await;
 
@@ -437,15 +480,15 @@ mod tests {
         assert!(cfg.max_tasks_per_poll > 0);
         assert!(cfg.max_concurrent_tasks > 0);
         assert!(cfg.shutdown_timeout > Duration::ZERO);
+        assert!(!cfg.immediate_steps); // immediate_steps is disabled by default
     }
 
     #[test]
-    fn worker_has_cancellation_token() {
-        // Just verify the worker can be created with cancellation token
-        // We can't test the actual scheduler without a real implementation
-        let token = CancellationToken::new();
-        assert!(!token.is_cancelled());
-        token.cancel();
-        assert!(token.is_cancelled());
+    fn worker_config_can_enable_immediate_steps() {
+        let cfg = WorkerConfig {
+            immediate_steps: true,
+            ..Default::default()
+        };
+        assert!(cfg.immediate_steps);
     }
 }

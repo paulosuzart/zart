@@ -215,6 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_concurrent_tasks: 4,
         shutdown_timeout: Duration::from_secs(5),
         orphan_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
     let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
     let w = worker.clone();
