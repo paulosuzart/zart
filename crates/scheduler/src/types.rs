@@ -29,6 +29,18 @@ pub struct FetchedTask {
     pub recurrence: Option<Recurrence>,
 }
 
+impl std::fmt::Display for FetchedTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "task={} exec={} attempt={}",
+            self.task_name,
+            self.execution_id.as_deref().unwrap_or("-"),
+            self.attempt,
+        )
+    }
+}
+
 /// The result of successfully scheduling a task.
 #[derive(Debug, Clone)]
 pub struct ScheduleResult {

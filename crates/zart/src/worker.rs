@@ -214,7 +214,16 @@ impl<S: Scheduler + 'static> Worker<S> {
 }
 
 /// Dispatch a single fetched task to its registered handler and persist the result.
-#[instrument(name = "task.dispatch", skip(scheduler, registry), fields(task_id = %task.task_id, task_name = %task.task_name))]
+#[instrument(
+    name = "task.dispatch",
+    skip(scheduler, registry, task),
+    fields(
+        task_id = %task.task_id,
+        task_name = %task.task_name,
+        execution_id = task.execution_id.as_deref().unwrap_or("-"),
+        attempt = task.attempt,
+    ),
+)]
 async fn dispatch_task<S: Scheduler + 'static>(
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
@@ -224,7 +233,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
         None => {
-            warn!(task_id = %task.task_id, task_name = %task.task_name, "No handler registered");
+            warn!("No handler registered for task");
             let _ = scheduler
                 .mark_failed(
                     &task.task_id,
@@ -265,11 +274,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
     if has_execution {
         match ctx.scheduler.get_execution(&execution_id).await {
             Ok(Some(exec)) if exec.status == scheduler::ExecutionStatus::Cancelled => {
-                info!(
-                    task_id = %task.task_id,
-                    execution_id = %execution_id,
-                    "Execution was cancelled while task was running; discarding result",
-                );
+                info!("Execution cancelled while task was running; discarding result");
                 let _ = ctx
                     .scheduler
                     .mark_failed(&task.task_id, "execution cancelled", None, &ctx.lock_token)
@@ -278,12 +283,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
             }
             Ok(_) => {} // Not cancelled, proceed normally.
             Err(e) => {
-                // Fail-safe: log and proceed; worst case we complete a cancelled execution.
-                error!(
-                    execution_id = %execution_id,
-                    error = %e,
-                    "Failed to check execution status after handler; proceeding"
-                );
+                error!(error = %e, "Failed to check execution status after handler; proceeding");
             }
         }
     }
@@ -294,14 +294,14 @@ async fn dispatch_task<S: Scheduler + 'static>(
             TASK_DURATION_SECONDS
                 .with_label_values(&[&task.task_name, "completed"])
                 .observe(duration);
-            info!(task_id = %task.task_id, "Task completed successfully");
+            info!("Task completed successfully");
             TASKS_TOTAL.with_label_values(&["completed"]).inc();
             if let Err(e) = ctx
                 .scheduler
                 .mark_completed(&task.task_id, Some(result.clone()), &ctx.lock_token)
                 .await
             {
-                error!(task_id = %task.task_id, error = %e, "Failed to mark task completed");
+                error!(error = %e, "Failed to mark task completed");
                 return;
             }
 
@@ -325,27 +325,24 @@ async fn dispatch_task<S: Scheduler + 'static>(
                         .await
                     {
                         error!(
-                            task_id = %task.task_id,
                             next_task_id = %new_task_id,
                             error = %e,
                             "Failed to schedule next recurring occurrence"
                         );
                     } else {
                         info!(
-                            task_id = %task.task_id,
                             next_task_id = %new_task_id,
-                            next_time = %next_time,
                             "Scheduled next recurring occurrence"
                         );
                     }
                 } else {
-                    warn!(task_id = %task.task_id, "Recurring task has no next occurrence");
+                    warn!("Recurring task has no next occurrence");
                 }
             }
 
             if has_execution {
                 let _ = ctx.scheduler.complete_execution(&execution_id, result).await
-                    .map_err(|e| error!(execution_id = %execution_id, error = %e, "Failed to complete execution record"));
+                    .map_err(|e| error!(error = %e, "Failed to complete execution record"));
             }
         }
 
@@ -361,15 +358,13 @@ async fn dispatch_task<S: Scheduler + 'static>(
         }) => {
             let exec_time = next_execution.unwrap_or_else(chrono::Utc::now);
             info!(
-                task_id = %task.task_id,
                 step = %step,
-                next_execution = %exec_time,
                 "Step scheduled — persisting state and re-queuing",
             );
             let state_json = match serde_json::to_value(&ctx.state) {
                 Ok(v) => v,
                 Err(e) => {
-                    error!(task_id = %task.task_id, error = %e, "Failed to serialize execution state");
+                    error!(error = %e, "Failed to serialize execution state");
                     return;
                 }
             };
@@ -378,7 +373,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
                 .update_task_state(&task.task_id, state_json, exec_time, &ctx.lock_token)
                 .await
             {
-                error!(task_id = %task.task_id, error = %e, "Failed to update task state");
+                error!(error = %e, "Failed to update task state");
             }
         }
 
@@ -391,15 +386,11 @@ async fn dispatch_task<S: Scheduler + 'static>(
         }) => {
             // Park 24 h in the future; offer_event will wake it up earlier.
             let exec_time = chrono::Utc::now() + chrono::Duration::hours(24);
-            info!(
-                task_id = %task.task_id,
-                event = %event,
-                "Step waiting for event — parking task",
-            );
+            info!(event = %event, "Step waiting for event — parking task");
             let state_json = match serde_json::to_value(&ctx.state) {
                 Ok(v) => v,
                 Err(e) => {
-                    error!(task_id = %task.task_id, error = %e, "Failed to serialize execution state");
+                    error!(error = %e, "Failed to serialize execution state");
                     return;
                 }
             };
@@ -408,7 +399,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
                 .update_task_state(&task.task_id, state_json, exec_time, &ctx.lock_token)
                 .await
             {
-                error!(task_id = %task.task_id, error = %e, "Failed to park task for event wait");
+                error!(error = %e, "Failed to park task for event wait");
             }
         }
 
@@ -417,19 +408,19 @@ async fn dispatch_task<S: Scheduler + 'static>(
             TASK_DURATION_SECONDS
                 .with_label_values(&[&task.task_name, "failed"])
                 .observe(duration);
-            error!(task_id = %task.task_id, error = %err, "Task failed");
+            error!(error = %err, "Task failed");
             TASKS_TOTAL.with_label_values(&["failed"]).inc();
             if let Err(e) = ctx
                 .scheduler
                 .mark_failed(&task.task_id, &err.to_string(), None, &ctx.lock_token)
                 .await
             {
-                error!(task_id = %task.task_id, error = %e, "Failed to mark task failed");
+                error!(error = %e, "Failed to mark task failed");
                 return;
             }
             if has_execution {
                 let _ = ctx.scheduler.fail_execution(&execution_id).await
-                    .map_err(|e| error!(execution_id = %execution_id, error = %e, "Failed to fail execution record"));
+                    .map_err(|e| error!(error = %e, "Failed to fail execution record"));
             }
         }
     }
