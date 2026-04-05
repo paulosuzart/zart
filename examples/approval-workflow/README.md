@@ -7,15 +7,13 @@ Demonstrates a **human-in-the-loop durable execution** that pauses for an extern
 - **`wait_for_event`** — suspends execution until an external event is delivered
 - **Event delivery via `offer_event`** — resumes the waiting execution with a typed payload
 - **Sequential steps** — steps before and after the event wait, passing data between them
-- **External API calls** — uses the Zippopotamus and Open Brewery DB APIs
-- **Result file output** — writes the approval decision and brewery data to a temp file
 
 ## Flow
 
-1. **Fetch location data** — calls the Zippopotamus API to look up a ZIP code
-2. **Wait for approval** — pauses execution until a manager approves (simulated via `offer_event`)
-3. **On approval** — queries the Open Brewery DB for breweries in the area and writes a "recommendations" file
-4. **On rejection** — writes a rejection notice to a temp file
+1. **Validate request** — a fake step that checks the approval request
+2. **Wait for manager approval** — pauses execution until an approval event is delivered
+3. **On approval** — processes the request and returns a result
+4. **On rejection** — returns a rejection notice
 
 ## Running
 
@@ -37,15 +35,14 @@ The example simulates the approval by delivering the event after a short delay (
 ```
 === Zart Approval Workflow Example ===
 
-Starting execution 'approval-demo-1'...
+Starting execution 'approval-demo-...'...
 Worker started. Execution will wait for approval...
 Execution is waiting for manager approval...
 Delivering approval event...
-Approval received! Fetching brewery recommendations...
+Approval received! Processing approved request...
 Execution completed!
 Decision: approved
-Breweries found: 5
-Report written to: /tmp/zart-approval-XXXXXX.txt
+Reviewer: Manager Carol
 ```
 
 ## Key Concept: `wait_for_event`

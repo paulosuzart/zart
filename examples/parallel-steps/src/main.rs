@@ -1,11 +1,10 @@
 //! Parallel Steps Example
 //!
 //! Demonstrates parallel step execution using schedule_step + wait_all:
-//! 1. Look up 3 ZIP codes in parallel via Zippopotamus API
-//! 2. Search breweries for each city in parallel via Open Brewery DB
-//! 3. Aggregate all results into a consolidated report file
+//! 1. Schedule 3 independent simulated health checks
+//! 2. Aggregate results into a summary
 //!
-//! Features: schedule_step, wait_all, external APIs, aggregated file output.
+//! Features: schedule_step, wait_all, structured output.
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
@@ -15,172 +14,90 @@ use std::time::Duration;
 use zart::prelude::*;
 use zart::registry::TaskHandler;
 use zart::context::TaskContext;
-use zart::error::{StepError, TaskError};
+use zart::error::TaskError;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ParallelInput {
-    zip_codes: Vec<String>,
+struct HealthCheckInput {
+    services: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CityBreweries {
-    city: String,
-    state: String,
-    breweries: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ParallelOutput {
-    cities_processed: usize,
-    total_breweries: usize,
-    city_details: Vec<CityBreweries>,
-}
-
-// ── API response types ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ZipInfo {
-    #[serde(rename = "place name")]
-    place_name: String,
-    state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Brewery {
+struct ServiceResult {
     name: String,
+    status: String,
+    response_ms: u64,
+    issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HealthCheckOutput {
+    services_checked: usize,
+    total_issues: usize,
+    results: Vec<ServiceResult>,
 }
 
 // ── Task handler ──────────────────────────────────────────────────────────────
 
-struct ParallelTask;
+struct HealthCheckTask;
 
 #[async_trait]
-impl TaskHandler for ParallelTask {
-    type Data = ParallelInput;
-    type Output = ParallelOutput;
+impl TaskHandler for HealthCheckTask {
+    type Data = HealthCheckInput;
+    type Output = HealthCheckOutput;
 
     async fn run<S: scheduler::Scheduler>(
         &self,
         ctx: &mut TaskContext<S>,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        let client = reqwest::Client::new();
-
-        // ── Phase 1: Look up all ZIP codes in parallel ────────────────────────
-        // Pre-build the list of (index, zip) pairs so we don't borrow from `data`.
-        let zip_pairs: Vec<(usize, String)> = data
-            .zip_codes
-            .iter()
-            .enumerate()
-            .map(|(i, z)| (i, z.clone()))
-            .collect();
-
-        let mut zip_handles = vec![];
-        for (i, zip) in zip_pairs {
-            let handle = ctx.schedule_step(&format!("lookup-zip-{i}"), {
-                let client = client.clone();
+        // Schedule parallel health checks — one per service
+        let mut handles = vec![];
+        for service in &data.services {
+            let handle = ctx.schedule_step(&format!("check-{service}"), {
+                let service = service.clone();
                 move || {
-                    let client = client.clone();
-                    let zip = zip.clone();
+                    let service = service.clone();
                     async move {
-                        let resp = client
-                            .get(format!("https://api.zippopotam.us/us/{zip}"))
-                            .send()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: format!("lookup-zip-{zip}"),
-                                reason: e.to_string(),
-                            })?
-                            .json::<ZipInfo>()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: format!("lookup-zip-{zip}"),
-                                reason: format!("parse error: {e}"),
-                            })?;
-                        Ok((zip, resp.place_name, resp.state))
+                        // Simulate a health check with varying latency and status
+                        let (status, response_ms, issues) = match service.as_str() {
+                            "auth-api" => ("healthy".to_string(), 42, vec![]),
+                            "payments" => {
+                                ("degraded".to_string(), 156, vec!["high latency detected".to_string()])
+                            }
+                            "users-db" => ("healthy".to_string(), 28, vec![]),
+                            _ => ("unknown".to_string(), 0, vec!["no check configured".to_string()]),
+                        };
+                        Ok(ServiceResult {
+                            name: service,
+                            status,
+                            response_ms,
+                            issues,
+                        })
                     }
                 }
             });
-            zip_handles.push(handle);
+            handles.push(handle);
         }
 
-        let zip_results = ctx.wait_all(zip_handles).await?;
-        let mut cities = vec![];
-        for result in zip_results {
-            let (zip, city, state) = result.map_err(|e| TaskError::StepFailed {
-                step: "parallel-zip-lookup".to_string(),
+        // Wait for all checks to complete
+        let results = ctx.wait_all(handles).await?;
+        let mut service_results = vec![];
+        for result in results {
+            let svc = result.map_err(|e| TaskError::StepFailed {
+                step: "parallel-health-check".to_string(),
                 source: e,
             })?;
-            println!("  ZIP {zip} → {city}, {state}");
-            cities.push((zip, city, state));
+            service_results.push(svc);
         }
 
-        // ── Phase 2: Fetch breweries for each city in parallel ────────────────
-        // Pre-build the list of (index, city) pairs.
-        let city_pairs: Vec<(usize, String, String)> = cities
-            .iter()
-            .enumerate()
-            .map(|(i, (_zip, city, state))| (i, city.clone(), state.clone()))
-            .collect();
+        let total_issues: usize = service_results.iter().map(|s| s.issues.len()).sum();
 
-        let mut brewery_handles = vec![];
-        let cities_for_closure = cities.clone();
-        for (i, _city, _state) in city_pairs {
-            let handle = ctx.schedule_step(&format!("fetch-breweries-{i}"), {
-                let client = client.clone();
-                let cities = cities_for_closure.clone();
-                move || {
-                    let client = client.clone();
-                    let city = cities[i].1.clone();
-                    async move {
-                        let resp = client
-                            .get("https://api.openbrewerydb.org/v1/breweries")
-                            .query(&[("by_city", &city)])
-                            .send()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: format!("fetch-breweries-{city}"),
-                                reason: e.to_string(),
-                            })?
-                            .json::<Vec<Brewery>>()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: format!("fetch-breweries-{city}"),
-                                reason: format!("parse error: {e}"),
-                            })?;
-                        let brewery_names: Vec<String> =
-                            resp.into_iter().map(|b| b.name).collect();
-                        Ok(brewery_names)
-                    }
-                }
-            });
-            brewery_handles.push(handle);
-        }
-
-        let brewery_results = ctx.wait_all(brewery_handles).await?;
-        let mut city_details = vec![];
-        for (j, result) in brewery_results.into_iter().enumerate() {
-            let breweries = result.map_err(|e| TaskError::StepFailed {
-                step: "parallel-brewery-fetch".to_string(),
-                source: e,
-            })?;
-            let (_zip, city, state) = &cities[j];
-            println!("  {city}, {state}: {} breweries", breweries.len());
-            city_details.push(CityBreweries {
-                city: city.clone(),
-                state: state.clone(),
-                breweries,
-            });
-        }
-
-        let total_breweries: usize = city_details.iter().map(|cd| cd.breweries.len()).sum();
-
-        Ok(ParallelOutput {
-            cities_processed: city_details.len(),
-            total_breweries,
-            city_details,
+        Ok(HealthCheckOutput {
+            services_checked: service_results.len(),
+            total_issues,
+            results: service_results,
         })
     }
 }
@@ -206,23 +123,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sched.run_migrations().await?;
 
     let mut registry = TaskRegistry::new();
-    registry.register("parallel-task", ParallelTask);
+    registry.register("health-check", HealthCheckTask);
     let registry = Arc::new(registry);
 
-    let execution_id = "parallel-demo-1";
+    let execution_id = format!("parallel-demo-{}", uuid::Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone(), registry.clone());
 
-    let input = ParallelInput {
-        zip_codes: vec![
-            "90210".to_string(), // Beverly Hills
-            "10001".to_string(), // New York
-            "60601".to_string(), // Chicago
+    let input = HealthCheckInput {
+        services: vec![
+            "auth-api".to_string(),
+            "payments".to_string(),
+            "users-db".to_string(),
         ],
     };
 
     println!("Starting execution '{execution_id}'...");
-    println!("  ZIP codes: {:?}", input.zip_codes);
-    durable.start_typed(execution_id, "parallel-task", &input).await?;
+    println!("  Services: {:?}", input.services);
+    durable
+        .start_typed(&execution_id, "health-check", &input)
+        .await?;
 
     // Start worker
     let config = zart::WorkerConfig {
@@ -237,31 +156,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _handle = tokio::spawn(async move { w.run().await });
 
     println!("\nWorker started. Steps executing...\n");
-    let record = durable.wait(execution_id, Duration::from_secs(60), None).await?;
+    let record = durable
+        .wait(&execution_id, Duration::from_secs(60), None)
+        .await?;
 
     worker.stop();
 
     match record.status {
         scheduler::ExecutionStatus::Completed => {
-            let output: ParallelOutput = serde_json::from_value(record.result.unwrap())?;
+            let output: HealthCheckOutput = serde_json::from_value(record.result.unwrap())?;
             println!("\nExecution completed!");
-            println!("  Cities processed: {}", output.cities_processed);
-            println!("  Total breweries:  {}", output.total_breweries);
-            for cd in &output.city_details {
+            println!("  Services checked: {}", output.services_checked);
+            println!("  Total issues:     {}", output.total_issues);
+
+            for svc in &output.results {
                 println!(
-                    "  {} ({}) — {} breweries",
-                    cd.city, cd.state, cd.breweries.len(),
+                    "\n  Service: {} — status: {} ({}ms)",
+                    svc.name, svc.status, svc.response_ms,
                 );
-                for (i, name) in cd.breweries.iter().take(5).enumerate() {
-                    println!("    {}. {}", i + 1, name);
-                }
-                if cd.breweries.len() > 5 {
-                    println!("    ... and {} more", cd.breweries.len() - 5);
+                for issue in &svc.issues {
+                    println!("    Issue: {}", issue);
                 }
             }
         }
         _ => {
             eprintln!("Execution ended with status: {:?}", record.status);
+            if let Some(result) = &record.result {
+                eprintln!("Result: {}", result);
+            }
         }
     }
 

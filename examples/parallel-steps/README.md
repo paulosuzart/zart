@@ -1,20 +1,17 @@
 # Parallel Steps Example
 
-Demonstrates **parallel step execution** using `schedule_step` + `wait_all`, where multiple independent API calls run concurrently and their results are aggregated.
+Demonstrates **parallel step execution** using `schedule_step` + `wait_all`, where multiple independent steps are scheduled concurrently and their results are aggregated.
 
 ## Features Used
 
 - **`schedule_step`** — registers steps for parallel execution without waiting
 - **`wait_all`** — collects results from all scheduled steps
 - **Sequential steps after parallel** — uses parallel results in a subsequent sequential step
-- **External API calls** — Zippopotamus API for multiple ZIP codes, Open Brewery DB for city lookups
-- **Aggregated file output** — writes a consolidated report from all parallel results
 
 ## Flow
 
-1. **Parallel ZIP lookups** — schedules 3 simultaneous calls to the Zippopotamus API for different ZIP codes
-2. **Parallel brewery searches** — schedules 3 simultaneous calls to Open Brewery DB for each city found
-3. **Aggregate report** — sequential step that combines all results into a single report file
+1. **Parallel data fetches** — schedules 3 independent simulated data fetches
+2. **Aggregate** — sequential step that combines all results into a summary
 
 ## Running
 
@@ -34,12 +31,17 @@ cargo run -p zart-examples --bin example-parallel-steps
 ```
 === Zart Parallel Steps Example ===
 
-Starting execution 'parallel-demo-1'...
-Worker started. Steps will execute in parallel...
+Starting execution 'parallel-demo-...'...
+Worker started. Steps executing...
+
 Execution completed!
-  ZIP codes processed: 3
-  Total breweries found: 15
-  Report written to: /tmp/zart-parallel-XXXXXX.txt
+  Services checked: 3
+  Total issues:     2
+
+  Service: auth-api — status: healthy (42ms)
+  Service: payments   — status: degraded (156ms)
+    Issue: high latency detected
+  Service: users-db   — status: healthy (28ms)
 ```
 
 ## Key Concept: `schedule_step` + `wait_all`
@@ -63,4 +65,4 @@ let h3 = ctx.schedule_step("step-c", || async { ... });
 let results = ctx.wait_all(vec![h1, h2, h3]).await?;
 ```
 
-Each scheduled step becomes its own task in the scheduler. They execute sequentially within the same worker dispatch (since `wait_all` runs them in order), but the pattern cleanly separates independent work that _could_ be parallelized by future scheduler improvements.
+Each scheduled step becomes its own task in the scheduler. The pattern cleanly separates independent work that _could_ be parallelized by the scheduler.

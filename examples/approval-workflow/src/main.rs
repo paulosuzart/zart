@@ -1,12 +1,12 @@
 //! Approval Workflow Example
 //!
 //! Demonstrates a human-in-the-loop durable execution:
-//! 1. Fetch location data from Zippopotamus API
+//! 1. Validate the approval request (fake step)
 //! 2. Wait for manager approval (via wait_for_event)
-//! 3. On approval: query Open Brewery DB and write recommendations file
-//! 4. On rejection: write rejection notice
+//! 3. On approval: process the request and return a result
+//! 4. On rejection: return a rejection notice
 //!
-//! Features: wait_for_event, offer_event, sequential steps, external APIs, file output.
+//! Features: wait_for_event, offer_event, sequential steps.
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
@@ -17,14 +17,13 @@ use zart::prelude::*;
 use zart::registry::TaskHandler;
 use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
-use zart::retry::RetryConfig;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApprovalRequest {
-    zip_code: String,
     requester_name: String,
+    resource: String,
     reason: String,
 }
 
@@ -39,27 +38,9 @@ struct ApprovalDecision {
 struct ApprovalOutput {
     decision: String,
     requester: String,
-    city: String,
-    state: String,
+    resource: String,
     reviewer: String,
     comment: String,
-    breweries: Vec<String>,
-}
-
-// ── API response types ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ZipInfo {
-    #[serde(rename = "place name")]
-    place_name: String,
-    state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Brewery {
-    name: String,
-    brewery_type: Option<String>,
-    city: Option<String>,
 }
 
 // ── Task handler ──────────────────────────────────────────────────────────────
@@ -76,38 +57,24 @@ impl TaskHandler for ApprovalTask {
         ctx: &mut TaskContext<S>,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        let client = reqwest::Client::new();
-
-        // Step 1: Fetch location data
-        let zip_info: ZipInfo = ctx
-            .step_with_retry(
-                "fetch-location",
-                RetryConfig::exponential(3, Duration::from_secs(1)),
-                || {
-                    let client = client.clone();
-                    let zip = data.zip_code.clone();
-                    async move {
-                        let resp = client
-                            .get(format!("https://api.zippopotam.us/us/{zip}"))
-                            .send()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "fetch-location".to_string(),
-                                reason: e.to_string(),
-                            })?
-                            .json::<ZipInfo>()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "fetch-location".to_string(),
-                                reason: format!("parse error: {e}"),
-                            })?;
-                        Ok(resp)
+        // Step 1: Validate the request (fake step)
+        let _validated = ctx
+            .step("validate-request", || {
+                let request = data.clone();
+                async move {
+                    if request.requester_name.is_empty() {
+                        return Err(StepError::Failed {
+                            step: "validate-request".to_string(),
+                            reason: "requester name is required".to_string(),
+                        });
                     }
-                },
-            )
+                    Ok(format!(
+                        "Validated request from {} for {}",
+                        request.requester_name, request.resource
+                    ))
+                }
+            })
             .await?;
-
-        let city = zip_info.place_name.clone();
 
         // Step 2: Wait for manager approval
         let decision: ApprovalDecision = ctx
@@ -115,38 +82,20 @@ impl TaskHandler for ApprovalTask {
             .await?;
 
         // Step 3: Act on the decision
-        let breweries: Vec<Brewery> = if decision.approved {
-            // Approved: fetch breweries
-            ctx.step_with_retry(
-                "fetch-breweries",
-                RetryConfig::exponential(3, Duration::from_secs(1)),
-                || {
-                    let client = client.clone();
-                    let city = city.clone();
-                    async move {
-                        let resp = client
-                            .get("https://api.openbrewerydb.org/v1/breweries")
-                            .query(&[("by_city", &city)])
-                            .send()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "fetch-breweries".to_string(),
-                                reason: e.to_string(),
-                            })?
-                            .json::<Vec<Brewery>>()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "fetch-breweries".to_string(),
-                                reason: format!("parse error: {e}"),
-                            })?;
-                        Ok(resp)
-                    }
-                },
-            )
-            .await?
-        } else {
-            vec![]
-        };
+        if decision.approved {
+            ctx.step("process-approved", || {
+                let resource = data.resource.clone();
+                let requester = data.requester_name.clone();
+                async move {
+                    // In a real system, this would provision the resource
+                    Ok(format!(
+                        "Provisioned {} for {}",
+                        resource, requester
+                    ))
+                }
+            })
+            .await?;
+        }
 
         Ok(ApprovalOutput {
             decision: if decision.approved {
@@ -155,11 +104,9 @@ impl TaskHandler for ApprovalTask {
                 "rejected".to_string()
             },
             requester: data.requester_name,
-            city,
-            state: zip_info.state,
+            resource: data.resource,
             reviewer: decision.reviewer,
             comment: decision.comment,
-            breweries: breweries.into_iter().map(|b| b.name).collect(),
         })
     }
 }
@@ -188,19 +135,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register("approval-task", ApprovalTask);
     let registry = Arc::new(registry);
 
-    let execution_id = "approval-demo-1";
+    let execution_id = format!("approval-demo-{}", uuid::Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone(), registry.clone());
 
     let request = ApprovalRequest {
-        zip_code: "10001".to_string(), // New York
         requester_name: "Bob".to_string(),
-        reason: "Team outing for brewery visits".to_string(),
+        resource: "staging-environment".to_string(),
+        reason: "Need to test the new deployment pipeline".to_string(),
     };
 
     println!("Starting execution '{execution_id}'...");
     println!("  Requester: {}", request.requester_name);
+    println!("  Resource:  {}", request.resource);
     println!("  Reason:    {}", request.reason);
-    durable.start_typed(execution_id, "approval-task", &request).await?;
+    durable
+        .start_typed(&execution_id, "approval-task", &request)
+        .await?;
 
     // Start worker
     let config = zart::WorkerConfig {
@@ -223,17 +173,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decision = ApprovalDecision {
         approved: true,
         reviewer: "Manager Carol".to_string(),
-        comment: "Looks good — proceed with the outing!".to_string(),
+        comment: "Looks good — proceed!".to_string(),
     };
 
     println!("Delivering approval event...");
     durable
-        .offer_event(execution_id, "manager-approval", serde_json::to_value(&decision)?)
+        .offer_event(
+            &execution_id,
+            "manager-approval",
+            serde_json::to_value(&decision)?,
+        )
         .await?;
 
     // Now wait for the execution to complete
-    println!("Approval received! Fetching brewery recommendations...\n");
-    let record = durable.wait(execution_id, Duration::from_secs(60), None).await?;
+    println!("Approval received! Processing approved request...\n");
+    let record = durable
+        .wait(&execution_id, Duration::from_secs(60), None)
+        .await?;
 
     worker.stop();
 
@@ -241,18 +197,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         scheduler::ExecutionStatus::Completed => {
             let output: ApprovalOutput = serde_json::from_value(record.result.unwrap())?;
             println!("Execution completed!");
-            println!("  Decision:     {}", output.decision);
-            println!("  Requester:    {}", output.requester);
-            println!("  City:         {}, {}", output.city, output.state);
-            println!("  Reviewer:     {}", output.reviewer);
-            println!("  Comment:      {}", output.comment);
-            println!("  Breweries:    {}", output.breweries.len());
-            for (i, name) in output.breweries.iter().enumerate() {
-                println!("    {}. {}", i + 1, name);
-            }
+            println!("  Decision:  {}", output.decision);
+            println!("  Requester: {}", output.requester);
+            println!("  Resource:  {}", output.resource);
+            println!("  Reviewer:  {}", output.reviewer);
+            println!("  Comment:   {}", output.comment);
         }
         _ => {
             eprintln!("Execution ended with status: {:?}", record.status);
+            if let Some(result) = &record.result {
+                eprintln!("Result: {}", result);
+            }
         }
     }
 
