@@ -6,11 +6,15 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use scheduler::{DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
+use scheduler::{
+    DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StepLookup, StorageError,
+    TaskStatus,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use zart::context::{ExecutionState, StepRecord, StepStatus, TaskContext};
+use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::registry::TaskHandler;
 use zart::retry::RetryConfig;
@@ -18,7 +22,27 @@ use zart_macros::{z_durable_loop, z_step, z_step_with_retry, z_wait_event, zart_
 
 // ── Mock scheduler (no-op) ────────────────────────────────────────────────────
 
-struct MockScheduler;
+struct MockScheduler {
+    step_responses: HashMap<(String, String), Option<StepLookup>>,
+}
+
+impl MockScheduler {
+    fn new() -> Self {
+        Self { step_responses: HashMap::new() }
+    }
+
+    fn with_step_completed(mut self, exec_id: &str, step: &str, result: serde_json::Value) -> Self {
+        self.step_responses.insert(
+            (exec_id.to_string(), step.to_string()),
+            Some(StepLookup {
+                task_id: format!("{exec_id}:step:{step}"),
+                status: TaskStatus::Completed,
+                result: Some(result),
+            }),
+        );
+        self
+    }
+}
 
 #[async_trait]
 impl Scheduler for MockScheduler {
@@ -101,12 +125,25 @@ impl Scheduler for MockScheduler {
     }
 }
 
-impl DurableStorage for MockScheduler {}
+#[async_trait]
+impl DurableStorage for MockScheduler {
+    async fn get_step_status(
+        &self,
+        execution_id: &str,
+        step_name: &str,
+    ) -> Result<Option<StepLookup>, StorageError> {
+        Ok(self
+            .step_responses
+            .get(&(execution_id.to_string(), step_name.to_string()))
+            .cloned()
+            .unwrap_or(None))
+    }
+}
 
 /// Construct a fresh TaskContext backed by the MockScheduler.
 fn make_ctx() -> TaskContext<MockScheduler> {
     TaskContext::new(
-        Arc::new(MockScheduler),
+        Arc::new(MockScheduler::new()),
         "test-execution",
         "test-task",
         Default::default(),
@@ -131,29 +168,18 @@ async fn z_step_first_call_returns_scheduled() {
     );
 }
 
-/// After the step is manually marked Completed in state, `z_step!` returns the
-/// cached result without running the closure again.
+/// After the step is completed in the DB, `z_step!` returns the cached result
+/// without running the closure again.
 #[tokio::test]
 async fn z_step_completed_step_returns_cached_result() {
-    let mut state = ExecutionState::default();
-    state.steps.insert(
-        "cached-step".to_string(),
-        StepRecord {
-            status: StepStatus::Completed,
-            result: Some(serde_json::json!(99)),
-            in_task_id: None,
-            retry_attempt: 0,
-            retry_config: None,
-            attempts: vec![],
-            event_deadline: None,
-        },
-    );
+    let mock = MockScheduler::new()
+        .with_step_completed("exec", "cached-step", serde_json::json!(99));
 
     let mut ctx = TaskContext::new(
-        Arc::new(MockScheduler),
+        Arc::new(mock),
         "exec",
         "task",
-        state,
+        Default::default(),
         "token",
         serde_json::Value::Null,
     );

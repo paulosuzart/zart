@@ -210,8 +210,23 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
+        self.step_internal(step_name, None, step_fn).await
+    }
+
+    /// Internal dispatcher for `step` and `step_with_retry`, sharing the same logic.
+    async fn step_internal<T, F, Fut>(
+        &mut self,
+        step_name: &str,
+        retry_config: Option<RetryConfig>,
+        step_fn: F,
+    ) -> Result<T, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, StepError>>,
+    {
         match &self.execution_mode {
-            ExecutionMode::Body { .. } => self.step_body_mode(step_name, step_fn).await,
+            ExecutionMode::Body { .. } => self.step_body_mode(step_name, retry_config, step_fn).await,
             ExecutionMode::Step { target_step, .. } => {
                 let target = target_step.clone();
                 self.step_step_mode(&target, step_name, step_fn).await
@@ -233,6 +248,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
     async fn step_body_mode<T, F, Fut>(
         &mut self,
         step_name: &str,
+        retry_config: Option<RetryConfig>,
         _step_fn: F,
     ) -> Result<T, StepError>
     where
@@ -284,6 +300,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
                     step_name,
                     current_segment + 1,
                     self.data.clone(),
+                    retry_config.as_ref(),
                 )
                 .await
                 .map_err(|e| StepError::Failed {
@@ -317,7 +334,48 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
     {
         if step_name == target {
             // Execute the lambda for this step.
-            let result = step_fn().await?;
+            let lambda_result = step_fn().await;
+            let result = match lambda_result {
+                Ok(v) => v,
+                Err(e) => {
+                    // Check if retry is configured and allowed.
+                    let (retry_config, retry_attempt) = match &self.execution_mode {
+                        ExecutionMode::Step { retry_config, retry_attempt, .. } => {
+                            (retry_config.clone(), *retry_attempt)
+                        }
+                        _ => (None, 0),
+                    };
+
+                    if let Some(rc) = retry_config {
+                        if let Some(delay) = rc.delay_for(retry_attempt + 1) {
+                            let retry_time = chrono::Utc::now()
+                                + chrono::Duration::from_std(delay)
+                                    .unwrap_or(chrono::Duration::zero());
+                            // Reschedule this step task for retry.
+                            if let Err(sched_err) = step_ops::reschedule_step_for_retry(
+                                &*self.scheduler,
+                                &self.task_id,
+                                &e.to_string(),
+                                retry_time,
+                                &self.lock_token,
+                            )
+                            .await
+                            {
+                                return Err(StepError::Failed {
+                                    step: step_name.to_string(),
+                                    reason: format!("failed to schedule retry: {sched_err}"),
+                                });
+                            }
+                            // Signal the worker that this step task managed its own transition.
+                            return Err(StepError::StepExecuted {
+                                step: step_name.to_string(),
+                            });
+                        }
+                    }
+
+                    return Err(e);
+                }
+            };
             let serialized = serde_json::to_value(&result).map_err(|e| StepError::Failed {
                 step: step_name.to_string(),
                 reason: format!("failed to serialize result: {e}"),
@@ -408,13 +466,13 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
 
     /// Execute a named step with a retry policy.
     ///
-    /// In the new execution model, retry configuration is handled by the worker via
-    /// the step task's metadata. This method delegates to [`step`](Self::step) and
-    /// ignores the `retry_config` parameter. It is kept for API compatibility.
+    /// In body mode, embeds the retry config in the step task's metadata so the
+    /// worker can reschedule on failure. In step mode, uses the config from the
+    /// task metadata (already loaded into `execution_mode`) to retry on failure.
     pub async fn step_with_retry<T, F, Fut>(
         &mut self,
         step_name: &str,
-        _retry_config: RetryConfig,
+        retry_config: RetryConfig,
         step_fn: F,
     ) -> Result<T, StepError>
     where
@@ -422,7 +480,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
-        self.step(step_name, step_fn).await
+        self.step_internal(step_name, Some(retry_config), step_fn).await
     }
 
     /// Execute a named step immediately.
@@ -1200,6 +1258,7 @@ mod tests {
             step_type: crate::execution_model::StepKind::Step,
             next_body_segment,
             retry_attempt: 0,
+            retry_config: None,
         })
     }
 
@@ -1420,6 +1479,7 @@ mod tests {
             step_type: crate::execution_model::StepKind::Step,
             next_body_segment: 1,
             retry_attempt: 0,
+            retry_config: None,
         });
 
         let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(0) });
@@ -1484,5 +1544,186 @@ mod tests {
         assert_eq!(meta["execution_id"], "exec-1");
         let diff = (*exec_time - wake_time).num_seconds().abs();
         assert!(diff < 1, "sleep task execution_time must equal the requested wake_time");
+    }
+
+    // ── step_with_retry: new execution model ──────────────────────────────────
+
+    /// Helper: make a step-mode context with a retry config embedded.
+    fn make_step_ctx_with_retry(
+        scheduler: std::sync::Arc<RecordingScheduler>,
+        target: &str,
+        next_body_segment: usize,
+        retry_attempt: usize,
+        retry_config: RetryConfig,
+    ) -> TaskContext<RecordingScheduler> {
+        let task_id = format!("exec-1:step:{target}");
+        TaskContext::new(
+            scheduler,
+            "exec-1",
+            "test-task",
+            ExecutionState::default(),
+            "lock-tok",
+            serde_json::json!({}),
+        )
+        .with_task_id(task_id)
+        .with_execution_mode(ExecutionMode::Step {
+            target_step: target.to_string(),
+            step_type: crate::execution_model::StepKind::Step,
+            next_body_segment,
+            retry_attempt,
+            retry_config: Some(retry_config),
+        })
+    }
+
+    /// In body mode, `step_with_retry` must embed the retry_config in the
+    /// scheduled step task's metadata so the step task can retry on failure.
+    #[tokio::test]
+    async fn body_mode_step_with_retry_embeds_retry_config_in_metadata() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let mut ctx = make_body_ctx(scheduler, 0);
+
+        let config = RetryConfig::fixed(3, Duration::from_secs(5));
+        let result = ctx
+            .step_with_retry("charge-card", config, || async {
+                Ok::<u32, StepError>(99)
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "charge-card"),
+            "step_with_retry in body mode returns Scheduled on first call"
+        );
+
+        let log = calls.lock().unwrap();
+        let inserts: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
+        assert_eq!(inserts.len(), 1, "exactly one task row inserted");
+
+        if let Call::ScheduleAt { metadata, .. } = &inserts[0] {
+            assert!(
+                metadata.get("retry_config").is_some(),
+                "retry_config must be present in step task metadata"
+            );
+            let embedded: RetryConfig =
+                serde_json::from_value(metadata["retry_config"].clone()).unwrap();
+            assert_eq!(embedded.max_attempts, 3);
+        }
+    }
+
+    /// When the step lambda fails and retries remain, `step_step_mode` must call
+    /// `mark_failed` with a future execution time (the retry delay) and return
+    /// `StepExecuted` so the worker does not also call `mark_failed`.
+    #[tokio::test]
+    async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_failed() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        // retry_attempt=0 means this is the first attempt; 3 retries are allowed.
+        let mut ctx = make_step_ctx_with_retry(
+            scheduler,
+            "charge-card",
+            1,
+            0,
+            RetryConfig::fixed(3, Duration::from_secs(10)),
+        );
+
+        let result = ctx
+            .step("charge-card", || async {
+                Err::<u32, _>(StepError::Failed {
+                    step: "charge-card".to_string(),
+                    reason: "card declined".to_string(),
+                })
+            })
+            .await;
+
+        // Worker receives StepExecuted — it does nothing further (no double mark_failed).
+        assert!(
+            matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
+            "must return StepExecuted so the worker skips its own mark_failed"
+        );
+
+        let log = calls.lock().unwrap();
+        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
+        assert_eq!(failures.len(), 1, "exactly one mark_failed call for the retry");
+
+        if let Call::MarkFailed { task_id, next_execution_time, .. } = &failures[0] {
+            assert_eq!(task_id, "exec-1:step:charge-card");
+            assert!(
+                next_execution_time.is_some(),
+                "retry must carry a future execution_time for the delay"
+            );
+            let delay_secs = (*next_execution_time.as_ref().unwrap() - chrono::Utc::now())
+                .num_seconds();
+            assert!(delay_secs > 0, "retry must be in the future");
+        }
+    }
+
+    /// When all retries are exhausted the original error propagates and
+    /// `mark_failed` is NOT called (the worker handles task failure itself).
+    #[tokio::test]
+    async fn step_mode_failure_with_retries_exhausted_propagates_error() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        // retry_attempt=3 means 3 retries have already happened; max is 3.
+        let mut ctx = make_step_ctx_with_retry(
+            scheduler,
+            "charge-card",
+            1,
+            3,
+            RetryConfig::fixed(3, Duration::from_secs(10)),
+        );
+
+        let result = ctx
+            .step("charge-card", || async {
+                Err::<u32, _>(StepError::Failed {
+                    step: "charge-card".to_string(),
+                    reason: "still declining".to_string(),
+                })
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(StepError::Failed { .. })),
+            "error must propagate when retries are exhausted"
+        );
+
+        // The worker's generic Err arm calls mark_failed; step_step_mode must NOT.
+        let log = calls.lock().unwrap();
+        assert_eq!(
+            log.iter().filter(|c| c.is_mark_failed()).count(),
+            0,
+            "step_step_mode must not call mark_failed when retries are exhausted"
+        );
+    }
+
+    /// A successful step in step mode must NOT trigger a retry — it must
+    /// complete transactionally and schedule the next body segment as usual.
+    #[tokio::test]
+    async fn step_mode_success_with_retry_config_completes_normally() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let mut ctx = make_step_ctx_with_retry(
+            scheduler,
+            "charge-card",
+            1,
+            0,
+            RetryConfig::fixed(3, Duration::from_secs(10)),
+        );
+
+        let result = ctx
+            .step("charge-card", || async { Ok::<u32, StepError>(42) })
+            .await;
+
+        assert!(
+            matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
+            "successful step must return StepExecuted"
+        );
+
+        let log = calls.lock().unwrap();
+        assert_eq!(
+            log.iter().filter(|c| c.is_mark_failed()).count(),
+            0,
+            "no mark_failed on success"
+        );
+        assert_eq!(
+            log.iter().filter(|c| c.is_complete_and_schedule()).count(),
+            1,
+            "complete_and_schedule called once to commit step and schedule next body"
+        );
     }
 }

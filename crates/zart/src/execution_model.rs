@@ -8,10 +8,11 @@
 //! - **`step`**: The handler function replays to execute a specific step's
 //!   lambda (identified by `target_step`), then completes transactionally.
 
+use crate::retry::RetryConfig;
 use serde::{Deserialize, Serialize};
 
 /// How a task should be dispatched by the worker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionMode {
     /// The main handler body is executing. Steps are scheduled as child task rows.
     /// When the body encounters an unscheduled step it inserts a child row and exits
@@ -34,6 +35,8 @@ pub enum ExecutionMode {
         next_body_segment: usize,
         /// How many times this step task has been retried (0 = first attempt).
         retry_attempt: usize,
+        /// Retry policy for this step (None means no retries).
+        retry_config: Option<RetryConfig>,
     },
 
     /// A coordinator task for `wait_all`. Polls child step tasks; when all complete
@@ -133,11 +136,16 @@ impl ExecutionMode {
                             }
                         };
 
+                        let retry_config = metadata
+                            .get("retry_config")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
                         ExecutionMode::Step {
                             target_step,
                             step_type,
                             next_body_segment,
                             retry_attempt,
+                            retry_config,
                         }
                     }
                 }
@@ -190,15 +198,17 @@ mod tests {
             "segment": 2,
             "retry_attempt": 1,
         });
-        assert_eq!(
-            ExecutionMode::from_metadata(&meta),
+        let mode = ExecutionMode::from_metadata(&meta);
+        assert!(matches!(
+            mode,
             ExecutionMode::Step {
-                target_step: "charge-card".to_string(),
+                ref target_step,
                 step_type: StepKind::Step,
                 next_body_segment: 2,
                 retry_attempt: 1,
-            }
-        );
+                retry_config: None,
+            } if target_step == "charge-card"
+        ));
     }
 
     #[test]

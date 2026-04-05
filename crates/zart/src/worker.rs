@@ -302,6 +302,21 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
     orphan_timeout: Duration,
 ) {
     let exec_mode = ExecutionMode::from_metadata(&task.metadata);
+    // Override retry_attempt with the scheduler's own attempt counter so it
+    // accurately reflects how many times this step has been attempted.
+    // task.attempt is 1-indexed; retry_attempt is 0-indexed.
+    let exec_mode = match exec_mode {
+        ExecutionMode::Step { target_step, step_type, next_body_segment, retry_config, .. } => {
+            ExecutionMode::Step {
+                target_step,
+                step_type,
+                next_body_segment,
+                retry_attempt: task.attempt.saturating_sub(1),
+                retry_config,
+            }
+        }
+        other => other,
+    };
 
     // ── Coordinator tasks (wait_all) ─────────────────────────────────────────
     // These don't dispatch to a handler. They poll children and schedule the
@@ -780,6 +795,7 @@ mod tests {
             step_type: crate::execution_model::StepKind::Sleep,
             next_body_segment: 4,
             retry_attempt: 0,
+            retry_config: None,
         };
 
         let task = make_fetched_task(

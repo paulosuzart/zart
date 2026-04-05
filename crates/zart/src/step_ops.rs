@@ -19,17 +19,40 @@ pub async fn schedule_step_task<S: Scheduler>(
     step_name: &str,
     next_body_segment: usize,
     data: serde_json::Value,
+    retry_config: Option<&crate::retry::RetryConfig>,
 ) -> Result<ScheduleResult, StorageError> {
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "mode": "step",
         "step_type": "step",
         "execution_id": execution_id,
         "step_name": step_name,
         "segment": next_body_segment,
+        "retry_attempt": 0,
     });
+    if let Some(rc) = retry_config {
+        metadata["retry_config"] = serde_json::to_value(rc)
+            .unwrap_or(serde_json::Value::Null);
+    }
     scheduler
         .schedule_at(task_id, task_name, Utc::now(), data, None, Some(execution_id), metadata)
         .await
+}
+
+/// Reschedule a failed step task for retry after a delay.
+///
+/// Marks the step task as failed with a future execution time so the worker
+/// will pick it up again after the retry delay. The scheduler's built-in
+/// `task.attempt` counter increments on each pickup and is used to track
+/// the retry attempt number.
+pub async fn reschedule_step_for_retry<S: Scheduler>(
+    scheduler: &S,
+    step_task_id: &str,
+    error: &str,
+    retry_time: chrono::DateTime<chrono::Utc>,
+    lock_token: &str,
+) -> Result<(), StorageError> {
+    scheduler.mark_failed(step_task_id, error, Some(retry_time), lock_token).await?;
+    Ok(())
 }
 
 /// Insert a wait_all child step task.
