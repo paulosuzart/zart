@@ -146,8 +146,15 @@ pub async fn schedule_coordinator<S: Scheduler>(
 
 /// Insert a wait_for_event step task row.
 ///
-/// If `deadline` is `None`, the task is scheduled for the far future (year 9999)
-/// so it effectively never fires unless `offer_event` arrives first.
+/// If `deadline` is `None`, the task is scheduled for `DateTime::MAX_UTC` (year
+/// 262142) so it effectively never fires unless `offer_event` arrives first.
+///
+/// **Trade-off**: using a sentinel far-future timestamp is simpler than a dedicated
+/// `parked` status or a nullable `execution_time`, but it means the scheduler's
+/// `poll_due` query will never return this row under normal conditions. The row is
+/// only completed via `complete_event_step_and_schedule_body`, which bypasses the
+/// `execution_time` check entirely. Operators querying for "scheduled" tasks with
+/// far-future times can identify these as pending event waits.
 pub async fn schedule_wait_for_event_task<S: Scheduler>(
     scheduler: &S,
     task_id: &str,

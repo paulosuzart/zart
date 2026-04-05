@@ -290,10 +290,14 @@ mod integration {
 
         let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
 
-        // Give the worker time to pick up the task and park it waiting for the event.
+        // Give the worker time to pick up the body task. In the new model the body task
+        // schedules a wait_for_event step task (execution_time = deadline) and completes
+        // itself — it does NOT park/block. The step task sits in the DB until offer_event
+        // atomically marks it completed and inserts the next body segment.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // Deliver the event.
+        // Deliver the event: atomically completes the step task + schedules the next body
+        // segment. The worker will then pick up the continuation immediately.
         durable
             .offer_event(
                 &execution_id,

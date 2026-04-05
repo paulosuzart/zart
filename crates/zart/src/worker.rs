@@ -677,6 +677,12 @@ async fn dispatch_sleep_continuation<S: Scheduler + DurableStorage + 'static>(
 ///
 /// The event never arrived before the deadline, so we mark the step task
 /// failed and fail the entire execution.
+///
+/// The two DB calls are sequential, not atomic — consistent with the general
+/// failure path in `dispatch_task`. A crash between the two leaves the
+/// execution in `running` with a failed step task, but the execution is
+/// functionally dead (no active tasks, no pending body segment). Operators
+/// can detect this via the failed step row and manually cancel or reset.
 async fn dispatch_wait_for_event<S: Scheduler + DurableStorage + 'static>(
     scheduler: Arc<S>,
     task: scheduler::FetchedTask,
