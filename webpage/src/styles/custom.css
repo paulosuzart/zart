@@ -72,11 +72,24 @@ pre, code,
 /* ── Inline code ───────────────────────────────────────────── */
 :not(pre) > code {
   font-family: var(--sl-font-mono);
-  font-size: 0.875em;
-  background: var(--sl-color-bg-inline-code, oklch(17% 0.07 285));
-  color: var(--sl-color-accent-high);
+  font-size: 0.85em;
   border-radius: 4px;
   padding: 0.1em 0.4em;
+  border: 1px solid oklch(50% 0.18 285 / 0.18);
+}
+
+/* Light mode: dark text on a faint purple-tinted chip */
+[data-theme='light'] :not(pre) > code {
+  background: oklch(94% 0.03 285);
+  color: oklch(25% 0.10 285);
+  border-color: oklch(50% 0.18 285 / 0.18);
+}
+
+/* Dark mode: near-white text on a dark purple chip */
+[data-theme='dark'] :not(pre) > code {
+  background: oklch(21% 0.09 285);
+  color: oklch(92% 0.04 285);
+  border-color: oklch(55% 0.20 285 / 0.25);
 }
 
 /* ── Sidebar ───────────────────────────────────────────────── */
@@ -117,6 +130,9 @@ table {
   width: 100%;
   margin-block: 1.5rem;
   font-size: 0.9rem;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--sl-color-hairline);
 }
 
 th {
@@ -125,14 +141,30 @@ th {
   font-weight: 600;
   text-align: left;
   padding: 0.6rem 1rem;
-  font-size: 0.8rem;
-  letter-spacing: 0.06em;
+  font-size: 0.78rem;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
 }
 
 td {
   padding: 0.6rem 1rem;
   border-bottom: 1px solid var(--sl-color-hairline);
+  vertical-align: top;
+}
+
+/* alternating rows for scanability */
+[data-theme='dark'] tbody tr:nth-child(even) {
+  background: oklch(12% 0.018 285 / 0.6);
+}
+
+[data-theme='dark'] tbody tr:hover {
+  background: oklch(18% 0.07 285 / 0.6);
+}
+
+/* inline code inside table cells: no-wrap for flag names */
+td code {
+  font-size: 0.82em;
+  white-space: nowrap;
 }
 
 /* ── Badges ────────────────────────────────────────────────── */
