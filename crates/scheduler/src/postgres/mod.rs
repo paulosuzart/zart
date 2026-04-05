@@ -637,4 +637,29 @@ impl Scheduler for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
     }
+
+    async fn renew_lease(
+        &self,
+        task_id: &str,
+        lock_token: &str,
+    ) -> Result<bool, StorageError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET locked_at  = NOW(),
+                updated_at = NOW()
+            WHERE task_id   = $1
+              AND worker_id = $2
+              AND status    = 'picked_up'
+            "#,
+        )
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        Ok(rows_affected > 0)
+    }
 }

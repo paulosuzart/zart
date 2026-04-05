@@ -254,3 +254,57 @@ zart status exec-abc-123 --verbose
 <Aside type="tip">
 Step-level error messages are persisted even for steps that eventually succeed on retry. This gives you a full audit trail of what was attempted and when.
 </Aside>
+
+---
+
+## 10. Task Heartbeats
+
+Long-running steps — LLM agent calls, data pipelines, video processing — can take minutes or even hours. Without heartbeats, Zart's orphan recovery would detect these tasks as "stuck" and reset them back to `scheduled`, causing duplicate execution.
+
+**How it works:**
+
+When a worker picks up a task, it locks the row with `locked_at`. A background heartbeat task runs in parallel with the handler, periodically updating `locked_at` to `NOW()`. When the handler returns (success or failure), the heartbeat is cancelled.
+
+```
+Worker picks up task → locked_at = T
+    ↓
+Heartbeat loop: every 100s → UPDATE locked_at = NOW()
+    ↓ (handler runs for 20 minutes — LLM call, data pipeline, etc.)
+Heartbeat continues renewing...
+    ↓
+Handler returns → heartbeat cancelled → result persisted
+```
+
+**Configuration:**
+
+```rust
+let worker = Worker::new(scheduler, registry, WorkerConfig {
+    orphan_timeout:     Duration::from_secs(300),   // 5 minutes
+    heartbeat_interval: None,                        // auto: orphan_timeout / 3
+    // ...
+});
+```
+
+| Setting | Default | Effect |
+|---|---|---|
+| `heartbeat_interval: None` | `orphan_timeout / 3` | Auto-computed — 2 retries before orphan reclaim |
+| `heartbeat_interval: Some(60s)` | — | Custom 60-second interval |
+| `heartbeat_interval: Some(0)` | — | Heartbeat disabled entirely |
+
+**Failure modes:**
+
+| Scenario | Behavior |
+|---|---|
+| Single heartbeat DB error | Logged, retried on next interval |
+| Persistent DB failure (3+ misses) | Orphan recovery reclaims task; handler result is discarded |
+| Handler panics | Cancellation token fires, heartbeat stops cleanly |
+| Worker graceful shutdown | Cancellation cascades to heartbeat |
+
+**Observability:**
+
+Heartbeat activity is tracked via Prometheus metrics:
+
+- `zart_task_heartbeat_renewals_total` — counter with `success` / `failed` / `not_found` status labels
+- `zart_heartbeat_active` — gauge showing currently running heartbeat loops
+
+**No schema changes required** — the heartbeat only updates the existing `locked_at` column.

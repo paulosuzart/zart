@@ -219,6 +219,22 @@ pub trait Scheduler: Send + Sync {
     ) -> Result<(), StorageError> {
         Ok(())
     }
+
+    /// Extend the lease of a task by updating `locked_at` to the current time.
+    ///
+    /// Returns `true` if the lease was renewed (task exists and lock token matches).
+    /// Returns `false` if the task was not found, the lock token doesn't match,
+    /// or the task is no longer in `picked_up` state.
+    ///
+    /// Used by the worker's background heartbeat loop to prevent orphan recovery
+    /// from reclaiming legitimately long-running tasks.
+    async fn renew_lease(
+        &self,
+        _task_id: &str,
+        _lock_token: &str,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
 }
 
 #[cfg(test)]

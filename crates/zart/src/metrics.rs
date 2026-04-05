@@ -23,6 +23,8 @@ lazy_static! {
         reg.register(Box::new(POLL_INTERVAL_SECONDS.clone())).expect("register POLL_INTERVAL");
         reg.register(Box::new(EXECUTIONS_TOTAL.clone())).expect("register EXECUTIONS_TOTAL");
         reg.register(Box::new(EVENTS_DELIVERED_TOTAL.clone())).expect("register EVENTS_DELIVERED");
+        reg.register(Box::new(TASK_HEARTBEAT_RENEWALS_TOTAL.clone())).expect("register TASK_HEARTBEAT_RENEWALS");
+        reg.register(Box::new(HEARTBEAT_ACTIVE.clone())).expect("register HEARTBEAT_ACTIVE");
         reg
     };
 
@@ -91,6 +93,18 @@ lazy_static! {
         prometheus::opts!("zart_events_delivered_total", "Total number of events delivered"),
         &["event_name", "status"]
     ).expect("Failed to create events_delivered_total metric");
+
+    /// Total number of task lease renewals via heartbeat.
+    pub static ref TASK_HEARTBEAT_RENEWALS_TOTAL: CounterVec = CounterVec::new(
+        prometheus::opts!("zart_task_heartbeat_renewals_total", "Total number of task lease renewals via heartbeat"),
+        &["task_name", "status"]
+    ).expect("Failed to create task_heartbeat_renewals_total metric");
+
+    /// Number of currently active heartbeat loops.
+    pub static ref HEARTBEAT_ACTIVE: prometheus::IntGauge = prometheus::IntGauge::new(
+        "zart_heartbeat_active",
+        "Number of currently active heartbeat loops"
+    ).expect("Failed to create heartbeat_active metric");
 }
 
 /// Register all Zart metrics with the global registry.

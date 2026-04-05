@@ -37,6 +37,7 @@ mod example_tests {
             max_concurrent_tasks: 4,
             shutdown_timeout: Duration::from_secs(5),
             orphan_timeout: Duration::from_secs(30),
+            ..Default::default()
         };
         let worker = Arc::new(Worker::new(scheduler, registry, config));
         let w = worker.clone();

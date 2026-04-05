@@ -3,7 +3,8 @@
 use crate::context::{ExecutionState, TaskContext};
 use crate::error::{StepError, TaskError};
 use crate::metrics::{
-    POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASK_DURATION_SECONDS, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
+    HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASKS_TOTAL, TASK_DURATION_SECONDS,
+    TASK_HEARTBEAT_RENEWALS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
 use crate::registry::TaskRegistry;
 use scheduler::Scheduler;
@@ -44,6 +45,13 @@ pub struct WorkerConfig {
     /// pick up other tasks while a step is executing. If the worker crashes, orphan
     /// recovery will eventually reset the in-flight step.
     pub immediate_steps: bool,
+
+    /// How often to renew the task lease while a handler is executing.
+    ///
+    /// When `None` (the default), the interval is computed as `orphan_timeout / 3`,
+    /// giving 2 retries before orphan recovery would reclaim the task.
+    /// Set to `Some(Duration::ZERO)` to disable heartbeating entirely.
+    pub heartbeat_interval: Option<Duration>,
 }
 
 impl Default for WorkerConfig {
@@ -55,6 +63,7 @@ impl Default for WorkerConfig {
             shutdown_timeout: Duration::from_secs(30),
             orphan_timeout: Duration::from_secs(300),
             immediate_steps: false, // Disabled by default for maximum fault tolerance.
+            heartbeat_interval: None, // Defaults to orphan_timeout / 3.
         }
     }
 }
@@ -198,12 +207,22 @@ impl<S: Scheduler + 'static> Worker<S> {
                 let scheduler = self.scheduler.clone();
                 let registry = self.registry.clone();
                 let immediate_steps = self.config.immediate_steps;
+                let heartbeat_interval = self.config.heartbeat_interval;
+                let orphan_timeout = self.config.orphan_timeout;
 
                 tokio::spawn(
                     async move {
                         let _permit = permit; // released when this task finishes
                         WORKER_CONCURRENT_TASKS.inc();
-                        dispatch_task_with_immediate(scheduler, registry, task, immediate_steps).await;
+                        dispatch_task_with_immediate(
+                            scheduler,
+                            registry,
+                            task,
+                            immediate_steps,
+                            heartbeat_interval,
+                            orphan_timeout,
+                        )
+                        .await;
                         WORKER_CONCURRENT_TASKS.dec();
                     }
                     .in_current_span(),
@@ -227,10 +246,61 @@ impl<S: Scheduler + 'static> Worker<S> {
     }
 }
 
+/// Background heartbeat loop that extends a task's lease until cancelled.
+///
+/// Runs in its own tokio task. Cancels automatically when the
+/// `CancellationToken` is cancelled (i.e., the handler has returned).
+async fn heartbeat_loop<S: Scheduler>(
+    scheduler: Arc<S>,
+    task_id: String,
+    lock_token: String,
+    task_name: String,
+    interval: Duration,
+    cancellation: CancellationToken,
+) {
+    HEARTBEAT_ACTIVE.inc();
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                // Handler returned — heartbeat is no longer needed.
+                break;
+            }
+            _ = tokio::time::sleep(interval) => {
+                match scheduler.renew_lease(&task_id, &lock_token).await {
+                    Ok(true) => {
+                        // Lease renewed successfully.
+                        TASK_HEARTBEAT_RENEWALS_TOTAL
+                            .with_label_values(&[&task_name, "success"])
+                            .inc();
+                    }
+                    Ok(false) => {
+                        // Lease not found or token mismatch — another worker
+                        // has taken over. Stop heartbeating.
+                        warn!(%task_id, "Heartbeat: lease no longer exists, stopping");
+                        TASK_HEARTBEAT_RENEWALS_TOTAL
+                            .with_label_values(&[&task_name, "not_found"])
+                            .inc();
+                        break;
+                    }
+                    Err(e) => {
+                        // Database error — log but continue retrying.
+                        // The next interval may succeed if the DB recovers.
+                        error!(%task_id, error = %e, "Heartbeat: failed to renew lease");
+                        TASK_HEARTBEAT_RENEWALS_TOTAL
+                            .with_label_values(&[&task_name, "failed"])
+                            .inc();
+                    }
+                }
+            }
+        }
+    }
+    HEARTBEAT_ACTIVE.dec();
+}
+
 /// Dispatch a single fetched task to its registered handler and persist the result.
 ///
 /// This is a convenience wrapper that calls [`dispatch_task_with_immediate`] with
-/// `immediate_steps = false`.
+/// `immediate_steps = false` and default heartbeat settings.
 #[allow(dead_code)]
 #[instrument(
     name = "task.dispatch",
@@ -247,7 +317,8 @@ async fn dispatch_task<S: Scheduler + 'static>(
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
 ) {
-    dispatch_task_with_immediate(scheduler, registry, task, false).await
+    dispatch_task_with_immediate(scheduler, registry, task, false, None, Duration::from_secs(300))
+        .await
 }
 
 /// Dispatch a single fetched task with optional immediate step execution.
@@ -266,6 +337,8 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
     immediate_steps: bool,
+    heartbeat_interval: Option<Duration>,
+    orphan_timeout: Duration,
 ) {
     let start_time = std::time::Instant::now();
     let handler = match registry.get_handler(&task.task_name) {
@@ -305,7 +378,39 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
         ctx = ctx.with_immediate_steps();
     }
 
+    // ── Heartbeat setup ──────────────────────────────────────────────────────
+    // Spawn a background task that periodically renews the task's lease to
+    // prevent orphan recovery from reclaiming legitimately long-running tasks.
+    let heartbeat_cancellation = CancellationToken::new();
+    let effective_interval = heartbeat_interval
+        .filter(|d| !d.is_zero())
+        .unwrap_or_else(|| orphan_timeout / 3);
+
+    let heartbeat_handle = tokio::spawn({
+        let scheduler = scheduler.clone();
+        let task_id = task.task_id.clone();
+        let lock_token = task.lock_token.clone();
+        let task_name = task.task_name.clone();
+        let cancellation = heartbeat_cancellation.clone();
+        async move {
+            heartbeat_loop(
+                scheduler,
+                task_id,
+                lock_token,
+                task_name,
+                effective_interval,
+                cancellation,
+            )
+            .await;
+        }
+    });
+
+    // Execute the handler.
     let result = handler.execute(&mut ctx, task.data).await;
+
+    // ── Stop heartbeat — handler has returned ────────────────────────────────
+    heartbeat_cancellation.cancel();
+    let _ = heartbeat_handle.await;
 
     // ── Cancellation guard ────────────────────────────────────────────────────
     // A durable execution can be cancelled while its task is already `picked_up`
@@ -481,6 +586,7 @@ mod tests {
         assert!(cfg.max_concurrent_tasks > 0);
         assert!(cfg.shutdown_timeout > Duration::ZERO);
         assert!(!cfg.immediate_steps); // immediate_steps is disabled by default
+        assert!(cfg.heartbeat_interval.is_none()); // heartbeat uses auto-computed interval
     }
 
     #[test]
@@ -490,5 +596,57 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.immediate_steps);
+    }
+
+    #[test]
+    fn worker_config_heartbeat_interval_defaults_to_none() {
+        let cfg = WorkerConfig::default();
+        assert!(cfg.heartbeat_interval.is_none());
+    }
+
+    #[test]
+    fn worker_config_can_set_custom_heartbeat_interval() {
+        let cfg = WorkerConfig {
+            heartbeat_interval: Some(Duration::from_secs(60)),
+            ..Default::default()
+        };
+        assert_eq!(cfg.heartbeat_interval, Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn worker_config_can_disable_heartbeat_with_zero() {
+        let cfg = WorkerConfig {
+            heartbeat_interval: Some(Duration::ZERO),
+            ..Default::default()
+        };
+        assert_eq!(cfg.heartbeat_interval, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn effective_interval_uses_orphan_timeout_third_when_none() {
+        let orphan_timeout = Duration::from_secs(300); // 5 minutes
+        let heartbeat_interval: Option<Duration> = None;
+        let effective = heartbeat_interval
+            .filter(|d| !d.is_zero())
+            .unwrap_or_else(|| orphan_timeout / 3);
+        assert_eq!(effective, Duration::from_secs(100));
+    }
+
+    #[test]
+    fn effective_interval_uses_custom_when_some() {
+        let orphan_timeout = Duration::from_secs(300);
+        let heartbeat_interval = Some(Duration::from_secs(30));
+        let effective = heartbeat_interval
+            .filter(|d| !d.is_zero())
+            .unwrap_or_else(|| orphan_timeout / 3);
+        assert_eq!(effective, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn effective_interval_disables_when_zero() {
+        let _orphan_timeout = Duration::from_secs(300);
+        let heartbeat_interval = Some(Duration::ZERO);
+        let effective = heartbeat_interval.filter(|d| !d.is_zero());
+        assert!(effective.is_none());
     }
 }
