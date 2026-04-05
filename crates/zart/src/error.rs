@@ -107,6 +107,12 @@ pub enum StepError {
     /// Any other error from user code.
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
+
+    /// **Control-flow** (new execution model): a step task executed its lambda and
+    /// completed transactionally (step marked completed + next body scheduled in one
+    /// DB transaction). The worker should do nothing further for this task.
+    #[error("Step '{step}' executed in step mode (transactional completion done)")]
+    StepExecuted { step: String },
 }
 
 /// Converts a [`StepError`] into a [`TaskError::StepFailed`].
@@ -124,6 +130,7 @@ impl From<StepError> for TaskError {
             StepError::RetryExhausted { step, .. } => step.clone(),
             StepError::Timeout { step, .. } => step.clone(),
             StepError::WaitingForEvent { event } => event.clone(),
+            StepError::StepExecuted { step } => step.clone(),
             StepError::Other(_) => "unknown".to_string(),
         };
         TaskError::StepFailed { step, source: e }

@@ -24,7 +24,7 @@ pub mod postgres;
 
 pub use error::StorageError;
 pub use recurrence::Recurrence;
-pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, TaskStatus};
+pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, StepLookup, TaskStatus};
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresScheduler;
@@ -234,6 +234,151 @@ pub trait Scheduler: Send + Sync {
         _lock_token: &str,
     ) -> Result<bool, StorageError> {
         Ok(false)
+    }
+
+    // ── Execution model: per-step task rows ────────────────────────────────
+
+    /// Look up a step task by `execution_id` + `step_name`.
+    ///
+    /// Returns `None` if no step task for this (execution, step) pair exists yet.
+    async fn get_step_status(
+        &self,
+        _execution_id: &str,
+        _step_name: &str,
+    ) -> Result<Option<StepLookup>, StorageError> {
+        Ok(None)
+    }
+
+    /// Insert a new step task row into `zart_tasks`.
+    ///
+    /// The `task_id` follows the pattern `{execution_id}:step:{step_name}`.
+    /// `next_body_segment` is stored in metadata so the step knows which body
+    /// segment to schedule when it completes.
+    ///
+    /// Uses `ON CONFLICT DO NOTHING` — safe to call multiple times.
+    async fn schedule_step_task(
+        &self,
+        task_id: &str,
+        task_name: &str,
+        execution_id: &str,
+        step_name: &str,
+        next_body_segment: usize,
+        data: serde_json::Value,
+    ) -> Result<ScheduleResult, StorageError> {
+        let _ = (task_id, task_name, execution_id, step_name, next_body_segment, data);
+        Err(StorageError::NotImplemented("schedule_step_task"))
+    }
+
+    /// Insert a wait_all child step task.
+    ///
+    /// Like `schedule_step_task` but marks the step as a wait_all child.
+    /// The completion of wait_all children does NOT trigger body scheduling —
+    /// that is handled by the coordinator task.
+    async fn schedule_wait_all_child(
+        &self,
+        task_id: &str,
+        task_name: &str,
+        execution_id: &str,
+        step_name: &str,
+        coordinator_id: &str,
+        data: serde_json::Value,
+    ) -> Result<ScheduleResult, StorageError> {
+        let _ = (task_id, task_name, execution_id, step_name, coordinator_id, data);
+        Err(StorageError::NotImplemented("schedule_wait_all_child"))
+    }
+
+    /// Atomically complete a step task and schedule the next body segment.
+    ///
+    /// This is the core transactional operation for single-step completion:
+    /// 1. UPDATE step task → `completed` with `result`
+    /// 2. INSERT next body task (segment N) as `scheduled`
+    ///
+    /// If either operation fails, both are rolled back.
+    async fn complete_step_and_schedule_body(
+        &self,
+        step_task_id: &str,
+        result: serde_json::Value,
+        lock_token: &str,
+        next_body_task_id: &str,
+        task_name: &str,
+        execution_id: &str,
+        next_segment: usize,
+        data: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (
+            step_task_id,
+            result,
+            lock_token,
+            next_body_task_id,
+            task_name,
+            execution_id,
+            next_segment,
+            data,
+        );
+        Err(StorageError::NotImplemented("complete_step_and_schedule_body"))
+    }
+
+    /// Complete a wait_all child step without scheduling a body continuation.
+    ///
+    /// The coordinator task is responsible for scheduling the next body once
+    /// all children in the group are done.
+    async fn complete_step_no_resume(
+        &self,
+        step_task_id: &str,
+        result: serde_json::Value,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let _ = (step_task_id, result, lock_token);
+        Err(StorageError::NotImplemented("complete_step_no_resume"))
+    }
+
+    /// Schedule a coordinator task that polls wait_all children.
+    ///
+    /// The coordinator runs in `step` mode with `step_type = wait_all`. When all
+    /// `wait_for` children are completed, it schedules body segment `next_segment`.
+    ///
+    /// Uses `ON CONFLICT DO NOTHING` — safe to call multiple times.
+    async fn schedule_coordinator(
+        &self,
+        coordinator_task_id: &str,
+        task_name: &str,
+        execution_id: &str,
+        next_segment: usize,
+        wait_for: Vec<String>,
+        data: serde_json::Value,
+    ) -> Result<ScheduleResult, StorageError> {
+        let _ = (coordinator_task_id, task_name, execution_id, next_segment, wait_for, data);
+        Err(StorageError::NotImplemented("schedule_coordinator"))
+    }
+
+    /// Check whether all wait_all children are completed.
+    ///
+    /// Returns the `(task_id, result)` pairs for the completed children.
+    /// If the returned `Vec` has fewer entries than `wait_for_task_ids`, some
+    /// children are still pending.
+    async fn check_wait_all_children(
+        &self,
+        wait_for_task_ids: &[String],
+    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        let _ = wait_for_task_ids;
+        Ok(vec![])
+    }
+
+    /// Schedule a sleep continuation task.
+    ///
+    /// The task is inserted with `execution_time = wake_time`. When the worker
+    /// picks it up, it schedules the next body segment.
+    async fn schedule_sleep_task(
+        &self,
+        sleep_task_id: &str,
+        task_name: &str,
+        execution_id: &str,
+        next_segment: usize,
+        wake_time: chrono::DateTime<chrono::Utc>,
+        data: serde_json::Value,
+    ) -> Result<ScheduleResult, StorageError> {
+        let _ = (sleep_task_id, task_name, execution_id, next_segment, wake_time, data);
+        Err(StorageError::NotImplemented("schedule_sleep_task"))
     }
 }
 

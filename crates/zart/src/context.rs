@@ -1,9 +1,10 @@
 //! Task execution context — the interface through which durable step execution is managed.
 
 use crate::error::StepError;
+use crate::execution_model::ExecutionMode;
 use crate::metrics::{STEP_DURATION_SECONDS, STEPS_TOTAL};
 use crate::retry::RetryConfig;
-use scheduler::Scheduler;
+use scheduler::{Scheduler, StepLookup, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -139,6 +140,9 @@ pub struct TaskContext<S: Scheduler> {
     pub(crate) scheduler: Arc<S>,
     /// Unique identifier of the enclosing durable execution.
     execution_id: String,
+    /// The `task_id` of the task currently being executed.
+    /// Differs from `execution_id` for step/body-segment tasks in the new model.
+    pub(crate) task_id: String,
     /// Registered name of the task handler.
     task_name: String,
     /// Mutable in-memory state; written back to the DB on re-schedule.
@@ -150,6 +154,9 @@ pub struct TaskContext<S: Scheduler> {
     /// When true, `step()` behaves like `step_immediate()` — executing steps
     /// in-memory without returning early.
     pub(crate) immediate_steps: bool,
+    /// How this task should behave when executing steps.
+    /// `Legacy` preserves the old in-state JSON model; `Body`/`Step` use per-row tasks.
+    pub(crate) execution_mode: ExecutionMode,
 }
 
 impl<S: Scheduler> TaskContext<S> {
@@ -164,15 +171,31 @@ impl<S: Scheduler> TaskContext<S> {
         lock_token: impl Into<String>,
         data: serde_json::Value,
     ) -> Self {
+        let execution_id = execution_id.into();
+        let task_id = execution_id.clone();
         Self {
             scheduler,
-            execution_id: execution_id.into(),
+            task_id,
+            execution_id,
             task_name: task_name.into(),
             state,
             lock_token: lock_token.into(),
             data,
             immediate_steps: false,
+            execution_mode: ExecutionMode::Legacy,
         }
+    }
+
+    /// Set the execution mode for this context (new execution model).
+    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
+    }
+
+    /// Set the underlying task_id (differs from execution_id in the new model).
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = task_id.into();
+        self
     }
 
     /// Construct a new `TaskContext` with immediate step execution enabled.
@@ -203,11 +226,199 @@ impl<S: Scheduler> TaskContext<S> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
-        if self.immediate_steps {
-            self.step_immediate(step_name, step_fn).await
+        match &self.execution_mode {
+            ExecutionMode::Body { .. } => self.step_body_mode(step_name, step_fn).await,
+            ExecutionMode::Step { target_step, .. } => {
+                let target = target_step.clone();
+                self.step_step_mode(&target, step_name, step_fn).await
+            }
+            // Legacy, Coordinator, or other — fall through to old behaviour.
+            _ => {
+                if self.immediate_steps {
+                    self.step_immediate(step_name, step_fn).await
+                } else {
+                    self.step_with_retry(step_name, RetryConfig::none(), step_fn).await
+                }
+            }
+        }
+    }
+
+    // ── New execution model — body mode ───────────────────────────────────────
+
+    /// `step()` in body mode: look up the step task in the DB.
+    ///
+    /// - Completed → return cached result (no lambda execution).
+    /// - Scheduled/PickedUp → step is in-flight, return `Err(Scheduled)` so body exits.
+    /// - Not found → insert a new step task row, return `Err(Scheduled)`.
+    async fn step_body_mode<T, F, Fut>(
+        &mut self,
+        step_name: &str,
+        _step_fn: F,
+    ) -> Result<T, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, StepError>>,
+    {
+        let lookup = self
+            .scheduler
+            .get_step_status(&self.execution_id, step_name)
+            .await
+            .map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        match lookup {
+            Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
+                serde_json::from_value(json).map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: format!("failed to deserialize cached result: {e}"),
+                })
+            }
+            Some(StepLookup { status: TaskStatus::Completed, result: None, .. }) => {
+                Err(StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: "step completed but result is missing".to_string(),
+                })
+            }
+            Some(_) => {
+                // Scheduled or PickedUp — step task exists, body should exit and wait.
+                Err(StepError::Scheduled {
+                    step: step_name.to_string(),
+                    next_execution: None,
+                })
+            }
+            None => {
+                // First time: insert step task row and exit.
+                let current_segment = match &self.execution_mode {
+                    ExecutionMode::Body { segment } => *segment,
+                    _ => 0,
+                };
+                let task_id = format!("{}:step:{}", self.execution_id, step_name);
+                self.scheduler
+                    .schedule_step_task(
+                        &task_id,
+                        &self.task_name,
+                        &self.execution_id,
+                        step_name,
+                        current_segment + 1,
+                        self.data.clone(),
+                    )
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: e.to_string(),
+                    })?;
+                Err(StepError::Scheduled {
+                    step: step_name.to_string(),
+                    next_execution: None,
+                })
+            }
+        }
+    }
+
+    // ── New execution model — step mode ───────────────────────────────────────
+
+    /// `step()` in step mode: replay the body until the target step is reached.
+    ///
+    /// - Non-target steps → DB lookup, return cached result (must be completed).
+    /// - Target step → execute lambda, complete transactionally, return `Err(StepExecuted)`.
+    async fn step_step_mode<T, F, Fut>(
+        &mut self,
+        target: &str,
+        step_name: &str,
+        step_fn: F,
+    ) -> Result<T, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, StepError>>,
+    {
+        if step_name == target {
+            // Execute the lambda for this step.
+            let result = step_fn().await?;
+            let serialized = serde_json::to_value(&result).map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: format!("failed to serialize result: {e}"),
+            })?;
+
+            let (next_body_segment, is_wait_all_child) = match &self.execution_mode {
+                ExecutionMode::Step { next_body_segment, .. } => {
+                    // Check metadata for wait_all child flag (stored in execution_model module).
+                    let wac = false; // sequential step: never a wait_all child
+                    (*next_body_segment, wac)
+                }
+                _ => (1, false),
+            };
+
+            let step_task_id = self.task_id.clone();
+
+            if is_wait_all_child {
+                self.scheduler
+                    .complete_step_no_resume(&step_task_id, serialized, &self.lock_token)
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: e.to_string(),
+                    })?;
+            } else {
+                let next_body_task_id =
+                    format!("{}-b{}", self.execution_id, next_body_segment);
+                self.scheduler
+                    .complete_step_and_schedule_body(
+                        &step_task_id,
+                        serialized,
+                        &self.lock_token,
+                        &next_body_task_id,
+                        &self.task_name,
+                        &self.execution_id,
+                        next_body_segment,
+                        self.data.clone(),
+                    )
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: e.to_string(),
+                    })?;
+            }
+
+            Err(StepError::StepExecuted {
+                step: step_name.to_string(),
+            })
         } else {
-            self.step_with_retry(step_name, RetryConfig::none(), step_fn)
+            // Non-target: must be a previously completed step; return cached result.
+            let lookup = self
+                .scheduler
+                .get_step_status(&self.execution_id, step_name)
                 .await
+                .map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: e.to_string(),
+                })?;
+
+            match lookup {
+                Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
+                    serde_json::from_value(json).map_err(|e| StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: format!("failed to deserialize cached result: {e}"),
+                    })
+                }
+                Some(StepLookup { status: TaskStatus::Completed, result: None, .. }) => {
+                    Err(StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: "step completed but result is missing".to_string(),
+                    })
+                }
+                _ => {
+                    // Step not yet completed. This shouldn't happen in sequential flow
+                    // but treat as "body must wait".
+                    Err(StepError::Scheduled {
+                        step: step_name.to_string(),
+                        next_execution: None,
+                    })
+                }
+            }
         }
     }
 
@@ -632,46 +843,79 @@ impl<S: Scheduler> TaskContext<S> {
     {
         let step_name_str = step_name.to_string();
 
-        let is_scheduled = match self.state.steps.get(step_name) {
-            None => {
-                // First encounter: register as Scheduled.
-                self.state.steps.insert(
-                    step_name.to_string(),
-                    StepRecord {
-                        status: StepStatus::Scheduled,
-                        result: None,
-                        in_task_id: None,
-                        retry_attempt: 0,
-                        retry_config: None,
-                        attempts: vec![],
-                        event_deadline: None,
-                    },
-                );
-                true
+        match &self.execution_mode {
+            ExecutionMode::Body { .. } | ExecutionMode::Step { .. } => {
+                // New model: schedule_step just returns a handle with the lambda.
+                // Actual scheduling (DB insert) happens in wait_all.
+                // In step mode, only the target step handle carries the lambda.
+                let is_target = matches!(&self.execution_mode,
+                    ExecutionMode::Step { target_step, .. } if target_step == step_name);
+
+                let pending: Option<PendingFn> = if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
+                    let name_for_err = step_name_str.clone();
+                    Some(Box::new(move || {
+                        Box::pin(async move {
+                            let result = step_fn().await?;
+                            serde_json::to_value(result).map_err(|e| StepError::Failed {
+                                step: name_for_err,
+                                reason: format!("serialize error: {e}"),
+                            })
+                        })
+                    }))
+                } else {
+                    // In step mode but not the target: lambda not needed.
+                    None
+                };
+
+                StepHandle {
+                    step_name: step_name_str,
+                    pending,
+                    _marker: std::marker::PhantomData,
+                }
             }
-            Some(record) => record.status == StepStatus::Scheduled,
-        };
 
-        let pending: Option<PendingFn> = if is_scheduled {
-            let name_for_err = step_name_str.clone();
-            Some(Box::new(move || {
-                Box::pin(async move {
-                    let result = step_fn().await?;
-                    serde_json::to_value(result).map_err(|e| StepError::Failed {
-                        step: name_for_err,
-                        reason: format!("serialize error: {e}"),
-                    })
-                })
-            }))
-        } else {
-            // Step is already Completed — no need to run the lambda.
-            None
-        };
+            // Legacy mode: existing in-memory behaviour.
+            _ => {
+                let is_scheduled = match self.state.steps.get(step_name) {
+                    None => {
+                        self.state.steps.insert(
+                            step_name.to_string(),
+                            StepRecord {
+                                status: StepStatus::Scheduled,
+                                result: None,
+                                in_task_id: None,
+                                retry_attempt: 0,
+                                retry_config: None,
+                                attempts: vec![],
+                                event_deadline: None,
+                            },
+                        );
+                        true
+                    }
+                    Some(record) => record.status == StepStatus::Scheduled,
+                };
 
-        StepHandle {
-            step_name: step_name_str,
-            pending,
-            _marker: std::marker::PhantomData,
+                let pending: Option<PendingFn> = if is_scheduled {
+                    let name_for_err = step_name_str.clone();
+                    Some(Box::new(move || {
+                        Box::pin(async move {
+                            let result = step_fn().await?;
+                            serde_json::to_value(result).map_err(|e| StepError::Failed {
+                                step: name_for_err,
+                                reason: format!("serialize error: {e}"),
+                            })
+                        })
+                    }))
+                } else {
+                    None
+                };
+
+                StepHandle {
+                    step_name: step_name_str,
+                    pending,
+                    _marker: std::marker::PhantomData,
+                }
+            }
         }
     }
 
@@ -690,6 +934,17 @@ impl<S: Scheduler> TaskContext<S> {
     where
         T: Serialize + for<'de> Deserialize<'de>,
     {
+        match &self.execution_mode {
+            ExecutionMode::Body { segment } => {
+                return self.wait_all_body_mode(handles, *segment).await;
+            }
+            ExecutionMode::Step { target_step, .. } => {
+                let target = target_step.clone();
+                return self.wait_all_step_mode(handles, &target).await;
+            }
+            _ => {} // fall through to legacy
+        }
+
         let mut results = Vec::with_capacity(handles.len());
 
         for handle in handles {
@@ -797,22 +1052,219 @@ impl<S: Scheduler> TaskContext<S> {
         Ok(results)
     }
 
+    // ── New execution model — wait_all body mode ──────────────────────────────
+
+    /// `wait_all` in body mode:
+    /// 1. Ensure all child step task rows exist (insert if not).
+    /// 2. If all are completed → return cached results.
+    /// 3. Otherwise → schedule coordinator (if not already scheduled), return Err(Scheduled).
+    async fn wait_all_body_mode<T>(
+        &mut self,
+        handles: Vec<StepHandle<T>>,
+        segment: usize,
+    ) -> Result<Vec<Result<T, StepError>>, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+    {
+        let next_segment = segment + 1;
+        let coordinator_id = format!(
+            "{}:coord:wait_all:{}",
+            self.execution_id, next_segment
+        );
+
+        // Extract step names upfront so we don't hold &StepHandle<T> across await points
+        // (PendingFn is Send but not Sync, so &StepHandle<T> is not Send).
+        let step_names: Vec<String> = handles.iter().map(|h| h.step_name.clone()).collect();
+
+        let mut all_completed = true;
+        let mut child_ids: Vec<String> = Vec::with_capacity(step_names.len());
+
+        for step_name in &step_names {
+            let child_task_id = format!("{}:step:{}", self.execution_id, step_name);
+            child_ids.push(child_task_id.clone());
+
+            let lookup = self
+                .scheduler
+                .get_step_status(&self.execution_id, step_name)
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: step_name.clone(),
+                    reason: e.to_string(),
+                })?;
+
+            match lookup {
+                Some(StepLookup { status: TaskStatus::Completed, .. }) => {}
+                Some(_) => {
+                    all_completed = false;
+                }
+                None => {
+                    all_completed = false;
+                    self.scheduler
+                        .schedule_wait_all_child(
+                            &child_task_id,
+                            &self.task_name,
+                            &self.execution_id,
+                            step_name,
+                            &coordinator_id,
+                            self.data.clone(),
+                        )
+                        .await
+                        .map_err(|e| StepError::Failed {
+                            step: step_name.clone(),
+                            reason: e.to_string(),
+                        })?;
+                }
+            }
+        }
+
+        if all_completed {
+            let mut results = Vec::with_capacity(step_names.len());
+            for step_name in &step_names {
+                let lookup = self
+                    .scheduler
+                    .get_step_status(&self.execution_id, step_name)
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.clone(),
+                        reason: e.to_string(),
+                    })?;
+                match lookup {
+                    Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
+                        let val = serde_json::from_value(json).map_err(|e| StepError::Failed {
+                            step: step_name.clone(),
+                            reason: format!("deserialize error: {e}"),
+                        })?;
+                        results.push(Ok(val));
+                    }
+                    _ => {
+                        results.push(Err(StepError::Failed {
+                            step: step_name.clone(),
+                            reason: "step completed but result is missing".to_string(),
+                        }));
+                    }
+                }
+            }
+            return Ok(results);
+        }
+
+        self.scheduler
+            .schedule_coordinator(
+                &coordinator_id,
+                &self.task_name,
+                &self.execution_id,
+                next_segment,
+                child_ids,
+                self.data.clone(),
+            )
+            .await
+            .map_err(|e| StepError::Failed {
+                step: "__wait_all".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        Err(StepError::Scheduled {
+            step: "__wait_all".to_string(),
+            next_execution: None,
+        })
+    }
+
+    // ── New execution model — wait_all step mode ──────────────────────────────
+
+    /// `wait_all` in step mode (executing a specific wait_all child):
+    /// Find the target handle, execute its lambda, complete via `complete_step_no_resume`.
+    async fn wait_all_step_mode<T>(
+        &mut self,
+        handles: Vec<StepHandle<T>>,
+        target: &str,
+    ) -> Result<Vec<Result<T, StepError>>, StepError>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+    {
+        for handle in handles {
+            if handle.step_name == target {
+                if let Some(pending_fn) = handle.pending {
+                    let json_result = pending_fn().await;
+                    match json_result {
+                        Ok(json_val) => {
+                            let step_task_id = self.task_id.clone();
+                            self.scheduler
+                                .complete_step_no_resume(
+                                    &step_task_id,
+                                    json_val,
+                                    &self.lock_token,
+                                )
+                                .await
+                                .map_err(|e| StepError::Failed {
+                                    step: target.to_string(),
+                                    reason: e.to_string(),
+                                })?;
+                            return Err(StepError::StepExecuted {
+                                step: target.to_string(),
+                            });
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                // No pending fn (step already completed): nothing to do.
+                return Err(StepError::StepExecuted {
+                    step: target.to_string(),
+                });
+            }
+        }
+        // Target not found in handles — shouldn't happen in correct usage.
+        Err(StepError::Failed {
+            step: target.to_string(),
+            reason: "target step not found in wait_all handles".to_string(),
+        })
+    }
+
+    // ── Sleep ─────────────────────────────────────────────────────────────���───
+
     /// Suspend execution for `duration`, resuming at `now + duration`.
-    ///
-    /// Implemented as a step named `"__sleep"` to leverage the standard
-    /// step scheduling mechanism.
-    pub async fn sleep(&mut self, _duration: std::time::Duration) -> Result<(), StepError> {
-        // TODO(M2): schedule a wake-up task and return StepError::Scheduled.
-        todo!("Implement in M2")
+    pub async fn sleep(&mut self, duration: std::time::Duration) -> Result<(), StepError> {
+        let wake_time = chrono::Utc::now()
+            + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::zero());
+        self.sleep_until(wake_time).await
     }
 
     /// Suspend execution until `wake_time`.
     pub async fn sleep_until(
         &mut self,
-        _wake_time: chrono::DateTime<chrono::Utc>,
+        wake_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), StepError> {
-        // TODO(M2): schedule a wake-up task and return StepError::Scheduled.
-        todo!("Implement in M2")
+        match &self.execution_mode {
+            ExecutionMode::Body { segment } => {
+                let next_segment = segment + 1;
+                let sleep_task_id =
+                    format!("{}:sleep:{}", self.execution_id, next_segment);
+                self.scheduler
+                    .schedule_sleep_task(
+                        &sleep_task_id,
+                        &self.task_name,
+                        &self.execution_id,
+                        next_segment,
+                        wake_time,
+                        self.data.clone(),
+                    )
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: "__sleep".to_string(),
+                        reason: e.to_string(),
+                    })?;
+                Err(StepError::Scheduled {
+                    step: "__sleep".to_string(),
+                    next_execution: None,
+                })
+            }
+            _ => {
+                // Legacy: no-op sleep (old model had todo!).
+                // In step/coordinator mode sleep tasks are handled by the worker directly.
+                Err(StepError::Scheduled {
+                    step: "__sleep".to_string(),
+                    next_execution: Some(wake_time),
+                })
+            }
+        }
     }
 
     /// Wait for an external event to be delivered to this execution.

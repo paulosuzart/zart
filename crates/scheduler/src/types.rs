@@ -27,6 +27,20 @@ pub struct FetchedTask {
     pub execution_id: Option<String>,
     /// Recurrence configuration, if this is a recurring task.
     pub recurrence: Option<Recurrence>,
+    /// Execution model metadata (mode, segment, step_name, step_type, etc.).
+    /// Empty object `{}` for legacy tasks that predate the new execution model.
+    pub metadata: serde_json::Value,
+}
+
+/// Result of looking up a step task by execution_id + step_name.
+#[derive(Debug, Clone)]
+pub struct StepLookup {
+    /// The task_id of the step row.
+    pub task_id: String,
+    /// Current lifecycle status of the step task.
+    pub status: TaskStatus,
+    /// JSON result stored when the step completed. `None` if not yet complete.
+    pub result: Option<serde_json::Value>,
 }
 
 impl std::fmt::Display for FetchedTask {
@@ -66,6 +80,21 @@ pub enum TaskStatus {
     Dead,
     /// Cancelled before execution.
     Cancelled,
+}
+
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "scheduled" => Ok(Self::Scheduled),
+            "picked_up" => Ok(Self::PickedUp),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "dead" => Ok(Self::Dead),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(format!("unknown task status: {other}")),
+        }
+    }
 }
 
 /// The lifecycle status of a durable execution record in `zart_executions`.

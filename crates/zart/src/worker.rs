@@ -2,6 +2,7 @@
 
 use crate::context::{ExecutionState, TaskContext};
 use crate::error::{StepError, TaskError};
+use crate::execution_model::ExecutionMode;
 use crate::metrics::{
     HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASKS_TOTAL, TASK_DURATION_SECONDS,
     TASK_HEARTBEAT_RENEWALS_TOTAL, WORKER_CONCURRENT_TASKS,
@@ -340,6 +341,27 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
     heartbeat_interval: Option<Duration>,
     orphan_timeout: Duration,
 ) {
+    let exec_mode = ExecutionMode::from_metadata(&task.metadata);
+
+    // ── Coordinator tasks (wait_all) ─────────────────────────────────────────
+    // These don't dispatch to a handler. They poll children and schedule the
+    // next body segment when all children are done.
+    if let ExecutionMode::Coordinator { ref wait_for, next_segment } = exec_mode {
+        dispatch_coordinator(scheduler, task, wait_for.clone(), next_segment).await;
+        return;
+    }
+
+    // ── Sleep continuation tasks ─────────────────────────────────────────────
+    // Step tasks with step_type=sleep just wake the next body segment.
+    if matches!(
+        exec_mode,
+        ExecutionMode::Step { ref step_type, .. }
+        if *step_type == crate::execution_model::StepKind::Sleep
+    ) {
+        dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
+        return;
+    }
+
     let start_time = std::time::Instant::now();
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
@@ -371,16 +393,16 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
         state,
         task.lock_token.clone(),
         task.data.clone(),
-    );
+    )
+    .with_task_id(task.task_id.clone())
+    .with_execution_mode(exec_mode.clone());
 
-    // Apply immediate_steps mode if configured.
-    if immediate_steps {
+    // Apply immediate_steps mode if configured (only relevant for legacy tasks).
+    if immediate_steps && exec_mode == ExecutionMode::Legacy {
         ctx = ctx.with_immediate_steps();
     }
 
     // ── Heartbeat setup ──────────────────────────────────────────────────────
-    // Spawn a background task that periodically renews the task's lease to
-    // prevent orphan recovery from reclaiming legitimately long-running tasks.
     let heartbeat_cancellation = CancellationToken::new();
     let effective_interval = heartbeat_interval
         .filter(|d| !d.is_zero())
@@ -413,12 +435,6 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
     let _ = heartbeat_handle.await;
 
     // ── Cancellation guard ────────────────────────────────────────────────────
-    // A durable execution can be cancelled while its task is already `picked_up`
-    // (cancel_execution only touches `scheduled` rows). We must check here —
-    // BEFORE persisting any result — so that we don't:
-    //   • overwrite the `cancelled` execution status with `completed` or `failed`
-    //   • re-queue the task via update_task_state (StepError::Scheduled path),
-    //     which would set it back to `scheduled` and cause infinite re-runs.
     if has_execution {
         match ctx.scheduler.get_execution(&execution_id).await {
             Ok(Some(exec)) if exec.status == scheduler::ExecutionStatus::Cancelled => {
@@ -429,7 +445,7 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
                     .await;
                 return;
             }
-            Ok(_) => {} // Not cancelled, proceed normally.
+            Ok(_) => {}
             Err(e) => {
                 error!(error = %e, "Failed to check execution status after handler; proceeding");
             }
@@ -458,7 +474,6 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
                 let now = chrono::Utc::now();
                 if let Some(next_time) = recurrence.next_after(now) {
                     let new_task_id = Uuid::new_v4().to_string();
-                    // Use the data stored in the context (same value, not moved).
                     let task_data = ctx.data().clone();
                     if let Err(e) = ctx
                         .scheduler
@@ -494,8 +509,42 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
             }
         }
 
-        // Control-flow: a step was just scheduled (first time) or a retry is pending.
-        // Persist the updated state and re-queue at `next_execution` (or immediately).
+        // ── New model: step executed in step mode — transactional completion done ──
+        // Both the step completion and the next body scheduling were done atomically
+        // inside `step()`. The worker just needs to "release" the task (it's already
+        // marked completed in the DB, but we still hold the in-memory lock token).
+        // Calling mark_completed again is a no-op due to the lock_token check failing
+        // gracefully, so we can safely skip it.
+        Err(TaskError::StepFailed {
+            source: StepError::StepExecuted { ref step },
+            ..
+        }) => {
+            info!(step = %step, "Step executed in step mode — completion was transactional");
+            TASKS_TOTAL.with_label_values(&["completed"]).inc();
+            // The step task is already completed in DB. No further action.
+        }
+
+        // ── New model (body): step was scheduled — body task is done ─────────────
+        // In the new model, when a body task schedules a child step and exits,
+        // the body task itself is complete (it won't be re-entered).
+        Err(TaskError::StepFailed {
+            source: StepError::Scheduled { ref step, ref next_execution },
+            ..
+        }) if exec_mode.is_new_model() => {
+            info!(step = %step, "Body step scheduled — marking body task complete");
+            TASKS_TOTAL.with_label_values(&["completed"]).inc();
+            if let Err(e) = ctx
+                .scheduler
+                .mark_completed(&task.task_id, None, &ctx.lock_token)
+                .await
+            {
+                error!(error = %e, "Failed to mark body task completed after step scheduling");
+            }
+            let _ = next_execution; // execution_time is on the child step task
+        }
+
+        // ── Legacy model: step was just scheduled or retry pending ────────────────
+        // Persist state and re-queue the same task.
         Err(TaskError::StepFailed {
             source:
                 StepError::Scheduled {
@@ -505,10 +554,7 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
             ..
         }) => {
             let exec_time = next_execution.unwrap_or_else(chrono::Utc::now);
-            info!(
-                step = %step,
-                "Step scheduled — persisting state and re-queuing",
-            );
+            info!(step = %step, "Step scheduled — persisting state and re-queuing");
             let state_json = match serde_json::to_value(&ctx.state) {
                 Ok(v) => v,
                 Err(e) => {
@@ -526,13 +572,10 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
         }
 
         // Control-flow: a step is waiting for an external event.
-        // Persist state with a far-future execution time to avoid busy-looping.
-        // `offer_event` will atomically reset the execution time to NOW().
         Err(TaskError::StepFailed {
             source: StepError::WaitingForEvent { ref event },
             ..
         }) => {
-            // Park 24 h in the future; offer_event will wake it up earlier.
             let exec_time = chrono::Utc::now() + chrono::Duration::hours(24);
             info!(event = %event, "Step waiting for event — parking task");
             let state_json = match serde_json::to_value(&ctx.state) {
@@ -571,6 +614,129 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
                     .map_err(|e| error!(error = %e, "Failed to fail execution record"));
             }
         }
+    }
+}
+
+// ── Coordinator dispatch ────────────────────────────────────────────────────
+
+/// Handle a coordinator task (`step_type = wait_all`).
+///
+/// Polls all child step tasks. If all are completed, schedules the next body
+/// segment and marks the coordinator completed. Otherwise re-queues itself
+/// with a short backoff so it can check again after the next poll cycle.
+async fn dispatch_coordinator<S: Scheduler + 'static>(
+    scheduler: Arc<S>,
+    task: scheduler::FetchedTask,
+    wait_for: Vec<String>,
+    next_segment: usize,
+) {
+    let execution_id = task
+        .execution_id
+        .as_deref()
+        .unwrap_or(&task.task_id)
+        .to_string();
+
+    let completed = match scheduler.check_wait_all_children(&wait_for).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!(error = %e, "Coordinator: failed to check children");
+            let _ = scheduler
+                .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
+                .await;
+            return;
+        }
+    };
+
+    if completed.len() == wait_for.len() {
+        // All done — atomically mark coordinator completed + schedule next body segment.
+        // complete_step_and_schedule_body inserts the body task with correct metadata
+        // ({mode:body, execution_id, segment}) in a single transaction.
+        let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
+        if let Err(e) = scheduler
+            .complete_step_and_schedule_body(
+                &task.task_id,
+                serde_json::Value::Null,
+                &task.lock_token,
+                &next_body_task_id,
+                &task.task_name,
+                &execution_id,
+                next_segment,
+                task.data.clone(),
+            )
+            .await
+        {
+            error!(error = %e, "Coordinator: failed to complete and schedule next body");
+            let _ = scheduler
+                .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
+                .await;
+            return;
+        }
+        info!(next_segment, "Coordinator: all children done, next body scheduled");
+    } else {
+        // Not all done — re-queue with a short backoff.
+        let retry_at = chrono::Utc::now() + chrono::Duration::seconds(5);
+        if let Err(e) = scheduler
+            .mark_failed(&task.task_id, "children not yet complete", Some(retry_at), &task.lock_token)
+            .await
+        {
+            error!(error = %e, "Coordinator: failed to re-queue self");
+        }
+        info!(
+            done = completed.len(),
+            total = wait_for.len(),
+            "Coordinator: waiting for children"
+        );
+    }
+}
+
+// ── Sleep continuation dispatch ─────────────────────────────────────────────
+
+/// Handle a sleep continuation task (`step_type = sleep`).
+///
+/// When the sleep timer fires, schedule the next body segment.
+async fn dispatch_sleep_continuation<S: Scheduler + 'static>(
+    scheduler: Arc<S>,
+    task: scheduler::FetchedTask,
+    exec_mode: &ExecutionMode,
+) {
+    let next_segment = match exec_mode {
+        ExecutionMode::Step { next_body_segment, .. } => *next_body_segment,
+        _ => {
+            error!("Sleep task has unexpected execution mode");
+            let _ = scheduler
+                .mark_failed(&task.task_id, "unexpected mode for sleep task", None, &task.lock_token)
+                .await;
+            return;
+        }
+    };
+
+    let execution_id = task
+        .execution_id
+        .as_deref()
+        .unwrap_or(&task.task_id)
+        .to_string();
+
+    let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
+
+    if let Err(e) = scheduler
+        .complete_step_and_schedule_body(
+            &task.task_id,
+            serde_json::Value::Null,
+            &task.lock_token,
+            &next_body_task_id,
+            &task.task_name,
+            &execution_id,
+            next_segment,
+            task.data.clone(),
+        )
+        .await
+    {
+        error!(error = %e, "Sleep continuation: failed to schedule next body");
+        let _ = scheduler
+            .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
+            .await;
+    } else {
+        info!(next_segment, "Sleep continuation: next body scheduled");
     }
 }
 

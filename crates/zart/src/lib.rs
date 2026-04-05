@@ -43,6 +43,7 @@ pub mod api_trait;
 pub mod context;
 pub mod durable;
 pub mod error;
+pub mod execution_model;
 pub mod logging;
 pub mod metrics;
 pub mod registry;

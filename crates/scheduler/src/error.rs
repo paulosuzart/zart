@@ -24,4 +24,8 @@ pub enum StorageError {
     /// The provided lock token did not match (optimistic lock failure).
     #[error("Lock token mismatch for task {0}")]
     LockMismatch(String),
+
+    /// The operation is not implemented by this backend.
+    #[error("Not implemented: {0}")]
+    NotImplemented(&'static str),
 }
