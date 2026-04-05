@@ -6,7 +6,7 @@
 
 use crate::error::SchedulerError;
 use crate::registry::TaskRegistry;
-use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult, Scheduler};
+use scheduler::{DurableStorage, ExecutionRecord, ExecutionStatus, ScheduleResult, Scheduler};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -20,13 +20,13 @@ const MAX_WAIT_SECS: u64 = 30;
 /// - inserting an execution record in `zart_executions`
 /// - scheduling the root task in `zart_tasks`
 /// - querying and waiting for execution completion
-pub struct DurableScheduler<S: Scheduler> {
+pub struct DurableScheduler<S: Scheduler + DurableStorage> {
     scheduler: Arc<S>,
     #[allow(dead_code)]
     registry: Arc<TaskRegistry<S>>,
 }
 
-impl<S: Scheduler> DurableScheduler<S> {
+impl<S: Scheduler + DurableStorage> DurableScheduler<S> {
     /// Create a new `DurableScheduler`.
     pub fn new(scheduler: Arc<S>, registry: Arc<TaskRegistry<S>>) -> Self {
         Self {

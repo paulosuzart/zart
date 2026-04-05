@@ -229,7 +229,7 @@ fn expand_zart_durable(args: DurableAttr, func: ItemFn) -> SynResult<TokenStream
             type Data = #data_type;
             type Output = #ok_type;
 
-            async fn run<S: ::scheduler::Scheduler>(
+            async fn run<S: ::scheduler::Scheduler + ::scheduler::DurableStorage>(
                 &self,
                 #ctx_pat: &mut ::zart::context::TaskContext<S>,
                 #data_pat: Self::Data,

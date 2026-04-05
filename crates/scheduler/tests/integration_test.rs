@@ -201,6 +201,7 @@ mod postgres_tests {
                 serde_json::json!({}),
                 None,
                 None,
+                serde_json::Value::Null,
             )
             .await
             .expect("schedule_at failed");
@@ -238,6 +239,7 @@ mod postgres_tests {
                 serde_json::json!({}),
                 Some(recurrence),
                 None,
+                serde_json::Value::Null,
             )
             .await
             .expect("schedule_at with recurrence failed");

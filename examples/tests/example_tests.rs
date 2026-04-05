@@ -101,7 +101,7 @@ mod example_tests {
             type Data = FinderInput;
             type Output = FinderOutput;
 
-            async fn run<S: scheduler::Scheduler>(
+            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
                 &self,
                 ctx: &mut zart::context::TaskContext<S>,
                 data: Self::Data,
@@ -281,7 +281,7 @@ mod example_tests {
             type Data = ApprovalRequest;
             type Output = ApprovalOutput;
 
-            async fn run<S: scheduler::Scheduler>(
+            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
                 &self,
                 ctx: &mut zart::context::TaskContext<S>,
                 data: Self::Data,
@@ -411,7 +411,7 @@ mod example_tests {
             type Data = ParallelInput;
             type Output = ParallelOutput;
 
-            async fn run<S: scheduler::Scheduler>(
+            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
                 &self,
                 ctx: &mut zart::context::TaskContext<S>,
                 data: Self::Data,

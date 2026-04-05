@@ -52,7 +52,7 @@ impl TaskHandler for ApprovalTask {
     type Data = ApprovalRequest;
     type Output = ApprovalOutput;
 
-    async fn run<S: scheduler::Scheduler>(
+    async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
         &self,
         ctx: &mut TaskContext<S>,
         data: Self::Data,

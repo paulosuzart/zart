@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use scheduler::{FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
+use scheduler::{DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +43,7 @@ impl Scheduler for MockScheduler {
         _data: serde_json::Value,
         _recurrence: Option<Recurrence>,
         _execution_id: Option<&str>,
+        _metadata: serde_json::Value,
     ) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
             task_id: task_id.to_string(),
@@ -99,6 +100,8 @@ impl Scheduler for MockScheduler {
         Ok(())
     }
 }
+
+impl DurableStorage for MockScheduler {}
 
 /// Construct a fresh TaskContext backed by the MockScheduler.
 fn make_ctx() -> TaskContext<MockScheduler> {

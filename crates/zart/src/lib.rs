@@ -20,7 +20,7 @@
 //! ```rust,no_run
 //! use zart::prelude::*;
 //! use async_trait::async_trait;
-//! use scheduler::Scheduler;
+//! use scheduler::{DurableStorage, Scheduler};
 //!
 //! struct MyTask;
 //!
@@ -29,7 +29,7 @@
 //!     type Data = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
-//!     async fn run<S: Scheduler>(
+//!     async fn run<S: Scheduler + DurableStorage>(
 //!         &self,
 //!         _ctx: &mut TaskContext<S>,
 //!         data: Self::Data,
@@ -48,6 +48,7 @@ pub mod logging;
 pub mod metrics;
 pub mod registry;
 pub mod retry;
+pub mod step_ops;
 pub mod worker;
 
 pub use api_trait::{DurableApi, into_durable_api};
@@ -72,5 +73,5 @@ pub mod prelude {
         retry::RetryConfig,
         worker::{Worker, WorkerConfig},
     };
-    pub use scheduler::{ExecutionRecord, ExecutionStatus, Scheduler};
+    pub use scheduler::{DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler};
 }

@@ -71,7 +71,7 @@ struct BreweryRaw {
 
 #[zart_durable("brewery-finder", timeout = "5m")]
 async fn brewery_finder(
-    ctx: &mut TaskContext<impl scheduler::Scheduler>,
+    ctx: &mut TaskContext<impl scheduler::Scheduler + scheduler::DurableStorage>,
     data: FinderInput,
 ) -> Result<FinderOutput, TaskError> {
     let client = reqwest::Client::new();

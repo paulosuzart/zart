@@ -8,7 +8,7 @@ use crate::metrics::{
     TASK_HEARTBEAT_RENEWALS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
 use crate::registry::TaskRegistry;
-use scheduler::Scheduler;
+use scheduler::{DurableStorage, Scheduler};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
@@ -74,7 +74,7 @@ impl Default for WorkerConfig {
 ///
 /// Multiple `Worker` instances can run concurrently (even across processes)
 /// — the database-level skip-lock prevents duplicate task execution.
-pub struct Worker<S: Scheduler> {
+pub struct Worker<S: Scheduler + DurableStorage> {
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
     config: WorkerConfig,
@@ -84,7 +84,7 @@ pub struct Worker<S: Scheduler> {
     cancellation: CancellationToken,
 }
 
-impl<S: Scheduler + 'static> Worker<S> {
+impl<S: Scheduler + DurableStorage + 'static> Worker<S> {
     /// Create a new worker.
     pub fn new(scheduler: Arc<S>, registry: Arc<TaskRegistry<S>>, config: WorkerConfig) -> Self {
         Self {
@@ -251,7 +251,7 @@ impl<S: Scheduler + 'static> Worker<S> {
 ///
 /// Runs in its own tokio task. Cancels automatically when the
 /// `CancellationToken` is cancelled (i.e., the handler has returned).
-async fn heartbeat_loop<S: Scheduler>(
+async fn heartbeat_loop<S: Scheduler + DurableStorage>(
     scheduler: Arc<S>,
     task_id: String,
     lock_token: String,
@@ -313,7 +313,7 @@ async fn heartbeat_loop<S: Scheduler>(
         attempt = task.attempt,
     ),
 )]
-async fn dispatch_task<S: Scheduler + 'static>(
+async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
@@ -333,7 +333,7 @@ async fn dispatch_task<S: Scheduler + 'static>(
         attempt = task.attempt,
     ),
 )]
-async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
+async fn dispatch_task_with_immediate<S: Scheduler + DurableStorage + 'static>(
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
@@ -484,6 +484,7 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
                             task_data,
                             Some(recurrence.clone()),
                             task.execution_id.as_deref(),
+                            serde_json::Value::Null,
                         )
                         .await
                     {
@@ -624,7 +625,7 @@ async fn dispatch_task_with_immediate<S: Scheduler + 'static>(
 /// Polls all child step tasks. If all are completed, schedules the next body
 /// segment and marks the coordinator completed. Otherwise re-queues itself
 /// with a short backoff so it can check again after the next poll cycle.
-async fn dispatch_coordinator<S: Scheduler + 'static>(
+async fn dispatch_coordinator<S: Scheduler + DurableStorage + 'static>(
     scheduler: Arc<S>,
     task: scheduler::FetchedTask,
     wait_for: Vec<String>,
@@ -652,18 +653,18 @@ async fn dispatch_coordinator<S: Scheduler + 'static>(
         // complete_step_and_schedule_body inserts the body task with correct metadata
         // ({mode:body, execution_id, segment}) in a single transaction.
         let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
-        if let Err(e) = scheduler
-            .complete_step_and_schedule_body(
-                &task.task_id,
-                serde_json::Value::Null,
-                &task.lock_token,
-                &next_body_task_id,
-                &task.task_name,
-                &execution_id,
-                next_segment,
-                task.data.clone(),
-            )
-            .await
+        if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
+            &*scheduler,
+            &task.task_id,
+            serde_json::Value::Null,
+            &task.lock_token,
+            &next_body_task_id,
+            &task.task_name,
+            &execution_id,
+            next_segment,
+            task.data.clone(),
+        )
+        .await
         {
             error!(error = %e, "Coordinator: failed to complete and schedule next body");
             let _ = scheduler
@@ -694,7 +695,7 @@ async fn dispatch_coordinator<S: Scheduler + 'static>(
 /// Handle a sleep continuation task (`step_type = sleep`).
 ///
 /// When the sleep timer fires, schedule the next body segment.
-async fn dispatch_sleep_continuation<S: Scheduler + 'static>(
+async fn dispatch_sleep_continuation<S: Scheduler + DurableStorage + 'static>(
     scheduler: Arc<S>,
     task: scheduler::FetchedTask,
     exec_mode: &ExecutionMode,
@@ -718,18 +719,18 @@ async fn dispatch_sleep_continuation<S: Scheduler + 'static>(
 
     let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
 
-    if let Err(e) = scheduler
-        .complete_step_and_schedule_body(
-            &task.task_id,
-            serde_json::Value::Null,
-            &task.lock_token,
-            &next_body_task_id,
-            &task.task_name,
-            &execution_id,
-            next_segment,
-            task.data.clone(),
-        )
-        .await
+    if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
+        &*scheduler,
+        &task.task_id,
+        serde_json::Value::Null,
+        &task.lock_token,
+        &next_body_task_id,
+        &task.task_name,
+        &execution_id,
+        next_segment,
+        task.data.clone(),
+    )
+    .await
     {
         error!(error = %e, "Sleep continuation: failed to schedule next body");
         let _ = scheduler

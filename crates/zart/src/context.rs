@@ -4,7 +4,8 @@ use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
 use crate::metrics::{STEP_DURATION_SECONDS, STEPS_TOTAL};
 use crate::retry::RetryConfig;
-use scheduler::{Scheduler, StepLookup, TaskStatus};
+use crate::step_ops;
+use scheduler::{DurableStorage, Scheduler, StepLookup, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -135,7 +136,7 @@ pub struct ExecutionState {
 ///
 /// The context is generic over the [`Scheduler`] so that the scheduler backend
 /// can be swapped (PostgreSQL, SQLite, in-memory for testing, etc.).
-pub struct TaskContext<S: Scheduler> {
+pub struct TaskContext<S: Scheduler + DurableStorage> {
     /// The underlying scheduler (used to schedule step tasks).
     pub(crate) scheduler: Arc<S>,
     /// Unique identifier of the enclosing durable execution.
@@ -159,7 +160,7 @@ pub struct TaskContext<S: Scheduler> {
     pub(crate) execution_mode: ExecutionMode,
 }
 
-impl<S: Scheduler> TaskContext<S> {
+impl<S: Scheduler + DurableStorage> TaskContext<S> {
     /// Construct a new `TaskContext`.
     ///
     /// Called by the [`Worker`] when it picks up a task.
@@ -296,20 +297,20 @@ impl<S: Scheduler> TaskContext<S> {
                     _ => 0,
                 };
                 let task_id = format!("{}:step:{}", self.execution_id, step_name);
-                self.scheduler
-                    .schedule_step_task(
-                        &task_id,
-                        &self.task_name,
-                        &self.execution_id,
-                        step_name,
-                        current_segment + 1,
-                        self.data.clone(),
-                    )
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: step_name.to_string(),
-                        reason: e.to_string(),
-                    })?;
+                step_ops::schedule_step_task(
+                    &*self.scheduler,
+                    &task_id,
+                    &self.task_name,
+                    &self.execution_id,
+                    step_name,
+                    current_segment + 1,
+                    self.data.clone(),
+                )
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: e.to_string(),
+                })?;
                 Err(StepError::Scheduled {
                     step: step_name.to_string(),
                     next_execution: None,
@@ -355,32 +356,36 @@ impl<S: Scheduler> TaskContext<S> {
             let step_task_id = self.task_id.clone();
 
             if is_wait_all_child {
-                self.scheduler
-                    .complete_step_no_resume(&step_task_id, serialized, &self.lock_token)
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: step_name.to_string(),
-                        reason: e.to_string(),
-                    })?;
+                step_ops::complete_step_no_resume(
+                    &*self.scheduler,
+                    &step_task_id,
+                    serialized,
+                    &self.lock_token,
+                )
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: e.to_string(),
+                })?;
             } else {
                 let next_body_task_id =
                     format!("{}-b{}", self.execution_id, next_body_segment);
-                self.scheduler
-                    .complete_step_and_schedule_body(
-                        &step_task_id,
-                        serialized,
-                        &self.lock_token,
-                        &next_body_task_id,
-                        &self.task_name,
-                        &self.execution_id,
-                        next_body_segment,
-                        self.data.clone(),
-                    )
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: step_name.to_string(),
-                        reason: e.to_string(),
-                    })?;
+                step_ops::complete_step_and_schedule_body(
+                    &*self.scheduler,
+                    &step_task_id,
+                    serialized,
+                    &self.lock_token,
+                    &next_body_task_id,
+                    &self.task_name,
+                    &self.execution_id,
+                    next_body_segment,
+                    self.data.clone(),
+                )
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: e.to_string(),
+                })?;
             }
 
             Err(StepError::StepExecuted {
@@ -1099,20 +1104,20 @@ impl<S: Scheduler> TaskContext<S> {
                 }
                 None => {
                     all_completed = false;
-                    self.scheduler
-                        .schedule_wait_all_child(
-                            &child_task_id,
-                            &self.task_name,
-                            &self.execution_id,
-                            step_name,
-                            &coordinator_id,
-                            self.data.clone(),
-                        )
-                        .await
-                        .map_err(|e| StepError::Failed {
-                            step: step_name.clone(),
-                            reason: e.to_string(),
-                        })?;
+                    step_ops::schedule_wait_all_child(
+                        &*self.scheduler,
+                        &child_task_id,
+                        &self.task_name,
+                        &self.execution_id,
+                        step_name,
+                        &coordinator_id,
+                        self.data.clone(),
+                    )
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.clone(),
+                        reason: e.to_string(),
+                    })?;
                 }
             }
         }
@@ -1147,20 +1152,20 @@ impl<S: Scheduler> TaskContext<S> {
             return Ok(results);
         }
 
-        self.scheduler
-            .schedule_coordinator(
-                &coordinator_id,
-                &self.task_name,
-                &self.execution_id,
-                next_segment,
-                child_ids,
-                self.data.clone(),
-            )
-            .await
-            .map_err(|e| StepError::Failed {
-                step: "__wait_all".to_string(),
-                reason: e.to_string(),
-            })?;
+        step_ops::schedule_coordinator(
+            &*self.scheduler,
+            &coordinator_id,
+            &self.task_name,
+            &self.execution_id,
+            next_segment,
+            child_ids,
+            self.data.clone(),
+        )
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "__wait_all".to_string(),
+            reason: e.to_string(),
+        })?;
 
         Err(StepError::Scheduled {
             step: "__wait_all".to_string(),
@@ -1187,17 +1192,17 @@ impl<S: Scheduler> TaskContext<S> {
                     match json_result {
                         Ok(json_val) => {
                             let step_task_id = self.task_id.clone();
-                            self.scheduler
-                                .complete_step_no_resume(
-                                    &step_task_id,
-                                    json_val,
-                                    &self.lock_token,
-                                )
-                                .await
-                                .map_err(|e| StepError::Failed {
-                                    step: target.to_string(),
-                                    reason: e.to_string(),
-                                })?;
+                            step_ops::complete_step_no_resume(
+                                &*self.scheduler,
+                                &step_task_id,
+                                json_val,
+                                &self.lock_token,
+                            )
+                            .await
+                            .map_err(|e| StepError::Failed {
+                                step: target.to_string(),
+                                reason: e.to_string(),
+                            })?;
                             return Err(StepError::StepExecuted {
                                 step: target.to_string(),
                             });
@@ -1237,20 +1242,20 @@ impl<S: Scheduler> TaskContext<S> {
                 let next_segment = segment + 1;
                 let sleep_task_id =
                     format!("{}:sleep:{}", self.execution_id, next_segment);
-                self.scheduler
-                    .schedule_sleep_task(
-                        &sleep_task_id,
-                        &self.task_name,
-                        &self.execution_id,
-                        next_segment,
-                        wake_time,
-                        self.data.clone(),
-                    )
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: "__sleep".to_string(),
-                        reason: e.to_string(),
-                    })?;
+                step_ops::schedule_sleep_task(
+                    &*self.scheduler,
+                    &sleep_task_id,
+                    &self.task_name,
+                    &self.execution_id,
+                    next_segment,
+                    wake_time,
+                    self.data.clone(),
+                )
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: "__sleep".to_string(),
+                    reason: e.to_string(),
+                })?;
                 Err(StepError::Scheduled {
                     step: "__sleep".to_string(),
                     next_execution: None,
@@ -1403,7 +1408,7 @@ impl<S: Scheduler> TaskContext<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scheduler::{FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
+    use scheduler::{DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1432,6 +1437,7 @@ mod tests {
             _data: serde_json::Value,
             _recurrence: Option<Recurrence>,
             _execution_id: Option<&str>,
+            _metadata: serde_json::Value,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
@@ -1488,6 +1494,8 @@ mod tests {
             Ok(())
         }
     }
+
+    impl DurableStorage for NoopScheduler {}
 
     fn make_ctx() -> TaskContext<NoopScheduler> {
         TaskContext::new(

@@ -65,7 +65,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -86,7 +86,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -113,7 +113,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -259,7 +259,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -419,7 +419,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -503,7 +503,7 @@ mod integration {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
-            async fn run<S: scheduler::Scheduler>(
+            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
                 &self,
                 _ctx: &mut TaskContext<S>,
                 _data: Self::Data,
@@ -535,6 +535,7 @@ mod integration {
                 serde_json::json!({}),
                 Some(Recurrence::FixedDelay { duration_ms: 200 }),
                 None,
+                serde_json::Value::Null,
             )
             .await
             .expect("schedule_at failed");
@@ -571,7 +572,7 @@ mod integration {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
-            async fn run<S: scheduler::Scheduler>(
+            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
                 &self,
                 ctx: &mut TaskContext<S>,
                 _data: Self::Data,
@@ -637,7 +638,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             _ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -660,7 +661,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -792,7 +793,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -849,7 +850,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
@@ -918,7 +919,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler>(
+        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
             &self,
             ctx: &mut TaskContext<S>,
             _data: Self::Data,
