@@ -43,6 +43,7 @@ export default defineConfig({
           label: 'Examples',
           items: [
             { label: 'Brewery Finder',    link: '/examples/brewery-finder' },
+            { label: 'Radkit Agent',      link: '/examples/radkit-agent' },
             { label: 'Approval Workflow', link: '/examples/approval-workflow' },
             { label: 'Parallel Steps',    link: '/examples/parallel-steps' },
           ],

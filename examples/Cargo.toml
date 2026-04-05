@@ -16,6 +16,10 @@ path = "approval-workflow/src/main.rs"
 name = "example-parallel-steps"
 path = "parallel-steps/src/main.rs"
 
+[[bin]]
+name = "example-radkit-agent"
+path = "radkit-agent/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }
@@ -30,6 +34,8 @@ reqwest = { version = "0.12", features = ["json"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 sqlx = { workspace = true }
+radkit = { version = "0.0.5", features = ["runtime"] }
+schemars = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

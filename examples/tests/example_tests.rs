@@ -517,4 +517,209 @@ mod example_tests {
             assert_eq!(result.total_issues, 1);
         }
     }
+
+    // ── Example 4: Radkit Agent ───────────────────────────────────────────────
+
+    mod radkit_agent {
+        use super::*;
+
+        #[derive(serde::Serialize, serde::Deserialize, Debug)]
+        struct AgentInput {
+            query: String,
+        }
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct ExtractedLocation {
+            city: String,
+            state: String,
+        }
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct BreweryInfo {
+            name: String,
+            brewery_type: String,
+            city: String,
+            state: String,
+        }
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct AgentOutput {
+            query: String,
+            location: ExtractedLocation,
+            breweries: Vec<BreweryInfo>,
+            summary: String,
+            completed_at: String,
+        }
+
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct BreweryRaw {
+            name: String,
+            #[serde(default)]
+            brewery_type: Option<String>,
+            city: Option<String>,
+            #[serde(default)]
+            state: Option<String>,
+        }
+
+        struct RadkitAgentTask;
+
+        #[async_trait::async_trait]
+        impl zart::registry::TaskHandler for RadkitAgentTask {
+            type Data = AgentInput;
+            type Output = AgentOutput;
+
+            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+                &self,
+                ctx: &mut zart::context::TaskContext<S>,
+                data: Self::Data,
+            ) -> Result<Self::Output, zart::error::TaskError> {
+                // For testing, we skip the LLM extraction and use hardcoded values
+                // In production, this would use radkit's LlmFunction
+
+                // Step 1: Extract location (simulated for test - in real code uses LLM)
+                let location = ctx
+                    .step_with_retry(
+                        "extract-location",
+                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
+                        || {
+                            let query = data.query.clone();
+                            async move {
+                                // Simulate LLM extraction with simple parsing
+                                // In real implementation, this calls radkit's LLM
+                                let (city, state) = if query.contains("Portland") {
+                                    ("Portland".to_string(), "Oregon".to_string())
+                                } else if query.contains("Asheville") {
+                                    ("Asheville".to_string(), "North Carolina".to_string())
+                                } else {
+                                    ("Unknown".to_string(), "Unknown".to_string())
+                                };
+                                Ok(ExtractedLocation { city, state })
+                            }
+                        },
+                    )
+                    .await?;
+
+                // Step 2: Find breweries via external API
+                let raw: Vec<BreweryRaw> = ctx
+                    .step_with_retry(
+                        "find-breweries",
+                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
+                        || {
+                            let city = location.city.clone();
+                            async move {
+                                let client = reqwest::Client::new();
+                                let resp = client
+                                    .get("https://api.openbrewerydb.org/v1/breweries")
+                                    .query(&[("by_city", &city)])
+                                    .send()
+                                    .await
+                                    .map_err(|e| zart::error::StepError::Failed {
+                                        step: "find-breweries".to_string(),
+                                        reason: e.to_string(),
+                                    })?;
+                                let breweries: Vec<BreweryRaw> =
+                                    resp.json().await.map_err(|e| {
+                                        zart::error::StepError::Failed {
+                                            step: "find-breweries".to_string(),
+                                            reason: format!("parse error: {e}"),
+                                        }
+                                    })?;
+                                Ok(breweries)
+                            }
+                        },
+                    )
+                    .await?;
+
+                // Step 3: Transform to output type
+                let breweries: Vec<BreweryInfo> = ctx
+                    .step("transform-results", || {
+                        let raw = raw.clone();
+                        let city = location.city.clone();
+                        let state = location.state.clone();
+                        async move {
+                            Ok(raw
+                                .into_iter()
+                                .map(|b| BreweryInfo {
+                                    name: b.name,
+                                    brewery_type: b.brewery_type
+                                        .unwrap_or_else(|| "unknown".to_string()),
+                                    city: b.city.unwrap_or_else(|| city.clone()),
+                                    state: b.state.unwrap_or_else(|| state.clone()),
+                                })
+                                .collect())
+                        }
+                    })
+                    .await?;
+
+                // Step 4: Generate summary (simulated for test - in real code uses LLM)
+                let summary = ctx
+                    .step_with_retry(
+                        "generate-summary",
+                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
+                        || {
+                            let location = location.clone();
+                            let breweries = breweries.clone();
+                            async move {
+                                // Simulated summary for testing
+                                Ok(format!(
+                                    "Found {} breweries in {}, {}!",
+                                    breweries.len(),
+                                    location.city,
+                                    location.state
+                                ))
+                            }
+                        },
+                    )
+                    .await?;
+
+                Ok(AgentOutput {
+                    query: data.query,
+                    location,
+                    breweries,
+                    summary,
+                    completed_at: chrono::Utc::now().to_rfc3339(),
+                })
+            }
+        }
+
+        #[tokio::test]
+        #[ignore = "requires PostgreSQL and internet — run with: just test-examples"]
+        async fn radkit_agent_completes_successfully() {
+            let scheduler = setup().await;
+
+            let mut registry = TaskRegistry::new();
+            registry.register("radkit-agent-test", RadkitAgentTask);
+            let registry = Arc::new(registry);
+
+            let execution_id = format!("test-radkit-{}", Uuid::new_v4());
+            let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+
+            let input = AgentInput {
+                query: "Find breweries in Portland".to_string(),
+            };
+            durable
+                .start_typed(&execution_id, "radkit-agent-test", &input)
+                .await
+                .expect("start failed");
+
+            let worker = spawn_worker(scheduler.clone(), registry);
+
+            let record = durable
+                .wait(&execution_id, Duration::from_secs(60), None)
+                .await
+                .expect("wait failed");
+
+            worker.stop();
+
+            assert_eq!(record.status, ExecutionStatus::Completed);
+            let result: AgentOutput = serde_json::from_value(
+                record.result.expect("expected result"),
+            )
+            .expect("deserialize failed");
+            assert!(result.query.contains("Portland"));
+            assert_eq!(result.location.city, "Portland");
+            assert!(!result.breweries.is_empty());
+            assert!(!result.summary.is_empty());
+        }
+    }
 }
