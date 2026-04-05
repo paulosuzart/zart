@@ -1,0 +1,186 @@
+---
+title: Brewery Finder
+description: A sequential multi-step durable workflow that calls external APIs and returns structured results.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+This example builds a durable workflow that takes a US ZIP code, resolves it to a city via the [Zippopotamus API](https://www.zippopotam.us/), then fetches breweries in that city from the [Open Brewery DB](https://www.openbrewerydb.org/). All steps are persisted — if the process crashes mid-flight, completed API calls are not retried.
+
+**Features demonstrated:** `#[zart_durable]`, `z_step!`, `z_step_with_retry!`, sequential steps, structured output.
+
+## Data types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FinderInput {
+    zip_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BreweryInfo {
+    name: String,
+    brewery_type: String,
+    city: String,
+    state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FinderOutput {
+    zip_code: String,
+    city: String,
+    state: String,
+    breweries: Vec<BreweryInfo>,
+    found_at: String,
+}
+```
+
+## The workflow
+
+The `#[zart_durable]` attribute generates a `TaskHandler` impl from a plain async function — no boilerplate struct or `impl` block needed.
+
+```rust
+#[zart_durable("brewery-finder", timeout = "5m")]
+async fn brewery_finder(
+    ctx: &mut TaskContext<impl Scheduler>,
+    data: FinderInput,
+) -> Result<FinderOutput, TaskError> {
+    let client = reqwest::Client::new();
+
+    // Step 1: resolve ZIP → city/state, retry up to 3× with exponential backoff
+    let (city, state) = z_step_with_retry!(
+        "lookup-zip",
+        RetryConfig::exponential(3, Duration::from_secs(1)),
+        || {
+            let client = client.clone();
+            let zip = data.zip_code.clone();
+            async move {
+                let resp = client
+                    .get(format!("https://api.zippopotam.us/us/{zip}"))
+                    .send()
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: "lookup-zip".into(),
+                        reason: e.to_string(),
+                    })?;
+                let zip_resp: ZipResponse = resp.json().await
+                    .map_err(|e| StepError::Failed {
+                        step: "lookup-zip".into(),
+                        reason: format!("failed to parse response: {e}"),
+                    })?;
+                let place = zip_resp.places.first().ok_or_else(|| StepError::Failed {
+                    step: "lookup-zip".into(),
+                    reason: format!("no place found for ZIP {zip}"),
+                })?;
+                Ok((place.place_name.clone(), place.state.clone()))
+            }
+        }
+    ).await?;
+
+    // Step 2: find breweries in that city, retry on transient failures
+    let raw_breweries = z_step_with_retry!(
+        "find-breweries",
+        RetryConfig::exponential(3, Duration::from_secs(1)),
+        || {
+            let client = client.clone();
+            let city = city.clone();
+            async move {
+                client
+                    .get("https://api.openbrewerydb.org/v1/breweries")
+                    .query(&[("by_city", &city)])
+                    .send()
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: "find-breweries".into(),
+                        reason: e.to_string(),
+                    })?
+                    .json::<Vec<BreweryRaw>>()
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: "find-breweries".into(),
+                        reason: format!("failed to parse response: {e}"),
+                    })
+            }
+        }
+    ).await?;
+
+    // Step 3: transform raw API data into structured output (no retries needed)
+    let breweries = z_step!("transform-results", || {
+        let raw = raw_breweries.clone();
+        let city = city.clone();
+        let state = state.clone();
+        async move {
+            Ok(raw.into_iter().map(|b| BreweryInfo {
+                name: b.name,
+                brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".into()),
+                city: b.city.unwrap_or_else(|| city.clone()),
+                state: b.state.unwrap_or_else(|| state.clone()),
+            }).collect::<Vec<_>>())
+        }
+    }).await?;
+
+    Ok(FinderOutput {
+        zip_code: data.zip_code,
+        city,
+        state,
+        breweries,
+        found_at: Utc::now().to_rfc3339(),
+    })
+}
+```
+
+## Running the workflow
+
+```rust
+// Register the macro-generated handler (struct name is PascalCase of the fn name)
+let mut registry = TaskRegistry::new();
+registry.register("brewery-finder", BreweryFinder);
+let registry = Arc::new(registry);
+
+let durable = DurableScheduler::new(sched.clone(), registry.clone());
+durable
+    .start_typed("my-run-1", "brewery-finder", &FinderInput {
+        zip_code: "97209".to_string(), // Portland, OR
+    })
+    .await?;
+
+// Start a worker and wait for the result
+let record = durable.wait("my-run-1", Duration::from_secs(60), None).await?;
+let output: FinderOutput = serde_json::from_value(record.result.unwrap())?;
+println!("Found {} breweries in {}, {}", output.breweries.len(), output.city, output.state);
+```
+
+## What you'll see
+
+```
+=== Zart Brewery Finder Example ===
+
+Starting execution 'brewery-finder-demo-...' for ZIP 97209...
+Initial execution status: Pending
+
+Waiting for execution to complete...
+
+Execution completed!
+  ZIP:         97209
+  City:        Portland
+  State:       Oregon
+  Breweries:   20
+
+  1. Breakside Brewery (micro) — Portland, Oregon
+  2. Cascade Brewing (brewpub) — Portland, Oregon
+  ...
+```
+
+<Aside type="tip">
+Step results are stored in PostgreSQL after each successful step. Kill the process after step 1 completes and restart — the workflow picks up at step 2 without calling the ZIP API again.
+</Aside>
+
+## Key concepts
+
+**`#[zart_durable]` macro** — generates a unit struct (`BreweryFinder`) that implements `TaskHandler`. The function body becomes the `run()` method. You get the full trait machinery without writing it by hand.
+
+**`z_step_with_retry!`** — expands to `ctx.step_with_retry(name, config, closure)`. The retry config here uses exponential backoff: first retry after 1 s, second after 2 s, third after 4 s.
+
+**`z_step!`** — expands to `ctx.step(name, closure)`. Use it for steps where failure is deterministic and retrying would not help (e.g., pure data transformations).
+
+**Sequential data flow** — each step's return value is available to the next step as a normal Rust variable. There is no special API for passing data between steps.

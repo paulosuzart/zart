@@ -1,0 +1,162 @@
+---
+title: Parallel Steps
+description: Run independent steps concurrently with schedule_step and wait_all, then aggregate the results.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This example runs health checks on three services concurrently. Each check is an independent step scheduled at the same time; `wait_all` collects their results once all complete. A final sequential step aggregates the data into a summary.
+
+**Features demonstrated:** `ctx.schedule_step()`, `ctx.wait_all()`, structured output, `TaskHandler` trait.
+
+## Data types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HealthCheckInput {
+    services: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ServiceResult {
+    name: String,
+    status: String,
+    response_ms: u64,
+    issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HealthCheckOutput {
+    services_checked: usize,
+    total_issues: usize,
+    results: Vec<ServiceResult>,
+}
+```
+
+## The workflow
+
+```rust
+struct HealthCheckTask;
+
+#[async_trait]
+impl TaskHandler for HealthCheckTask {
+    type Data   = HealthCheckInput;
+    type Output = HealthCheckOutput;
+
+    async fn run<S: Scheduler>(
+        &self,
+        ctx: &mut TaskContext<S>,
+        data: Self::Data,
+    ) -> Result<Self::Output, TaskError> {
+        // Schedule one step per service — all are registered before any runs
+        let mut handles = vec![];
+        for service in &data.services {
+            let handle = ctx.schedule_step(&format!("check-{service}"), {
+                let service = service.clone();
+                move || {
+                    let service = service.clone();
+                    async move {
+                        // Replace with a real HTTP health check in production
+                        let (status, response_ms, issues) = match service.as_str() {
+                            "auth-api"  => ("healthy".into(),  42,  vec![]),
+                            "payments"  => ("degraded".into(), 156, vec!["high latency detected".into()]),
+                            "users-db"  => ("healthy".into(),  28,  vec![]),
+                            _           => ("unknown".into(),  0,   vec!["no check configured".into()]),
+                        };
+                        Ok(ServiceResult { name: service, status, response_ms, issues })
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Block until every scheduled step has a persisted result
+        let results = ctx.wait_all(handles).await?;
+
+        let mut service_results = vec![];
+        for result in results {
+            let svc = result.map_err(|e| TaskError::StepFailed {
+                step: "parallel-health-check".into(),
+                source: e,
+            })?;
+            service_results.push(svc);
+        }
+
+        let total_issues = service_results.iter().map(|s| s.issues.len()).sum();
+
+        Ok(HealthCheckOutput {
+            services_checked: service_results.len(),
+            total_issues,
+            results: service_results,
+        })
+    }
+}
+```
+
+## Running the workflow
+
+```rust
+let mut registry = TaskRegistry::new();
+registry.register("health-check", HealthCheckTask);
+let registry = Arc::new(registry);
+
+let durable = DurableScheduler::new(sched.clone(), registry.clone());
+durable
+    .start_typed("health-check-run-1", "health-check", &HealthCheckInput {
+        services: vec!["auth-api".into(), "payments".into(), "users-db".into()],
+    })
+    .await?;
+
+let record = durable.wait("health-check-run-1", Duration::from_secs(60), None).await?;
+let output: HealthCheckOutput = serde_json::from_value(record.result.unwrap())?;
+println!("Checked {} services, {} issues", output.services_checked, output.total_issues);
+```
+
+## What you'll see
+
+```
+=== Zart Parallel Steps Example ===
+
+Starting execution 'parallel-demo-...'...
+  Services: ["auth-api", "payments", "users-db"]
+
+Worker started. Steps executing...
+
+Execution completed!
+  Services checked: 3
+  Total issues:     1
+
+  Service: auth-api  — status: healthy  (42ms)
+  Service: payments  — status: degraded (156ms)
+    Issue: high latency detected
+  Service: users-db  — status: healthy  (28ms)
+```
+
+<Aside type="tip">
+Each scheduled step is its own persisted record. If the worker crashes after `auth-api` and `users-db` complete but before `payments` does, the restart skips the two completed steps and only re-runs `payments`.
+</Aside>
+
+## Sequential vs parallel
+
+```rust
+// Sequential — each step waits for the previous one to finish
+let a = ctx.step("step-a", || async { ... }).await?;
+let b = ctx.step("step-b", || async { ... }).await?;
+let c = ctx.step("step-c", || async { ... }).await?;
+
+// Parallel — all three are registered first, then collected together
+let h1 = ctx.schedule_step("step-a", || async { ... });
+let h2 = ctx.schedule_step("step-b", || async { ... });
+let h3 = ctx.schedule_step("step-c", || async { ... });
+let [a, b, c] = ctx.wait_all(vec![h1, h2, h3]).await?[..] else { unreachable!() };
+```
+
+Use parallel steps when the work is independent and order does not matter. Use sequential steps when each step depends on the previous step's output.
+
+## Key concepts
+
+**`ctx.schedule_step(name, closure)`** — registers the step for execution without waiting. Returns a handle. The step is enqueued in the scheduler and may run on any available worker.
+
+**`ctx.wait_all(handles)`** — suspends the current execution until every handle has a result. Returns results in the same order as the input handles.
+
+**Each step is a separate task** — scheduled steps become independent scheduler tasks. They can run on different workers, in any order, and each has its own retry policy if configured.
