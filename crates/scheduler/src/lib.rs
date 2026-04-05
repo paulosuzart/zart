@@ -27,7 +27,10 @@ pub use recurrence::Recurrence;
 pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, TaskStatus};
 
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresScheduler;
+pub use postgres::{
+    PostgresScheduler,
+    credentials::{CredentialManager, CredentialRotationError, CredentialsSource},
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

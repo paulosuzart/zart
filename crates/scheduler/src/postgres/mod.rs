@@ -9,10 +9,18 @@
 //! Call [`PostgresScheduler::run_migrations`] (or `just migrate`) once before
 //! starting workers. It applies the embedded SQL files under `migrations/`.
 
+pub mod credentials;
+
+use std::ops::Deref;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use tokio::sync::RwLock;
 use uuid::Uuid;
+
+pub use credentials::{CredentialManager, CredentialRotationError, CredentialsSource};
 
 use crate::{
     ExecutionRecord, ExecutionStatus, FetchedTask, Recurrence, ScheduleResult, Scheduler,
@@ -25,13 +33,102 @@ use crate::{
 /// `sqlx::PgPool`. Call [`run_migrations`][Self::run_migrations] before first
 /// use to ensure the schema is up to date.
 pub struct PostgresScheduler {
-    pool: PgPool,
+    /// The connection pool, behind an RwLock for atomic credential rotation.
+    pool: Arc<RwLock<PgPool>>,
+    /// Optional credential manager for credential rotation.
+    credential_manager: Option<credentials::CredentialManager>,
 }
 
 impl PostgresScheduler {
     /// Create a new scheduler wrapping the given connection pool.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool: Arc::new(RwLock::new(pool)),
+            credential_manager: None,
+        }
+    }
+
+    /// Create a new scheduler with credential rotation support.
+    ///
+    /// The `credential_manager` allows graceful pool replacement when
+    /// credentials rotate (e.g., via Vault or Secrets Manager).
+    pub fn with_credentials(pool: PgPool, database_url: &str) -> Self {
+        let pool_ref = Arc::new(RwLock::new(pool));
+        let cm = credentials::CredentialManager::new(pool_ref.clone(), database_url);
+        Self {
+            pool: pool_ref,
+            credential_manager: Some(cm),
+        }
+    }
+
+    /// Get the credential manager if one was configured.
+    pub fn credential_manager(&self) -> Option<&credentials::CredentialManager> {
+        self.credential_manager.as_ref()
+    }
+
+    /// Gracefully rotate database credentials.
+    ///
+    /// Creates a new connection pool with the new URL, atomically swaps it
+    /// in place of the old pool, and closes the old connections.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_url` - The new database connection URL
+    /// * `graceful` - If true, drains existing connections before closing
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// scheduler.rotate_credentials("postgresql://user:newpass@localhost/zart", true).await?;
+    /// ```
+    pub async fn rotate_credentials(
+        &self,
+        new_url: &str,
+        graceful: bool,
+    ) -> Result<(), CredentialRotationError> {
+        match &self.credential_manager {
+            Some(cm) => {
+                cm.rotate(
+                    new_url,
+                    graceful,
+                    std::time::Duration::from_secs(30),
+                )
+                .await
+            }
+            None => Err(CredentialRotationError::NoSourceConfigured),
+        }
+    }
+
+    /// Reload credentials from the configured source and rotate the pool.
+    ///
+    /// Requires that a [`CredentialsSource`] was configured when the scheduler
+    /// was created.
+    pub async fn reload_credentials(
+        &self,
+        graceful: bool,
+    ) -> Result<(), CredentialRotationError> {
+        match &self.credential_manager {
+            Some(cm) => {
+                cm.reload(
+                    graceful,
+                    std::time::Duration::from_secs(30),
+                )
+                .await
+            }
+            None => Err(CredentialRotationError::NoSourceConfigured),
+        }
+    }
+
+    /// Get a reference to the current connection pool.
+    fn pool(&self) -> Arc<RwLock<PgPool>> {
+        self.pool.clone()
+    }
+
+    /// Acquire a read guard on the connection pool.
+    ///
+    /// This is a convenience method for accessing the pool in scheduler methods.
+    async fn pool_guard(&self) -> tokio::sync::RwLockReadGuard<'_, PgPool> {
+        self.pool.read().await
     }
 }
 
@@ -78,7 +175,7 @@ impl Scheduler for PostgresScheduler {
         .bind(&data)
         .bind(&recurrence_json)
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
@@ -93,8 +190,8 @@ impl Scheduler for PostgresScheduler {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<FetchedTask>, StorageError> {
-        let mut tx = self
-            .pool
+        let pool = self.pool_guard().await;
+        let mut tx = pool
             .begin()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -201,7 +298,7 @@ impl Scheduler for PostgresScheduler {
         .bind(next_execution_time)
         .bind(task_id)
         .bind(lock_token)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
@@ -234,7 +331,7 @@ impl Scheduler for PostgresScheduler {
         .bind(&result)
         .bind(task_id)
         .bind(lock_token)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
@@ -276,7 +373,7 @@ impl Scheduler for PostgresScheduler {
             .bind(t)
             .bind(task_id)
             .bind(lock_token)
-            .execute(&self.pool)
+            .execute(&*self.pool_guard().await)
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?
             .rows_affected()
@@ -297,7 +394,7 @@ impl Scheduler for PostgresScheduler {
             .bind(error)
             .bind(task_id)
             .bind(lock_token)
-            .execute(&self.pool)
+            .execute(&*self.pool_guard().await)
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?
             .rows_affected()
@@ -318,7 +415,7 @@ impl Scheduler for PostgresScheduler {
             "#,
         )
         .bind(task_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
@@ -329,7 +426,7 @@ impl Scheduler for PostgresScheduler {
     async fn delete_task(&self, task_id: &str) -> Result<(), StorageError> {
         sqlx::query("DELETE FROM zart_tasks WHERE task_id = $1")
             .bind(task_id)
-            .execute(&self.pool)
+            .execute(&*self.pool_guard().await)
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
@@ -337,7 +434,7 @@ impl Scheduler for PostgresScheduler {
 
     async fn run_migrations(&self) -> Result<(), StorageError> {
         sqlx::migrate!("./migrations")
-            .run(&self.pool)
+            .run(&*self.pool_guard().await)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))
     }
@@ -358,7 +455,7 @@ impl Scheduler for PostgresScheduler {
         .bind(execution_id)
         .bind(task_name)
         .bind(&payload)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
@@ -381,7 +478,7 @@ impl Scheduler for PostgresScheduler {
         )
         .bind(&result)
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
@@ -397,7 +494,7 @@ impl Scheduler for PostgresScheduler {
             "#,
         )
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
@@ -422,7 +519,7 @@ impl Scheduler for PostgresScheduler {
             "#,
         )
         .bind(threshold)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
@@ -440,7 +537,7 @@ impl Scheduler for PostgresScheduler {
             "#,
         )
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
@@ -454,7 +551,7 @@ impl Scheduler for PostgresScheduler {
             "#,
         )
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
@@ -494,7 +591,7 @@ impl Scheduler for PostgresScheduler {
         .bind(task_name)
         .bind(limit as i64)
         .bind(offset as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
@@ -548,7 +645,7 @@ impl Scheduler for PostgresScheduler {
         )
         .bind(&event_obj)
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
@@ -578,7 +675,7 @@ impl Scheduler for PostgresScheduler {
                 "#,
         )
         .bind(execution_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
@@ -632,7 +729,7 @@ impl Scheduler for PostgresScheduler {
         )
         .bind(&payload)
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&*self.pool_guard().await)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
