@@ -13,10 +13,6 @@ use serde::{Deserialize, Serialize};
 /// How a task should be dispatched by the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionMode {
-    /// Legacy mode — no `metadata` present. Uses the old JSON-blob-in-state approach.
-    /// Preserved for backward compatibility; existing handlers continue to work unchanged.
-    Legacy,
-
     /// The main handler body is executing. Steps are scheduled as child task rows.
     /// When the body encounters an unscheduled step it inserts a child row and exits
     /// via `Err(StepError::Scheduled)`. The body task itself is then marked completed.
@@ -68,8 +64,8 @@ pub enum StepKind {
 impl ExecutionMode {
     /// Parse an `ExecutionMode` from the task's `metadata` JSON.
     ///
-    /// Returns `ExecutionMode::Legacy` if the metadata is empty or the `mode`
-    /// key is absent, preserving full backward compatibility.
+    /// Returns `ExecutionMode::Body { segment: 0 }` if the metadata is empty
+    /// or the `mode` key is absent.
     pub fn from_metadata(metadata: &serde_json::Value) -> Self {
         let mode = metadata.get("mode").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -147,13 +143,8 @@ impl ExecutionMode {
                 }
             }
 
-            _ => ExecutionMode::Legacy,
+            _ => ExecutionMode::Body { segment: 0 },
         }
-    }
-
-    /// Returns `true` if this is the new execution model (non-legacy).
-    pub fn is_new_model(&self) -> bool {
-        !matches!(self, ExecutionMode::Legacy)
     }
 }
 
@@ -177,16 +168,6 @@ pub fn coordinator_id(metadata: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn from_metadata_empty_object_is_legacy() {
-        assert_eq!(ExecutionMode::from_metadata(&json!({})), ExecutionMode::Legacy);
-    }
-
-    #[test]
-    fn from_metadata_null_is_legacy() {
-        assert_eq!(ExecutionMode::from_metadata(&serde_json::Value::Null), ExecutionMode::Legacy);
-    }
 
     #[test]
     fn from_metadata_body_parses_segment() {
@@ -265,32 +246,6 @@ mod tests {
             ExecutionMode::from_metadata(&meta),
             ExecutionMode::Coordinator { next_segment: 1, wait_for: vec![] }
         );
-    }
-
-    #[test]
-    fn is_new_model_false_for_legacy() {
-        assert!(!ExecutionMode::Legacy.is_new_model());
-    }
-
-    #[test]
-    fn is_new_model_true_for_body() {
-        assert!(ExecutionMode::Body { segment: 0 }.is_new_model());
-    }
-
-    #[test]
-    fn is_new_model_true_for_step() {
-        assert!(ExecutionMode::Step {
-            target_step: "x".to_string(),
-            step_type: StepKind::Step,
-            next_body_segment: 1,
-            retry_attempt: 0,
-        }
-        .is_new_model());
-    }
-
-    #[test]
-    fn is_new_model_true_for_coordinator() {
-        assert!(ExecutionMode::Coordinator { next_segment: 1, wait_for: vec![] }.is_new_model());
     }
 
     #[test]

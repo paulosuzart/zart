@@ -35,18 +35,6 @@ pub struct WorkerConfig {
     /// and will be reset to `scheduled` by the orphan recovery loop.
     pub orphan_timeout: Duration,
 
-    /// When enabled, steps scheduled via `step()` are executed immediately in-memory
-    /// without returning early. This reduces latency between sequential steps but
-    /// blocks the worker for the duration of each step.
-    ///
-    /// This is equivalent to using `step_immediate()` for all steps, but applies
-    /// globally to the entire durable execution.
-    ///
-    /// **Trade-off**: lower latency vs. reduced fault tolerance. The worker cannot
-    /// pick up other tasks while a step is executing. If the worker crashes, orphan
-    /// recovery will eventually reset the in-flight step.
-    pub immediate_steps: bool,
-
     /// How often to renew the task lease while a handler is executing.
     ///
     /// When `None` (the default), the interval is computed as `orphan_timeout / 3`,
@@ -63,7 +51,6 @@ impl Default for WorkerConfig {
             max_concurrent_tasks: 16,
             shutdown_timeout: Duration::from_secs(30),
             orphan_timeout: Duration::from_secs(300),
-            immediate_steps: false, // Disabled by default for maximum fault tolerance.
             heartbeat_interval: None, // Defaults to orphan_timeout / 3.
         }
     }
@@ -207,7 +194,6 @@ impl<S: Scheduler + DurableStorage + 'static> Worker<S> {
 
                 let scheduler = self.scheduler.clone();
                 let registry = self.registry.clone();
-                let immediate_steps = self.config.immediate_steps;
                 let heartbeat_interval = self.config.heartbeat_interval;
                 let orphan_timeout = self.config.orphan_timeout;
 
@@ -215,11 +201,10 @@ impl<S: Scheduler + DurableStorage + 'static> Worker<S> {
                     async move {
                         let _permit = permit; // released when this task finishes
                         WORKER_CONCURRENT_TASKS.inc();
-                        dispatch_task_with_immediate(
+                        dispatch_task(
                             scheduler,
                             registry,
                             task,
-                            immediate_steps,
                             heartbeat_interval,
                             orphan_timeout,
                         )
@@ -299,10 +284,6 @@ async fn heartbeat_loop<S: Scheduler + DurableStorage>(
 }
 
 /// Dispatch a single fetched task to its registered handler and persist the result.
-///
-/// This is a convenience wrapper that calls [`dispatch_task_with_immediate`] with
-/// `immediate_steps = false` and default heartbeat settings.
-#[allow(dead_code)]
 #[instrument(
     name = "task.dispatch",
     skip(scheduler, registry, task),
@@ -317,27 +298,6 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
     scheduler: Arc<S>,
     registry: Arc<TaskRegistry<S>>,
     task: scheduler::FetchedTask,
-) {
-    dispatch_task_with_immediate(scheduler, registry, task, false, None, Duration::from_secs(300))
-        .await
-}
-
-/// Dispatch a single fetched task with optional immediate step execution.
-#[instrument(
-    name = "task.dispatch",
-    skip(scheduler, registry, task),
-    fields(
-        task_id = %task.task_id,
-        task_name = %task.task_name,
-        execution_id = task.execution_id.as_deref().unwrap_or("-"),
-        attempt = task.attempt,
-    ),
-)]
-async fn dispatch_task_with_immediate<S: Scheduler + DurableStorage + 'static>(
-    scheduler: Arc<S>,
-    registry: Arc<TaskRegistry<S>>,
-    task: scheduler::FetchedTask,
-    immediate_steps: bool,
     heartbeat_interval: Option<Duration>,
     orphan_timeout: Duration,
 ) {
@@ -396,11 +356,6 @@ async fn dispatch_task_with_immediate<S: Scheduler + DurableStorage + 'static>(
     )
     .with_task_id(task.task_id.clone())
     .with_execution_mode(exec_mode.clone());
-
-    // Apply immediate_steps mode if configured (only relevant for legacy tasks).
-    if immediate_steps && exec_mode == ExecutionMode::Legacy {
-        ctx = ctx.with_immediate_steps();
-    }
 
     // ── Heartbeat setup ──────────────────────────────────────────────────────
     let heartbeat_cancellation = CancellationToken::new();
@@ -525,13 +480,13 @@ async fn dispatch_task_with_immediate<S: Scheduler + DurableStorage + 'static>(
             // The step task is already completed in DB. No further action.
         }
 
-        // ── New model (body): step was scheduled — body task is done ─────────────
-        // In the new model, when a body task schedules a child step and exits,
+        // ── Body: step was scheduled — body task is done ─────────────────────────
+        // When a body task schedules a child step and exits,
         // the body task itself is complete (it won't be re-entered).
         Err(TaskError::StepFailed {
             source: StepError::Scheduled { ref step, ref next_execution },
             ..
-        }) if exec_mode.is_new_model() => {
+        }) => {
             info!(step = %step, "Body step scheduled — marking body task complete");
             TASKS_TOTAL.with_label_values(&["completed"]).inc();
             if let Err(e) = ctx
@@ -542,34 +497,6 @@ async fn dispatch_task_with_immediate<S: Scheduler + DurableStorage + 'static>(
                 error!(error = %e, "Failed to mark body task completed after step scheduling");
             }
             let _ = next_execution; // execution_time is on the child step task
-        }
-
-        // ── Legacy model: step was just scheduled or retry pending ────────────────
-        // Persist state and re-queue the same task.
-        Err(TaskError::StepFailed {
-            source:
-                StepError::Scheduled {
-                    ref step,
-                    ref next_execution,
-                },
-            ..
-        }) => {
-            let exec_time = next_execution.unwrap_or_else(chrono::Utc::now);
-            info!(step = %step, "Step scheduled — persisting state and re-queuing");
-            let state_json = match serde_json::to_value(&ctx.state) {
-                Ok(v) => v,
-                Err(e) => {
-                    error!(error = %e, "Failed to serialize execution state");
-                    return;
-                }
-            };
-            if let Err(e) = ctx
-                .scheduler
-                .update_task_state(&task.task_id, state_json, exec_time, &ctx.lock_token)
-                .await
-            {
-                error!(error = %e, "Failed to update task state");
-            }
         }
 
         // Control-flow: a step is waiting for an external event.
@@ -888,17 +815,7 @@ mod tests {
         assert!(cfg.max_tasks_per_poll > 0);
         assert!(cfg.max_concurrent_tasks > 0);
         assert!(cfg.shutdown_timeout > Duration::ZERO);
-        assert!(!cfg.immediate_steps); // immediate_steps is disabled by default
         assert!(cfg.heartbeat_interval.is_none()); // heartbeat uses auto-computed interval
-    }
-
-    #[test]
-    fn worker_config_can_enable_immediate_steps() {
-        let cfg = WorkerConfig {
-            immediate_steps: true,
-            ..Default::default()
-        };
-        assert!(cfg.immediate_steps);
     }
 
     #[test]
