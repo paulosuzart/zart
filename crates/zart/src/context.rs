@@ -2176,4 +2176,332 @@ mod tests {
         assert_eq!(record.attempts.len(), 2);
         assert_eq!(record.attempts[1].status, AttemptStatus::Completed);
     }
+
+    // ── New execution model: call-counting tests ──────────────────────────────
+    //
+    // These tests use RecordingScheduler to assert exactly which DB operations
+    // each execution-model code path triggers and how many task rows are created.
+
+    use crate::test_helpers::{Call, RecordingScheduler};
+
+    fn make_body_ctx(
+        scheduler: std::sync::Arc<RecordingScheduler>,
+        segment: usize,
+    ) -> TaskContext<RecordingScheduler> {
+        TaskContext::new(
+            scheduler,
+            "exec-1",
+            "test-task",
+            ExecutionState::default(),
+            "lock-tok",
+            serde_json::json!({"input": "data"}),
+        )
+        .with_execution_mode(ExecutionMode::Body { segment })
+    }
+
+    fn make_step_ctx(
+        scheduler: std::sync::Arc<RecordingScheduler>,
+        target: &str,
+        next_body_segment: usize,
+    ) -> TaskContext<RecordingScheduler> {
+        let task_id = format!("exec-1:step:{target}");
+        TaskContext::new(
+            scheduler,
+            "exec-1",
+            "test-task",
+            ExecutionState::default(),
+            "lock-tok",
+            serde_json::json!({"input": "data"}),
+        )
+        .with_task_id(task_id)
+        .with_execution_mode(ExecutionMode::Step {
+            target_step: target.to_string(),
+            step_type: crate::execution_model::StepKind::Step,
+            next_body_segment,
+            retry_attempt: 0,
+        })
+    }
+
+    // ── body mode: step() ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn body_mode_first_step_inserts_exactly_one_task_row() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let mut ctx = make_body_ctx(scheduler, 0);
+
+        let result = ctx.step("charge-card", || async { Ok::<u32, StepError>(99) }).await;
+
+        assert!(
+            matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "charge-card"),
+            "first step call in body mode must return Scheduled"
+        );
+
+        let log = calls.lock().unwrap();
+        let inserts: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
+        assert_eq!(inserts.len(), 1, "exactly one task row inserted");
+
+        if let Call::ScheduleAt { task_id, metadata, .. } = &inserts[0] {
+            assert_eq!(task_id, "exec-1:step:charge-card");
+            assert_eq!(metadata["mode"], "step");
+            assert_eq!(metadata["step_type"], "step");
+            assert_eq!(metadata["step_name"], "charge-card");
+            assert_eq!(metadata["segment"], 1, "next_body_segment = current segment + 1");
+            assert_eq!(metadata["execution_id"], "exec-1");
+        } else {
+            panic!("unexpected call variant");
+        }
+    }
+
+    #[tokio::test]
+    async fn body_mode_completed_step_returns_cached_result_with_zero_db_writes() {
+        let (scheduler, calls) = RecordingScheduler::builder()
+            .step_completed("exec-1", "charge-card", serde_json::json!(42))
+            .build();
+        let mut ctx = make_body_ctx(scheduler, 1);
+
+        let mut lambda_called = false;
+        let result: Result<i32, _> = ctx
+            .step("charge-card", || {
+                lambda_called = true;
+                async { Ok::<i32, StepError>(0) }
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 42, "cached result must be returned");
+        assert!(!lambda_called, "lambda must not run for a completed step");
+
+        let log = calls.lock().unwrap();
+        assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
+        assert_eq!(log.iter().filter(|c| c.is_complete_and_schedule()).count(), 0);
+    }
+
+    #[tokio::test]
+    async fn body_mode_inflight_step_returns_scheduled_without_inserting_duplicate() {
+        let (scheduler, calls) = RecordingScheduler::builder()
+            .step_in_flight("exec-1", "charge-card")
+            .build();
+        let mut ctx = make_body_ctx(scheduler, 1);
+
+        let result = ctx.step("charge-card", || async { Ok::<u32, StepError>(1) }).await;
+
+        assert!(matches!(result, Err(StepError::Scheduled { .. })));
+        let log = calls.lock().unwrap();
+        assert_eq!(
+            log.iter().filter(|c| c.is_schedule_at()).count(),
+            0,
+            "step row already exists; must not insert a duplicate"
+        );
+    }
+
+    // ── step mode: target and non-target steps ────────────────────────────────
+
+    #[tokio::test]
+    async fn step_mode_target_step_executes_lambda_and_atomically_completes() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let mut ctx = make_step_ctx(scheduler, "charge-card", 1);
+
+        let mut lambda_called = false;
+        let result: Result<u32, _> = ctx
+            .step("charge-card", || {
+                lambda_called = true;
+                async { Ok::<u32, StepError>(99) }
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
+            "target step must return StepExecuted (transactional completion)"
+        );
+        assert!(lambda_called, "lambda must execute for the target step");
+
+        let log = calls.lock().unwrap();
+        assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0, "no new rows in step mode");
+
+        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        assert_eq!(cas.len(), 1, "complete_and_schedule called exactly once");
+
+        if let Call::CompleteAndSchedule { completed_task_id, new_task_id, new_metadata, .. } =
+            &cas[0]
+        {
+            assert_eq!(completed_task_id, "exec-1:step:charge-card");
+            assert_eq!(new_task_id, "exec-1-b1");
+            assert_eq!(new_metadata["mode"], "body");
+            assert_eq!(new_metadata["segment"], 1);
+            assert_eq!(new_metadata["execution_id"], "exec-1");
+        } else {
+            panic!("unexpected call variant");
+        }
+    }
+
+    #[tokio::test]
+    async fn step_mode_nontarget_step_reads_cache_with_zero_writes() {
+        let (scheduler, calls) = RecordingScheduler::builder()
+            .step_completed("exec-1", "step-one", serde_json::json!(21))
+            .build();
+        let mut ctx = make_step_ctx(scheduler, "step-two", 2);
+
+        let mut lambda_called = false;
+        let result: Result<i32, _> = ctx
+            .step("step-one", || {
+                lambda_called = true;
+                async { Ok::<i32, StepError>(0) }
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 21, "should return the cached result");
+        assert!(!lambda_called, "lambda must not run for a non-target step");
+
+        let log = calls.lock().unwrap();
+        assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
+        assert_eq!(log.iter().filter(|c| c.is_complete_and_schedule()).count(), 0);
+    }
+
+    // ── body mode: wait_all ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children_plus_one_coordinator() {
+        // All three steps are unconfigured → get_step_status returns Ok(None).
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let mut ctx = make_body_ctx(scheduler, 0);
+
+        let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(1) });
+        let h2 = ctx.schedule_step("step-b", || async { Ok::<u32, StepError>(2) });
+        let h3 = ctx.schedule_step("step-c", || async { Ok::<u32, StepError>(3) });
+        let result = ctx.wait_all(vec![h1, h2, h3]).await;
+
+        assert!(matches!(result, Err(StepError::Scheduled { .. })));
+
+        let log = calls.lock().unwrap();
+        let inserts: Vec<&serde_json::Value> = log
+            .iter()
+            .filter_map(|c| {
+                if let Call::ScheduleAt { metadata, .. } = c { Some(metadata) } else { None }
+            })
+            .collect();
+
+        assert_eq!(inserts.len(), 4, "3 child step rows + 1 coordinator = 4 total inserts");
+
+        let children: Vec<_> = inserts
+            .iter()
+            .filter(|m| m.get("is_wait_all_child").and_then(|v| v.as_bool()).unwrap_or(false))
+            .collect();
+        assert_eq!(children.len(), 3, "three children each marked is_wait_all_child=true");
+
+        let coordinators: Vec<_> =
+            inserts.iter().filter(|m| m["step_type"] == "wait_all").collect();
+        assert_eq!(coordinators.len(), 1, "exactly one coordinator task");
+        assert_eq!(coordinators[0]["segment"], 1, "coordinator targets the next body segment");
+        assert_eq!(coordinators[0]["mode"], "step");
+    }
+
+    #[tokio::test]
+    async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() {
+        let (scheduler, calls) = RecordingScheduler::builder()
+            .step_completed("exec-1", "step-a", serde_json::json!(10))
+            .step_completed("exec-1", "step-b", serde_json::json!(20))
+            .build();
+        let mut ctx = make_body_ctx(scheduler, 1);
+
+        let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(99) });
+        let h2 = ctx.schedule_step("step-b", || async { Ok::<u32, StepError>(99) });
+        let results = ctx.wait_all(vec![h1, h2]).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(*results[0].as_ref().unwrap(), 10u32);
+        assert_eq!(*results[1].as_ref().unwrap(), 20u32);
+
+        let log = calls.lock().unwrap();
+        assert_eq!(
+            log.iter().filter(|c| c.is_schedule_at()).count(),
+            0,
+            "all steps already completed — no new rows inserted"
+        );
+        assert_eq!(log.iter().filter(|c| c.is_complete_and_schedule()).count(), 0);
+    }
+
+    // ── step mode: wait_all child execution ───────────────────────────────────
+
+    #[tokio::test]
+    async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_and_schedule() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+
+        let mut ctx = TaskContext::new(
+            scheduler,
+            "exec-1",
+            "test-task",
+            ExecutionState::default(),
+            "lock-tok",
+            serde_json::json!({}),
+        )
+        .with_task_id("exec-1:step:step-b".to_string())
+        .with_execution_mode(ExecutionMode::Step {
+            target_step: "step-b".to_string(),
+            step_type: crate::execution_model::StepKind::Step,
+            next_body_segment: 1,
+            retry_attempt: 0,
+        });
+
+        let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(0) });
+        let h2 = ctx.schedule_step("step-b", || async { Ok::<u32, StepError>(2) });
+        let h3 = ctx.schedule_step("step-c", || async { Ok::<u32, StepError>(0) });
+        let result = ctx.wait_all(vec![h1, h2, h3]).await;
+
+        assert!(
+            matches!(result, Err(StepError::StepExecuted { ref step }) if step == "step-b"),
+            "wait_all child must return StepExecuted"
+        );
+
+        let log = calls.lock().unwrap();
+
+        let mc: Vec<_> = log
+            .iter()
+            .filter_map(|c| {
+                if let Call::MarkCompleted { task_id, .. } = c { Some(task_id.as_str()) } else { None }
+            })
+            .collect();
+        assert_eq!(mc.len(), 1, "complete_step_no_resume delegates to mark_completed once");
+        assert_eq!(mc[0], "exec-1:step:step-b");
+
+        assert_eq!(
+            log.iter().filter(|c| c.is_complete_and_schedule()).count(),
+            0,
+            "coordinator handles body scheduling; wait_all children must NOT call complete_and_schedule"
+        );
+        assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
+    }
+
+    // ── body mode: sleep ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn sleep_body_mode_inserts_one_sleep_task_with_exact_wake_time() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let mut ctx = make_body_ctx(scheduler, 0);
+
+        let wake_time = chrono::Utc::now() + chrono::Duration::hours(1);
+        let result = ctx.sleep_until(wake_time).await;
+
+        assert!(matches!(result, Err(StepError::Scheduled { .. })));
+
+        let log = calls.lock().unwrap();
+        let inserts: Vec<_> = log
+            .iter()
+            .filter_map(|c| {
+                if let Call::ScheduleAt { task_id, execution_time, metadata, .. } = c {
+                    Some((task_id, execution_time, metadata))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(inserts.len(), 1, "sleep inserts exactly one task row");
+        let (task_id, exec_time, meta) = inserts[0];
+        assert_eq!(task_id, "exec-1:sleep:1");
+        assert_eq!(meta["mode"], "step");
+        assert_eq!(meta["step_type"], "sleep");
+        assert_eq!(meta["segment"], 1);
+        assert_eq!(meta["execution_id"], "exec-1");
+        let diff = (*exec_time - wake_time).num_seconds().abs();
+        assert!(diff < 1, "sleep task execution_time must equal the requested wake_time");
+    }
 }

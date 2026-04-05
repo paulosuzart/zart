@@ -744,6 +744,142 @@ async fn dispatch_sleep_continuation<S: Scheduler + DurableStorage + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{Call, RecordingScheduler};
+    use scheduler::FetchedTask;
+
+    fn make_fetched_task(task_id: &str, metadata: serde_json::Value) -> FetchedTask {
+        FetchedTask {
+            task_id: task_id.to_string(),
+            task_name: "my-handler".to_string(),
+            data: serde_json::Value::Null,
+            state: serde_json::Value::Null,
+            attempt: 1,
+            lock_token: "tok".to_string(),
+            execution_id: Some("exec-1".to_string()),
+            recurrence: None,
+            metadata,
+        }
+    }
+
+    // ── dispatch_coordinator ──────────────────────────────────────────────────
+
+    /// When all children are completed, `dispatch_coordinator` must call
+    /// `complete_and_schedule` exactly once (marks coordinator done + inserts
+    /// next body task atomically). No separate `mark_failed` should appear.
+    #[tokio::test]
+    async fn coordinator_all_children_done_calls_complete_and_schedule_once() {
+        let child_ids = vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()];
+        let (scheduler, calls) = RecordingScheduler::builder()
+            .wait_all_returns(vec![
+                ("exec-1:step:a".to_string(), serde_json::json!(1)),
+                ("exec-1:step:b".to_string(), serde_json::json!(2)),
+            ])
+            .build();
+
+        let task = make_fetched_task(
+            "exec-1:coord:wait_all:2",
+            serde_json::json!({
+                "mode": "step",
+                "step_type": "wait_all",
+                "segment": 3,
+                "wait_for": child_ids.clone(),
+            }),
+        );
+
+        dispatch_coordinator(scheduler, task, child_ids, 3).await;
+
+        let log = calls.lock().unwrap();
+        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
+
+        assert_eq!(cas.len(), 1, "expected exactly one complete_and_schedule");
+        assert!(failures.is_empty(), "no mark_failed expected when all children done");
+
+        if let Call::CompleteAndSchedule { new_task_id, new_metadata, .. } = &cas[0] {
+            assert_eq!(new_task_id, "exec-1-b3");
+            assert_eq!(new_metadata["mode"], "body");
+            assert_eq!(new_metadata["segment"], 3);
+        }
+    }
+
+    /// When some children are still pending, `dispatch_coordinator` must call
+    /// `mark_failed` with a non-None `next_execution_time` (the backoff re-queue)
+    /// and must NOT call `complete_and_schedule`.
+    #[tokio::test]
+    async fn coordinator_pending_children_requeues_with_backoff_no_body_scheduled() {
+        let child_ids = vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()];
+        // Only one child is done — the other is still in-flight.
+        let (scheduler, calls) = RecordingScheduler::builder()
+            .wait_all_returns(vec![("exec-1:step:a".to_string(), serde_json::json!(1))])
+            .build();
+
+        let task = make_fetched_task(
+            "exec-1:coord:wait_all:2",
+            serde_json::json!({
+                "mode": "step",
+                "step_type": "wait_all",
+                "segment": 2,
+                "wait_for": child_ids.clone(),
+            }),
+        );
+
+        dispatch_coordinator(scheduler, task, child_ids, 2).await;
+
+        let log = calls.lock().unwrap();
+        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
+
+        assert!(cas.is_empty(), "no body scheduled when children still pending");
+        assert_eq!(failures.len(), 1, "coordinator re-queues itself via mark_failed");
+
+        if let Call::MarkFailed { next_execution_time, .. } = &failures[0] {
+            assert!(
+                next_execution_time.is_some(),
+                "re-queue must carry a backoff execution_time"
+            );
+        }
+    }
+
+    // ── dispatch_sleep_continuation ───────────────────────────────────────────
+
+    /// When a sleep task fires, `dispatch_sleep_continuation` must call
+    /// `complete_and_schedule` exactly once, inserting the next body segment
+    /// with `mode=body` metadata. No failures should occur.
+    #[tokio::test]
+    async fn sleep_continuation_calls_complete_and_schedule_with_body_metadata() {
+        let (scheduler, calls) = RecordingScheduler::builder().build();
+        let exec_mode = ExecutionMode::Step {
+            target_step: "__sleep".to_string(),
+            step_type: crate::execution_model::StepKind::Sleep,
+            next_body_segment: 4,
+            retry_attempt: 0,
+        };
+
+        let task = make_fetched_task(
+            "exec-1:step:__sleep",
+            serde_json::json!({
+                "mode": "step",
+                "step_type": "sleep",
+                "step_name": "__sleep",
+                "segment": 4,
+            }),
+        );
+
+        dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
+
+        let log = calls.lock().unwrap();
+        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
+
+        assert_eq!(cas.len(), 1, "sleep fires exactly one complete_and_schedule");
+        assert!(failures.is_empty(), "no failures for a normal sleep completion");
+
+        if let Call::CompleteAndSchedule { new_task_id, new_metadata, .. } = &cas[0] {
+            assert_eq!(new_task_id, "exec-1-b4");
+            assert_eq!(new_metadata["mode"], "body");
+            assert_eq!(new_metadata["segment"], 4);
+        }
+    }
 
     #[test]
     fn worker_config_defaults_are_sane() {

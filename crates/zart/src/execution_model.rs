@@ -172,3 +172,148 @@ pub fn coordinator_id(metadata: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(String::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn from_metadata_empty_object_is_legacy() {
+        assert_eq!(ExecutionMode::from_metadata(&json!({})), ExecutionMode::Legacy);
+    }
+
+    #[test]
+    fn from_metadata_null_is_legacy() {
+        assert_eq!(ExecutionMode::from_metadata(&serde_json::Value::Null), ExecutionMode::Legacy);
+    }
+
+    #[test]
+    fn from_metadata_body_parses_segment() {
+        let meta = json!({ "mode": "body", "segment": 3 });
+        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body { segment: 3 });
+    }
+
+    #[test]
+    fn from_metadata_body_defaults_segment_to_zero_when_absent() {
+        let meta = json!({ "mode": "body" });
+        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body { segment: 0 });
+    }
+
+    #[test]
+    fn from_metadata_step_parses_name_segment_and_retry_attempt() {
+        let meta = json!({
+            "mode": "step",
+            "step_type": "step",
+            "step_name": "charge-card",
+            "segment": 2,
+            "retry_attempt": 1,
+        });
+        assert_eq!(
+            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::Step {
+                target_step: "charge-card".to_string(),
+                step_type: StepKind::Step,
+                next_body_segment: 2,
+                retry_attempt: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn from_metadata_step_defaults_segment_and_retry_to_sensible_values() {
+        let meta = json!({ "mode": "step", "step_name": "send-email" });
+        let mode = ExecutionMode::from_metadata(&meta);
+        assert!(matches!(mode, ExecutionMode::Step { next_body_segment: 1, retry_attempt: 0, .. }));
+    }
+
+    #[test]
+    fn from_metadata_step_type_sleep() {
+        let meta = json!({
+            "mode": "step",
+            "step_type": "sleep",
+            "step_name": "__sleep",
+            "segment": 1,
+        });
+        assert!(matches!(
+            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::Step { step_type: StepKind::Sleep, .. }
+        ));
+    }
+
+    #[test]
+    fn from_metadata_wait_all_step_type_becomes_coordinator() {
+        let meta = json!({
+            "mode": "step",
+            "step_type": "wait_all",
+            "segment": 4,
+            "wait_for": ["exec-1:step:a", "exec-1:step:b"],
+        });
+        assert_eq!(
+            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::Coordinator {
+                next_segment: 4,
+                wait_for: vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn from_metadata_coordinator_with_empty_wait_for() {
+        let meta = json!({ "mode": "step", "step_type": "wait_all", "segment": 1 });
+        assert_eq!(
+            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::Coordinator { next_segment: 1, wait_for: vec![] }
+        );
+    }
+
+    #[test]
+    fn is_new_model_false_for_legacy() {
+        assert!(!ExecutionMode::Legacy.is_new_model());
+    }
+
+    #[test]
+    fn is_new_model_true_for_body() {
+        assert!(ExecutionMode::Body { segment: 0 }.is_new_model());
+    }
+
+    #[test]
+    fn is_new_model_true_for_step() {
+        assert!(ExecutionMode::Step {
+            target_step: "x".to_string(),
+            step_type: StepKind::Step,
+            next_body_segment: 1,
+            retry_attempt: 0,
+        }
+        .is_new_model());
+    }
+
+    #[test]
+    fn is_new_model_true_for_coordinator() {
+        assert!(ExecutionMode::Coordinator { next_segment: 1, wait_for: vec![] }.is_new_model());
+    }
+
+    #[test]
+    fn is_wait_all_child_true_when_flag_present() {
+        assert!(is_wait_all_child(&json!({ "is_wait_all_child": true })));
+    }
+
+    #[test]
+    fn is_wait_all_child_false_when_absent() {
+        assert!(!is_wait_all_child(&json!({})));
+    }
+
+    #[test]
+    fn coordinator_id_extracts_value() {
+        let meta = json!({ "coordinator_id": "exec-1:coord:wait_all:2" });
+        assert_eq!(
+            coordinator_id(&meta),
+            Some("exec-1:coord:wait_all:2".to_string())
+        );
+    }
+
+    #[test]
+    fn coordinator_id_none_when_absent() {
+        assert!(coordinator_id(&json!({})).is_none());
+    }
+}

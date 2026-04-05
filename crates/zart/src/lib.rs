@@ -51,6 +51,9 @@ pub mod retry;
 pub mod step_ops;
 pub mod worker;
 
+#[cfg(test)]
+pub(crate) mod test_helpers;
+
 pub use api_trait::{DurableApi, into_durable_api};
 pub use context::{StepHandle, TaskContext};
 pub use durable::DurableScheduler;
