@@ -24,7 +24,7 @@ pub mod postgres;
 
 pub use error::StorageError;
 pub use recurrence::Recurrence;
-pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, TaskStatus};
+pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, StepLookup, TaskStatus};
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresScheduler;
@@ -59,6 +59,7 @@ pub trait Scheduler: Send + Sync {
         data: serde_json::Value,
         recurrence: Option<Recurrence>,
         execution_id: Option<&str>,
+        metadata: serde_json::Value,
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Poll for tasks that are due for execution.
@@ -110,49 +111,6 @@ pub trait Scheduler: Send + Sync {
     /// Run database migrations required by this backend.
     async fn run_migrations(&self) -> Result<(), StorageError>;
 
-    // ── Durable execution tracking ─────────────────────────────────────────
-
-    /// Insert a new durable execution record into `zart_executions`.
-    ///
-    /// Uses `ON CONFLICT DO NOTHING` so that calling `start_execution` twice
-    /// with the same `execution_id` is a safe no-op (idempotency key).
-    async fn start_execution(
-        &self,
-        execution_id: &str,
-        task_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        let _ = (execution_id, task_name, payload);
-        Ok(())
-    }
-
-    /// Mark a durable execution as successfully completed.
-    async fn complete_execution(
-        &self,
-        execution_id: &str,
-        result: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        let _ = (execution_id, result);
-        Ok(())
-    }
-
-    /// Mark a durable execution as failed.
-    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
-        let _ = execution_id;
-        Ok(())
-    }
-
-    /// Fetch a durable execution record by ID.
-    ///
-    /// Returns `None` if no execution with the given ID exists.
-    async fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<ExecutionRecord>, StorageError> {
-        let _ = execution_id;
-        Ok(None)
-    }
-
     /// Reset tasks that have been stuck in `picked_up` state longer than `stale_timeout`.
     ///
     /// A task becomes an orphan when the worker that locked it crashes without
@@ -166,58 +124,6 @@ pub trait Scheduler: Send + Sync {
     ) -> Result<usize, StorageError> {
         let _ = stale_timeout;
         Ok(0)
-    }
-
-    /// Cancel a running or scheduled durable execution.
-    ///
-    /// Marks the execution as `cancelled` and cancels any scheduled (not yet
-    /// running) task associated with it. Returns `true` if the execution was
-    /// found and transitioned to cancelled, `false` otherwise.
-    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
-        let _ = execution_id;
-        Ok(false)
-    }
-
-    /// List durable execution records with optional filters.
-    ///
-    /// Filters by `status` and/or `task_name` when provided. Results are
-    /// ordered by `scheduled_at DESC` and paginated with `limit`/`offset`.
-    async fn list_executions(
-        &self,
-        status: Option<ExecutionStatus>,
-        task_name: Option<&str>,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<ExecutionRecord>, StorageError> {
-        let _ = (status, task_name, limit, offset);
-        Ok(vec![])
-    }
-
-    /// Atomically inject an event payload into a waiting execution's task state
-    /// and reschedule the task for immediate execution.
-    ///
-    /// Returns `true` if a scheduled task for the execution was found and
-    /// updated, `false` if no such task exists (execution unknown or not waiting).
-    async fn reschedule_with_event(
-        &self,
-        execution_id: &str,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<bool, StorageError> {
-        let _ = (execution_id, event_name, payload);
-        Ok(false)
-    }
-
-    /// Reset a terminal execution so it can be retried.
-    ///
-    /// Sets status back to "scheduled", clears result/completed_at.
-    /// No-op for executions that don't exist.
-    async fn reset_execution(
-        &self,
-        _execution_id: &str,
-        _payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        Ok(())
     }
 
     /// Extend the lease of a task by updating `locked_at` to the current time.
@@ -234,6 +140,140 @@ pub trait Scheduler: Send + Sync {
         _lock_token: &str,
     ) -> Result<bool, StorageError> {
         Ok(false)
+    }
+
+    /// Atomically mark one task as completed and insert a new task in a single transaction.
+    ///
+    /// Used by the execution model to complete a step/coordinator/sleep task and
+    /// schedule the next body segment without a gap between the two operations.
+    async fn complete_and_schedule(
+        &self,
+        completed_task_id: &str,
+        result: Option<serde_json::Value>,
+        lock_token: &str,
+        new_task_id: &str,
+        new_task_name: &str,
+        new_execution_time: DateTime<Utc>,
+        new_data: serde_json::Value,
+        new_execution_id: Option<&str>,
+        new_metadata: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (completed_task_id, result, lock_token, new_task_id, new_task_name,
+                 new_execution_time, new_data, new_execution_id, new_metadata);
+        Err(StorageError::NotImplemented("complete_and_schedule"))
+    }
+
+}
+
+/// Storage operations for durable executions and the per-row step model.
+///
+/// Extends [`Scheduler`] for backends that support the `zart_executions` table
+/// and the execution-model step rows. Implement this alongside [`Scheduler`]
+/// to enable [`DurableScheduler`], [`Worker`], and [`TaskContext`] in their
+/// full durable-execution mode.
+///
+/// A plain task-queue backend only needs to implement [`Scheduler`].
+#[async_trait]
+pub trait DurableStorage: Send + Sync {
+    /// Insert a new durable execution record into `zart_executions`.
+    async fn start_execution(
+        &self,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (execution_id, task_name, payload);
+        Err(StorageError::NotImplemented("start_execution"))
+    }
+
+    /// Mark a durable execution as successfully completed.
+    async fn complete_execution(
+        &self,
+        execution_id: &str,
+        result: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (execution_id, result);
+        Err(StorageError::NotImplemented("complete_execution"))
+    }
+
+    /// Mark a durable execution as failed.
+    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
+        let _ = execution_id;
+        Err(StorageError::NotImplemented("fail_execution"))
+    }
+
+    /// Fetch a durable execution record by ID.
+    async fn get_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<ExecutionRecord>, StorageError> {
+        let _ = execution_id;
+        Err(StorageError::NotImplemented("get_execution"))
+    }
+
+    /// Cancel a running or scheduled durable execution.
+    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
+        let _ = execution_id;
+        Err(StorageError::NotImplemented("cancel_execution"))
+    }
+
+    /// List durable execution records with optional filters.
+    async fn list_executions(
+        &self,
+        status: Option<ExecutionStatus>,
+        task_name: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ExecutionRecord>, StorageError> {
+        let _ = (status, task_name, limit, offset);
+        Err(StorageError::NotImplemented("list_executions"))
+    }
+
+    /// Atomically complete a wait_for_event step task and schedule the next body segment.
+    ///
+    /// Finds the step task matching `execution_id` + `event_name` that is still
+    /// `scheduled` (i.e. the deadline has not yet fired), marks it completed with
+    /// `payload`, and inserts the next body task (derived from the step task's metadata).
+    ///
+    /// Returns `true` if the step was found and completed, `false` if not found
+    /// (event delivered too late — deadline fired and worker already holds the task).
+    async fn complete_event_step_and_schedule_body(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        let _ = (execution_id, event_name, payload);
+        Err(StorageError::NotImplemented("complete_event_step_and_schedule_body"))
+    }
+
+    /// Reset a terminal execution so it can be retried.
+    async fn reset_execution(
+        &self,
+        execution_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (execution_id, payload);
+        Err(StorageError::NotImplemented("reset_execution"))
+    }
+
+    /// Look up a step task by `execution_id` + `step_name`.
+    async fn get_step_status(
+        &self,
+        execution_id: &str,
+        step_name: &str,
+    ) -> Result<Option<StepLookup>, StorageError> {
+        let _ = (execution_id, step_name);
+        Err(StorageError::NotImplemented("get_step_status"))
+    }
+
+    /// Check whether all wait_all children are completed.
+    async fn check_wait_all_children(
+        &self,
+        wait_for_task_ids: &[String],
+    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        let _ = wait_for_task_ids;
+        Err(StorageError::NotImplemented("check_wait_all_children"))
     }
 }
 
@@ -268,6 +308,7 @@ mod tests {
             _data: serde_json::Value,
             _recurrence: Option<Recurrence>,
             _execution_id: Option<&str>,
+            _metadata: serde_json::Value,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
@@ -347,5 +388,35 @@ mod tests {
         let scheduler = Arc::new(StubScheduler);
         let cancelled = scheduler.cancel_task("task-1").await.unwrap();
         assert!(cancelled);
+    }
+
+    struct StubDurableStorage;
+
+    #[async_trait]
+    impl Scheduler for StubDurableStorage {
+        async fn schedule_now(&self, task_id: &str, _: &str, _: serde_json::Value, _: Option<&str>) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult { task_id: task_id.to_string(), execution_time: Utc::now() })
+        }
+        async fn schedule_at(&self, task_id: &str, _: &str, execution_time: DateTime<Utc>, _: serde_json::Value, _: Option<Recurrence>, _: Option<&str>, _: serde_json::Value) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult { task_id: task_id.to_string(), execution_time })
+        }
+        async fn poll_due(&self, _: DateTime<Utc>, _: usize) -> Result<Vec<FetchedTask>, StorageError> { Ok(vec![]) }
+        async fn update_task_state(&self, _: &str, _: serde_json::Value, _: DateTime<Utc>, _: &str) -> Result<(), StorageError> { Ok(()) }
+        async fn mark_completed(&self, _: &str, _: Option<serde_json::Value>, _: &str) -> Result<(), StorageError> { Ok(()) }
+        async fn mark_failed(&self, _: &str, _: &str, _: Option<DateTime<Utc>>, _: &str) -> Result<(), StorageError> { Ok(()) }
+        async fn cancel_task(&self, _: &str) -> Result<bool, StorageError> { Ok(true) }
+        async fn delete_task(&self, _: &str) -> Result<(), StorageError> { Ok(()) }
+        async fn run_migrations(&self) -> Result<(), StorageError> { Ok(()) }
+    }
+
+    impl DurableStorage for StubDurableStorage {}
+
+    #[tokio::test]
+    async fn complete_event_step_and_schedule_body_not_implemented_by_default() {
+        let storage = StubDurableStorage;
+        let result = storage
+            .complete_event_step_and_schedule_body("exec-1", "approval", serde_json::json!({}))
+            .await;
+        assert!(matches!(result, Err(StorageError::NotImplemented(_))));
     }
 }

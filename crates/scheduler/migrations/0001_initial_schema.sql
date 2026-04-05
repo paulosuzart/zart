@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS zart_tasks (
     -- Link to parent durable execution
     execution_id   TEXT,
 
+    -- Execution model metadata (mode, segment, step_name, step_type, etc.)
+    metadata       JSONB NOT NULL DEFAULT '{}',
+
     -- Error tracking
     last_error     TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -69,3 +72,18 @@ CREATE INDEX IF NOT EXISTS idx_zart_tasks_recurrence
 -- Lookup executions by status and schedule time (for listing / observability)
 CREATE INDEX IF NOT EXISTS idx_zart_executions_status
     ON zart_executions (status, scheduled_at);
+
+-- Execution model: all tasks belonging to a durable execution
+CREATE INDEX IF NOT EXISTS idx_zart_tasks_exec_metadata
+    ON zart_tasks ((metadata->>'execution_id'))
+    WHERE metadata->>'execution_id' IS NOT NULL;
+
+-- Execution model: fast step lookup by execution_id + step_name
+CREATE INDEX IF NOT EXISTS idx_zart_tasks_step_lookup
+    ON zart_tasks ((metadata->>'execution_id'), (metadata->>'step_name'), status)
+    WHERE metadata->>'mode' = 'step';
+
+-- Execution model: body segment lookup
+CREATE INDEX IF NOT EXISTS idx_zart_tasks_body_segment
+    ON zart_tasks ((metadata->>'execution_id'), CAST(metadata->>'segment' AS INTEGER))
+    WHERE metadata->>'mode' = 'body';

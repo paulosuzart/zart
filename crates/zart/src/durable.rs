@@ -6,7 +6,7 @@
 
 use crate::error::SchedulerError;
 use crate::registry::TaskRegistry;
-use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult, Scheduler};
+use scheduler::{DurableStorage, ExecutionRecord, ExecutionStatus, ScheduleResult, Scheduler};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -20,13 +20,13 @@ const MAX_WAIT_SECS: u64 = 30;
 /// - inserting an execution record in `zart_executions`
 /// - scheduling the root task in `zart_tasks`
 /// - querying and waiting for execution completion
-pub struct DurableScheduler<S: Scheduler> {
+pub struct DurableScheduler<S: Scheduler + DurableStorage> {
     scheduler: Arc<S>,
     #[allow(dead_code)]
     registry: Arc<TaskRegistry<S>>,
 }
 
-impl<S: Scheduler> DurableScheduler<S> {
+impl<S: Scheduler + DurableStorage> DurableScheduler<S> {
     /// Create a new `DurableScheduler`.
     pub fn new(scheduler: Arc<S>, registry: Arc<TaskRegistry<S>>) -> Self {
         Self {
@@ -166,13 +166,15 @@ impl<S: Scheduler> DurableScheduler<S> {
 
     /// Deliver an external event to a waiting execution.
     ///
-    /// Atomically injects `payload` into the execution's task state under
-    /// `event_name` and reschedules the task for immediate pickup.
+    /// Atomically marks the event's step task completed with `payload` and
+    /// schedules the next body segment. Races cleanly with the deadline worker:
+    /// if the deadline already fired and the step task is no longer `scheduled`,
+    /// returns [`SchedulerError::ExecutionNotFound`].
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::ExecutionNotFound`] if no scheduled task for
-    /// the given execution ID was found (not waiting or does not exist).
+    /// Returns [`SchedulerError::ExecutionNotFound`] if no scheduled
+    /// wait_for_event step task was found for the given execution ID and event name.
     pub async fn offer_event(
         &self,
         execution_id: &str,
@@ -181,7 +183,7 @@ impl<S: Scheduler> DurableScheduler<S> {
     ) -> Result<(), SchedulerError> {
         let found = self
             .scheduler
-            .reschedule_with_event(execution_id, event_name, payload)
+            .complete_event_step_and_schedule_body(execution_id, event_name, payload)
             .await?;
         if !found {
             return Err(SchedulerError::ExecutionNotFound(execution_id.to_string()));

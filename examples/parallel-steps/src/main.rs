@@ -47,7 +47,7 @@ impl TaskHandler for HealthCheckTask {
     type Data = HealthCheckInput;
     type Output = HealthCheckOutput;
 
-    async fn run<S: scheduler::Scheduler>(
+    async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
         &self,
         ctx: &mut TaskContext<S>,
         data: Self::Data,

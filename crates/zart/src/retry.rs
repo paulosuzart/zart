@@ -53,7 +53,7 @@ mod duration_millis_opt {
 /// // Retry 5 times with exponential backoff starting at 1 second.
 /// let exp = RetryConfig::exponential(5, Duration::from_secs(1));
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (does not count the initial attempt).
     ///

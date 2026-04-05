@@ -3,7 +3,7 @@
 use crate::context::TaskContext;
 use crate::error::TaskError;
 use async_trait::async_trait;
-use scheduler::Scheduler;
+use scheduler::{DurableStorage, Scheduler};
 use std::collections::HashMap;
 
 /// A user-defined task handler.
@@ -45,7 +45,7 @@ pub trait TaskHandler: Send + Sync + 'static {
     ///
     /// The `ctx` provides the step API and access to the execution state.
     /// `data` is the deserialized input payload provided when the execution was started.
-    async fn run<S: Scheduler>(
+    async fn run<S: Scheduler + DurableStorage>(
         &self,
         ctx: &mut TaskContext<S>,
         data: Self::Data,
@@ -68,7 +68,7 @@ pub trait TaskHandler: Send + Sync + 'static {
 /// `S` is fixed at the registry level so that `execute` is a concrete method
 /// (not a generic one) — which allows it to be used as a trait object.
 #[async_trait]
-pub trait RegisteredTask<S: Scheduler>: Send + Sync {
+pub trait RegisteredTask<S: Scheduler + DurableStorage>: Send + Sync {
     /// Execute the task with raw JSON data, returning a raw JSON result.
     async fn execute(
         &self,
@@ -87,7 +87,7 @@ struct TaskHandlerAdapter<T: TaskHandler>(T);
 impl<T, S> RegisteredTask<S> for TaskHandlerAdapter<T>
 where
     T: TaskHandler,
-    S: Scheduler + Send + Sync + 'static,
+    S: Scheduler + DurableStorage + Send + Sync + 'static,
 {
     async fn execute(
         &self,
@@ -119,11 +119,11 @@ where
 /// share the same backend, enabling type-erased dispatch via `Box<dyn RegisteredTask<S>>`.
 ///
 /// The registry is built once at startup and shared (via [`Arc`]) across all workers.
-pub struct TaskRegistry<S: Scheduler> {
+pub struct TaskRegistry<S: Scheduler + DurableStorage> {
     handlers: HashMap<String, Box<dyn RegisteredTask<S>>>,
 }
 
-impl<S: Scheduler + Send + Sync + 'static> TaskRegistry<S> {
+impl<S: Scheduler + DurableStorage + Send + Sync + 'static> TaskRegistry<S> {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
@@ -155,7 +155,7 @@ impl<S: Scheduler + Send + Sync + 'static> TaskRegistry<S> {
     }
 }
 
-impl<S: Scheduler + Send + Sync + 'static> Default for TaskRegistry<S> {
+impl<S: Scheduler + DurableStorage + Send + Sync + 'static> Default for TaskRegistry<S> {
     fn default() -> Self {
         Self::new()
     }
@@ -192,6 +192,7 @@ mod tests {
             _data: serde_json::Value,
             _recurrence: Option<Recurrence>,
             _execution_id: Option<&str>,
+            _metadata: serde_json::Value,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
@@ -249,6 +250,8 @@ mod tests {
         }
     }
 
+    impl DurableStorage for NoopScheduler {}
+
     struct EchoTask;
 
     #[async_trait]
@@ -256,7 +259,7 @@ mod tests {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: Scheduler>(
+        async fn run<S: Scheduler + DurableStorage>(
             &self,
             _ctx: &mut TaskContext<S>,
             data: Self::Data,
