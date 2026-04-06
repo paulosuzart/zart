@@ -70,9 +70,19 @@ mod integration {
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            let step1: i32 = ctx.step("step-one", || async { Ok(21i32) }).await?;
+            let step1: i32 = ctx
+                .step("step-one", |sctx| async move {
+                    println!("[step-one] Attempt {}", sctx.current_attempt() + 1);
+                    Ok(21i32)
+                })
+                .await?;
 
-            let step2: i32 = ctx.step("step-two", || async { Ok(step1 * 2) }).await?;
+            let step2: i32 = ctx
+                .step("step-two", |_sctx| async move {
+                    println!("[step-two] running");
+                    Ok(step1 * 2)
+                })
+                .await?;
 
             Ok(serde_json::json!({ "answer": step2 }))
         }
@@ -91,7 +101,8 @@ mod integration {
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            ctx.step("fail-step", || async {
+            ctx.step("fail-step", |_sctx| async {
+                println!("[fail-step] Failing intentionally");
                 Err::<serde_json::Value, _>(StepError::Failed {
                     step: "fail-step".to_string(),
                     reason: "intentional failure".to_string(),
@@ -123,9 +134,14 @@ mod integration {
                 .step_with_retry(
                     "transient-step",
                     RetryConfig::fixed(3, Duration::from_millis(50)),
-                    move || {
+                    move |sctx| {
                         let count = attempts.fetch_add(1, Ordering::SeqCst);
                         async move {
+                            println!(
+                                "[transient-step] Attempt {} (0-indexed: {})",
+                                sctx.current_attempt() + 1,
+                                sctx.current_attempt()
+                            );
                             if count < 2 {
                                 Err(StepError::Failed {
                                     step: "transient-step".to_string(),
@@ -427,9 +443,18 @@ mod integration {
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            let h1 = ctx.schedule_step("step-a", || async { Ok::<i32, _>(1) });
-            let h2 = ctx.schedule_step("step-b", || async { Ok::<i32, _>(2) });
-            let h3 = ctx.schedule_step("step-c", || async { Ok::<i32, _>(3) });
+            let h1 = ctx.schedule_step("step-a", |_sctx| async {
+                println!("[step-a] running");
+                Ok::<i32, _>(1)
+            });
+            let h2 = ctx.schedule_step("step-b", |_sctx| async {
+                println!("[step-b] running");
+                Ok::<i32, _>(2)
+            });
+            let h3 = ctx.schedule_step("step-c", |_sctx| async {
+                println!("[step-c] running");
+                Ok::<i32, _>(3)
+            });
 
             let results = ctx.wait_all(vec![h1, h2, h3]).await?;
             let sum: i32 = results.into_iter().map(|r| r.unwrap()).sum();
@@ -579,7 +604,7 @@ mod integration {
                 ctx.step_with_retry(
                     "always-fail",
                     RetryConfig::fixed(1, Duration::from_millis(50)),
-                    || async {
+                    |_sctx| async {
                         Err::<String, _>(StepError::Failed {
                             step: "always-fail".to_string(),
                             reason: "permanent error".to_string(),
@@ -672,8 +697,11 @@ mod integration {
 
             // This is the first call: returns StepError::Scheduled, causing
             // the worker to call update_task_state and re-queue the task.
-            ctx.step("gated-step", || async { Ok::<i32, StepError>(1) })
-                .await?;
+            ctx.step("gated-step", |_sctx| async {
+                println!("[gated-step] Scheduling step");
+                Ok::<i32, StepError>(1)
+            })
+            .await?;
 
             Ok(serde_json::json!({}))
         }

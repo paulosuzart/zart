@@ -110,10 +110,11 @@ mod example_tests {
                     .step_with_retry(
                         "lookup-zip",
                         zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        || {
+                        |sctx| {
                             let client = client.clone();
                             let zip = data.zip_code.clone();
                             async move {
+                                let _ = sctx;
                                 let resp = client
                                     .get(format!("https://api.zippopotam.us/us/{zip}"))
                                     .send()
@@ -145,10 +146,11 @@ mod example_tests {
                     .step_with_retry(
                         "find-breweries",
                         zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        || {
+                        |sctx| {
                             let client = client.clone();
                             let city = city.clone();
                             async move {
+                                let _ = sctx;
                                 let resp = client
                                     .get("https://api.openbrewerydb.org/v1/breweries")
                                     .query(&[("by_city", &city)])
@@ -173,7 +175,7 @@ mod example_tests {
 
                 // Step 3: Transform to output type
                 let breweries: Vec<BreweryInfo> = ctx
-                    .step("transform", || {
+                    .step("transform", |_sctx| {
                         let raw = raw.clone();
                         let city = city.clone();
                         let state = state.clone();
@@ -282,7 +284,7 @@ mod example_tests {
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
                 // Step 1: Validate request (fake step)
-                ctx.step("validate-request", || {
+                ctx.step("validate-request", |_sctx| {
                     let name = data.requester_name.clone();
                     async move {
                         if name.is_empty() {
@@ -414,7 +416,7 @@ mod example_tests {
                 for service in &data.services {
                     let handle = ctx.schedule_step(&format!("check-{service}"), {
                         let service = service.clone();
-                        move || {
+                        move |_sctx| {
                             let service = service.clone();
                             async move {
                                 let (status, response_ms, issues) = match service.as_str() {
@@ -568,7 +570,7 @@ mod example_tests {
                     .step_with_retry(
                         "extract-location",
                         zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        || {
+                        |_sctx| {
                             let query = data.query.clone();
                             async move {
                                 // Simulate LLM extraction with simple parsing
@@ -591,9 +593,10 @@ mod example_tests {
                     .step_with_retry(
                         "find-breweries",
                         zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        || {
+                        |sctx| {
                             let city = location.city.clone();
                             async move {
+                                let _ = sctx;
                                 let client = reqwest::Client::new();
                                 let resp = client
                                     .get("https://api.openbrewerydb.org/v1/breweries")
@@ -619,7 +622,7 @@ mod example_tests {
 
                 // Step 3: Transform to output type
                 let breweries: Vec<BreweryInfo> = ctx
-                    .step("transform-results", || {
+                    .step("transform-results", |_sctx| {
                         let raw = raw.clone();
                         let city = location.city.clone();
                         let state = location.state.clone();
@@ -644,7 +647,7 @@ mod example_tests {
                     .step_with_retry(
                         "generate-summary",
                         zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        || {
+                        |_sctx| {
                             let location = location.clone();
                             let breweries = breweries.clone();
                             async move {

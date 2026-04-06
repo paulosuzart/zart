@@ -59,9 +59,10 @@ impl DurableExecution for ApprovalTask {
     ) -> Result<Self::Output, TaskError> {
         // Step 1: Validate the request (fake step)
         let _validated = ctx
-            .step("validate-request", || {
+            .step("validate-request", |ctx| {
                 let request = data.clone();
                 async move {
+                    println!("[validate-request] Attempt {}", ctx.current_attempt() + 1);
                     if request.requester_name.is_empty() {
                         return Err(StepError::Failed {
                             step: "validate-request".to_string(),
@@ -83,10 +84,11 @@ impl DurableExecution for ApprovalTask {
 
         // Step 3: Act on the decision
         if decision.approved {
-            ctx.step("process-approved", || {
+            ctx.step("process-approved", |ctx| {
                 let resource = data.resource.clone();
                 let requester = data.requester_name.clone();
                 async move {
+                    println!("[process-approved] Attempt {}", ctx.current_attempt() + 1);
                     // In a real system, this would provision the resource
                     Ok(format!("Provisioned {} for {}", resource, requester))
                 }

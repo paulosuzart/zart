@@ -13,12 +13,66 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tracing::instrument;
 
+// ── StepContext (read-only execution metadata) ────────────────────────────────
+
+/// Read-only execution metadata passed to step closures.
+///
+/// This struct provides access to execution metadata like the current retry
+/// attempt, execution ID, and task name. It is deliberately separate from
+/// [`TaskContext`] which provides scheduling methods (`step`, `schedule_step`,
+/// etc.) that require `&mut self`.
+///
+/// Step closures receive a `StepContext` so they can inspect retry state
+/// without needing mutable access to the full [`TaskContext`].
+#[derive(Clone)]
+pub struct StepContext {
+    execution_id: String,
+    task_name: String,
+    current_attempt: usize,
+    max_retries: Option<usize>,
+}
+
+impl StepContext {
+    /// Returns the current retry attempt number (0-indexed).
+    ///
+    /// Returns `0` if this is the first attempt or if no retry is configured.
+    /// Returns `1` for the first retry, `2` for the second retry, etc.
+    pub fn current_attempt(&self) -> usize {
+        self.current_attempt
+    }
+
+    /// Returns the maximum number of retry attempts configured for this step.
+    ///
+    /// Returns `None` if no retry policy is configured.
+    pub fn max_retries(&self) -> Option<usize> {
+        self.max_retries
+    }
+
+    /// Returns `true` if this is a retry attempt (i.e., not the first attempt).
+    pub fn is_retry_attempt(&self) -> bool {
+        self.current_attempt > 0
+    }
+
+    /// Returns the unique ID of the enclosing durable execution.
+    pub fn execution_id(&self) -> &str {
+        &self.execution_id
+    }
+
+    /// Returns the registered name of this task handler.
+    pub fn task_name(&self) -> &str {
+        &self.task_name
+    }
+}
+
 // ── Internal type alias ───────────────────────────────────────────────────────
 
-/// A boxed, one-shot async function that yields a JSON-serialized step result.
-/// Used internally by [`StepHandle`] to store a pending step lambda.
+/// A boxed, one-shot async function that receives a [`StepContext`] and yields a
+/// JSON-serialized step result. Used internally by [`StepHandle`] to store a
+/// pending step lambda.
 type PendingFn = Box<
-    dyn FnOnce() -> Pin<
+    dyn FnOnce(
+            StepContext,
+        ) -> Pin<
             Box<dyn Future<Output = Result<serde_json::Value, StepError>> + Send + 'static>,
         > + Send
         + 'static,
@@ -178,6 +232,29 @@ impl TaskContext {
         self
     }
 
+    /// Construct a [`StepContext`] with the current execution metadata.
+    ///
+    /// This is used internally to pass read-only metadata to step closures.
+    fn step_context(&self) -> StepContext {
+        let (current_attempt, max_retries) = match &self.execution_mode {
+            ExecutionMode::Step {
+                retry_attempt,
+                retry_config,
+                ..
+            } => (
+                *retry_attempt,
+                retry_config.as_ref().map(|rc| rc.max_attempts),
+            ),
+            _ => (0, None),
+        };
+        StepContext {
+            execution_id: self.execution_id.clone(),
+            task_name: self.task_name.clone(),
+            current_attempt,
+            max_retries,
+        }
+    }
+
     /// Execute a named step with no retries and no timeout.
     ///
     /// # Control flow
@@ -186,11 +263,16 @@ impl TaskContext {
     ///   The body task is then marked complete; the step runs independently.
     /// - **Step `Completed`**: deserializes the stored result and returns `Ok(T)`
     ///   immediately (lambda not called).
+    ///
+    /// # Closure signature
+    ///
+    /// The closure receives a [`StepContext`] so you can access execution metadata
+    /// like `ctx.current_attempt()`, `ctx.max_retries()`, and `ctx.is_retry_attempt()`.
     #[instrument(name = "step.execute", skip(self, step_fn), fields(step_name = step_name))]
     pub async fn step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         self.step_internal(step_name, None, step_fn).await
@@ -205,7 +287,7 @@ impl TaskContext {
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         match &self.execution_mode {
@@ -238,7 +320,7 @@ impl TaskContext {
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         let lookup = self
@@ -320,12 +402,12 @@ impl TaskContext {
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         if step_name == target {
             // Execute the lambda for this step.
-            let lambda_result = step_fn().await;
+            let lambda_result = step_fn(self.step_context()).await;
             let result = match lambda_result {
                 Ok(v) => v,
                 Err(e) => {
@@ -468,6 +550,11 @@ impl TaskContext {
     /// In body mode, embeds the retry config in the step task's metadata so the
     /// worker can reschedule on failure. In step mode, uses the config from the
     /// task metadata (already loaded into `execution_mode`) to retry on failure.
+    ///
+    /// # Closure signature
+    ///
+    /// The closure receives a [`StepContext`] so you can access execution metadata
+    /// like `ctx.current_attempt()`, `ctx.max_retries()`, and `ctx.is_retry_attempt()`.
     pub async fn step_with_retry<T, F, Fut>(
         &mut self,
         step_name: &str,
@@ -476,7 +563,7 @@ impl TaskContext {
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         self.step_internal(step_name, Some(retry_config), step_fn)
@@ -495,7 +582,7 @@ impl TaskContext {
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         self.step(step_name, step_fn).await
@@ -515,12 +602,12 @@ impl TaskContext {
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
+        F: FnOnce(StepContext) -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         let step_name_owned = step_name.to_string();
-        self.step(step_name, move || async move {
-            tokio::time::timeout(timeout, step_fn())
+        self.step(step_name, move |sctx| async move {
+            tokio::time::timeout(timeout, step_fn(sctx))
                 .await
                 .map_err(|_| StepError::Timeout {
                     step: step_name_owned,
@@ -543,7 +630,7 @@ impl TaskContext {
     pub fn schedule_step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> StepHandle<T>
     where
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: FnOnce() -> Fut + Send + 'static,
+        F: FnOnce(StepContext) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, StepError>> + Send + 'static,
     {
         let step_name_str = step_name.to_string();
@@ -557,9 +644,9 @@ impl TaskContext {
         let pending: Option<PendingFn> =
             if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
                 let name_for_err = step_name_str.clone();
-                Some(Box::new(move || {
+                Some(Box::new(move |sctx: StepContext| {
                     Box::pin(async move {
-                        let result = step_fn().await?;
+                        let result = step_fn(sctx).await?;
                         serde_json::to_value(result).map_err(|e| StepError::Failed {
                             step: name_for_err,
                             reason: format!("serialize error: {e}"),
@@ -741,7 +828,7 @@ impl TaskContext {
         for handle in handles {
             if handle.step_name == target {
                 if let Some(pending_fn) = handle.pending {
-                    let json_result = pending_fn().await;
+                    let json_result = pending_fn(self.step_context()).await;
                     match json_result {
                         Ok(json_val) => {
                             let step_task_id = self.task_id.clone();
@@ -990,6 +1077,57 @@ impl TaskContext {
     pub fn task_name(&self) -> &str {
         &self.task_name
     }
+
+    /// Returns the current retry attempt number (0-indexed) for this step.
+    ///
+    /// Returns `0` if this is the first attempt or if no retry is configured.
+    /// Returns `1` for the first retry, `2` for the second retry, etc.
+    ///
+    /// This is useful for implementing intentional failure patterns in examples
+    /// or for logging/debugging retry behavior.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.step_with_retry("risky-op", RetryConfig::fixed(3, Duration::from_secs(1)), |ctx| async move {
+    ///     if ctx.current_attempt() == 0 {
+    ///         // Simulate transient failure on first attempt
+    ///         return Err(anyhow!("Temporary failure - will retry"));
+    ///     }
+    ///     // Succeed on retry
+    ///     Ok(SuccessResult { message: "Succeeded!" })
+    /// }).await
+    /// ```
+    pub fn current_attempt(&self) -> usize {
+        match &self.execution_mode {
+            ExecutionMode::Step { retry_attempt, .. } => *retry_attempt,
+            _ => 0,
+        }
+    }
+
+    /// Returns the maximum number of retry attempts configured for this step.
+    ///
+    /// Returns `None` if no retry policy is configured (i.e., using `step()` instead of `step_with_retry()`).
+    /// Returns `Some(n)` where `n` is the max retry count from the [`RetryConfig`].
+    ///
+    /// Note: This is the maximum number of *retries*, not total attempts.
+    /// Total attempts = `max_retries + 1` (initial attempt + retries).
+    pub fn max_retries(&self) -> Option<usize> {
+        match &self.execution_mode {
+            ExecutionMode::Step { retry_config, .. } => {
+                retry_config.as_ref().map(|rc| rc.max_attempts)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if this is a retry attempt (i.e., not the first attempt).
+    ///
+    /// Equivalent to `ctx.current_attempt() > 0`.
+    /// Useful for conditional logic that should only run on retries.
+    pub fn is_retry_attempt(&self) -> bool {
+        self.current_attempt() > 0
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -1201,7 +1339,7 @@ mod tests {
         let mut ctx = make_body_ctx(scheduler, 0);
 
         let result = ctx
-            .step("charge-card", || async { Ok::<u32, StepError>(99) })
+            .step("charge-card", |_sctx| async { Ok::<u32, StepError>(99) })
             .await;
 
         assert!(
@@ -1240,7 +1378,7 @@ mod tests {
 
         let mut lambda_called = false;
         let result: Result<i32, _> = ctx
-            .step("charge-card", || {
+            .step("charge-card", |_sctx| {
                 lambda_called = true;
                 async { Ok::<i32, StepError>(0) }
             })
@@ -1265,7 +1403,7 @@ mod tests {
         let mut ctx = make_body_ctx(scheduler, 1);
 
         let result = ctx
-            .step("charge-card", || async { Ok::<u32, StepError>(1) })
+            .step("charge-card", |_sctx| async { Ok::<u32, StepError>(1) })
             .await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
@@ -1286,7 +1424,7 @@ mod tests {
 
         let mut lambda_called = false;
         let result: Result<u32, _> = ctx
-            .step("charge-card", || {
+            .step("charge-card", |_sctx| {
                 lambda_called = true;
                 async { Ok::<u32, StepError>(99) }
             })
@@ -1337,7 +1475,7 @@ mod tests {
 
         let mut lambda_called = false;
         let result: Result<i32, _> = ctx
-            .step("step-one", || {
+            .step("step-one", |_sctx| {
                 lambda_called = true;
                 async { Ok::<i32, StepError>(0) }
             })
@@ -1362,9 +1500,9 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
 
-        let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(1) });
-        let h2 = ctx.schedule_step("step-b", || async { Ok::<u32, StepError>(2) });
-        let h3 = ctx.schedule_step("step-c", || async { Ok::<u32, StepError>(3) });
+        let h1 = ctx.schedule_step("step-a", |_sctx| async { Ok::<u32, StepError>(1) });
+        let h2 = ctx.schedule_step("step-b", |_sctx| async { Ok::<u32, StepError>(2) });
+        let h3 = ctx.schedule_step("step-c", |_sctx| async { Ok::<u32, StepError>(3) });
         let result = ctx.wait_all(vec![h1, h2, h3]).await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
@@ -1421,8 +1559,8 @@ mod tests {
             .build();
         let mut ctx = make_body_ctx(scheduler, 1);
 
-        let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(99) });
-        let h2 = ctx.schedule_step("step-b", || async { Ok::<u32, StepError>(99) });
+        let h1 = ctx.schedule_step("step-a", |_sctx| async { Ok::<u32, StepError>(99) });
+        let h2 = ctx.schedule_step("step-b", |_sctx| async { Ok::<u32, StepError>(99) });
         let results = ctx.wait_all(vec![h1, h2]).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -1463,9 +1601,9 @@ mod tests {
             retry_config: None,
         });
 
-        let h1 = ctx.schedule_step("step-a", || async { Ok::<u32, StepError>(0) });
-        let h2 = ctx.schedule_step("step-b", || async { Ok::<u32, StepError>(2) });
-        let h3 = ctx.schedule_step("step-c", || async { Ok::<u32, StepError>(0) });
+        let h1 = ctx.schedule_step("step-a", |_sctx| async { Ok::<u32, StepError>(0) });
+        let h2 = ctx.schedule_step("step-b", |_sctx| async { Ok::<u32, StepError>(2) });
+        let h3 = ctx.schedule_step("step-c", |_sctx| async { Ok::<u32, StepError>(0) });
         let result = ctx.wait_all(vec![h1, h2, h3]).await;
 
         assert!(
@@ -1581,7 +1719,7 @@ mod tests {
 
         let config = RetryConfig::fixed(3, Duration::from_secs(5));
         let result = ctx
-            .step_with_retry("charge-card", config, || async { Ok::<u32, StepError>(99) })
+            .step_with_retry("charge-card", config, |_sctx| async { Ok::<u32, StepError>(99) })
             .await;
 
         assert!(
@@ -1620,7 +1758,7 @@ mod tests {
         );
 
         let result = ctx
-            .step("charge-card", || async {
+            .step("charge-card", |_sctx| async {
                 Err::<u32, _>(StepError::Failed {
                     step: "charge-card".to_string(),
                     reason: "card declined".to_string(),
@@ -1674,7 +1812,7 @@ mod tests {
         );
 
         let result = ctx
-            .step("charge-card", || async {
+            .step("charge-card", |_sctx| async {
                 Err::<u32, _>(StepError::Failed {
                     step: "charge-card".to_string(),
                     reason: "still declining".to_string(),
@@ -1710,7 +1848,7 @@ mod tests {
         );
 
         let result = ctx
-            .step("charge-card", || async { Ok::<u32, StepError>(42) })
+            .step("charge-card", |_sctx| async { Ok::<u32, StepError>(42) })
             .await;
 
         assert!(

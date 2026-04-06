@@ -80,10 +80,11 @@ async fn brewery_finder(
     let (city, state) = z_step_with_retry!(
         "lookup-zip",
         RetryConfig::exponential(3, Duration::from_secs(1)),
-        || {
+        |ctx| {
             let client = client.clone();
             let zip = data.zip_code.clone();
             async move {
+                println!("[lookup-zip] Attempt {}", ctx.current_attempt() + 1);
                 let resp = client
                     .get(format!("https://api.zippopotam.us/us/{zip}"))
                     .send()
@@ -110,10 +111,11 @@ async fn brewery_finder(
     let raw_breweries = z_step_with_retry!(
         "find-breweries",
         RetryConfig::exponential(3, Duration::from_secs(1)),
-        || {
+        |ctx| {
             let client = client.clone();
             let city = city.clone();
             async move {
+                println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
                 let resp = client
                     .get("https://api.openbrewerydb.org/v1/breweries")
                     .query(&[("by_city", &city)])
@@ -136,11 +138,12 @@ async fn brewery_finder(
     .await?;
 
     // Step 3: Transform raw data into structured output (no retries needed)
-    let breweries: Vec<BreweryInfo> = z_step!("transform-results", || {
+    let breweries: Vec<BreweryInfo> = z_step!("transform-results", |_ctx| {
         let raw = raw_breweries.clone();
         let city = city.clone();
         let state = state.clone();
         async move {
+            println!("[transform-results] Processing {} breweries", raw.len());
             Ok(raw
                 .into_iter()
                 .map(|b| BreweryInfo {

@@ -309,10 +309,15 @@ impl Parse for ZStepInput {
 /// Expands to `ctx.step(name, closure)`. The variable `ctx` must be in scope
 /// (it is always available inside a `#[zart_durable]` handler).
 ///
+/// The closure receives a [`StepContext`](zart::context::StepContext) so you can access
+/// execution metadata like `sctx.current_attempt()`, `sctx.max_retries()`, and
+/// `sctx.is_retry_attempt()`.
+///
 /// # Example
 ///
 /// ```rust,ignore
-/// let email_id = z_step!("send-email", || async {
+/// let email_id = z_step!("send-email", |sctx| async move {
+///     println!("Attempt: {}", sctx.current_attempt());
 ///     Ok(send_email(&data.email).await?)
 /// }).await?;
 /// ```
@@ -320,7 +325,8 @@ impl Parse for ZStepInput {
 /// Expands to:
 ///
 /// ```rust,ignore
-/// let email_id = ctx.step("send-email", || async {
+/// let email_id = ctx.step("send-email", |sctx| async move {
+///     println!("Attempt: {}", sctx.current_attempt());
 ///     Ok(send_email(&data.email).await?)
 /// }).await?;
 /// ```
@@ -358,13 +364,23 @@ impl Parse for ZStepRetryInput {
 ///
 /// Expands to `ctx.step_with_retry(name, config, closure)`.
 ///
+/// The closure receives a [`StepContext`](zart::context::StepContext) so you can access
+/// execution metadata like `sctx.current_attempt()`, `sctx.max_retries()`, and
+/// `sctx.is_retry_attempt()`.
+///
 /// # Example
 ///
 /// ```rust,ignore
 /// z_step_with_retry!(
 ///     "call-api",
 ///     RetryConfig::exponential(3, Duration::from_secs(5)),
-///     || async { external_api.call().await }
+///     |sctx| async move {
+///         if sctx.current_attempt() == 0 {
+///             // Simulate transient failure on first attempt
+///             return Err(StepError::Failed { step: "call-api".into(), reason: "timeout".into() });
+///         }
+///         external_api.call().await
+///     }
 /// ).await?;
 /// ```
 #[proc_macro]

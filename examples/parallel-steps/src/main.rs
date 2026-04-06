@@ -57,9 +57,10 @@ impl DurableExecution for HealthCheckTask {
         for service in &data.services {
             let handle = ctx.schedule_step(&format!("check-{service}"), {
                 let service = service.clone();
-                move || {
+                move |ctx| {
                     let service = service.clone();
                     async move {
+                        println!("[check-{}] Attempt {}", service, ctx.current_attempt() + 1);
                         // Simulate a health check with varying latency and status
                         let (status, response_ms, issues) = match service.as_str() {
                             "auth-api" => ("healthy".to_string(), 42, vec![]),

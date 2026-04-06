@@ -54,10 +54,7 @@ pub trait Scheduler: Send + Sync {
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Schedule a task for execution at a specific point in time.
-    async fn schedule_at(
-        &self,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError>;
+    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError>;
 
     /// Poll for tasks that are due for execution.
     ///

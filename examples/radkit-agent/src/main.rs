@@ -112,10 +112,11 @@ impl DurableExecution for RadkitAgent {
             .step_with_retry(
                 "extract-location",
                 RetryConfig::exponential(3, Duration::from_secs(2)),
-                || {
+                |sctx| {
                     let llm = self.llm.clone();
                     let query = data.query.clone();
                     async move {
+                        println!("[extract-location] Attempt {}", sctx.current_attempt() + 1);
                         // Build extraction prompt
                         let prompt = format!(
                             r#"Extract the city and state from this query. Return valid JSON.
@@ -154,13 +155,14 @@ Respond with only a JSON object with "city" and "state" fields."#
         );
 
         // Step 2: Find breweries in the extracted city via Open Brewery DB (with retries)
-        let raw_breweries = ctx
+        let raw_breweries: Vec<BreweryRaw> = ctx
             .step_with_retry(
                 "find-breweries",
                 RetryConfig::exponential(3, Duration::from_secs(1)),
-                || {
+                |sctx| {
                     let city = location.city.clone();
                     async move {
+                        println!("[find-breweries] Attempt {}", sctx.current_attempt() + 1);
                         let client = reqwest::Client::new();
                         let resp = client
                             .get("https://api.openbrewerydb.org/v1/breweries")
@@ -187,7 +189,7 @@ Respond with only a JSON object with "city" and "state" fields."#
 
         // Step 3: Transform raw data into structured output
         let breweries: Vec<BreweryInfo> = ctx
-            .step("transform-results", || {
+            .step("transform-results", |_sctx| {
                 let raw = raw_breweries.clone();
                 let city = location.city.clone();
                 let state = location.state.clone();
@@ -210,12 +212,13 @@ Respond with only a JSON object with "city" and "state" fields."#
             .step_with_retry(
                 "generate-summary",
                 RetryConfig::exponential(3, Duration::from_secs(2)),
-                || {
+                |sctx| {
                     let llm = self.llm.clone();
                     let query = data.query.clone();
                     let location = location.clone();
                     let breweries = breweries.clone();
                     async move {
+                        println!("[generate-summary] Attempt {}", sctx.current_attempt() + 1);
                         let brewery_list = breweries
                             .iter()
                             .take(5)

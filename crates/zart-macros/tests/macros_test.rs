@@ -61,10 +61,7 @@ impl Scheduler for MockScheduler {
         })
     }
 
-    async fn schedule_at(
-        &self,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError> {
+    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
             task_id: params.task_id,
             execution_time: params.execution_time,
@@ -164,7 +161,7 @@ fn make_ctx() -> TaskContext {
 #[tokio::test]
 async fn z_step_first_call_returns_scheduled() {
     let mut ctx = make_ctx();
-    let result = z_step!("my-step", || async { Ok::<i32, StepError>(42) }).await;
+    let result = z_step!("my-step", |_sctx| async { Ok::<i32, StepError>(42) }).await;
 
     assert!(
         matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "my-step"),
@@ -188,7 +185,7 @@ async fn z_step_completed_step_returns_cached_result() {
     );
 
     // The closure must NOT be called; the cached value (99) is returned.
-    let result = z_step!("cached-step", || async {
+    let result = z_step!("cached-step", |_sctx| async {
         // If this runs, the test should panic to flag a bug.
         panic!("closure should not be called for a completed step");
         #[allow(unreachable_code)]
@@ -208,7 +205,7 @@ async fn z_step_with_retry_first_call_returns_scheduled() {
     let mut ctx = make_ctx();
     let config = RetryConfig::fixed(3, Duration::from_millis(10));
 
-    let result = z_step_with_retry!("retry-step", config, || async {
+    let result = z_step_with_retry!("retry-step", config, |_sctx| async {
         Ok::<String, StepError>("ok".to_string())
     })
     .await;
@@ -342,7 +339,7 @@ fn zart_durable_no_timeout_returns_none() {
 /// causing the handler to return `Err(TaskError::StepFailed)`.
 #[zart_durable("step-task")]
 async fn step_using_handler(ctx: &mut TaskContext, data: String) -> Result<String, TaskError> {
-    let processed = z_step!("process", || async {
+    let processed = z_step!("process", |_sctx| async {
         Ok::<String, StepError>(data.to_uppercase())
     })
     .await?;
@@ -368,7 +365,7 @@ async fn retry_step_handler(ctx: &mut TaskContext, data: u32) -> Result<u32, Tas
     let result = z_step_with_retry!(
         "compute",
         RetryConfig::fixed(3, Duration::from_millis(10)),
-        || async { Ok::<u32, StepError>(data + 1) }
+        |_sctx| async { Ok::<u32, StepError>(data + 1) }
     )
     .await?;
     Ok(result)
@@ -416,7 +413,7 @@ async fn zart_durable_struct_data_type() {
 async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, TaskError> {
     let mut total = 0u32;
     z_durable_loop!(data, |item| {
-        let v = z_step!(&format!("item-{item}"), || async {
+        let v = z_step!(&format!("item-{item}"), |_sctx| async {
             Ok::<u32, StepError>(item * 2)
         })
         .await?;
