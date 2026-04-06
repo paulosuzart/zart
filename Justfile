@@ -28,7 +28,13 @@ test:
 # Run all tests including those that require a running PostgreSQL instance.
 # Uses --test-threads=1 so integration tests don't race each other via SKIP LOCKED.
 test-integration:
-    cargo test --workspace -- --include-ignored --test-threads=1
+    cargo test --workspace --features scheduler/postgres -- --include-ignored --test-threads=1
+
+# Run integration tests (PostgreSQL required, internet NOT required)
+# Excludes example tests that call external APIs
+test-integration-core:
+    cargo test -p scheduler --test integration_test --features postgres -- --include-ignored --test-threads=1
+    cargo test -p zart --test integration_test -- --include-ignored --test-threads=1
 
 # Run tests for a specific crate only
 test-crate crate:
@@ -111,6 +117,7 @@ ci-integration:
     just up
     DATABASE_URL=postgres://zart:zart@localhost:5432/zart just test-integration
     just down
+    @echo "Integration tests completed successfully!"
 
 # ── Observability ──────────────────────────────────────────────────────────────
 

@@ -4,6 +4,17 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of tests to run'
+        required: true
+        default: 'integration'
+        type: choice
+        options:
+          - integration
+          - full-integration (with examples)
+          - all
 
 env:
   CARGO_TERM_COLOR: always
@@ -79,6 +90,14 @@ jobs:
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Always run on push to main/master and PRs, or when manually triggered
+    if: >-
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'workflow_dispatch' && 
+       (github.event.inputs.test_type == 'integration' || 
+        github.event.inputs.test_type == 'all'))
 
     services:
       postgres:
@@ -107,8 +126,85 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Run all tests (including integration)
-        run: cargo test --workspace -- --include-ignored
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U zart -d zart > /dev/null 2>&1; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 1
+          done
+          echo "PostgreSQL failed to become ready"
+          exit 1
+
+      - name: Run integration tests (with PostgreSQL, single-threaded)
+        run: |
+          # Run core integration tests (PostgreSQL required, no internet needed)
+          # - scheduler integration tests
+          # - zart integration tests
+          # Examples with external API calls are tested separately
+          cargo test -p scheduler --test integration_test --features postgres -- --include-ignored --test-threads=1
+          cargo test -p zart --test integration_test -- --include-ignored --test-threads=1
+
+  # ── Full integration tests (with PostgreSQL + internet for examples) ──────────
+  test-integration-full:
+    name: Full Integration Tests (with Examples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Run on main branch, or when manually triggered with 'full-integration' or 'all'
+    if: >-
+      github.ref == 'refs/heads/main' || 
+      github.ref == 'refs/heads/master' || 
+      (github.event_name == 'workflow_dispatch' && 
+       (github.event.inputs.test_type == 'full-integration (with examples)' || 
+        github.event.inputs.test_type == 'all'))
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: zart
+          POSTGRES_PASSWORD: zart
+          POSTGRES_DB: zart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U zart -d zart"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgres://zart:zart@localhost:5432/zart
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U zart -d zart > /dev/null 2>&1; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 1
+          done
+          echo "PostgreSQL failed to become ready"
+          exit 1
+
+      - name: Run full integration tests (including examples with external APIs)
+        run: |
+          # Run all integration tests including example tests that call external APIs
+          cargo test --workspace --features scheduler/postgres -- --include-ignored --test-threads=1
 
   # ── Documentation ─────────────────────────────────────────────────────────────
   doc:
