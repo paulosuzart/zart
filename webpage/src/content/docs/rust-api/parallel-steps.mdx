@@ -10,8 +10,42 @@ Zart supports running multiple steps in parallel via `ctx.schedule_step()` and `
 ## Basic Usage
 
 ```rust
-use zart::{DurableExecution, TaskContext, TaskError, Scheduler};
+use zart::prelude::*;
 use async_trait::async_trait;
+
+// Define each step as a ZartStep struct
+struct SendEmailStep { email: String }
+
+#[async_trait]
+impl ZartStep for SendEmailStep {
+    type Output = ();
+    fn step_name(&self) -> &'static str { "send-email" }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        send_email(&self.email).await
+    }
+}
+
+struct SetupBillingStep { email: String }
+
+#[async_trait]
+impl ZartStep for SetupBillingStep {
+    type Output = String;
+    fn step_name(&self) -> &'static str { "setup-billing" }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        setup_stripe_customer(&self.email).await
+    }
+}
+
+struct ProvisionResourceStep { user_id: String }
+
+#[async_trait]
+impl ZartStep for ProvisionResourceStep {
+    type Output = String;
+    fn step_name(&self) -> &'static str { "provision-resources" }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        provision_aws(&self.user_id).await
+    }
+}
 
 pub struct OnboardingTask;
 
@@ -26,23 +60,15 @@ impl DurableExecution for OnboardingTask {
         data: OnboardingData,
     ) -> Result<(), TaskError> {
         // Schedule three parallel steps
-        let h1 = ctx.schedule_step("send-email", || async {
-            send_email(&data.email).await
-        });
-        let h2 = ctx.schedule_step("setup-billing", || async {
-            setup_stripe_customer(&data.email).await
-        });
-        let h3 = ctx.schedule_step("provision-resources", || async {
-            provision_aws(&data.user_id).await
-        });
+        let h1 = ctx.schedule_step(SendEmailStep { email: data.email.clone() });
+        let h2 = ctx.schedule_step(SetupBillingStep { email: data.email.clone() });
+        let h3 = ctx.schedule_step(ProvisionResourceStep { user_id: data.user_id.clone() });
 
         // Durably wait for all three to complete
         let _results = ctx.wait_all(vec![h1, h2, h3]).await?;
 
         // This line only runs after all three succeed
-        ctx.step("send-ready-notification", || async {
-            notify_user_ready(&data.email).await
-        }).await?;
+        ctx.execute_step(NotifyReadyStep { email: data.email }).await?;
 
         Ok(())
     }
@@ -73,28 +99,18 @@ Each `ctx.schedule_step()` call:
 Each scheduled step returns its output through the `wait_all` result vector, in the same order as the handles:
 
 ```rust
-#[derive(Serialize, Deserialize)]
-struct EmailResult { message_id: String }
+struct SendEmailStep { email: String }
+// ... impl ZartStep ...
 
-#[derive(Serialize, Deserialize)]
-struct BillingResult { customer_id: String }
+struct SetupStripeStep { email: String }
+// ... impl ZartStep ...
 
-#[derive(Serialize, Deserialize)]
-struct ProvisionResult { instance_id: String }
-
-// ...
-let h1 = ctx.schedule_step("send-email", || async {
-    send_email(&data.email).await
-});
-let h2 = ctx.schedule_step("setup-billing", || async {
-    setup_stripe(&data.email).await
-});
+let h1 = ctx.schedule_step(SendEmailStep { email: data.email.clone() });
+let h2 = ctx.schedule_step(SetupStripeStep { email: data.email.clone() });
 
 let results = ctx.wait_all(vec![h1, h2]).await?;
-let email_result:   EmailResult   = results[0].deserialize()?;
-let billing_result: BillingResult = results[1].deserialize()?;
-
-println!("Customer ID: {}", billing_result.customer_id);
+// results[0] = output of SendEmailStep
+// results[1] = output of SetupStripeStep
 ```
 
 ## Error Handling
@@ -122,6 +138,17 @@ Because each child step is independently persisted, re-running the parent after 
 Schedule a variable number of parallel tasks based on runtime data:
 
 ```rust
+struct ProcessRegionStep { region: String }
+
+#[async_trait]
+impl ZartStep for ProcessRegionStep {
+    type Output = RegionResult;
+    fn step_name(&self) -> &'static str { &self.region }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        process_region(&self.region).await
+    }
+}
+
 #[async_trait]
 impl DurableExecution for ProcessRegionsTask {
     type Data   = MultiRegionJob;
@@ -135,22 +162,13 @@ impl DurableExecution for ProcessRegionsTask {
         // Schedule one task per region dynamically
         let handles: Vec<_> = data.regions
             .iter()
-            .map(|region| {
-                let region = region.clone();
-                ctx.schedule_step(
-                    &format!("process-{region}"),
-                    move || {
-                        let r = region.clone();
-                        async move { process_region(&r).await }
-                    },
-                )
-            })
+            .map(|region| ctx.schedule_step(ProcessRegionStep { region: region.clone() }))
             .collect();
 
         let raw_results = ctx.wait_all(handles).await?;
         let results: Vec<RegionResult> = raw_results
             .into_iter()
-            .map(|r| r.deserialize())
+            .map(|r| r.map_err(|e| TaskError::StepFailed { step: "dynamic".into(), source: e }))
             .collect::<Result<_, _>>()?;
 
         Ok(results)
@@ -164,19 +182,19 @@ Parallel steps can themselves schedule further parallel steps, creating a tree o
 
 ```rust
 // Parent: fans out to two pipelines
-ctx.schedule_step("pipeline-a", || async { run_pipeline_a().await });
-ctx.schedule_step("pipeline-b", || async { run_pipeline_b().await });
+ctx.schedule_step(PipelineAStep);
+ctx.schedule_step(PipelineBStep);
 
-// Inside run_pipeline_a — further parallelism
-ctx.schedule_step("pipeline-a-step-1", || async { ... });
-ctx.schedule_step("pipeline-a-step-2", || async { ... });
+// Inside PipelineA — further parallelism
+ctx.schedule_step(PipelineAStep1);
+ctx.schedule_step(PipelineAStep2);
 ```
 
 Each level is fully durable and can span multiple worker nodes.
 
-## Comparison to `ctx.step()`
+## Comparison to `ctx.execute_step()`
 
-| | `ctx.step()` | `ctx.schedule_step()` + `wait_all` |
+| | `ctx.execute_step()` | `ctx.schedule_step()` + `wait_all` |
 |---|---|---|
 | Execution | Sequential, in-process | Parallel, potentially cross-worker |
 | Durability | Yes | Yes |

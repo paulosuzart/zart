@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This example shows how to pause a durable execution and wait for a human decision before proceeding. The workflow validates a resource-access request, parks itself waiting for manager approval, then either provisions the resource or records the rejection — depending on what the manager decides.
 
-**Features demonstrated:** `DurableExecution` trait, `ctx.step()`, `ctx.wait_for_event()`, `durable.offer_event()`.
+**Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, `ctx.execute_step()`, `ctx.wait_for_event()`, `durable.offer_event()`.
 
 ## Data types
 
@@ -36,67 +36,64 @@ struct ApprovalOutput {
 }
 ```
 
-## The workflow
-
-This example uses the `DurableExecution` trait directly (without the `#[zart_durable]` macro) to show the underlying mechanics.
+## Step definitions
 
 ```rust
-struct ApprovalTask;
+use zart::prelude::*;
+use zart::zart_step;
 
-#[async_trait]
-impl DurableExecution for ApprovalTask {
-    type Data   = ApprovalRequest;
-    type Output = ApprovalOutput;
-
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        // Step 1: validate the request
-        ctx.step("validate-request", || {
-            let request = data.clone();
-            async move {
-                if request.requester_name.is_empty() {
-                    return Err(StepError::Failed {
-                        step: "validate-request".into(),
-                        reason: "requester name is required".into(),
-                    });
-                }
-                Ok(format!(
-                    "Validated request from {} for {}",
-                    request.requester_name, request.resource
-                ))
-            }
-        }).await?;
-
-        // Step 2: park until a manager delivers the approval event
-        // The task is stored in the DB with a far-future execution time.
-        // offer_event() wakes it up with the typed payload.
-        let decision: ApprovalDecision = ctx
-            .wait_for_event("manager-approval", Some(Duration::from_secs(120)))
-            .await?;
-
-        // Step 3: act on the decision
-        if decision.approved {
-            ctx.step("process-approved", || {
-                let resource = data.resource.clone();
-                let requester = data.requester_name.clone();
-                async move {
-                    // In a real system: provision the resource here
-                    Ok(format!("Provisioned {} for {}", resource, requester))
-                }
-            }).await?;
-        }
-
-        Ok(ApprovalOutput {
-            decision: if decision.approved { "approved" } else { "rejected" }.into(),
-            requester: data.requester_name,
-            resource: data.resource,
-            reviewer: decision.reviewer,
-            comment: decision.comment,
-        })
+#[zart_step("validate-request")]
+async fn validate_request(request: &ApprovalRequest, ctx: StepContext) -> Result<String, StepError> {
+    let _ = ctx.current_attempt();
+    if request.requester_name.is_empty() {
+        return Err(StepError::Failed {
+            step: "validate-request".into(),
+            reason: "requester name is required".into(),
+        });
     }
+    Ok(format!("Validated request from {} for {}", request.requester_name, request.resource))
+}
+
+#[zart_step("process-approved")]
+async fn process_approved(resource: &str, requester: &str, ctx: StepContext) -> Result<String, StepError> {
+    let _ = ctx.current_attempt();
+    // In a real system, this would provision the resource
+    Ok(format!("Provisioned {} for {}", resource, requester))
+}
+```
+
+## The workflow
+
+The durable handler composes steps and uses `wait_for_event` to pause for the manager's decision.
+
+```rust
+#[zart_durable("approval-task", timeout = "5m")]
+async fn approval_task(
+    ctx: &mut TaskContext,
+    data: ApprovalRequest,
+) -> Result<ApprovalOutput, TaskError> {
+    // Step 1: validate the request
+    ctx.execute_step(validate_request(&data)).await?;
+
+    // Step 2: park until a manager delivers the approval event
+    // The task is stored in the DB with a far-future execution time.
+    // offer_event() wakes it up with the typed payload.
+    let decision: ApprovalDecision = ctx
+        .wait_for_event("manager-approval", Some(Duration::from_secs(120)))
+        .await?;
+
+    // Step 3: act on the decision
+    if decision.approved {
+        ctx.execute_step(process_approved(&data.resource, &data.requester_name)).await?;
+    }
+
+    Ok(ApprovalOutput {
+        decision: if decision.approved { "approved" } else { "rejected" }.into(),
+        requester: data.requester_name,
+        resource: data.resource,
+        reviewer: decision.reviewer,
+        comment: decision.comment,
+    })
 }
 ```
 
@@ -148,15 +145,14 @@ Starting execution 'approval-demo-...'...
 Execution is waiting for manager approval...
 (Simulating manager delivering the event after 2 seconds)
 
-Delivering approval event...
-Approval received! Processing approved request...
+Manager decision: ApprovalDecision { approved: true, reviewer: "Alice (Manager)", ... }
 
 Execution completed!
   Decision:  approved
   Requester: Bob
   Resource:  staging-environment
-  Reviewer:  Manager Carol
-  Comment:   Looks good — proceed!
+  Reviewer:  Alice (Manager)
+  Comment:   Approved for testing purposes
 ```
 
 <Aside type="tip">

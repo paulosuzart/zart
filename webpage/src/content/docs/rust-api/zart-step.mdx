@@ -1,0 +1,261 @@
+---
+title: ZartStep Trait
+description: Defining durable steps with the ZartStep trait — the contract that powers ctx.execute_step().
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`ZartStep` is the core trait for defining individual workflow steps. Each step represents one unit of work whose result is persisted before the workflow moves on. If the process crashes mid-execution, completed steps are replayed from the database — never re-executed.
+
+You can implement `ZartStep` manually for full control, or use the `#[zart_step]` macro which generates the struct and trait implementation for you.
+
+## The Trait
+
+```rust
+#[async_trait]
+pub trait ZartStep {
+    /// The output type this step produces.
+    type Output: Serialize + DeserializeOwned + Send + Sync;
+
+    /// Unique name for this step (used in database tracking).
+    fn step_name(&self) -> &'static str;
+
+    /// Optional retry configuration. Default: None (no retries).
+    fn retry_config(&self) -> Option<RetryConfig> { None }
+
+    /// Optional wall-clock timeout. Default: None.
+    fn timeout(&self) -> Option<Duration> { None }
+
+    /// The step's actual logic.
+    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
+}
+```
+
+<Aside type="tip">
+The `run()` method receives a `StepContext` (not `TaskContext`) — a read-only view of execution metadata like `current_attempt()`, `max_retries()`, and `is_retry_attempt()`. Use these to inspect retry state inside your step.
+</Aside>
+
+## Manual Implementation
+
+Define a struct that captures your step's dependencies, then implement `ZartStep`:
+
+```rust
+use zart::prelude::*;
+use async_trait::async_trait;
+use std::time::Duration;
+
+struct LookupZipStep<'a> {
+    client: &'a reqwest::Client,
+    zip_code: &'a str,
+}
+
+#[async_trait]
+impl ZartStep for LookupZipStep<'_> {
+    type Output = (String, String);
+
+    fn step_name(&self) -> &'static str { "lookup-zip" }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        Some(RetryConfig::exponential(3, Duration::from_secs(1)))
+    }
+
+    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
+        println!("[lookup-zip] Attempt {}", ctx.current_attempt() + 1);
+
+        let resp = self.client
+            .get(format!("https://api.zippopotam.us/us/{}", self.zip_code))
+            .send().await
+            .map_err(|e| StepError::Failed { step: "lookup-zip".into(), reason: e.to_string() })?;
+
+        let data: ZipResponse = resp.json().await
+            .map_err(|e| StepError::Failed { step: "lookup-zip".into(), reason: e.to_string() })?;
+
+        let place = data.places.first()
+            .ok_or_else(|| StepError::Failed { step: "lookup-zip".into(), reason: "no place found".into() })?;
+
+        Ok((place.place_name.clone(), place.state.clone()))
+    }
+}
+```
+
+### Using the Step
+
+Execute it via `ctx.execute_step()`:
+
+```rust
+let (city, state) = ctx.execute_step(LookupZipStep {
+    client: &client,
+    zip_code: &data.zip_code,
+}).await?;
+```
+
+The framework reads `step_name()` for tracking, applies `retry_config()` if set, and calls `run()` to execute the step logic. Results are persisted to the database automatically.
+
+## Retry Configuration
+
+Override `retry_config()` to enable automatic retries with a specific policy:
+
+```rust
+fn retry_config(&self) -> Option<RetryConfig> {
+    Some(RetryConfig::exponential(5, Duration::from_secs(1)))
+}
+```
+
+| Constructor | Behavior |
+|---|---|
+| `RetryConfig::none()` | No retries (default) |
+| `RetryConfig::fixed(n, delay)` | Constant delay between attempts |
+| `RetryConfig::exponential(n, initial)` | Doubles each time: `initial`, `2×`, `4×`, … |
+
+```rust
+// 3 retries, 5 seconds apart
+RetryConfig::fixed(3, Duration::from_secs(5))
+
+// 5 retries: 1s, 2s, 4s, 8s, 16s
+RetryConfig::exponential(5, Duration::from_secs(1))
+```
+
+## Timeout Configuration
+
+Override `timeout()` to enforce a wall-clock deadline:
+
+```rust
+fn timeout(&self) -> Option<Duration> {
+    Some(Duration::from_secs(30)) // 30-second timeout
+}
+```
+
+If the step does not complete within the timeout, it returns `StepError::Timeout`. You can combine retry and timeout — each individual attempt gets the timeout deadline.
+
+## Parallel Steps
+
+Schedule multiple steps for concurrent execution using `ctx.schedule_step()`:
+
+```rust
+let h1 = ctx.schedule_step(CheckServiceStep { service: "auth-api" });
+let h2 = ctx.schedule_step(CheckServiceStep { service: "payments" });
+let h3 = ctx.schedule_step(CheckServiceStep { service: "users-db" });
+
+// Wait for all — survives restarts
+let results = ctx.wait_all(vec![h1, h2, h3]).await?;
+```
+
+Each `schedule_step` call creates a separate row in the scheduler. Sub-steps can run on different workers simultaneously.
+
+<Aside type="caution">
+`wait_all` durably persists all scheduled steps before executing them. If the process restarts during `wait_all`, it resumes from where it left off — no step is lost or duplicated.
+</Aside>
+
+## Macro vs Manual
+
+The `#[zart_step]` macro generates the exact same code as a manual implementation. Use whichever fits your style:
+
+| | `#[zart_step]` macro | Manual `impl ZartStep` |
+|---|---|---|
+| **Verbosity** | One function | Struct + trait impl |
+| **Control** | Good for most cases | Full control over struct, lifetimes |
+| **Testing** | Call the function directly | Instantiate struct, call `run()` |
+| **Reuse** | Import and call the function | Import and instantiate the struct |
+| **Lifetime handling** | Macro injects `'a` automatically | You manage lifetimes explicitly |
+
+```rust
+// Macro style — the #[zart_step] macro generates a struct + impl ZartStep
+#[zart_step("lookup-zip", retry = "exponential(3, 1s)")]
+async fn lookup_zip(
+    client: &reqwest::Client,
+    zip_code: &str,
+    ctx: StepContext,
+) -> Result<(String, String), StepError> {
+    // ... step logic
+}
+
+// Usage:
+let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
+```
+
+## Full Example
+
+A complete durable handler using manual `ZartStep` structs:
+
+```rust
+use zart::prelude::*;
+use async_trait::async_trait;
+use std::time::Duration;
+
+// ── Step 1: Validate the request ──────────────────────────────────────────────
+
+struct ValidateRequestStep {
+    request: ApprovalRequest,
+}
+
+#[async_trait]
+impl ZartStep for ValidateRequestStep {
+    type Output = String;
+    fn step_name(&self) -> &'static str { "validate-request" }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        if self.request.requester_name.is_empty() {
+            return Err(StepError::Failed {
+                step: "validate-request".into(),
+                reason: "empty name".into(),
+            });
+        }
+        Ok(format!("Validated request from {}", self.request.requester_name))
+    }
+}
+
+// ── Step 2: Process after approval (no retry — idempotent) ────────────────────
+
+struct ProcessApprovedStep {
+    resource: String,
+    requester: String,
+}
+
+#[async_trait]
+impl ZartStep for ProcessApprovedStep {
+    type Output = String;
+    fn step_name(&self) -> &'static str { "process-approved" }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        Ok(format!("Provisioned {} for {}", self.resource, self.requester))
+    }
+}
+
+// ── Durable handler ───────────────────────────────────────────────────────────
+
+struct ApprovalTask;
+
+#[async_trait]
+impl DurableExecution for ApprovalTask {
+    type Data = ApprovalRequest;
+    type Output = ApprovalOutput;
+
+    async fn run(
+        &self,
+        ctx: &mut TaskContext,
+        data: Self::Data,
+    ) -> Result<Self::Output, TaskError> {
+        // Validate
+        ctx.execute_step(ValidateRequestStep { request: data.clone() }).await?;
+
+        // Wait for manager approval (up to 2 hours)
+        let decision: ApprovalDecision = ctx
+            .wait_for_event("manager-approval", Some(Duration::from_secs(7200)))
+            .await?;
+
+        // Process if approved
+        if decision.approved {
+            ctx.execute_step(ProcessApprovedStep {
+                resource: data.resource.clone(),
+                requester: data.requester_name.clone(),
+            }).await?;
+        }
+
+        Ok(ApprovalOutput {
+            decision: if decision.approved { "approved" } else { "rejected" }.into(),
+            requester: data.requester_name,
+            resource: data.resource,
+            reviewer: decision.reviewer,
+            comment: decision.comment,
+        })
+    }
+}
+```

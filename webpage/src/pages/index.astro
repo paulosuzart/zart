@@ -821,32 +821,27 @@
               <span class="dot dot-green"></span>
               <span class="code-window-filename">brewery_finder.rs</span>
             </div>
-            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>&#125;;
-<span class="kw">use</span> radkit::&#123;models::providers::OpenAILlm, agent::LlmFunction&#125;;
+            <pre><code><span class="kw">use</span> zart::prelude::*;
+<span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
+
+<span class="attr">#[zart_step("extract", retry = "exponential(3, 2s)")]</span>
+<span class="kw">async fn</span> <span class="fn">extract_city</span>(query: &amp;<span class="ty">str</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;<span class="ty">City</span>&gt; &#123;
+    LlmFunction::&lt;City&gt;::new(llm).run(query).<span class="kw">await</span>
+&#125;
+
+<span class="attr">#[zart_step("fetch", retry = "exponential(3, 1s)")]</span>
+<span class="kw">async fn</span> <span class="fn">fetch_breweries</span>(city: &amp;<span class="ty">str</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Vec</span>&gt; &#123;
+    reqwest::get(&amp;api_url(city)).<span class="kw">await</span>?.json().<span class="kw">await</span>
+&#125;
 
 <span class="attr">#[zart_durable("ai-brewery-finder", timeout = "10m")]</span>
-<span class="kw">async fn</span> <span class="fn">brewery_finder</span>(query: <span class="ty">String</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Report</span>&gt; &#123;
-
-  <span class="kw">let</span> llm = OpenAILlm::from_env(<span class="str">"gpt-4o"</span>)?;
-
-  <span class="cmt">// Extract city from natural language — persisted</span>
-  <span class="kw">let</span> city = <span class="mac">z_step_with_retry!</span>(<span class="str">"extract"</span>, retries = <span class="lit">3</span>, || <span class="kw">async</span> &#123;
-    <span class="kw">let</span> fn = LlmFunction::&lt;City&gt;::new(llm.clone());
-    fn.run(&amp;query).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Fetch brewery data — retries on transient failure</span>
-  <span class="kw">let</span> data = <span class="mac">z_step_with_retry!</span>(<span class="str">"fetch"</span>, retries = <span class="lit">3</span>, || <span class="kw">async</span> &#123;
-    reqwest::get(&amp;api_url(&amp;city)).<span class="kw">await</span>?.<span class="kw">await</span>.json().<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// LLM summary — only runs if fetch succeeded</span>
-  <span class="kw">let</span> summary = <span class="mac">z_step!</span>(<span class="str">"summarize"</span>, || <span class="kw">async</span> &#123;
-    LlmFunction::&lt;Summary&gt;::new(llm)
-      .run(&amp;format_prompt(&amp;data)).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="ty">Ok</span>(<span class="ty">Report</span>::<span class="fn">new</span>(&amp;summary))
+<span class="kw">async fn</span> <span class="fn">brewery_finder</span>(
+    ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>,
+    query: <span class="ty">String</span>,
+) -> <span class="ty">Result</span>&lt;<span class="ty">Report</span>&gt; &#123;
+    <span class="kw">let</span> city = ctx.<span class="fn">execute_step</span>(<span class="fn">extract_city</span>(&amp;query)).<span class="kw">await</span>?;
+    <span class="kw">let</span> data = ctx.<span class="fn">execute_step</span>(<span class="fn">fetch_breweries</span>(&amp;city.name)).<span class="kw">await</span>?;
+    <span class="ty">Ok</span>(<span class="ty">Report</span>::<span class="fn">summarize</span>(&amp;data))
 &#125;</code></pre>
           </div>
         </div>
@@ -860,25 +855,28 @@
               <span class="dot dot-green"></span>
               <span class="code-window-filename">checkout_flow.rs</span>
             </div>
-            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_wait_event</span>&#125;;
+            <pre><code><span class="kw">use</span> zart::prelude::*;
+<span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
+
+<span class="attr">#[zart_step("charge")]</span>
+<span class="kw">async fn</span> <span class="fn">charge_card</span>(order: &amp;<span class="ty">Order</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Charge</span>&gt; &#123;
+    stripe.charge(&amp;order.card, order.total).<span class="kw">await</span>
+&#125;
+
+<span class="attr">#[zart_step("receipt")]</span>
+<span class="kw">async fn</span> <span class="fn">send_receipt</span>(charge: &amp;<span class="ty">Charge</span>, email: &amp;<span class="ty">str</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
+    mailer.send(email, charge).<span class="kw">await</span>
+&#125;
 
 <span class="attr">#[zart_durable("checkout", timeout = "10m")]</span>
-<span class="kw">async fn</span> <span class="fn">checkout</span>(order: <span class="ty">Order</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Receipt</span>&gt; &#123;
-
-  <span class="cmt">// Persisted — never charged twice on retry</span>
-  <span class="kw">let</span> charge = <span class="mac">z_step!</span>(<span class="str">"charge"</span>, || <span class="kw">async</span> &#123;
-    stripe.<span class="fn">charge</span>(&amp;order.card, order.total).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Persisted — never sent twice even if process dies</span>
-  <span class="mac">z_step!</span>(<span class="str">"receipt"</span>, || <span class="kw">async</span> &#123;
-    mailer.<span class="fn">send</span>(&amp;order.email, &amp;charge).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Durable wait — survives restarts, times out after 24h</span>
-  <span class="mac">z_wait_event!</span>(<span class="str">"shipped"</span>, timeout = <span class="str">"24h"</span>).<span class="kw">await</span>?;
-
-  <span class="ty">Ok</span>(<span class="ty">Receipt</span>::<span class="fn">from</span>(charge))
+<span class="kw">async fn</span> <span class="fn">checkout</span>(
+    ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>,
+    order: <span class="ty">Order</span>,
+) -> <span class="ty">Result</span>&lt;<span class="ty">Receipt</span>&gt; &#123;
+    <span class="kw">let</span> charge = ctx.<span class="fn">execute_step</span>(<span class="fn">charge_card</span>(&amp;order)).<span class="kw">await</span>?;
+    ctx.<span class="fn">execute_step</span>(<span class="fn">send_receipt</span>(&amp;charge, &amp;order.email)).<span class="kw">await</span>?;
+    <span class="kw">let</span> _: <span class="ty">Shipped</span> = ctx.<span class="fn">wait_for_event</span>(<span class="str">"shipped"</span>, <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">86400</span>))).<span class="kw">await</span>?;
+    <span class="ty">Ok</span>(<span class="ty">Receipt</span>::<span class="fn">from</span>(charge))
 &#125;</code></pre>
           </div>
         </div>
@@ -892,32 +890,29 @@
               <span class="dot dot-green"></span>
               <span class="code-window-filename">onboarding.rs</span>
             </div>
-            <pre><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_wait_event</span>&#125;;
+            <pre><code><span class="kw">use</span> zart::prelude::*;
+<span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
+
+<span class="attr">#[zart_step("welcome")]</span>
+<span class="kw">async fn</span> <span class="fn">send_welcome</span>(email: &amp;<span class="ty">str</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
+    email.send(email, <span class="str">"Welcome!"</span>).<span class="kw">await</span>
+&#125;
+
+<span class="attr">#[zart_step("billing", retry = "exponential(3, 2s)")]</span>
+<span class="kw">async fn</span> <span class="fn">setup_billing</span>(user: &amp;<span class="ty">NewUser</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;<span class="ty">CustomerId</span>&gt; &#123;
+    stripe.create_customer(user).<span class="kw">await</span>
+&#125;
 
 <span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
-<span class="kw">async fn</span> <span class="fn">onboard</span>(user: <span class="ty">NewUser</span>) -> <span class="ty">Result</span>&lt;<span class="ty">Welcome</span>&gt; &#123;
-
-  <span class="cmt">// Welcome email — never sent twice on restart</span>
-  <span class="mac">z_step!</span>(<span class="str">"welcome"</span>, || <span class="kw">async</span> &#123;
-    email.<span class="fn">send</span>(&amp;user.email, <span class="str">"Welcome!"</span>).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Billing setup — with automatic retries</span>
-  <span class="mac">z_step_with_retry!</span>(<span class="str">"billing"</span>, retries = <span class="lit">3</span>, || <span class="kw">async</span> &#123;
-    stripe.<span class="fn">create_customer</span>(&amp;user).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="cmt">// Durable wait for email verification (48h)</span>
-  <span class="kw">let</span> _: <span class="ty">Verified</span> = <span class="mac">z_wait_event!</span>(
-    <span class="str">"email-confirmed"</span>, timeout = <span class="str">"48h"</span>
-  ).<span class="kw">await</span>?;
-
-  <span class="cmt">// Provision resources — runs only once</span>
-  <span class="mac">z_step!</span>(<span class="str">"provision"</span>, || <span class="kw">async</span> &#123;
-    aws.<span class="fn">create_workspace</span>(&amp;user).<span class="kw">await</span>
-  &#125;).<span class="kw">await</span>?;
-
-  <span class="ty">Ok</span>(<span class="ty">Welcome</span>::<span class="fn">for_user</span>(&amp;user))
+<span class="kw">async fn</span> <span class="fn">onboard</span>(
+    ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>,
+    user: <span class="ty">NewUser</span>,
+) -> <span class="ty">Result</span>&lt;<span class="ty">Welcome</span>&gt; &#123;
+    ctx.<span class="fn">execute_step</span>(<span class="fn">send_welcome</span>(&amp;user.email)).<span class="kw">await</span>?;
+    ctx.<span class="fn">execute_step</span>(<span class="fn">setup_billing</span>(&amp;user)).<span class="kw">await</span>?;
+    <span class="kw">let</span> _: <span class="ty">Verified</span> = ctx.<span class="fn">wait_for_event</span>(<span class="str">"email-confirmed"</span>, <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">172800</span>))).<span class="kw">await</span>?;
+    ctx.<span class="fn">execute_step</span>(<span class="fn">provision</span>(&amp;user)).<span class="kw">await</span>?;
+    <span class="ty">Ok</span>(<span class="ty">Welcome</span>::<span class="fn">for_user</span>(&amp;user))
 &#125;</code></pre>
           </div>
         </div>
@@ -1014,47 +1009,67 @@
     <div class="tabs-wrapper">
       <ul class="tab-list" role="tablist">
         <li><button class="tab-btn active" role="tab" data-tab="macros">Macros</button></li>
-        <li><button class="tab-btn" role="tab" data-tab="task-handler">DurableExecution</button></li>
+        <li><button class="tab-btn" role="tab" data-tab="task-handler">Raw Traits</button></li>
       </ul>
 
       <!-- Macros tab -->
       <div class="tab-panel active" id="tab-macros">
         <div class="tab-code-window">
-          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>, <span class="mac">z_wait_event</span>&#125;;
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::prelude::*;
+<span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
-<span class="cmt">/// Proc-macro turns this async fn into a full durable DurableExecution</span>
+<span class="cmt">/// Define each step as a standalone async function</span>
+<span class="attr">#[zart_step("send-welcome", retry = "exponential(3, 2s)")]</span>
+<span class="kw">async fn</span> <span class="fn">send_welcome</span>(email: &amp;<span class="ty">str</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;(), <span class="ty">StepError</span>&gt; &#123;
+    send_email(email).<span class="kw">await</span>
+&#125;
+
+<span class="attr">#[zart_step("setup-billing")]</span>
+<span class="kw">async fn</span> <span class="fn">setup_billing</span>(email: &amp;<span class="ty">str</span>, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;<span class="ty">String</span>, <span class="ty">StepError</span>&gt; &#123;
+    <span class="fn">create_stripe_customer</span>(email).<span class="kw">await</span>
+&#125;
+
+<span class="cmt">/// Compose steps inside a durable handler</span>
 <span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
-<span class="kw">async fn</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
+<span class="kw">async fn</span> <span class="fn">onboarding</span>(
+    ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>,
+    data: <span class="ty">OnboardingData</span>,
+) -> <span class="ty">Result</span>&lt;(), <span class="ty">TaskError</span>&gt; &#123;
 
-    <span class="cmt">// Each step auto-persists its result</span>
-    <span class="mac">z_step!</span>(<span class="str">"send-email"</span>, || <span class="kw">async</span> &#123;
-        <span class="fn">send_welcome_email</span>(&amp;data.email).<span class="kw">await</span>
-    &#125;).<span class="kw">await</span>?;
+    <span class="kw">let</span> _ = ctx.<span class="fn">execute_step</span>(<span class="fn">send_welcome</span>(&amp;data.email)).<span class="kw">await</span>?;
+    <span class="kw">let</span> customer_id = ctx.<span class="fn">execute_step</span>(<span class="fn">setup_billing</span>(&amp;data.email)).<span class="kw">await</span>?;
 
-    <span class="cmt">// Step with retry: 3 attempts, exponential backoff starting at 2s</span>
-    <span class="mac">z_step_with_retry!</span>(
-        <span class="str">"setup-billing"</span>,
-        retries = <span class="lit">3</span>,
-        backoff = <span class="str">"exponential"</span>,
-        delay = <span class="str">"2s"</span>,
-        || <span class="kw">async</span> &#123; <span class="fn">setup_stripe_customer</span>(&amp;data.email).<span class="kw">await</span> &#125;
-    ).<span class="kw">await</span>?;
-
-    <span class="cmt">// Durable wait — workflow suspends here, survives any restart</span>
+    <span class="cmt">// Durable wait — workflow suspends, survives any restart</span>
     <span class="kw">let</span> event: <span class="ty">VerifyPayload</span> =
-        <span class="mac">z_wait_event!</span>(<span class="str">"email-verified"</span>, timeout = <span class="str">"48h"</span>).<span class="kw">await</span>?;
+        ctx.<span class="fn">wait_for_event</span>(<span class="str">"email-verified"</span>, <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">172_800</span>))).<span class="kw">await</span>?;
 
     <span class="ty">Ok</span>(())
 &#125;</code></pre>
         </div>
       </div>
 
-      <!-- DurableExecution tab -->
+      <!-- Raw Traits tab -->
       <div class="tab-panel" id="tab-task-handler">
         <div class="tab-code-window">
-          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">DurableExecution</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> async_trait::async_trait;
 
+<span class="cmt">/// Define a step struct — holds your dependencies</span>
+<span class="kw">struct</span> <span class="ty">SendEmailStep</span>&#123; email: <span class="ty">String</span> &#125;
+
+<span class="attr">#[async_trait]</span>
+<span class="kw">impl</span> <span class="ty">ZartStep</span> <span class="kw">for</span> <span class="ty">SendEmailStep</span> &#123;
+    <span class="kw">type</span> <span class="ty">Output</span> = ();
+    <span class="kw">fn</span> <span class="fn">step_name</span>(&amp;self) -> &amp;'static <span class="ty">str</span> &#123; <span class="str">"send-email"</span> &#125;
+    <span class="kw">fn</span> <span class="fn">retry_config</span>(&amp;self) -> <span class="ty">Option</span>&lt;<span class="ty">RetryConfig</span>&gt; &#123;
+        <span class="ty">Some</span>(<span class="ty">RetryConfig</span>::<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">2</span>)))
+    &#125;
+    <span class="kw">async fn</span> <span class="fn">run</span>(&amp;self, ctx: <span class="ty">StepContext</span>) -> <span class="ty">Result</span>&lt;(), <span class="ty">StepError</span>&gt; &#123;
+        <span class="fn">send_email</span>(&amp;self.email).<span class="kw">await</span>
+    &#125;
+&#125;
+
+<span class="cmt">/// Compose steps inside a durable handler</span>
 <span class="kw">struct</span> <span class="ty">OnboardingTask</span>;
 
 <span class="attr">#[async_trait]</span>
@@ -1067,30 +1082,12 @@
         ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>,
         data: <span class="ty">OnboardingData</span>,
     ) -> <span class="ty">Result</span>&lt;(), <span class="ty">TaskError</span>&gt; &#123;
-        <span class="cmt">// Step 1 — send welcome email</span>
-        ctx.<span class="fn">step</span>(<span class="str">"send-email"</span>, || <span class="kw">async</span> &#123;
-            <span class="fn">send_welcome_email</span>(&amp;data.email).<span class="kw">await</span>
-        &#125;).<span class="kw">await</span>?;
-
-        <span class="cmt">// Step 2 — set up billing (with 3 retries, exponential backoff)</span>
-        ctx.<span class="fn">step_with_retry</span>(
-            <span class="str">"setup-billing"</span>,
-            <span class="ty">RetryConfig</span>::<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">2</span>)),
-            || <span class="kw">async</span> &#123; <span class="fn">setup_stripe_customer</span>(&amp;data.email).<span class="kw">await</span> &#125;,
-        ).<span class="kw">await</span>?;
-
-        <span class="cmt">// Step 3 — wait for email verification (up to 48h)</span>
+        ctx.<span class="fn">execute_step</span>(<span class="ty">SendEmailStep</span> &#123; email: data.email &#125;).<span class="kw">await</span>?;
         <span class="kw">let</span> _: <span class="ty">VerifyPayload</span> = ctx.<span class="fn">wait_for_event</span>(
             <span class="str">"email-verified"</span>,
-            <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">172800</span>)),
+            <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">172_800</span>)),
         ).<span class="kw">await</span>?;
-
         <span class="ty">Ok</span>(())
-    &#125;
-
-    <span class="kw">fn</span> <span class="fn">max_retries</span>(&amp;<span class="kw">self</span>) -> <span class="ty">usize</span> &#123; <span class="lit">3</span> &#125;
-    <span class="kw">fn</span> <span class="fn">timeout</span>(&amp;<span class="kw">self</span>) -> <span class="ty">Option</span>&lt;<span class="ty">Duration</span>&gt; &#123;
-        <span class="ty">Some</span>(<span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">600</span>))
     &#125;
 &#125;</code></pre>
         </div>

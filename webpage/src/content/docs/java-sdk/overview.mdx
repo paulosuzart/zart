@@ -37,15 +37,11 @@ public class OnboardingTask implements DurableExecution<OnboardingData, Void> {
     public Void run(TaskContext ctx, OnboardingData data) throws TaskException {
 
         // Persisted step — never runs twice
-        ctx.step("send-welcome-email", () ->
-            emailService.sendWelcome(data.getEmail())
-        );
+        ctx.executeStep(new SendWelcomeStep(data.getEmail()));
 
         // Step with retry policy
-        String customerId = ctx.stepWithRetry(
-            "setup-billing",
-            RetryConfig.exponential(3, Duration.ofSeconds(2)),
-            () -> billingService.createCustomer(data.getEmail())
+        String customerId = ctx.executeStep(
+            new CreateCustomerStep(data.getEmail())
         );
 
         // Durable wait — JVM can restart, workflow resumes
@@ -113,9 +109,7 @@ scheduler.schedule("checkout") {
 
 class CheckoutTask : SuspendingDurableExecution<CheckoutData, Receipt> {
     override suspend fun run(ctx: TaskContext, data: CheckoutData): Receipt {
-        val charge = ctx.step("charge") {
-            stripe.charge(data.card, data.total)
-        }
+        val charge = ctx.executeStep(ChargeStep(data.card, data.total))
 
         val _ = ctx.waitForEvent<ShippedEvent>("shipped", timeout = 24.hours)
 

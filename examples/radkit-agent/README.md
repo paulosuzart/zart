@@ -5,8 +5,8 @@ Demonstrates **AI-powered durable execution** using [radkit](https://github.com/
 ## Features Used
 
 - **Manual `DurableExecution` trait** — struct with fields for dependency injection (LLM provider)
-- **`z_step!` macro** — ergonomic step definition for deterministic transformations
-- **`z_step_with_retry!` macro** — step with retry configuration for external API/LLM calls
+- **`#[zart_step]` macro** — turns async functions into step structs with `ZartStep` implementation
+- **`ctx.execute_step()`** — executes steps with automatic retry/timeout handling
 - **radkit LLM integration** — structured output extraction and conversational summarization
 - **Mixed workflow** — combines AI steps (LLM extraction, summarization) with traditional API calls
 
@@ -108,43 +108,36 @@ Completed at: 2026-04-05T...
 - **Mixed workloads** — seamlessly combine AI steps with traditional API calls, database queries, and business logic.
 - **State preservation** — if the process crashes after extracting the location but before fetching breweries, completed work is not repeated.
 
-## Dependency Injection via DurableExecution
+## Step Functions with `#[zart_step]`
 
-This example implements `DurableExecution` manually (instead of using `#[zart_durable]`) to define a struct with an LLM provider field. The provider is stored as `Arc<dyn BaseLlm>` so it can be cloned into step closures and any radkit provider type can be injected:
+Each step is a standalone async function that captures its dependencies:
 
 ```rust
-use radkit::models::BaseLlm;
-use std::sync::Arc;
-
-struct RadkitAgent {
+#[zart_step("extract-location", retry = "exponential(3, 2s)")]
+async fn extract_location(
     llm: Arc<dyn BaseLlm>,
+    query: String,
+    ctx: StepContext,
+) -> Result<ExtractedLocation, StepError> {
+    let function = LlmFunction::<LocationExtraction>::new_with_system_instructions(
+        llm.clone(),
+        "You are a location extraction assistant...",
+    );
+    function.run(&prompt).await
 }
+```
 
-impl RadkitAgent {
-    fn new(llm: OpenAILlm) -> Self {
-        Self {
-            llm: Arc::new(llm),
-        }
-    }
-}
+The durable handler composes them cleanly:
 
-#[async_trait::async_trait]
-impl DurableExecution for RadkitAgent {
-    type Data = AgentInput;
-    type Output = AgentOutput;
-
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        // self.llm is available in every step
-        let function = LlmFunction::<LocationExtraction>::new_with_system_instructions(
-            self.llm.clone(),
-            "You are a location extraction assistant...",
-        );
-        // ...
-    }
+```rust
+async fn run(
+    &self,
+    ctx: &mut TaskContext,
+    data: Self::Data,
+) -> Result<Self::Output, TaskError> {
+    // self.llm is available in every step
+    let location = ctx.execute_step(extract_location(self.llm.clone(), data.query.clone())).await?;
+    // ...
 }
 ```
 

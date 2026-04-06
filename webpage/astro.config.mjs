@@ -38,6 +38,7 @@ export default defineConfig({
           items: [
             { label: "Overview", link: "/rust-api/overview" },
             { label: "DurableExecution Trait", link: "/rust-api/task-handler" },
+            { label: "ZartStep Trait", link: "/rust-api/zart-step" },
             { label: "Macros", link: "/rust-api/macros" },
             { label: "Durable Loops", link: "/rust-api/loops" },
             {

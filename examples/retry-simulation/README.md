@@ -5,11 +5,11 @@ This example demonstrates how to simulate and observe retry behavior in Zart dur
 ## What It Demonstrates
 
 - **Intentional Failure Pattern**: The example fails on the first attempt and succeeds on the retry
-- **Execution Metadata Access**: Using read-only accessors to query retry state:
-  - `ctx.current_attempt()` - Which attempt is running (0-indexed)
-  - `ctx.max_retries()` - Maximum retries configured
-  - `ctx.is_retry_attempt()` - Whether this is a retry (not the first attempt)
-- **Automatic Retry Handling**: Using `step_with_retry` with `RetryConfig`
+- **StepContext Metadata**: Using read-only accessors to query retry state:
+  - `ctx.current_attempt()` — which attempt is running (0-indexed)
+  - `ctx.max_retries()` — maximum retries configured
+  - `ctx.is_retry_attempt()` — whether this is a retry (not the first attempt)
+- **Automatic Retry Handling**: Using `#[zart_step]` with `retry = "fixed(3, 1s)"`
 - **Real-time Observation**: Logging shows the retry behavior as it happens
 
 ## How It Works
@@ -17,10 +17,10 @@ This example demonstrates how to simulate and observe retry behavior in Zart dur
 The example implements a durable execution with two steps:
 
 1. **`intentional-failure`**: A step that:
-   - Checks `ctx.current_attempt()` 
+   - Checks `ctx.current_attempt()`
    - Fails on attempt 0 with a simulated transient error
    - Succeeds on attempt 1+ (the retries)
-   - Uses `RetryConfig::fixed(3, Duration::from_secs(1))` for up to 3 retries with 1s delay
+   - Uses `retry = "fixed(3, 1s)"` for up to 3 retries with 1s delay
 
 2. **`normal-step`**: A step that always succeeds (demonstrates normal behavior)
 
@@ -31,7 +31,7 @@ The example implements a durable execution with two steps:
 docker-compose up -d
 
 # Run the example
-cargo run --bin example-retry-simulation
+just example-retry-simulation
 ```
 
 ## Expected Output
@@ -39,52 +39,47 @@ cargo run --bin example-retry-simulation
 ```
 === Zart Retry Simulation Example ===
 
-This example demonstrates intentional failure and automatic retry.
-The first attempt will fail, and the framework will retry automatically.
-
-Starting execution 'retry-sim-...' with name 'Paulo'...
+Starting execution 'retry-sim-...' with name 'retry-demo'...
 
 [intentional-failure] Attempt #0 (0-indexed) | is_retry=false | max_retries=Some(3)
-⚠️  Simulated transient failure for 'Paulo' on attempt #0
+⚠️  Simulated transient failure for 'retry-demo' on attempt #0
 
 [intentional-failure] Attempt #1 (0-indexed) | is_retry=true | max_retries=Some(3)
-✓  Succeeded for 'Paulo' on retry attempt #1
+✓  Succeeded for 'retry-demo' on retry attempt #1
 
 [normal-step] Running (no retries needed)
 
-============================================================
-✓ Execution completed successfully!
-============================================================
-  Name:            Paulo
+=== Execution Completed ===
+  Name:            retry-demo
   Total attempts:  2
-  Message:         Completed with 2 total attempt(s) - retry simulation successful!
+  Message:         Completed after 2 attempt(s), succeeded on retry #1
 
 Attempts Log:
   1. intentional-failure: succeeded on attempt #1 (1 retries)
   2. normal-step: Normal step completed successfully
-============================================================
 ```
 
 ## Key Code Pattern
 
 ```rust
-ctx.step_with_retry(
-    "risky-operation",
-    RetryConfig::fixed(3, Duration::from_secs(1)),
-    || {
-        async move {
-            if ctx.current_attempt() == 0 {
-                // Simulate transient failure on first attempt
-                return Err(StepError::Failed {
-                    step: "risky-operation".to_string(),
-                    reason: "Simulated transient error".to_string(),
-                });
-            }
-            // Succeed on retry
-            Ok(SuccessResult { message: "Succeeded on retry!" })
-        }
-    },
-).await?
+#[zart_step("intentional-failure", retry = "fixed(3, 1s)")]
+async fn intentional_failure_step(
+    name: String,
+    ctx: StepContext,
+) -> Result<RetryStepResult, StepError> {
+    if ctx.current_attempt() == 0 {
+        // Simulate transient failure on first attempt
+        return Err(StepError::Failed {
+            step: "intentional-failure".to_string(),
+            reason: "Simulated transient error".to_string(),
+        });
+    }
+    // Succeed on retry
+    Ok(RetryStepResult { message: "Succeeded on retry!" })
+}
+
+// Usage in durable handler:
+let result = ctx.execute_step(intentional_failure_step(name)).await?;
 ```
 
 ## Use Cases

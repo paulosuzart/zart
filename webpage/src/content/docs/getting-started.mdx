@@ -20,16 +20,10 @@ impl DurableExecution for OnboardingTask {
         -> Result<(), TaskError>
     {
         // Each step runs exactly once — result is stored in the DB
-        ctx.step("send-email", || async {
-            send_welcome_email(&data.email).await
-        }).await?;
+        ctx.execute_step(SendEmailStep { email: &data.email }).await?;
 
-        // Retry up to 3× with exponential backoff if billing fails
-        ctx.step_with_retry(
-            "setup-billing",
-            RetryConfig::exponential(3, Duration::from_secs(2)),
-            || async { setup_stripe_customer(&data.email).await },
-        ).await?;
+        // Retry up to 3x with exponential backoff if billing fails
+        ctx.execute_step(SetupBillingStep { email: &data.email }).await?;
 
         Ok(())
     }
@@ -128,8 +122,8 @@ let status = durable.wait("signup-user-42", None).await?;
 
 ## Next Steps
 
-- [DurableExecution Trait](/rust-api/task-handler/) — full reference for `ctx.step()`, retries, sleeps, and events
-- [Macros](/rust-api/macros/) — the `#[zart_durable]` proc-macro layer for less boilerplate
+- [DurableExecution Trait](/rust-api/task-handler/) — full reference for `ctx.execute_step()`, retries, sleeps, and events
+- [Macros](/rust-api/macros/) — the `#[zart_durable]` and `#[zart_step]` proc-macro layer for less boilerplate
 - [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `wait_all`
 - [Wait for Event](/rust-api/wait-for-event/) — human-in-the-loop and webhook patterns
 - [PostgreSQL Storage](/features/#7-postgresql-storage) — how workflow state is persisted
