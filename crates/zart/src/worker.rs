@@ -4,11 +4,11 @@ use crate::context::{ExecutionState, TaskContext};
 use crate::error::{StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 use crate::metrics::{
-    HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASKS_TOTAL, TASK_DURATION_SECONDS,
-    TASK_HEARTBEAT_RENEWALS_TOTAL, WORKER_CONCURRENT_TASKS,
+    HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASK_DURATION_SECONDS,
+    TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
 use crate::registry::TaskRegistry;
-use scheduler::{DurableStorage, Scheduler};
+use scheduler::StorageBackend;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
@@ -61,9 +61,9 @@ impl Default for WorkerConfig {
 ///
 /// Multiple `Worker` instances can run concurrently (even across processes)
 /// — the database-level skip-lock prevents duplicate task execution.
-pub struct Worker<S: Scheduler + DurableStorage> {
-    scheduler: Arc<S>,
-    registry: Arc<TaskRegistry<S>>,
+pub struct Worker {
+    scheduler: Arc<dyn StorageBackend>,
+    registry: Arc<TaskRegistry>,
     config: WorkerConfig,
     /// Notified by [`stop`](Self::stop) to trigger a graceful shutdown.
     shutdown: Arc<Notify>,
@@ -71,9 +71,13 @@ pub struct Worker<S: Scheduler + DurableStorage> {
     cancellation: CancellationToken,
 }
 
-impl<S: Scheduler + DurableStorage + 'static> Worker<S> {
+impl Worker {
     /// Create a new worker.
-    pub fn new(scheduler: Arc<S>, registry: Arc<TaskRegistry<S>>, config: WorkerConfig) -> Self {
+    pub fn new(
+        scheduler: Arc<dyn StorageBackend>,
+        registry: Arc<TaskRegistry>,
+        config: WorkerConfig,
+    ) -> Self {
         Self {
             scheduler,
             registry,
@@ -88,8 +92,8 @@ impl<S: Scheduler + DurableStorage + 'static> Worker<S> {
     /// This allows multiple workers to be shut down together
     /// when a common CancellationToken is cancelled.
     pub fn with_cancellation(
-        scheduler: Arc<S>,
-        registry: Arc<TaskRegistry<S>>,
+        scheduler: Arc<dyn StorageBackend>,
+        registry: Arc<TaskRegistry>,
         config: WorkerConfig,
         cancellation: CancellationToken,
     ) -> Self {
@@ -236,8 +240,8 @@ impl<S: Scheduler + DurableStorage + 'static> Worker<S> {
 ///
 /// Runs in its own tokio task. Cancels automatically when the
 /// `CancellationToken` is cancelled (i.e., the handler has returned).
-async fn heartbeat_loop<S: Scheduler + DurableStorage>(
-    scheduler: Arc<S>,
+async fn heartbeat_loop(
+    scheduler: Arc<dyn StorageBackend>,
     task_id: String,
     lock_token: String,
     task_name: String,
@@ -294,9 +298,9 @@ async fn heartbeat_loop<S: Scheduler + DurableStorage>(
         attempt = task.attempt,
     ),
 )]
-async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
-    scheduler: Arc<S>,
-    registry: Arc<TaskRegistry<S>>,
+async fn dispatch_task(
+    scheduler: Arc<dyn StorageBackend>,
+    registry: Arc<TaskRegistry>,
     task: scheduler::FetchedTask,
     heartbeat_interval: Option<Duration>,
     orphan_timeout: Duration,
@@ -306,22 +310,30 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
     // accurately reflects how many times this step has been attempted.
     // task.attempt is 1-indexed; retry_attempt is 0-indexed.
     let exec_mode = match exec_mode {
-        ExecutionMode::Step { target_step, step_type, next_body_segment, retry_config, .. } => {
-            ExecutionMode::Step {
-                target_step,
-                step_type,
-                next_body_segment,
-                retry_attempt: task.attempt.saturating_sub(1),
-                retry_config,
-            }
-        }
+        ExecutionMode::Step {
+            target_step,
+            step_type,
+            next_body_segment,
+            retry_config,
+            ..
+        } => ExecutionMode::Step {
+            target_step,
+            step_type,
+            next_body_segment,
+            retry_attempt: task.attempt.saturating_sub(1),
+            retry_config,
+        },
         other => other,
     };
 
     // ── Coordinator tasks (wait_all) ─────────────────────────────────────────
     // These don't dispatch to a handler. They poll children and schedule the
     // next body segment when all children are done.
-    if let ExecutionMode::Coordinator { ref wait_for, next_segment } = exec_mode {
+    if let ExecutionMode::Coordinator {
+        ref wait_for,
+        next_segment,
+    } = exec_mode
+    {
         dispatch_coordinator(scheduler, task, wait_for.clone(), next_segment).await;
         return;
     }
@@ -486,7 +498,10 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
             }
 
             if has_execution {
-                let _ = ctx.scheduler.complete_execution(&execution_id, result).await
+                let _ = ctx
+                    .scheduler
+                    .complete_execution(&execution_id, result)
+                    .await
                     .map_err(|e| error!(error = %e, "Failed to complete execution record"));
             }
         }
@@ -510,7 +525,11 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
         // When a body task schedules a child step and exits,
         // the body task itself is complete (it won't be re-entered).
         Err(TaskError::StepFailed {
-            source: StepError::Scheduled { ref step, ref next_execution },
+            source:
+                StepError::Scheduled {
+                    ref step,
+                    ref next_execution,
+                },
             ..
         }) => {
             info!(step = %step, "Body step scheduled — marking body task complete");
@@ -541,7 +560,10 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
                 return;
             }
             if has_execution {
-                let _ = ctx.scheduler.fail_execution(&execution_id).await
+                let _ = ctx
+                    .scheduler
+                    .fail_execution(&execution_id)
+                    .await
                     .map_err(|e| error!(error = %e, "Failed to fail execution record"));
             }
         }
@@ -555,8 +577,8 @@ async fn dispatch_task<S: Scheduler + DurableStorage + 'static>(
 /// Polls all child step tasks. If all are completed, schedules the next body
 /// segment and marks the coordinator completed. Otherwise re-queues itself
 /// with a short backoff so it can check again after the next poll cycle.
-async fn dispatch_coordinator<S: Scheduler + DurableStorage + 'static>(
-    scheduler: Arc<S>,
+async fn dispatch_coordinator(
+    scheduler: Arc<dyn StorageBackend>,
     task: scheduler::FetchedTask,
     wait_for: Vec<String>,
     next_segment: usize,
@@ -602,12 +624,20 @@ async fn dispatch_coordinator<S: Scheduler + DurableStorage + 'static>(
                 .await;
             return;
         }
-        info!(next_segment, "Coordinator: all children done, next body scheduled");
+        info!(
+            next_segment,
+            "Coordinator: all children done, next body scheduled"
+        );
     } else {
         // Not all done — re-queue with a short backoff.
         let retry_at = chrono::Utc::now() + chrono::Duration::seconds(5);
         if let Err(e) = scheduler
-            .mark_failed(&task.task_id, "children not yet complete", Some(retry_at), &task.lock_token)
+            .mark_failed(
+                &task.task_id,
+                "children not yet complete",
+                Some(retry_at),
+                &task.lock_token,
+            )
             .await
         {
             error!(error = %e, "Coordinator: failed to re-queue self");
@@ -625,17 +655,24 @@ async fn dispatch_coordinator<S: Scheduler + DurableStorage + 'static>(
 /// Handle a sleep continuation task (`step_type = sleep`).
 ///
 /// When the sleep timer fires, schedule the next body segment.
-async fn dispatch_sleep_continuation<S: Scheduler + DurableStorage + 'static>(
-    scheduler: Arc<S>,
+async fn dispatch_sleep_continuation(
+    scheduler: Arc<dyn StorageBackend>,
     task: scheduler::FetchedTask,
     exec_mode: &ExecutionMode,
 ) {
     let next_segment = match exec_mode {
-        ExecutionMode::Step { next_body_segment, .. } => *next_body_segment,
+        ExecutionMode::Step {
+            next_body_segment, ..
+        } => *next_body_segment,
         _ => {
             error!("Sleep task has unexpected execution mode");
             let _ = scheduler
-                .mark_failed(&task.task_id, "unexpected mode for sleep task", None, &task.lock_token)
+                .mark_failed(
+                    &task.task_id,
+                    "unexpected mode for sleep task",
+                    None,
+                    &task.lock_token,
+                )
                 .await;
             return;
         }
@@ -683,10 +720,7 @@ async fn dispatch_sleep_continuation<S: Scheduler + DurableStorage + 'static>(
 /// execution in `running` with a failed step task, but the execution is
 /// functionally dead (no active tasks, no pending body segment). Operators
 /// can detect this via the failed step row and manually cancel or reset.
-async fn dispatch_wait_for_event<S: Scheduler + DurableStorage + 'static>(
-    scheduler: Arc<S>,
-    task: scheduler::FetchedTask,
-) {
+async fn dispatch_wait_for_event(scheduler: Arc<dyn StorageBackend>, task: scheduler::FetchedTask) {
     let execution_id = task
         .execution_id
         .as_deref()
@@ -699,7 +733,12 @@ async fn dispatch_wait_for_event<S: Scheduler + DurableStorage + 'static>(
         .unwrap_or("unknown");
     info!(step = %step_name, "wait_for_event deadline exceeded — failing execution");
     let _ = scheduler
-        .mark_failed(&task.task_id, "event deadline exceeded", None, &task.lock_token)
+        .mark_failed(
+            &task.task_id,
+            "event deadline exceeded",
+            None,
+            &task.lock_token,
+        )
         .await;
     let _ = scheduler.fail_execution(&execution_id).await;
 }
@@ -752,13 +791,24 @@ mod tests {
         dispatch_coordinator(scheduler, task, child_ids, 3).await;
 
         let log = calls.lock().unwrap();
-        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let cas: Vec<_> = log
+            .iter()
+            .filter(|c| c.is_complete_and_schedule())
+            .collect();
         let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
 
         assert_eq!(cas.len(), 1, "expected exactly one complete_and_schedule");
-        assert!(failures.is_empty(), "no mark_failed expected when all children done");
+        assert!(
+            failures.is_empty(),
+            "no mark_failed expected when all children done"
+        );
 
-        if let Call::CompleteAndSchedule { new_task_id, new_metadata, .. } = &cas[0] {
+        if let Call::CompleteAndSchedule {
+            new_task_id,
+            new_metadata,
+            ..
+        } = &cas[0]
+        {
             assert_eq!(new_task_id, "exec-1-b3");
             assert_eq!(new_metadata["mode"], "body");
             assert_eq!(new_metadata["segment"], 3);
@@ -789,13 +839,27 @@ mod tests {
         dispatch_coordinator(scheduler, task, child_ids, 2).await;
 
         let log = calls.lock().unwrap();
-        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let cas: Vec<_> = log
+            .iter()
+            .filter(|c| c.is_complete_and_schedule())
+            .collect();
         let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
 
-        assert!(cas.is_empty(), "no body scheduled when children still pending");
-        assert_eq!(failures.len(), 1, "coordinator re-queues itself via mark_failed");
+        assert!(
+            cas.is_empty(),
+            "no body scheduled when children still pending"
+        );
+        assert_eq!(
+            failures.len(),
+            1,
+            "coordinator re-queues itself via mark_failed"
+        );
 
-        if let Call::MarkFailed { next_execution_time, .. } = &failures[0] {
+        if let Call::MarkFailed {
+            next_execution_time,
+            ..
+        } = &failures[0]
+        {
             assert!(
                 next_execution_time.is_some(),
                 "re-queue must carry a backoff execution_time"
@@ -832,13 +896,28 @@ mod tests {
         dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
 
         let log = calls.lock().unwrap();
-        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let cas: Vec<_> = log
+            .iter()
+            .filter(|c| c.is_complete_and_schedule())
+            .collect();
         let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
 
-        assert_eq!(cas.len(), 1, "sleep fires exactly one complete_and_schedule");
-        assert!(failures.is_empty(), "no failures for a normal sleep completion");
+        assert_eq!(
+            cas.len(),
+            1,
+            "sleep fires exactly one complete_and_schedule"
+        );
+        assert!(
+            failures.is_empty(),
+            "no failures for a normal sleep completion"
+        );
 
-        if let Call::CompleteAndSchedule { new_task_id, new_metadata, .. } = &cas[0] {
+        if let Call::CompleteAndSchedule {
+            new_task_id,
+            new_metadata,
+            ..
+        } = &cas[0]
+        {
             assert_eq!(new_task_id, "exec-1-b4");
             assert_eq!(new_metadata["mode"], "body");
             assert_eq!(new_metadata["segment"], 4);

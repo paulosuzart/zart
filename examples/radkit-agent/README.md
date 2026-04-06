@@ -4,7 +4,7 @@ Demonstrates **AI-powered durable execution** using [radkit](https://github.com/
 
 ## Features Used
 
-- **Manual `TaskHandler` trait** — struct with fields for dependency injection (LLM provider)
+- **Manual `DurableExecution` trait** — struct with fields for dependency injection (LLM provider)
 - **`z_step!` macro** — ergonomic step definition for deterministic transformations
 - **`z_step_with_retry!` macro** — step with retry configuration for external API/LLM calls
 - **radkit LLM integration** — structured output extraction and conversational summarization
@@ -108,9 +108,9 @@ Completed at: 2026-04-05T...
 - **Mixed workloads** — seamlessly combine AI steps with traditional API calls, database queries, and business logic.
 - **State preservation** — if the process crashes after extracting the location but before fetching breweries, completed work is not repeated.
 
-## Dependency Injection via TaskHandler
+## Dependency Injection via DurableExecution
 
-This example implements `TaskHandler` manually (instead of using `#[zart_durable]`) to define a struct with an LLM provider field. The provider is stored as `Arc<dyn BaseLlm>` so it can be cloned into step closures and any radkit provider type can be injected:
+This example implements `DurableExecution` manually (instead of using `#[zart_durable]`) to define a struct with an LLM provider field. The provider is stored as `Arc<dyn BaseLlm>` so it can be cloned into step closures and any radkit provider type can be injected:
 
 ```rust
 use radkit::models::BaseLlm;
@@ -129,13 +129,13 @@ impl RadkitAgent {
 }
 
 #[async_trait::async_trait]
-impl TaskHandler for RadkitAgent {
+impl DurableExecution for RadkitAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 
-    async fn run<S: Scheduler + DurableStorage>(
+    async fn run(
         &self,
-        ctx: &mut TaskContext<S>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // self.llm is available in every step

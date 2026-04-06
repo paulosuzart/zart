@@ -27,10 +27,7 @@ mod example_tests {
         scheduler
     }
 
-    fn spawn_worker(
-        scheduler: Arc<PostgresScheduler>,
-        registry: Arc<TaskRegistry<PostgresScheduler>>,
-    ) -> Arc<Worker<PostgresScheduler>> {
+    fn spawn_worker(scheduler: Arc<PostgresScheduler>, registry: Arc<TaskRegistry>) -> Arc<Worker> {
         let config = WorkerConfig {
             poll_interval: Duration::from_millis(200),
             max_tasks_per_poll: 10,
@@ -97,13 +94,13 @@ mod example_tests {
         struct BreweryFinderTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for BreweryFinderTask {
+        impl zart::registry::DurableExecution for BreweryFinderTask {
             type Data = FinderInput;
             type Output = FinderOutput;
 
-            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                ctx: &mut zart::context::TaskContext<S>,
+                ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
                 let client = reqwest::Client::new();
@@ -118,22 +115,19 @@ mod example_tests {
                             let zip = data.zip_code.clone();
                             async move {
                                 let resp = client
-                                    .get(format!(
-                                        "https://api.zippopotam.us/us/{zip}"
-                                    ))
+                                    .get(format!("https://api.zippopotam.us/us/{zip}"))
                                     .send()
                                     .await
                                     .map_err(|e| zart::error::StepError::Failed {
                                         step: "lookup-zip".to_string(),
                                         reason: e.to_string(),
                                     })?;
-                                let zip_resp: ZipResponse =
-                                    resp.json().await.map_err(|e| {
-                                        zart::error::StepError::Failed {
-                                            step: "lookup-zip".to_string(),
-                                            reason: format!("parse error: {e}"),
-                                        }
-                                    })?;
+                                let zip_resp: ZipResponse = resp.json().await.map_err(|e| {
+                                    zart::error::StepError::Failed {
+                                        step: "lookup-zip".to_string(),
+                                        reason: format!("parse error: {e}"),
+                                    }
+                                })?;
                                 let place = zip_resp.places.first().ok_or_else(|| {
                                     zart::error::StepError::Failed {
                                         step: "lookup-zip".to_string(),
@@ -188,7 +182,8 @@ mod example_tests {
                                 .into_iter()
                                 .map(|b| BreweryInfo {
                                     name: b.name,
-                                    brewery_type: b.brewery_type
+                                    brewery_type: b
+                                        .brewery_type
                                         .unwrap_or_else(|| "unknown".to_string()),
                                     city: b.city.unwrap_or_else(|| city.clone()),
                                     state: b.state.unwrap_or_else(|| state.clone()),
@@ -277,13 +272,13 @@ mod example_tests {
         struct ApprovalTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for ApprovalTask {
+        impl zart::registry::DurableExecution for ApprovalTask {
             type Data = ApprovalRequest;
             type Output = ApprovalOutput;
 
-            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                ctx: &mut zart::context::TaskContext<S>,
+                ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
                 // Step 1: Validate request (fake step)
@@ -370,10 +365,9 @@ mod example_tests {
             worker.stop();
 
             assert_eq!(record.status, ExecutionStatus::Completed);
-            let result: ApprovalOutput = serde_json::from_value(
-                record.result.expect("expected result"),
-            )
-            .expect("deserialize failed");
+            let result: ApprovalOutput =
+                serde_json::from_value(record.result.expect("expected result"))
+                    .expect("deserialize failed");
             assert_eq!(result.decision, "approved");
             assert_eq!(result.requester, "TestRequester");
         }
@@ -407,13 +401,13 @@ mod example_tests {
         struct ParallelTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for ParallelTask {
+        impl zart::registry::DurableExecution for ParallelTask {
             type Data = ParallelInput;
             type Output = ParallelOutput;
 
-            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                ctx: &mut zart::context::TaskContext<S>,
+                ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
                 let mut handles = vec![];
@@ -423,25 +417,20 @@ mod example_tests {
                         move || {
                             let service = service.clone();
                             async move {
-                                let (status, response_ms, issues) =
-                                    match service.as_str() {
-                                        "auth-api" => {
-                                            ("healthy".to_string(), 42, vec![])
-                                        }
-                                        "payments" => (
-                                            "degraded".to_string(),
-                                            156,
-                                            vec!["high latency".to_string()],
-                                        ),
-                                        "users-db" => {
-                                            ("healthy".to_string(), 28, vec![])
-                                        }
-                                        _ => (
-                                            "unknown".to_string(),
-                                            0,
-                                            vec!["no check configured".to_string()],
-                                        ),
-                                    };
+                                let (status, response_ms, issues) = match service.as_str() {
+                                    "auth-api" => ("healthy".to_string(), 42, vec![]),
+                                    "payments" => (
+                                        "degraded".to_string(),
+                                        156,
+                                        vec!["high latency".to_string()],
+                                    ),
+                                    "users-db" => ("healthy".to_string(), 28, vec![]),
+                                    _ => (
+                                        "unknown".to_string(),
+                                        0,
+                                        vec!["no check configured".to_string()],
+                                    ),
+                                };
                                 Ok(ServiceResult {
                                     name: service,
                                     status,
@@ -464,8 +453,7 @@ mod example_tests {
                     service_results.push(svc);
                 }
 
-                let total_issues: usize =
-                    service_results.iter().map(|s| s.issues.len()).sum();
+                let total_issues: usize = service_results.iter().map(|s| s.issues.len()).sum();
 
                 Ok(ParallelOutput {
                     services_checked: service_results.len(),
@@ -509,10 +497,9 @@ mod example_tests {
             worker.stop();
 
             assert_eq!(record.status, ExecutionStatus::Completed);
-            let result: ParallelOutput = serde_json::from_value(
-                record.result.expect("expected result"),
-            )
-            .expect("deserialize failed");
+            let result: ParallelOutput =
+                serde_json::from_value(record.result.expect("expected result"))
+                    .expect("deserialize failed");
             assert_eq!(result.services_checked, 3);
             assert_eq!(result.total_issues, 1);
         }
@@ -564,13 +551,13 @@ mod example_tests {
         struct RadkitAgentTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for RadkitAgentTask {
+        impl zart::registry::DurableExecution for RadkitAgentTask {
             type Data = AgentInput;
             type Output = AgentOutput;
 
-            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                ctx: &mut zart::context::TaskContext<S>,
+                ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
                 // For testing, we skip the LLM extraction and use hardcoded values
@@ -641,7 +628,8 @@ mod example_tests {
                                 .into_iter()
                                 .map(|b| BreweryInfo {
                                     name: b.name,
-                                    brewery_type: b.brewery_type
+                                    brewery_type: b
+                                        .brewery_type
                                         .unwrap_or_else(|| "unknown".to_string()),
                                     city: b.city.unwrap_or_else(|| city.clone()),
                                     state: b.state.unwrap_or_else(|| state.clone()),
@@ -712,10 +700,9 @@ mod example_tests {
             worker.stop();
 
             assert_eq!(record.status, ExecutionStatus::Completed);
-            let result: AgentOutput = serde_json::from_value(
-                record.result.expect("expected result"),
-            )
-            .expect("deserialize failed");
+            let result: AgentOutput =
+                serde_json::from_value(record.result.expect("expected result"))
+                    .expect("deserialize failed");
             assert!(result.query.contains("Portland"));
             assert_eq!(result.location.city, "Portland");
             assert!(!result.breweries.is_empty());

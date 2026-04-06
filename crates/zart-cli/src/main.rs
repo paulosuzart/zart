@@ -130,8 +130,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
-                Arc::new(TaskRegistry::new());
+            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
             let durable = DurableScheduler::new(scheduler, registry);
 
             durable
@@ -149,8 +148,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
-                Arc::new(TaskRegistry::new());
+            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
             let durable = DurableScheduler::new(scheduler, registry);
 
             let record = durable.status(&execution_id).await.unwrap_or_else(|e| {
@@ -174,8 +172,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
-                Arc::new(TaskRegistry::new());
+            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
             let durable = DurableScheduler::new(scheduler, registry);
 
             let cancelled = durable.cancel(&execution_id).await.unwrap_or_else(|e| {
@@ -198,8 +195,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry<scheduler::PostgresScheduler>> =
-                Arc::new(TaskRegistry::new());
+            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
             let durable = DurableScheduler::new(scheduler, registry);
 
             let record = durable

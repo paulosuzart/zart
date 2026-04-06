@@ -64,7 +64,7 @@ async fn process_batch(data: BatchData) -> Result<()> {
 Sometimes you need to poll an external service until a condition is met. Use `ctx.sleep()` between polls to introduce a durable wait:
 
 ```rust
-use zart::{TaskHandler, TaskContext, TaskError, Scheduler};
+use zart::{DurableExecution, TaskContext, TaskError, Scheduler};
 use zart_macros::z_step;
 use std::time::Duration;
 

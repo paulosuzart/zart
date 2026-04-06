@@ -6,7 +6,7 @@
 //! # Macros
 //!
 //! - [`#[zart_durable]`](macro@zart_durable) — annotate an async function as a durable handler,
-//!   generating a unit struct that implements [`TaskHandler`](zart::registry::TaskHandler).
+//!   generating a unit struct that implements [`DurableExecution`](zart::registry::DurableExecution).
 //! - [`z_step!`](macro@z_step) — ergonomic wrapper around `ctx.step(name, closure)`
 //! - [`z_step_with_retry!`](macro@z_step_with_retry) — wrapper around `ctx.step_with_retry(name, config, closure)`
 //! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `ctx.wait_for_event(name, timeout)`
@@ -15,7 +15,7 @@
 //! # Required dependencies
 //!
 //! Crates using `#[zart_durable]` must also add `async-trait` to their `Cargo.toml`
-//! because the generated `TaskHandler` impl requires it.
+//! because the generated `DurableExecution` impl requires it.
 //!
 //! # Example
 //!
@@ -25,7 +25,7 @@
 //!
 //! #[zart_durable("user-onboard", timeout = "5m")]
 //! async fn onboard_user(
-//!     ctx: &mut TaskContext<impl Scheduler>,
+//!     ctx: &mut TaskContext,
 //!     data: OnboardingData,
 //! ) -> Result<OnboardingResult, TaskError> {
 //!     z_step!("send-welcome-email", || async {
@@ -115,7 +115,7 @@ impl Parse for DurableAttr {
 ///
 /// Generates a unit struct (named by converting the function name from
 /// `snake_case` to `PascalCase`) that implements
-/// [`TaskHandler`](zart::registry::TaskHandler).
+/// [`DurableExecution`](zart::registry::DurableExecution).
 ///
 /// The generated struct can then be registered with a [`TaskRegistry`](zart::registry::TaskRegistry):
 ///
@@ -134,7 +134,7 @@ impl Parse for DurableAttr {
 ///
 /// ```rust,ignore
 /// async fn fn_name(
-///     ctx: &mut TaskContext<impl Scheduler>,
+///     ctx: &mut TaskContext,
 ///     data: DataType,
 /// ) -> Result<OutputType, TaskError>
 /// ```
@@ -147,7 +147,7 @@ impl Parse for DurableAttr {
 /// ```rust,ignore
 /// #[zart_durable("send-report", timeout = "10m")]
 /// async fn send_report(
-///     ctx: &mut TaskContext<impl Scheduler>,
+///     ctx: &mut TaskContext,
 ///     data: ReportRequest,
 /// ) -> Result<ReportId, TaskError> {
 ///     let id = z_step!("generate", || async { Ok(generate_report(&data).await?) }).await?;
@@ -225,13 +225,13 @@ fn expand_zart_durable(args: DurableAttr, func: ItemFn) -> SynResult<TokenStream
         #vis struct #struct_ident;
 
         #[::async_trait::async_trait]
-        impl ::zart::registry::TaskHandler for #struct_ident {
+        impl ::zart::registry::DurableExecution for #struct_ident {
             type Data = #data_type;
             type Output = #ok_type;
 
-            async fn run<S: ::scheduler::Scheduler + ::scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                #ctx_pat: &mut ::zart::context::TaskContext<S>,
+                #ctx_pat: &mut ::zart::context::TaskContext,
                 #data_pat: Self::Data,
             ) -> ::std::result::Result<Self::Output, ::zart::error::TaskError> {
                 #body

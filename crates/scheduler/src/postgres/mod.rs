@@ -45,8 +45,16 @@ impl Scheduler for PostgresScheduler {
         execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError> {
         let now = Utc::now();
-        self.schedule_at(task_id, task_name, now, data, None, execution_id, serde_json::Value::Null)
-            .await
+        self.schedule_at(
+            task_id,
+            task_name,
+            now,
+            data,
+            None,
+            execution_id,
+            serde_json::Value::Null,
+        )
+        .await
     }
 
     async fn schedule_at(
@@ -137,7 +145,9 @@ impl Scheduler for PostgresScheduler {
 
         let mut fetched = Vec::with_capacity(rows.len());
 
-        for (task_id, task_name, data, state, attempt, execution_id, recurrence_json, metadata) in rows {
+        for (task_id, task_name, data, state, attempt, execution_id, recurrence_json, metadata) in
+            rows
+        {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
@@ -372,11 +382,7 @@ impl Scheduler for PostgresScheduler {
         Ok(result.rows_affected() as usize)
     }
 
-    async fn renew_lease(
-        &self,
-        task_id: &str,
-        lock_token: &str,
-    ) -> Result<bool, StorageError> {
+    async fn renew_lease(&self, task_id: &str, lock_token: &str) -> Result<bool, StorageError> {
         let rows_affected = sqlx::query(
             r#"
             UPDATE zart_tasks
@@ -409,7 +415,11 @@ impl Scheduler for PostgresScheduler {
         new_execution_id: Option<&str>,
         new_metadata: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let rows = sqlx::query(
             r#"
@@ -433,7 +443,9 @@ impl Scheduler for PostgresScheduler {
         .rows_affected();
 
         if rows == 0 {
-            tx.rollback().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
             return Err(StorageError::LockMismatch(completed_task_id.to_string()));
         }
 
@@ -455,10 +467,11 @@ impl Scheduler for PostgresScheduler {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        tx.commit().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
     }
-
 }
 
 #[async_trait]
@@ -681,7 +694,11 @@ impl DurableStorage for PostgresScheduler {
         event_name: &str,
         payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         // Mark the wait_for_event step task completed (only if still 'scheduled' — i.e.
         // the deadline worker has not yet picked it up).
@@ -708,7 +725,9 @@ impl DurableStorage for PostgresScheduler {
 
         let (task_name, data, next_segment) = match row {
             None => {
-                tx.rollback().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+                tx.rollback()
+                    .await
+                    .map_err(|e| StorageError::Database(Box::new(e)))?;
                 return Ok(false);
             }
             Some((t, d, s)) => (t, d, s as usize),
@@ -737,7 +756,9 @@ impl DurableStorage for PostgresScheduler {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        tx.commit().await.map_err(|e| StorageError::Database(Box::new(e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(true)
     }
 
@@ -793,7 +814,11 @@ impl DurableStorage for PostgresScheduler {
                         e,
                     )))
                 })?;
-                Ok(Some(StepLookup { task_id: tid, status, result }))
+                Ok(Some(StepLookup {
+                    task_id: tid,
+                    status,
+                    result,
+                }))
             }
         }
     }

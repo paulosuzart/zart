@@ -10,7 +10,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## In the Workflow
 
 ```rust
-use zart::{TaskHandler, TaskContext, TaskError, Scheduler};
+use zart::{DurableExecution, TaskContext, TaskError, Scheduler};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ struct ApprovalPayload {
 
 async fn run(
     &self,
-    ctx: &mut TaskContext<impl Scheduler>,
+    ctx: &mut TaskContext,
     data: OrderData,
 ) -> Result<(), TaskError> {
     // Process order steps...

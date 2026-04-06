@@ -12,11 +12,11 @@ Here is a complete durable workflow in Zart. Every step persists its result — 
 struct OnboardingTask;
 
 #[async_trait]
-impl TaskHandler for OnboardingTask {
+impl DurableExecution for OnboardingTask {
     type Data   = OnboardingData;
     type Output = ();
 
-    async fn run(&self, ctx: &mut TaskContext<impl Scheduler>, data: OnboardingData)
+    async fn run(&self, ctx: &mut TaskContext, data: OnboardingData)
         -> Result<(), TaskError>
     {
         // Each step runs exactly once — result is stored in the DB
@@ -128,7 +128,7 @@ let status = durable.wait("signup-user-42", None).await?;
 
 ## Next Steps
 
-- [TaskHandler Trait](/rust-api/task-handler/) — full reference for `ctx.step()`, retries, sleeps, and events
+- [DurableExecution Trait](/rust-api/task-handler/) — full reference for `ctx.step()`, retries, sleeps, and events
 - [Macros](/rust-api/macros/) — the `#[zart_durable]` proc-macro layer for less boilerplate
 - [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `wait_all`
 - [Wait for Event](/rust-api/wait-for-event/) — human-in-the-loop and webhook patterns

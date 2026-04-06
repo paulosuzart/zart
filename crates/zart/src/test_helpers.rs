@@ -8,6 +8,8 @@
 //! `check_wait_all_children`. Tests use it to assert *which* DB operations the
 //! execution model triggers and *how many* task rows are inserted per scenario.
 
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
@@ -111,7 +113,8 @@ pub struct RecordingSchedulerBuilder {
 impl RecordingSchedulerBuilder {
     /// `get_step_status(exec_id, step)` → `Ok(None)` (step row not yet inserted).
     pub fn step_not_found(mut self, exec_id: &str, step: &str) -> Self {
-        self.step_responses.insert((exec_id.into(), step.into()), None);
+        self.step_responses
+            .insert((exec_id.into(), step.into()), None);
         self
     }
 
@@ -173,7 +176,10 @@ impl Scheduler for RecordingScheduler {
         _data: serde_json::Value,
         _execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError> {
-        Ok(ScheduleResult { task_id: task_id.to_string(), execution_time: Utc::now() })
+        Ok(ScheduleResult {
+            task_id: task_id.to_string(),
+            execution_time: Utc::now(),
+        })
     }
 
     async fn schedule_at(
@@ -193,7 +199,10 @@ impl Scheduler for RecordingScheduler {
             execution_id: execution_id.map(String::from),
             metadata,
         });
-        Ok(ScheduleResult { task_id: task_id.to_string(), execution_time })
+        Ok(ScheduleResult {
+            task_id: task_id.to_string(),
+            execution_time,
+        })
     }
 
     async fn poll_due(
@@ -220,10 +229,10 @@ impl Scheduler for RecordingScheduler {
         result: Option<serde_json::Value>,
         _lock_token: &str,
     ) -> Result<(), StorageError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(Call::MarkCompleted { task_id: task_id.to_string(), result });
+        self.calls.lock().unwrap().push(Call::MarkCompleted {
+            task_id: task_id.to_string(),
+            result,
+        });
         Ok(())
     }
 
@@ -309,10 +318,13 @@ impl DurableStorage for RecordingScheduler {
         event_name: &str,
         _payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
-        self.calls.lock().unwrap().push(Call::CompleteEventStepAndScheduleBody {
-            execution_id: execution_id.to_string(),
-            event_name: event_name.to_string(),
-        });
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::CompleteEventStepAndScheduleBody {
+                execution_id: execution_id.to_string(),
+                event_name: event_name.to_string(),
+            });
         Ok(true)
     }
 

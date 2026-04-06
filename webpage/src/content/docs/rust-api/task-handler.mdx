@@ -1,23 +1,23 @@
 ---
-title: TaskHandler Trait
-description: Full reference for the TaskHandler trait, TaskContext methods, and RetryConfig.
+title: DurableExecution Trait
+description: Full reference for the DurableExecution trait, TaskContext methods, and RetryConfig.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-`TaskHandler` is the trait you implement to define a durable workflow. Zart calls `run` each time a worker claims your execution. Completed steps are skipped automatically — only the next pending step executes.
+`DurableExecution` is the trait you implement to define a durable workflow. Zart calls `run` each time a worker claims your execution. Completed steps are skipped automatically — only the next pending step executes.
 
 ## The Trait
 
 ```rust
 #[async_trait]
-pub trait TaskHandler: Send + Sync {
+pub trait DurableExecution: Send + Sync {
     type Data:   serde::de::DeserializeOwned + Send + Sync;
     type Output: serde::Serialize + Send + Sync;
 
     async fn run(
         &self,
-        ctx: &mut TaskContext<impl Scheduler>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError>;
 
@@ -188,7 +188,7 @@ RetryConfig::exponential(5, Duration::from_secs(1))
 A five-step onboarding workflow combining steps, retries, and an event wait:
 
 ```rust
-use zart::{TaskHandler, TaskContext, TaskError, RetryConfig, Scheduler};
+use zart::{DurableExecution, TaskContext, TaskError, RetryConfig, Scheduler};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -207,13 +207,13 @@ pub struct OnboardingResult {
 pub struct OnboardingTask;
 
 #[async_trait]
-impl TaskHandler for OnboardingTask {
+impl DurableExecution for OnboardingTask {
     type Data   = OnboardingData;
     type Output = OnboardingResult;
 
     async fn run(
         &self,
-        ctx: &mut TaskContext<impl Scheduler>,
+        ctx: &mut TaskContext,
         data: OnboardingData,
     ) -> Result<Self::Output, TaskError> {
         // Step 1 — send welcome email

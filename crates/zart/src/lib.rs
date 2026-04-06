@@ -20,18 +20,17 @@
 //! ```rust,no_run
 //! use zart::prelude::*;
 //! use async_trait::async_trait;
-//! use scheduler::{DurableStorage, Scheduler};
 //!
 //! struct MyTask;
 //!
 //! #[async_trait]
-//! impl TaskHandler for MyTask {
+//! impl DurableExecution for MyTask {
 //!     type Data = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
-//!     async fn run<S: Scheduler + DurableStorage>(
+//!     async fn run(
 //!         &self,
-//!         _ctx: &mut TaskContext<S>,
+//!         _ctx: &mut TaskContext,
 //!         data: Self::Data,
 //!     ) -> Result<Self::Output, TaskError> {
 //!         Ok(data)
@@ -59,7 +58,7 @@ pub use context::{StepHandle, TaskContext};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
-pub use registry::{TaskHandler, TaskRegistry};
+pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
 pub use worker::{Worker, WorkerConfig};
 
@@ -72,9 +71,11 @@ pub mod prelude {
         context::{StepHandle, TaskContext},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
-        registry::{TaskHandler, TaskRegistry},
+        registry::{DurableExecution, TaskRegistry},
         retry::RetryConfig,
         worker::{Worker, WorkerConfig},
     };
-    pub use scheduler::{DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler};
+    pub use scheduler::{
+        DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler, StorageBackend,
+    };
 }

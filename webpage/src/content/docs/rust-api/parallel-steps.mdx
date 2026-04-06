@@ -10,19 +10,19 @@ Zart supports running multiple steps in parallel via `ctx.schedule_step()` and `
 ## Basic Usage
 
 ```rust
-use zart::{TaskHandler, TaskContext, TaskError, Scheduler};
+use zart::{DurableExecution, TaskContext, TaskError, Scheduler};
 use async_trait::async_trait;
 
 pub struct OnboardingTask;
 
 #[async_trait]
-impl TaskHandler for OnboardingTask {
+impl DurableExecution for OnboardingTask {
     type Data   = OnboardingData;
     type Output = ();
 
     async fn run(
         &self,
-        ctx: &mut TaskContext<impl Scheduler>,
+        ctx: &mut TaskContext,
         data: OnboardingData,
     ) -> Result<(), TaskError> {
         // Schedule three parallel steps
@@ -123,13 +123,13 @@ Schedule a variable number of parallel tasks based on runtime data:
 
 ```rust
 #[async_trait]
-impl TaskHandler for ProcessRegionsTask {
+impl DurableExecution for ProcessRegionsTask {
     type Data   = MultiRegionJob;
     type Output = Vec<RegionResult>;
 
     async fn run(
         &self,
-        ctx: &mut TaskContext<impl Scheduler>,
+        ctx: &mut TaskContext,
         data: MultiRegionJob,
     ) -> Result<Self::Output, TaskError> {
         // Schedule one task per region dynamically

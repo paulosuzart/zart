@@ -17,7 +17,7 @@ mod integration {
         DurableScheduler, RetryConfig, TaskRegistry, Worker, WorkerConfig,
         context::TaskContext,
         error::{StepError, TaskError},
-        registry::TaskHandler,
+        registry::DurableExecution,
     };
 
     // ── Shared helpers ────────────────────────────────────────────────────────
@@ -38,8 +38,8 @@ mod integration {
 
     fn spawn_worker(
         scheduler: Arc<PostgresScheduler>,
-        registry: Arc<TaskRegistry<PostgresScheduler>>,
-    ) -> (Arc<Worker<PostgresScheduler>>, tokio::task::JoinHandle<()>) {
+        registry: Arc<TaskRegistry>,
+    ) -> (Arc<Worker>, tokio::task::JoinHandle<()>) {
         let config = WorkerConfig {
             poll_interval: Duration::from_millis(100),
             max_tasks_per_poll: 10,
@@ -61,13 +61,13 @@ mod integration {
     struct SequentialTask;
 
     #[async_trait::async_trait]
-    impl TaskHandler for SequentialTask {
+    impl DurableExecution for SequentialTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            ctx: &mut TaskContext<S>,
+            ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             let step1: i32 = ctx.step("step-one", || async { Ok(21i32) }).await?;
@@ -82,13 +82,13 @@ mod integration {
     struct FailingTask;
 
     #[async_trait::async_trait]
-    impl TaskHandler for FailingTask {
+    impl DurableExecution for FailingTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            ctx: &mut TaskContext<S>,
+            ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             ctx.step("fail-step", || async {
@@ -109,13 +109,13 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for TransientFailTask {
+    impl DurableExecution for TransientFailTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            ctx: &mut TaskContext<S>,
+            ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             let attempts = self.attempts.clone();
@@ -255,13 +255,13 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for WaitEventTask {
+    impl DurableExecution for WaitEventTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            ctx: &mut TaskContext<S>,
+            ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             let approval: ApprovalPayload = ctx
@@ -387,7 +387,7 @@ mod integration {
     async fn list_executions_returns_started_executions() {
         let scheduler = setup().await;
 
-        let registry: Arc<TaskRegistry<PostgresScheduler>> = Arc::new(TaskRegistry::new());
+        let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
         let durable = DurableScheduler::new(scheduler.clone(), registry);
 
         let base_id = Uuid::new_v4().to_string();
@@ -419,13 +419,13 @@ mod integration {
     struct ParallelTask;
 
     #[async_trait::async_trait]
-    impl TaskHandler for ParallelTask {
+    impl DurableExecution for ParallelTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            ctx: &mut TaskContext<S>,
+            ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             let h1 = ctx.schedule_step("step-a", || async { Ok::<i32, _>(1) });
@@ -503,13 +503,13 @@ mod integration {
         }
 
         #[async_trait::async_trait]
-        impl TaskHandler for CounterTask {
+        impl DurableExecution for CounterTask {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
-            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                _ctx: &mut TaskContext<S>,
+                _ctx: &mut TaskContext,
                 _data: Self::Data,
             ) -> Result<Self::Output, TaskError> {
                 self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -572,13 +572,13 @@ mod integration {
         struct AlwaysFailTask;
 
         #[async_trait::async_trait]
-        impl TaskHandler for AlwaysFailTask {
+        impl DurableExecution for AlwaysFailTask {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
-            async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                ctx: &mut TaskContext<S>,
+                ctx: &mut TaskContext,
                 _data: Self::Data,
             ) -> Result<Self::Output, TaskError> {
                 ctx.step_with_retry(
@@ -638,13 +638,13 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for GatedTask {
+    impl DurableExecution for GatedTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            _ctx: &mut TaskContext<S>,
+            _ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             self.started.notify_one();
@@ -661,13 +661,13 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for GatedStepTask {
+    impl DurableExecution for GatedStepTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+        async fn run(
             &self,
-            ctx: &mut TaskContext<S>,
+            ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
             // Signal that we entered the handler (before the step call).
@@ -786,5 +786,4 @@ mod integration {
             record.status
         );
     }
-
 }

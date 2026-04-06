@@ -13,10 +13,10 @@ use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use zart::prelude::*;
-use zart::registry::TaskHandler;
 use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
+use zart::prelude::*;
+use zart::registry::DurableExecution;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -48,13 +48,13 @@ struct ApprovalOutput {
 struct ApprovalTask;
 
 #[async_trait]
-impl TaskHandler for ApprovalTask {
+impl DurableExecution for ApprovalTask {
     type Data = ApprovalRequest;
     type Output = ApprovalOutput;
 
-    async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+    async fn run(
         &self,
-        ctx: &mut TaskContext<S>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // Step 1: Validate the request (fake step)
@@ -88,10 +88,7 @@ impl TaskHandler for ApprovalTask {
                 let requester = data.requester_name.clone();
                 async move {
                     // In a real system, this would provision the resource
-                    Ok(format!(
-                        "Provisioned {} for {}",
-                        resource, requester
-                    ))
+                    Ok(format!("Provisioned {} for {}", resource, requester))
                 }
             })
             .await?;

@@ -1014,7 +1014,7 @@
     <div class="tabs-wrapper">
       <ul class="tab-list" role="tablist">
         <li><button class="tab-btn active" role="tab" data-tab="macros">Macros</button></li>
-        <li><button class="tab-btn" role="tab" data-tab="task-handler">TaskHandler</button></li>
+        <li><button class="tab-btn" role="tab" data-tab="task-handler">DurableExecution</button></li>
       </ul>
 
       <!-- Macros tab -->
@@ -1022,7 +1022,7 @@
         <div class="tab-code-window">
           <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart_macros::&#123;<span class="mac">zart_durable</span>, <span class="mac">z_step</span>, <span class="mac">z_step_with_retry</span>, <span class="mac">z_wait_event</span>&#125;;
 
-<span class="cmt">/// Proc-macro turns this async fn into a full durable TaskHandler</span>
+<span class="cmt">/// Proc-macro turns this async fn into a full durable DurableExecution</span>
 <span class="attr">#[zart_durable("onboarding", timeout = "30m")]</span>
 <span class="kw">async fn</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -> <span class="ty">Result</span>&lt;()&gt; &#123;
 
@@ -1049,22 +1049,22 @@
         </div>
       </div>
 
-      <!-- TaskHandler tab -->
+      <!-- DurableExecution tab -->
       <div class="tab-panel" id="tab-task-handler">
         <div class="tab-code-window">
-          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">TaskHandler</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
+          <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::&#123;<span class="ty">DurableExecution</span>, <span class="ty">TaskContext</span>, <span class="ty">TaskError</span>, <span class="ty">RetryConfig</span>&#125;;
 <span class="kw">use</span> async_trait::async_trait;
 
 <span class="kw">struct</span> <span class="ty">OnboardingTask</span>;
 
 <span class="attr">#[async_trait]</span>
-<span class="kw">impl</span> <span class="ty">TaskHandler</span> <span class="kw">for</span> <span class="ty">OnboardingTask</span> &#123;
+<span class="kw">impl</span> <span class="ty">DurableExecution</span> <span class="kw">for</span> <span class="ty">OnboardingTask</span> &#123;
     <span class="kw">type</span> <span class="ty">Data</span>   = <span class="ty">OnboardingData</span>;
     <span class="kw">type</span> <span class="ty">Output</span> = ();
 
     <span class="kw">async fn</span> <span class="fn">run</span>(
         &amp;<span class="kw">self</span>,
-        ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>&lt;<span class="kw">impl</span> <span class="ty">Scheduler</span>&gt;,
+        ctx: &amp;<span class="kw">mut</span> <span class="ty">TaskContext</span>,
         data: <span class="ty">OnboardingData</span>,
     ) -> <span class="ty">Result</span>&lt;(), <span class="ty">TaskError</span>&gt; &#123;
         <span class="cmt">// Step 1 — send welcome email</span>

@@ -11,10 +11,10 @@ use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use zart::prelude::*;
-use zart::registry::TaskHandler;
 use zart::context::TaskContext;
 use zart::error::TaskError;
+use zart::prelude::*;
+use zart::registry::DurableExecution;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -43,13 +43,13 @@ struct HealthCheckOutput {
 struct HealthCheckTask;
 
 #[async_trait]
-impl TaskHandler for HealthCheckTask {
+impl DurableExecution for HealthCheckTask {
     type Data = HealthCheckInput;
     type Output = HealthCheckOutput;
 
-    async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+    async fn run(
         &self,
-        ctx: &mut TaskContext<S>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // Schedule parallel health checks — one per service
@@ -63,11 +63,17 @@ impl TaskHandler for HealthCheckTask {
                         // Simulate a health check with varying latency and status
                         let (status, response_ms, issues) = match service.as_str() {
                             "auth-api" => ("healthy".to_string(), 42, vec![]),
-                            "payments" => {
-                                ("degraded".to_string(), 156, vec!["high latency detected".to_string()])
-                            }
+                            "payments" => (
+                                "degraded".to_string(),
+                                156,
+                                vec!["high latency detected".to_string()],
+                            ),
                             "users-db" => ("healthy".to_string(), 28, vec![]),
-                            _ => ("unknown".to_string(), 0, vec!["no check configured".to_string()]),
+                            _ => (
+                                "unknown".to_string(),
+                                0,
+                                vec!["no check configured".to_string()],
+                            ),
                         };
                         Ok(ServiceResult {
                             name: service,
