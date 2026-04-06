@@ -15,22 +15,22 @@ Every step's result is serialized and written to the database before the workflo
 
 **How it works:**
 
-1. Worker calls `ctx.step("charge", || async { stripe.charge(...).await })`.
-2. Zart checks `zart_steps` for a row with `(execution_id, "charge")`.
-3. **Hit:** deserializes and returns the stored value. Closure is never called.
-4. **Miss:** runs the closure, serializes the result, inserts the row, returns the value.
+1. Worker calls `ctx.execute_step(MyStep { ... })`.
+2. Zart checks `zart_steps` for a row with `(execution_id, step_name)`.
+3. **Hit:** deserializes and returns the stored value. Step logic is never called.
+4. **Miss:** runs `step.run()`, serializes the result, inserts the row, returns the value.
 
 **What this means for you:**
 
 - A payment is never charged twice, even if your process crashes after the charge but before the receipt.
 - Database inserts, API calls, and emails become safe to "retry" — the retry only runs incomplete work.
-- No idempotency logic needed inside the step closure for most cases.
+- No idempotency logic needed inside the step logic for most cases.
 
 ```rust
 // This can crash anywhere — Zart recovers from the last completed step
-ctx.step("step-1", || async { do_a().await }).await?;
-ctx.step("step-2", || async { do_b().await }).await?; // <-- crash here
-ctx.step("step-3", || async { do_c().await }).await?; // resumes here
+ctx.execute_step(StepA).await?;
+ctx.execute_step(StepB).await?; // <-- crash here
+ctx.execute_step(StepC).await?; // resumes here
 ```
 
 ---
@@ -45,14 +45,25 @@ Configure retry behaviour at both the task level and the individual step level.
 fn max_retries(&self) -> usize { 3 }
 ```
 
-**Step-level retries** via `ctx.step_with_retry()` or `z_step_with_retry!`:
+**Step-level retries** via `ZartStep::retry_config()`:
 
 ```rust
-ctx.step_with_retry(
-    "flaky-external-call",
-    RetryConfig::exponential(5, Duration::from_secs(1)),
-    || async { external.call().await },
-).await?;
+struct ChargeStep { card: String, amount: i64 }
+
+#[async_trait]
+impl ZartStep for ChargeStep {
+    type Output = ChargeResult;
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("charge-card") }
+    fn retry_config(&self) -> Option<RetryConfig> {
+        Some(RetryConfig::exponential(3, Duration::from_secs(2)))
+    }
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        stripe.charge(&self.card, self.amount).await
+    }
+}
+
+// Usage:
+let result = ctx.execute_step(ChargeStep { card, amount }).await?;
 ```
 
 **RetryConfig variants:**
@@ -62,7 +73,6 @@ ctx.step_with_retry(
 | `RetryConfig::none()` | No retries — fail immediately |
 | `RetryConfig::fixed(n, delay)` | `n` retries, constant `delay` between each |
 | `RetryConfig::exponential(n, base)` | `n` retries, delay doubles each attempt |
-| `RetryConfig::exponential_with_max(n, base, cap)` | Same, but delay capped at `cap` |
 
 Jitter is applied automatically to exponential backoff to prevent thundering herd.
 
@@ -75,9 +85,9 @@ Fan out work to multiple concurrent sub-tasks using `ctx.schedule_step()` and `c
 Each scheduled step becomes an independent task in the scheduler — it can run on a different worker node. `wait_all` durably suspends the parent until all children complete.
 
 ```rust
-let h1 = ctx.schedule_step("email",    || async { send_email().await });
-let h2 = ctx.schedule_step("billing",  || async { setup_billing().await });
-let h3 = ctx.schedule_step("provision",|| async { provision_aws().await });
+let h1 = ctx.schedule_step(EmailStep);
+let h2 = ctx.schedule_step(BillingStep);
+let h3 = ctx.schedule_step(ProvisionStep);
 
 // Parent suspends here — no thread is blocked
 ctx.wait_all(vec![h1, h2, h3]).await?;

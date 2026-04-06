@@ -54,7 +54,7 @@ pub mod worker;
 pub(crate) mod test_helpers;
 
 pub use api_trait::{DurableApi, into_durable_api};
-pub use context::{StepHandle, TaskContext};
+pub use context::{StepContext, StepHandle, TaskContext, ZartStep};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
@@ -62,13 +62,16 @@ pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
 pub use worker::{Worker, WorkerConfig};
 
+// Re-export proc macros from zart-macros
+pub use zart_macros::{z_durable_loop, z_wait_event, zart_durable, zart_step};
+
 /// Commonly used types re-exported for ergonomic imports.
 ///
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
     pub use crate::{
         api_trait::DurableApi,
-        context::{StepHandle, TaskContext},
+        context::{StepContext, StepHandle, TaskContext, ZartStep},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
         registry::{DurableExecution, TaskRegistry},

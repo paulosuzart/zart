@@ -1,0 +1,171 @@
+---
+title: Retry Simulation
+description: Observe automatic step retries in action — a step intentionally fails on the first attempt and succeeds on the retry.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This example simulates a transient failure to show how Zart automatically retries steps. The first attempt always fails; the framework retries and the second attempt succeeds. All retry metadata is accessible inside the step via `StepContext`.
+
+**Features demonstrated:** `#[zart_step]` with `retry = "fixed(n, delay)"`, `ctx.current_attempt()`, `ctx.max_retries()`, `ctx.is_retry_attempt()`, `DurableExecution` trait.
+
+## Data types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetrySimulationInput {
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetrySimulationOutput {
+    name: String,
+    total_attempts: usize,
+    message: String,
+    attempts_log: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetryStepResult {
+    message: String,
+    attempt_number: usize,
+}
+```
+
+## Step definitions
+
+```rust
+use zart::prelude::*;
+use zart::zart_step;
+
+/// Fails on attempt 0; succeeds on any retry.
+/// `retry = "fixed(3, 1s)"` means up to 3 retries, 1 second apart.
+#[zart_step("intentional-failure", retry = "fixed(3, 1s)")]
+async fn intentional_failure_step(
+    name: String,
+    ctx: StepContext,
+) -> Result<RetryStepResult, StepError> {
+    let current = ctx.current_attempt();
+    println!(
+        "[intentional-failure] Attempt #{} | is_retry={} | max_retries={:?}",
+        current,
+        ctx.is_retry_attempt(),
+        ctx.max_retries(),
+    );
+
+    if current == 0 {
+        return Err(StepError::Failed {
+            step: "intentional-failure".into(),
+            reason: format!("Simulated transient error on attempt {}", current + 1),
+        });
+    }
+
+    Ok(RetryStepResult {
+        message: format!("Succeeded for '{}' on retry attempt #{}", name, current),
+        attempt_number: current,
+    })
+}
+
+/// A step that always succeeds — no retry configuration needed.
+#[zart_step("normal-step")]
+async fn normal_step(name: String, _ctx: StepContext) -> Result<String, StepError> {
+    Ok(format!("Normal step completed for '{}'", name))
+}
+```
+
+## The workflow
+
+```rust
+struct RetrySimulationTask;
+
+#[async_trait]
+impl DurableExecution for RetrySimulationTask {
+    type Data = RetrySimulationInput;
+    type Output = RetrySimulationOutput;
+
+    async fn run(
+        &self,
+        ctx: &mut TaskContext,
+        data: Self::Data,
+    ) -> Result<Self::Output, TaskError> {
+        // Step 1: fails first, then retries automatically.
+        let result = ctx.execute_step(intentional_failure_step(data.name.clone())).await?;
+
+        let mut attempts_log = vec![format!(
+            "intentional-failure: succeeded on attempt #{} ({} retries)",
+            result.attempt_number, result.attempt_number
+        )];
+
+        // Step 2: always succeeds on the first try.
+        let normal = ctx.execute_step(normal_step(data.name.clone())).await?;
+        attempts_log.push(normal);
+
+        Ok(RetrySimulationOutput {
+            name: data.name,
+            total_attempts: result.attempt_number + 1,
+            message: format!(
+                "Completed after {} attempt(s), succeeded on retry #{}",
+                result.attempt_number + 1,
+                result.attempt_number
+            ),
+            attempts_log,
+        })
+    }
+}
+```
+
+## Running the workflow
+
+```rust
+let mut registry = TaskRegistry::new();
+registry.register("retry-simulation", RetrySimulationTask);
+let registry = Arc::new(registry);
+
+let durable = DurableScheduler::new(sched.clone());
+durable
+    .start_typed(&execution_id, "retry-simulation", &RetrySimulationInput {
+        name: "retry-demo".into(),
+    })
+    .await?;
+
+let record = durable.wait(&execution_id, Duration::from_secs(60), None).await?;
+let output: RetrySimulationOutput = serde_json::from_value(record.result.unwrap())?;
+println!("{}", output.message);
+```
+
+## What you'll see
+
+```
+=== Zart Retry Simulation Example ===
+
+Starting execution 'retry-sim-...'...
+
+[intentional-failure] Attempt #0 | is_retry=false | max_retries=Some(3)
+Simulated transient failure for 'retry-demo' on attempt #0
+
+[intentional-failure] Attempt #1 | is_retry=true  | max_retries=Some(3)
+Succeeded for 'retry-demo' on retry attempt #1
+
+[normal-step] Running (no retries needed)
+
+=== Execution Completed ===
+  Name:            retry-demo
+  Total attempts:  2
+  Message:         Completed after 2 attempt(s), succeeded on retry #1
+```
+
+<Aside type="note">
+The retry delay (`1s` fixed in this example) means the second attempt runs approximately 1 second after the first failure. In production, exponential backoff (`retry = "exponential(5, 1s)"`) is usually preferable for external API calls.
+</Aside>
+
+## Key concepts
+
+**`retry = "fixed(n, delay)"`** — configures up to `n` retries with a constant delay between attempts. Use `"exponential(n, initial)"` for doubling delays.
+
+**`ctx.current_attempt()`** — zero-indexed attempt counter available inside every step. `0` on the first run, `1` on the first retry, and so on.
+
+**`ctx.is_retry_attempt()`** — convenience accessor returning `true` if `current_attempt() > 0`. Useful for conditional logic such as skipping expensive setup on retries.
+
+**`ctx.max_retries()`** — returns the configured retry limit so the step can adapt its behavior as retries are exhausted.
+
+See [ZartStep — Retry Configuration](/rust-api/zart-step/#retry-configuration) for the full retry API reference.

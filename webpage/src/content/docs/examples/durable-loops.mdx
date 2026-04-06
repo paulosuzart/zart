@@ -1,0 +1,183 @@
+---
+title: Durable Loops
+description: Iterate over a collection durably — each item is processed in its own persisted step with a unique name.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This example processes a batch of reports. It fetches the list inside a step for stable replay, then iterates over it with two uniqueness mechanisms: the `{index}` template and `.with_id()`.
+
+**Features demonstrated:** `#[zart_step("name-{field}")]`, `.with_id()`, `ctx.execute_step()` in a loop, fetch-inside-step pattern, `DurableExecution` trait.
+
+## Data types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Report {
+    id: u32,
+    title: String,
+    value: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProcessedReport {
+    id: u32,
+    title: String,
+    score: u64,
+    flagged: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchInput {
+    batch_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchOutput {
+    batch_name: String,
+    total: usize,
+    flagged: usize,
+}
+```
+
+## Step definitions
+
+```rust
+use zart::prelude::*;
+use zart::zart_step;
+
+/// Returns a static fake list for the given batch. In production this would be a
+/// database query filtered by batch_name. Wrapping it in a step means the same
+/// list is replayed after any restart — even if the underlying data changes.
+#[zart_step("fetch-reports")]
+async fn fetch_reports(batch_name: String, ctx: StepContext) -> Result<Vec<Report>, StepError> {
+    let _ = ctx.current_attempt();
+    // In production: db.query("SELECT ... WHERE batch = ?", batch_name).await
+    Ok(vec![
+        Report { id: 1, title: "Q1 Sales".into(), value: 84.5 },
+        Report { id: 2, title: "Q2 Sales".into(), value: 91.2 },
+        Report { id: 3, title: "Q3 Sales".into(), value: 72.0 },
+        Report { id: 4, title: "Q4 Sales".into(), value: 110.8 },
+    ])
+}
+
+/// The `{index}` placeholder expands at runtime, producing unique DB keys:
+/// "process-report-0", "process-report-1", ...
+#[zart_step("process-report-{index}")]
+async fn process_report(
+    index: usize,
+    report: Report,
+    _ctx: StepContext,
+) -> Result<ProcessedReport, StepError> {
+    let score = (report.value * 10.0) as u64;
+    let flagged = report.value < 80.0;
+    Ok(ProcessedReport { id: report.id, title: report.title, score, flagged })
+}
+
+/// Static step name — callers must supply `.with_id()` when calling in a loop.
+#[zart_step("notify-stakeholder")]
+async fn notify_stakeholder(
+    email: String,
+    report_title: String,
+    _ctx: StepContext,
+) -> Result<(), StepError> {
+    println!("Sent alert for '{}' to {}", report_title, email);
+    Ok(())
+}
+```
+
+## The workflow
+
+```rust
+struct ReportBatchTask;
+
+#[async_trait]
+impl DurableExecution for ReportBatchTask {
+    type Data = BatchInput;
+    type Output = BatchOutput;
+
+    async fn run(
+        &self,
+        ctx: &mut TaskContext,
+        data: Self::Data,
+    ) -> Result<Self::Output, TaskError> {
+        // Fetch inside a step so the same list is used on replay.
+        let reports = ctx.execute_step(fetch_reports(data.batch_name.clone())).await?;
+
+        // {index} template — unique names baked into the step definition.
+        let mut processed = Vec::new();
+        for (i, report) in reports.into_iter().enumerate() {
+            let result = ctx.execute_step(process_report(i, report)).await?;
+            processed.push(result);
+        }
+
+        // .with_id() — override the static name at the call site.
+        for (i, p) in processed.iter().enumerate() {
+            if p.flagged {
+                ctx.execute_step(
+                    notify_stakeholder("team@example.com".into(), p.title.clone())
+                        .with_id(format!("notify-stakeholder-{i}")),
+                )
+                .await?;
+            }
+        }
+
+        let flagged = processed.iter().filter(|p| p.flagged).count();
+        Ok(BatchOutput { batch_name: data.batch_name, total: processed.len(), flagged })
+    }
+}
+```
+
+## Running the workflow
+
+```rust
+let mut registry = TaskRegistry::new();
+registry.register("report-batch", ReportBatchTask);
+let registry = Arc::new(registry);
+
+let durable = DurableScheduler::new(sched.clone());
+durable
+    .start_typed(&execution_id, "report-batch", &BatchInput {
+        batch_name: "2024-annual".into(),
+    })
+    .await?;
+
+let record = durable.wait(&execution_id, Duration::from_secs(60), None).await?;
+let output: BatchOutput = serde_json::from_value(record.result.unwrap())?;
+println!("Processed {} reports, {} flagged", output.total, output.flagged);
+```
+
+## What you'll see
+
+```
+=== Zart Durable Loops Example ===
+
+Starting execution 'report-batch-...'...
+
+Processing reports:
+
+  [process-report-0] 'Q1 Sales': value=84.5, score=845, flagged=false
+  [process-report-1] 'Q2 Sales': value=91.2, score=912, flagged=false
+  [process-report-2] 'Q3 Sales': value=72.0, score=720, flagged=true
+  [process-report-3] 'Q4 Sales': value=110.8, score=1108, flagged=false
+  [notify] Sent alert for 'Q3 Sales' to team@example.com
+
+=== Batch Complete ===
+  Batch:   2024-annual
+  Total:   4
+  Flagged: 1
+```
+
+<Aside type="tip">
+If the worker crashes after processing reports 0–2 but before report 3, the restart skips `"process-report-0"`, `"process-report-1"`, and `"process-report-2"` (returning stored results instantly) and resumes from `"process-report-3"`.
+</Aside>
+
+## Key concepts
+
+**Fetch inside a step** — wrapping the list query in `fetch_reports()` means the same dataset is returned on replay, even if the underlying data changes between attempts.
+
+**`{field}` template** — the `{index}` placeholder in `#[zart_step("process-report-{index}")]` expands at runtime using `self.index`. Each iteration gets a distinct DB key without any call-site boilerplate.
+
+**`.with_id()`** — when the unique key isn't part of the step struct (or the step is reused under different naming schemes), override the name at the call site: `.with_id(format!("notify-stakeholder-{i}"))`.
+
+See [Durable Loops](/rust-api/loops/) for full documentation on both mechanisms and guidance on when to use each.

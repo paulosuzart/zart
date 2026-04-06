@@ -169,16 +169,35 @@ example-radkit-agent db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate
     RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-radkit-agent
 
+# Run the retry-simulation example (demonstrates intentional failure and automatic retry)
+# Usage: just example-retry-simulation [DATABASE_URL]
+example-retry-simulation db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-retry-simulation
+
+# Run the durable-loops example (demonstrates durable iteration with unique step names)
+# Usage: just example-durable-loops [DATABASE_URL]
+example-durable-loops db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-durable-loops
+
 # Run all examples sequentially (requires PostgreSQL and internet)
 run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
     just example-brewery-finder {{db_url}}
     just example-approval {{db_url}}
     just example-parallel {{db_url}}
     just example-radkit-agent {{db_url}}
+    just example-retry-simulation {{db_url}}
+    just example-durable-loops {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)
+# The examples themselves serve as integration tests — run them via just run-all-examples
 test-examples:
-    cargo test -p zart-examples -- --include-ignored --test-threads=1
+    @echo "Example tests have been removed. Run examples directly with:"
+    @echo "  just example-brewery-finder"
+    @echo "  just example-approval"
+    @echo "  just example-parallel"
+    @echo "  just run-all-examples"
 
 # Check that examples compile without running them
 check-examples:

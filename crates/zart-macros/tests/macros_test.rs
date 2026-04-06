@@ -8,9 +8,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
     DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler, StepLookup,
-    StorageError, TaskStatus,
+    StorageError,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +19,7 @@ use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
-use zart_macros::{z_durable_loop, z_step, z_step_with_retry, z_wait_event, zart_durable};
+use zart_macros::{z_durable_loop, z_wait_event, zart_durable};
 
 // ── Mock scheduler (no-op) ────────────────────────────────────────────────────
 
@@ -33,17 +34,6 @@ impl MockScheduler {
         }
     }
 
-    fn with_step_completed(mut self, exec_id: &str, step: &str, result: serde_json::Value) -> Self {
-        self.step_responses.insert(
-            (exec_id.to_string(), step.to_string()),
-            Some(StepLookup {
-                task_id: format!("{exec_id}:step:{step}"),
-                status: TaskStatus::Completed,
-                result: Some(result),
-            }),
-        );
-        self
-    }
 }
 
 #[async_trait]
@@ -61,10 +51,7 @@ impl Scheduler for MockScheduler {
         })
     }
 
-    async fn schedule_at(
-        &self,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError> {
+    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
             task_id: params.task_id,
             execution_time: params.execution_time,
@@ -154,69 +141,6 @@ fn make_ctx() -> TaskContext {
         "lock-token",
         serde_json::Value::Null,
     )
-}
-
-// ── z_step! tests ─────────────────────────────────────────────────────────────
-
-/// `z_step!` must expand to `ctx.step(name, closure)`.
-/// On first call with a fresh context, the step is not yet registered, so the
-/// framework returns `Err(StepError::Scheduled)` as a control-flow signal.
-#[tokio::test]
-async fn z_step_first_call_returns_scheduled() {
-    let mut ctx = make_ctx();
-    let result = z_step!("my-step", || async { Ok::<i32, StepError>(42) }).await;
-
-    assert!(
-        matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "my-step"),
-        "expected StepError::Scheduled for first step encounter, got: {result:?}"
-    );
-}
-
-/// After the step is completed in the DB, `z_step!` returns the cached result
-/// without running the closure again.
-#[tokio::test]
-async fn z_step_completed_step_returns_cached_result() {
-    let mock =
-        MockScheduler::new().with_step_completed("exec", "cached-step", serde_json::json!(99));
-
-    let mut ctx = TaskContext::new(
-        Arc::new(mock),
-        "exec",
-        "task",
-        "token",
-        serde_json::Value::Null,
-    );
-
-    // The closure must NOT be called; the cached value (99) is returned.
-    let result = z_step!("cached-step", || async {
-        // If this runs, the test should panic to flag a bug.
-        panic!("closure should not be called for a completed step");
-        #[allow(unreachable_code)]
-        Ok::<i32, StepError>(0)
-    })
-    .await;
-
-    assert_eq!(result.unwrap(), 99);
-}
-
-// ── z_step_with_retry! tests ──────────────────────────────────────────────────
-
-/// `z_step_with_retry!` must expand to `ctx.step_with_retry(name, config, closure)`.
-/// On first call the step is scheduled — same control-flow as `z_step!`.
-#[tokio::test]
-async fn z_step_with_retry_first_call_returns_scheduled() {
-    let mut ctx = make_ctx();
-    let config = RetryConfig::fixed(3, Duration::from_millis(10));
-
-    let result = z_step_with_retry!("retry-step", config, || async {
-        Ok::<String, StepError>("ok".to_string())
-    })
-    .await;
-
-    assert!(
-        matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "retry-step"),
-        "expected StepError::Scheduled, got: {result:?}"
-    );
 }
 
 // ── z_wait_event! tests ───────────────────────────────────────────────────────
@@ -338,19 +262,35 @@ fn zart_durable_no_timeout_returns_none() {
     assert_eq!(handler.timeout(), None);
 }
 
-/// A handler that uses `z_step!` inside: on first call the step is scheduled,
+/// A handler that uses `ctx.execute_step()` inside: on first call the step is scheduled,
 /// causing the handler to return `Err(TaskError::StepFailed)`.
+///
+/// We define a simple ZartStep struct inline.
+use zart::context::ZartStep;
+
+struct ProcessStep {
+    input: String,
+}
+
+#[async_trait]
+impl ZartStep for ProcessStep {
+    type Output = String;
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("process")
+    }
+    async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        Ok(self.input.to_uppercase())
+    }
+}
+
 #[zart_durable("step-task")]
 async fn step_using_handler(ctx: &mut TaskContext, data: String) -> Result<String, TaskError> {
-    let processed = z_step!("process", || async {
-        Ok::<String, StepError>(data.to_uppercase())
-    })
-    .await?;
+    let processed = ctx.execute_step(ProcessStep { input: data }).await?;
     Ok(processed)
 }
 
 #[tokio::test]
-async fn zart_durable_with_z_step_first_call_schedules() {
+async fn zart_durable_with_execute_step_first_call_schedules() {
     let handler = StepUsingHandler;
     let mut ctx = make_ctx();
     let result = handler.run(&mut ctx, "hello".to_string()).await;
@@ -362,20 +302,33 @@ async fn zart_durable_with_z_step_first_call_schedules() {
     );
 }
 
-/// A handler that uses `z_step_with_retry!` compiles and schedules on first call.
+/// A handler that uses `ctx.execute_step()` with a retry-configured step.
+struct ComputeStep {
+    input: u32,
+}
+
+#[async_trait]
+impl ZartStep for ComputeStep {
+    type Output = u32;
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("compute")
+    }
+    fn retry_config(&self) -> Option<RetryConfig> {
+        Some(RetryConfig::fixed(3, Duration::from_millis(10)))
+    }
+    async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        Ok(self.input + 1)
+    }
+}
+
 #[zart_durable("retry-task")]
 async fn retry_step_handler(ctx: &mut TaskContext, data: u32) -> Result<u32, TaskError> {
-    let result = z_step_with_retry!(
-        "compute",
-        RetryConfig::fixed(3, Duration::from_millis(10)),
-        || async { Ok::<u32, StepError>(data + 1) }
-    )
-    .await?;
+    let result = ctx.execute_step(ComputeStep { input: data }).await?;
     Ok(result)
 }
 
 #[tokio::test]
-async fn zart_durable_with_z_step_with_retry_first_call_schedules() {
+async fn zart_durable_with_execute_step_retry_first_call_schedules() {
     let handler = RetryStepHandler;
     let mut ctx = make_ctx();
     let result = handler.run(&mut ctx, 5u32).await;
@@ -411,28 +364,77 @@ async fn zart_durable_struct_data_type() {
     assert_eq!(result, "order-42-9.99");
 }
 
-/// `z_durable_loop!` combined with `z_step!` inside a `#[zart_durable]` handler.
+/// `z_durable_loop!` combined with `ctx.execute_step()` inside a `#[zart_durable]` handler.
+/// Each iteration uses a unique step name via dynamic `Cow::Owned` — required because the
+/// database tracks steps by name (`{execution_id}:step:{step_name}`) and the `task_id`
+/// is PRIMARY KEY. Without unique names, all iterations would share the same cached result.
 #[zart_durable("loop-task")]
 async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, TaskError> {
     let mut total = 0u32;
-    z_durable_loop!(data, |item| {
-        let v = z_step!(&format!("item-{item}"), || async {
-            Ok::<u32, StepError>(item * 2)
-        })
-        .await?;
+    for (index, item) in data.into_iter().enumerate() {
+        struct LoopItemStep {
+            index: usize,
+            value: u32,
+        }
+        #[async_trait]
+        impl ZartStep for LoopItemStep {
+            type Output = u32;
+            // Unique per iteration: "loop-item-0", "loop-item-1", etc.
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Owned(format!("loop-item-{}", self.index))
+            }
+            async fn run(
+                &self,
+                _ctx: zart::context::StepContext,
+            ) -> Result<Self::Output, StepError> {
+                Ok(self.value * 2)
+            }
+        }
+        let v = ctx
+            .execute_step(LoopItemStep { index, value: item })
+            .await?;
         total += v;
-    });
+    }
     Ok(total)
 }
 
 #[tokio::test]
-async fn zart_durable_loop_with_z_step_schedules_first_item() {
+async fn zart_durable_loop_with_execute_step_schedules_first_item() {
     let handler = LoopHandler;
     let mut ctx = make_ctx();
-    // The first step encountered is "item-1"; it will be scheduled.
+    // The first step encountered is "item-placeholder"; it will be scheduled.
     let result = handler.run(&mut ctx, vec![1u32, 2, 3]).await;
     assert!(
         matches!(result, Err(TaskError::StepFailed { .. })),
         "expected step to be scheduled, got: {result:?}"
     );
+}
+
+// ── Dynamic step name tests ───────────────────────────────────────────────────
+
+/// A step whose name encodes a loop index via the {field} template.
+#[zart_macros::zart_step("process-item-{index}")]
+async fn process_item(index: u32, ctx: zart::context::StepContext) -> Result<u32, StepError> {
+    Ok(index * 10)
+}
+
+#[test]
+fn zart_step_template_name_generates_dynamic_cow() {
+    // step name must embed the field value at runtime
+    let step = process_item(3);
+    assert_eq!(step.step_name(), "process-item-3");
+
+    let step = process_item(42);
+    assert_eq!(step.step_name(), "process-item-42");
+}
+
+#[test]
+fn with_id_overrides_static_step_name() {
+    let step = ProcessStep {
+        input: "hello".to_string(),
+    };
+    assert_eq!(step.step_name(), "process");
+
+    let overridden = step.with_id("process-0");
+    assert_eq!(overridden.step_name(), "process-0");
 }

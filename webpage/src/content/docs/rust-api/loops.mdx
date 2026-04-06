@@ -1,187 +1,210 @@
 ---
 title: Durable Loops
-description: Iterate over collections and implement polling loops that survive process restarts.
+description: Iterate over collections and implement polling loops that survive process restarts — with unique step names per iteration.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Regular Rust loops are not durable — if your process restarts mid-loop, all progress is lost and the loop starts over. Zart solves this by giving each iteration a unique step name that is persisted to the database.
+Regular Rust loops are not durable — if your process restarts mid-loop, all progress is lost and the loop starts over. Zart solves this by persisting each iteration's result independently, keyed by a unique step name.
 
-## The Core Pattern
+## Why Step Names Must Be Unique Per Iteration
 
-The key insight is simple: **give each iteration a unique step name**. Zart checks whether a step has already been completed before calling the closure.
+Each step call is stored in the database as `{execution_id}:step:{step_name}` with a `PRIMARY KEY` constraint. If two iterations share the same step name, the second iteration finds the first's cached result in the database and silently returns it — producing wrong data with no error.
 
 ```rust
-#[zart_durable("batch-processor")]
-async fn process_batch(data: BatchData) -> Result<BatchResult> {
-    // First, fetch items — this step is itself persisted
-    let items = z_step!("fetch-items", || async {
-        db.fetch_pending_items().await
-    }).await?;
+// ❌ Wrong — all iterations share "process-item", second gets first's result
+for item in items {
+    ctx.execute_step(ProcessItemStep { item }).await?;
+    // step name is always "process-item" — bug!
+}
 
-    // Each iteration gets a unique step name
-    for (i, item) in items.iter().enumerate() {
-        z_step!(&format!("process-item-{i}"), || async {
-            processor.handle(item).await
-        }).await?;
-    }
-
-    Ok(BatchResult { processed: items.len() })
+// ✅ Correct — each iteration has a unique name
+for (i, item) in items.iter().enumerate() {
+    ctx.execute_step(ProcessItemStep { item, index: i }).await?;
+    // step names: "process-item-0", "process-item-1", ...
 }
 ```
 
-If the process restarts after processing items 0–3, Zart will skip steps `"process-item-0"` through `"process-item-3"` (returning their stored results immediately) and resume from `"process-item-4"`.
+## Two Ways to Make Step Names Unique
 
-<Aside type="tip">
-Always fetch the list of items in a step too. That way the exact same list is used on replay — even if the underlying data changes between attempts.
-</Aside>
+### Option 1 — `{field}` template in `#[zart_step]` (recommended)
 
-## Using `z_durable_loop!`
-
-The `z_durable_loop!` macro wraps this pattern for you:
+Embed a struct field directly in the step name at definition time. The macro generates a dynamic name at runtime using `format!`:
 
 ```rust
-use zart_macros::{zart_durable, z_durable_loop};
+#[zart_step("process-item-{index}")]
+async fn process_item(index: usize, item: Item, ctx: StepContext) -> Result<Output, StepError> {
+    // step_name() returns "process-item-0", "process-item-1", etc.
+    transform(item).await
+}
 
-#[zart_durable("batch-processor")]
-async fn process_batch(data: BatchData) -> Result<()> {
-    let items = z_step!("fetch-items", || async {
-        db.fetch_pending_items().await
-    }).await?;
-
-    z_durable_loop!("process-item", items, |i, item| async move {
-        // i is the zero-based iteration index
-        // step name becomes "process-item-0", "process-item-1", etc.
-        processor.handle(&item).await
-    }).await?;
-
-    Ok(())
+// In the durable handler — nothing special needed at the call site:
+for (i, item) in items.iter().enumerate() {
+    ctx.execute_step(process_item(i, item.clone())).await?;
 }
 ```
 
-## Polling Loops
-
-Sometimes you need to poll an external service until a condition is met. Use `ctx.sleep()` between polls to introduce a durable wait:
+Any field implementing `Display` can appear in the template. Multiple placeholders are supported:
 
 ```rust
-use zart::{DurableExecution, TaskContext, TaskError, Scheduler};
-use zart_macros::z_step;
-use std::time::Duration;
+#[zart_step("process-{region}-{shard}")]
+async fn process_shard(region: &str, shard: u32, ctx: StepContext) -> Result<(), StepError> {
+    // "process-us-east-1-0", "process-us-east-1-1", etc.
+}
+```
 
-#[zart_durable("wait-for-job", timeout = "6h")]
-async fn wait_for_job(data: JobData) -> Result<JobResult> {
-    let mut attempt = 0u32;
+### Option 2 — `.with_id()` at the call site
 
-    loop {
-        let status = z_step!(&format!("check-status-{attempt}"), || async {
-            api.get_job_status(&data.job_id).await
-        }).await?;
+Override the step name when the unique key isn't captured in the step struct, or when you reuse a step definition under different identities:
 
-        if status.is_complete() {
-            return Ok(JobResult { output: status.output });
-        }
+```rust
+#[zart_step("send-notification")]
+async fn send_notification(user_id: &str, ctx: StepContext) -> Result<(), StepError> {
+    notify(user_id).await
+}
 
-        if status.is_failed() {
-            return Err(TaskError::custom("Job failed externally"));
-        }
-
-        // Durable wait — process can restart, timer continues
-        ctx.sleep(Duration::from_secs(300)).await?; // 5 minutes
-        attempt += 1;
-    }
+// Give each call a unique name at the call site:
+for (i, user_id) in recipients.iter().enumerate() {
+    ctx.execute_step(
+        send_notification(user_id).with_id(format!("send-notification-{i}"))
+    ).await?;
 }
 ```
 
 <Aside type="note">
-The `attempt` counter must be part of the step name to ensure each check is a unique step. If you reuse the same step name, Zart will return the first result on every iteration.
+`.with_id()` overrides `step_name()` entirely. Retries, timeouts, and the `run()` logic are still taken from the inner step.
 </Aside>
 
-## Accumulating Results
+### Choosing between the two
 
-Collect results across iterations into a final value:
+| | `{field}` template | `.with_id()` |
+|---|---|---|
+| **Where the name is set** | Step definition | Call site in the durable body |
+| **Same step, different naming schemes** | Requires two definitions | One definition, two call sites |
+| **Naming involves orchestration data** | No — struct fields only | Yes — any expression |
+| **Risk of forgetting** | Lower — always part of the definition | Higher — must remember at each call |
+
+Use `{field}` when the unique key is naturally a field of the step (loop index, item ID). Use `.with_id()` when the unique key comes from orchestration context not captured in the struct.
+
+## Pattern: Fetch + Iterate
+
+Always fetch the item list inside a step. This ensures the exact same list is replayed after a crash — even if the underlying data changes between attempts.
 
 ```rust
-#[zart_durable("transform-records")]
-async fn transform_records(data: TransformJob) -> Result<TransformSummary> {
-    let records = z_step!("fetch-records", || async {
-        db.get_records(&data.query).await
-    }).await?;
+#[zart_step("fetch-items")]
+async fn fetch_items(ctx: StepContext) -> Result<Vec<Item>, StepError> {
+    db.fetch_pending_items().await
+}
 
-    let mut results = Vec::with_capacity(records.len());
+#[zart_step("process-item-{index}")]
+async fn process_item(index: usize, item: Item, ctx: StepContext) -> Result<Output, StepError> {
+    processor.handle(&item).await
+}
 
-    for (i, record) in records.iter().enumerate() {
-        let output = z_step!(&format!("transform-{i}"), || async {
-            transformer.apply(record).await
-        }).await?;
-        results.push(output);
+#[zart_durable("batch-processor")]
+async fn process_batch(
+    ctx: &mut TaskContext,
+    data: BatchData,
+) -> Result<BatchResult, TaskError> {
+    let items = ctx.execute_step(fetch_items()).await?;
+
+    for (i, item) in items.into_iter().enumerate() {
+        ctx.execute_step(process_item(i, item)).await?;
     }
 
-    z_step!("write-results", || async {
-        db.bulk_insert(&results).await
-    }).await?;
-
-    Ok(TransformSummary {
-        total:   records.len(),
-        written: results.len(),
-    })
+    Ok(BatchResult { processed: items_count })
 }
 ```
 
-## Chunked Processing
+If the process restarts after processing items 0–3, Zart skips `"process-item-0"` through `"process-item-3"` (returning stored results instantly) and resumes from `"process-item-4"`.
 
-For very large datasets, process in chunks to limit memory usage while keeping each chunk's work durable:
+<Aside type="tip">
+Fetch inside a step so the list is stable across replays. If you fetch in the handler body directly, a restart might see a different set of items.
+</Aside>
+
+## Pattern: Transforming Collections
+
+Read items, transform each one, write results — all durable:
 
 ```rust
-#[zart_durable("process-large-dataset")]
-async fn process_large_dataset(data: DatasetJob) -> Result<()> {
-    let chunk_count = z_step!("get-chunk-count", || async {
-        db.count_chunks(&data.dataset_id).await
-    }).await?;
+#[zart_step("fetch-records")]
+async fn fetch_records(ctx: StepContext) -> Result<Vec<Record>, StepError> {
+    db.query("SELECT * FROM pending").await
+}
 
-    for chunk_idx in 0..chunk_count {
-        // Fetch and process each chunk durably
-        z_step!(&format!("process-chunk-{chunk_idx}"), || async {
-            let chunk = db.get_chunk(&data.dataset_id, chunk_idx).await?;
-            processor.process_chunk(chunk).await
-        }).await?;
+#[zart_step("transform-record-{index}")]
+async fn transform_record(index: usize, record: Record, ctx: StepContext) -> Result<Output, StepError> {
+    transformer.apply(&record).await
+}
+
+#[zart_step("write-results")]
+async fn write_results(outputs: Vec<Output>, ctx: StepContext) -> Result<(), StepError> {
+    db.batch_insert(&outputs).await
+}
+
+#[zart_durable("data-pipeline")]
+async fn run_pipeline(
+    ctx: &mut TaskContext,
+    _data: PipelineInput,
+) -> Result<(), TaskError> {
+    let records = ctx.execute_step(fetch_records()).await?;
+
+    let mut outputs = Vec::new();
+    for (i, record) in records.into_iter().enumerate() {
+        let output = ctx.execute_step(transform_record(i, record)).await?;
+        outputs.push(output);
     }
 
+    ctx.execute_step(write_results(outputs)).await?;
     Ok(())
 }
 ```
 
-## Retry-Until Pattern
+## Pattern: Chunked Processing
 
-Sometimes you want to keep retrying a step until it succeeds, with configurable backoff:
+For large datasets, process in fixed-size chunks. Each chunk is its own durable step:
 
 ```rust
-use zart_macros::z_step_with_retry;
+const CHUNK_SIZE: usize = 100;
 
-#[zart_durable("provision-with-retry")]
-async fn provision(data: ProvisionRequest) -> Result<ProvisionResult> {
-    // Try up to 10 times with exponential backoff capped at 5 minutes
-    let result = z_step_with_retry!(
-        "provision-resource",
-        retries   = 10,
-        backoff   = "exponential",
-        delay     = "5s",
-        max_delay = "5m",
-        || async { cloud.provision(&data.config).await }
-    ).await?;
+#[zart_step("get-total-count")]
+async fn get_total_count(ctx: StepContext) -> Result<usize, StepError> {
+    db.count_pending_items().await
+}
 
-    Ok(result)
+#[zart_step("process-chunk-{chunk_idx}")]
+async fn process_chunk(chunk_idx: usize, ctx: StepContext) -> Result<usize, StepError> {
+    let offset = chunk_idx * CHUNK_SIZE;
+    let items = db.fetch_items(offset, CHUNK_SIZE).await?;
+    processor.process_batch(&items).await?;
+    Ok(items.len())
+}
+
+#[zart_durable("chunked-processor")]
+async fn run_chunked(
+    ctx: &mut TaskContext,
+    data: BatchInput,
+) -> Result<usize, TaskError> {
+    let total = ctx.execute_step(get_total_count()).await?;
+    let num_chunks = total.div_ceil(CHUNK_SIZE);
+    let mut processed = 0;
+
+    for chunk_idx in 0..num_chunks {
+        processed += ctx.execute_step(process_chunk(chunk_idx)).await?;
+    }
+
+    Ok(processed)
 }
 ```
 
-## Important: Step Name Uniqueness
+## Key Rules
 
-Step names within a single execution must be unique. Here are the rules:
+**Every iteration needs a unique step name** — use a loop index, item ID, or any value that distinguishes the call. Without it, all iterations silently share the same cached result.
 
-- Static steps: use a descriptive string like `"send-email"`.
-- Loop iterations: append the index like `"process-item-{i}"`.
-- Nested loops: combine indices like `"row-{r}-col-{c}"`.
-- Conditional branches: use distinct names like `"path-a-step"` vs `"path-b-step"`.
+**Fetch inside a step** — wrap data-fetching in its own step so the same dataset is used on replay.
 
-<Aside type="caution">
-Never reuse a step name for different operations. If two different logical steps share the same name, the second will receive the persisted result of the first — leading to subtle bugs.
-</Aside>
+**Plain `for` loop** — no special macro or wrapper needed. A standard Rust `for` with `ctx.execute_step()` is all it takes.
+
+## See it in action
+
+The [Durable Loops example](/examples/durable-loops/) processes a batch of reports using both mechanisms: the `{index}` template for per-item processing steps and `.with_id()` for conditional notification steps.

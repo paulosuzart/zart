@@ -8,7 +8,9 @@
 //! generic storage backend with no execution-model knowledge.
 
 use chrono::Utc;
-use scheduler::{CompleteAndScheduleParams, ScheduleAtParams, ScheduleResult, Scheduler, StorageError};
+use scheduler::{
+    CompleteAndScheduleParams, ScheduleAtParams, ScheduleResult, Scheduler, StorageError,
+};
 
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {

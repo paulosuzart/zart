@@ -4,6 +4,8 @@ Demonstrates a **human-in-the-loop durable execution** that pauses for an extern
 
 ## Features Used
 
+- **`#[zart_step]` macro** — defines step functions as standalone async functions
+- **`ctx.execute_step()`** — executes steps with automatic retry/timeout handling
 - **`wait_for_event`** — suspends execution until an external event is delivered
 - **Event delivery via `offer_event`** — resumes the waiting execution with a typed payload
 - **Sequential steps** — steps before and after the event wait, passing data between them
@@ -25,7 +27,7 @@ just up
 just migrate
 
 # Build and run the example
-cargo run -p zart-examples --bin example-approval-workflow
+just example-approval-workflow
 ```
 
 The example simulates the approval by delivering the event after a short delay (as if a manager reviewed the request). In a real system, the event would come from an HTTP API call or CLI command.

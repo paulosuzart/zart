@@ -47,33 +47,44 @@ Registering two handlers under the same name panics at startup. Names are case-s
 
 ## Core Steps
 
-`ctx.step()` and `ctx.step_with_retry()` are what you'll use in almost every workflow. Both follow the same rule: **if a result is already stored in the database, the closure is not called**.
+Steps are defined with `#[zart_step]` or by manually implementing the [`ZartStep`](/rust-api/zart-step/) trait. Each step's result is persisted to the database before the workflow moves on.
 
-### `ctx.step()`
+### Sequential Steps
 
-```rust
-let customer_id: String = ctx.step("create-customer", || async {
-    crm.create_customer(&data.email).await
-}).await?;
-```
-
-- The step name must be unique within the execution.
-- The closure return type must implement `Serialize + DeserializeOwned`.
-- On failure, the step can be retried by re-running the execution (see `max_retries`).
-
-### `ctx.step_with_retry()`
-
-Apply a retry policy directly to the step, independent of the task-level `max_retries`. Use this for calls to external APIs or any operation that can transiently fail.
+Use `ctx.execute_step()` to run a step sequentially:
 
 ```rust
-let order_id: String = ctx.step_with_retry(
-    "place-order",
-    RetryConfig::exponential(5, Duration::from_secs(1)),
-    || async { payments_api.charge(&data.card).await },
-).await?;
+let customer_id: String = ctx.execute_step(CreateCustomerStep { email: data.email }).await?;
 ```
 
-See [RetryConfig](#retryconfig) below for all available policies.
+- The step name (from `ZartStep::step_name()`) must be unique within the execution.
+- The step return type must implement `Serialize + DeserializeOwned`.
+- If a result is already stored for this step, the step is skipped and the cached result is returned.
+
+### Steps with Retry
+
+Override `retry_config()` in your `ZartStep` impl to enable retries:
+
+```rust
+struct PlaceOrderStep;
+
+#[async_trait]
+impl ZartStep for PlaceOrderStep {
+    type Output = String;
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("place-order") }
+    fn retry_config(&self) -> Option<RetryConfig> {
+        Some(RetryConfig::exponential(5, Duration::from_secs(1)))
+    }
+    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
+        payments_api.charge(&data.card).await
+    }
+}
+
+// Usage:
+let order_id: String = ctx.execute_step(PlaceOrderStep).await?;
+```
+
+See [ZartStep](/rust-api/zart-step/) for all available configuration options.
 
 ## Timing
 
@@ -122,15 +133,15 @@ Returns `Err(TaskError::EventTimeout)` if the timeout elapses before the event a
 
 ## Parallel Execution
 
-Fan out independent work across multiple concurrent sub-tasks. Each `schedule_step` call becomes a separate row in the scheduler — sub-tasks can run on different workers simultaneously.
+Fan out independent work across multiple concurrent sub-tasks. Each `schedule_step` call creates a separate row in the scheduler — sub-tasks can run on different workers simultaneously.
 
 ### `ctx.schedule_step()` / `ctx.wait_all()`
 
 ```rust
 // Schedule three steps to run in parallel
-let h1 = ctx.schedule_step("send-email",    || async { send_email().await });
-let h2 = ctx.schedule_step("setup-billing", || async { setup_billing().await });
-let h3 = ctx.schedule_step("provision",     || async { provision_resources().await });
+let h1 = ctx.schedule_step(SendEmailStep { to: user.email });
+let h2 = ctx.schedule_step(SetupBillingStep { customer_id });
+let h3 = ctx.schedule_step(ProvisionStep { user_id });
 
 // Durably wait for all three — survives restarts
 let [email_ok, billing_ok, provision_ok] = ctx.wait_all(vec![h1, h2, h3]).await?;
@@ -164,7 +175,7 @@ ctx.set_data(serde_json::to_value(&progress)?);
 
 ## RetryConfig
 
-Controls retry behaviour for `step_with_retry` and the task-level `max_retries`. All three constructors share the same fields: number of attempts, initial delay, and backoff multiplier.
+Controls retry behaviour for steps (via `ZartStep::retry_config()`) and the task-level `max_retries`. All three constructors share the same fields: number of attempts, initial delay, and backoff multiplier.
 
 | Constructor | Delay between retries |
 |---|---|
@@ -188,7 +199,7 @@ RetryConfig::exponential(5, Duration::from_secs(1))
 A five-step onboarding workflow combining steps, retries, and an event wait:
 
 ```rust
-use zart::{DurableExecution, TaskContext, TaskError, RetryConfig, Scheduler};
+use zart::prelude::*;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -204,6 +215,38 @@ pub struct OnboardingResult {
     pub customer_id: String,
 }
 
+// ── Step definitions ─────────────────────────────────────────────────────────
+
+#[zart::zart_step("send-welcome-email")]
+async fn send_welcome_email(email: &str, ctx: zart::context::StepContext)
+    -> Result<(), zart::error::StepError>
+{
+    send_welcome_email(email).await
+}
+
+#[zart::zart_step("create-stripe-customer", retry = "exponential(3, 2s)")]
+async fn create_stripe_customer(email: &str, ctx: zart::context::StepContext)
+    -> Result<String, zart::error::StepError>
+{
+    create_stripe_customer(email).await
+}
+
+#[zart::zart_step("provision-resource")]
+async fn provision_resource(user_id: &str, customer_id: &str, ctx: zart::context::StepContext)
+    -> Result<(), zart::error::StepError>
+{
+    provision_aws_resources(user_id, customer_id).await
+}
+
+#[zart::zart_step("activate-account")]
+async fn activate_account(user_id: &str, ctx: zart::context::StepContext)
+    -> Result<(), zart::error::StepError>
+{
+    activate_account(user_id).await
+}
+
+// ── Durable handler ──────────────────────────────────────────────────────────
+
 pub struct OnboardingTask;
 
 #[async_trait]
@@ -217,21 +260,13 @@ impl DurableExecution for OnboardingTask {
         data: OnboardingData,
     ) -> Result<Self::Output, TaskError> {
         // Step 1 — send welcome email
-        ctx.step("send-welcome-email", || async {
-            send_welcome_email(&data.email).await
-        }).await?;
+        ctx.execute_step(send_welcome_email(&data.email)).await?;
 
         // Step 2 — create Stripe customer (retry 3× with exponential backoff)
-        let customer_id: String = ctx.step_with_retry(
-            "create-stripe-customer",
-            RetryConfig::exponential(3, Duration::from_secs(2)),
-            || async { create_stripe_customer(&data.email).await },
-        ).await?;
+        let customer_id: String = ctx.execute_step(create_stripe_customer(&data.email)).await?;
 
         // Step 3 — provision cloud resources
-        ctx.step("provision-resources", || async {
-            provision_aws_resources(&data.user_id, &customer_id).await
-        }).await?;
+        ctx.execute_step(provision_resource(&data.user_id, &customer_id)).await?;
 
         // Step 4 — wait up to 48h for email verification
         let _: VerificationPayload = ctx.wait_for_event(
@@ -240,9 +275,7 @@ impl DurableExecution for OnboardingTask {
         ).await?;
 
         // Step 5 — activate account
-        ctx.step("activate-account", || async {
-            activate_account(&data.user_id).await
-        }).await?;
+        ctx.execute_step(activate_account(&data.user_id)).await?;
 
         Ok(OnboardingResult { customer_id })
     }

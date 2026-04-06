@@ -1,11 +1,11 @@
 //! Brewery Finder Example
 //!
-//! Demonstrates a sequential multi-step durable execution using macros:
+//! Demonstrates a sequential multi-step durable execution using the new `#[zart_step]` macro:
 //! 1. Look up city/state from a US ZIP code via Zippopotamus API
 //! 2. Find breweries in that city via Open Brewery DB API
 //! 3. Return a structured result with all brewery data
 //!
-//! Features: #[zart_durable], z_step!, z_step_with_retry!, external API calls,
+//! Features: #[zart_durable], #[zart_step], external API calls,
 //! structured output (no file I/O).
 
 use chrono::Utc;
@@ -16,8 +16,6 @@ use std::time::Duration;
 use uuid::Uuid;
 use zart::error::StepError;
 use zart::prelude::*;
-use zart::retry::RetryConfig;
-use zart_macros::{z_step, z_step_with_retry, zart_durable};
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -43,7 +41,7 @@ struct FinderOutput {
     found_at: String,
 }
 
-// ── API response types ────────────────────────────────────────────────────────
+// ── External API response types ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
 struct PlaceInfo {
@@ -67,92 +65,108 @@ struct BreweryRaw {
     state: Option<String>,
 }
 
-// ── Durable handler (macro-generated DurableExecution) ─────────────────────────────
+// ── Step definitions using #[zart_step] ───────────────────────────────────────
 
-#[zart_durable("brewery-finder", timeout = "5m")]
+/// Step 1: Look up city/state from a US ZIP code via Zippopotamus API.
+#[zart::zart_step("lookup-zip", retry = "exponential(3, 1s)")]
+async fn lookup_zip(
+    client: &reqwest::Client,
+    zip_code: &str,
+    ctx: StepContext,
+) -> Result<(String, String), StepError> {
+    println!("[lookup-zip] Attempt {}", ctx.current_attempt() + 1);
+
+    let resp = client
+        .get(format!("https://api.zippopotam.us/us/{zip_code}"))
+        .send()
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "lookup-zip".to_string(),
+            reason: e.to_string(),
+        })?;
+
+    let zip_resp: ZipResponse = resp.json().await.map_err(|e| StepError::Failed {
+        step: "lookup-zip".to_string(),
+        reason: format!("failed to parse response: {e}"),
+    })?;
+
+    let place = zip_resp.places.first().ok_or_else(|| StepError::Failed {
+        step: "lookup-zip".to_string(),
+        reason: format!("no place found for ZIP {zip_code}"),
+    })?;
+
+    Ok((place.place_name.clone(), place.state.clone()))
+}
+
+/// Step 2: Find breweries in a city via Open Brewery DB API.
+#[zart::zart_step("find-breweries", retry = "exponential(3, 1s)")]
+async fn find_breweries(
+    client: &reqwest::Client,
+    city: &str,
+    ctx: StepContext,
+) -> Result<Vec<BreweryRaw>, StepError> {
+    println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
+
+    let resp = client
+        .get("https://api.openbrewerydb.org/v1/breweries")
+        .query(&[("by_city", city)])
+        .send()
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "find-breweries".to_string(),
+            reason: e.to_string(),
+        })?;
+
+    resp.json().await.map_err(|e| StepError::Failed {
+        step: "find-breweries".to_string(),
+        reason: format!("failed to parse response: {e}"),
+    })
+}
+
+/// Step 3: Transform raw data into structured output.
+#[zart::zart_step("transform-results")]
+async fn transform_results(
+    raw: &[BreweryRaw],
+    city: &str,
+    state: &str,
+    ctx: StepContext,
+) -> Result<Vec<BreweryInfo>, StepError> {
+    let _ = ctx.current_attempt();
+    Ok(raw
+        .iter()
+        .map(|b| BreweryInfo {
+            name: b.name.clone(),
+            brewery_type: b
+                .brewery_type
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            city: b.city.clone().unwrap_or_else(|| city.to_string()),
+            state: b.state.clone().unwrap_or_else(|| state.to_string()),
+        })
+        .collect())
+}
+
+// ── Durable handler ──────────────────────────────────────────────────────────
+
+#[zart::zart_durable("brewery-finder", timeout = "5m")]
 async fn brewery_finder(
     ctx: &mut TaskContext,
     data: FinderInput,
 ) -> Result<FinderOutput, TaskError> {
     let client = reqwest::Client::new();
 
-    // Step 1: Look up ZIP code via Zippopotamus API (with retries)
-    let (city, state) = z_step_with_retry!(
-        "lookup-zip",
-        RetryConfig::exponential(3, Duration::from_secs(1)),
-        || {
-            let client = client.clone();
-            let zip = data.zip_code.clone();
-            async move {
-                let resp = client
-                    .get(format!("https://api.zippopotam.us/us/{zip}"))
-                    .send()
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: "lookup-zip".to_string(),
-                        reason: e.to_string(),
-                    })?;
-                let zip_resp: ZipResponse = resp.json().await.map_err(|e| StepError::Failed {
-                    step: "lookup-zip".to_string(),
-                    reason: format!("failed to parse response: {e}"),
-                })?;
-                let place = zip_resp.places.first().ok_or_else(|| StepError::Failed {
-                    step: "lookup-zip".to_string(),
-                    reason: format!("no place found for ZIP {zip}"),
-                })?;
-                Ok((place.place_name.clone(), place.state.clone()))
-            }
-        }
-    )
-    .await?;
+    // Step 1: Look up ZIP code → (city, state)
+    let (city, state) = ctx
+        .execute_step(lookup_zip(&client, &data.zip_code))
+        .await?;
 
-    // Step 2: Find breweries in the city via Open Brewery DB (with retries)
-    let raw_breweries = z_step_with_retry!(
-        "find-breweries",
-        RetryConfig::exponential(3, Duration::from_secs(1)),
-        || {
-            let client = client.clone();
-            let city = city.clone();
-            async move {
-                let resp = client
-                    .get("https://api.openbrewerydb.org/v1/breweries")
-                    .query(&[("by_city", &city)])
-                    .send()
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: "find-breweries".to_string(),
-                        reason: e.to_string(),
-                    })?
-                    .json::<Vec<BreweryRaw>>()
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: "find-breweries".to_string(),
-                        reason: format!("failed to parse response: {e}"),
-                    })?;
-                Ok(resp)
-            }
-        }
-    )
-    .await?;
+    // Step 2: Find breweries in the city
+    let raw_breweries = ctx.execute_step(find_breweries(&client, &city)).await?;
 
-    // Step 3: Transform raw data into structured output (no retries needed)
-    let breweries: Vec<BreweryInfo> = z_step!("transform-results", || {
-        let raw = raw_breweries.clone();
-        let city = city.clone();
-        let state = state.clone();
-        async move {
-            Ok(raw
-                .into_iter()
-                .map(|b| BreweryInfo {
-                    name: b.name,
-                    brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
-                    city: b.city.unwrap_or_else(|| city.clone()),
-                    state: b.state.unwrap_or_else(|| state.clone()),
-                })
-                .collect())
-        }
-    })
-    .await?;
+    // Step 3: Transform into structured output
+    let breweries = ctx
+        .execute_step(transform_results(&raw_breweries, &city, &state))
+        .await?;
 
     Ok(FinderOutput {
         zip_code: data.zip_code,

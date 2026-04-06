@@ -1,0 +1,117 @@
+---
+title: About Zart
+description: The story, motivation, and philosophy behind Zart — durable execution without the infrastructure overhead.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Why Zart Exists
+
+Zart was born from a decade of backend development watching the same pattern repeat across industries: **teams build unreliable workflows and pay for it later**.
+
+Not because engineers don't care. Not because they lack the tools. But because the industry normalized a false choice: ship fast and patch reliability later, or adopt heavy orchestration infrastructure from day one.
+
+Here's what that false choice looks like in practice.
+
+---
+
+## The Pattern
+
+### Content Generation at Scale
+
+Imagine a pipeline that processes hundreds of thousands of pages: fetching content, validating data, generating links, and publishing. Any failure at any point means regenerating everything from scratch — wasting compute, burning time, and delaying critical updates.
+
+The usual fix involves introducing a task queue, a batch processing framework, or custom checkpointing logic. Each option means new infrastructure, new mental models, and new failure modes to debug. So the simpler version ships first. And hope carries the reliability burden.
+
+### Payment Processing
+
+Payments follow a multi-step flow: validate, authorize, capture, settle, notify. A failure between authorize and capture doesn't just lose data — it creates reconciliation problems, erodes trust, and generates support tickets that take weeks to resolve.
+
+Teams often build custom reliability layers: state machines, compensating transactions, retry queues. Each approach works. Each one adds complexity. And over time, the industry normalizes around accepting this as "just how payments work."
+
+### Synchronous Report Generation Across Services
+
+Generating reports often requires calling multiple services in a single request chain. Services accumulate data in memory, block on each other, and cascade failures back to the user's browser.
+
+Teams build solid CI/CD pipelines capable of deploying constantly. But deploying during peak hours means killing long-running requests mid-flight — losing work and frustrating users. So deployments slow down. Features wait. The gap between "we *can* deploy fast" and "we *should* deploy fast" grows wider.
+
+In one of these situations, the seed of Zart first appeared — an internal library born from noticing that teams often avoid tools like Temporal or Cadence not because they're bad, but because the learning curve and infrastructure commitment feel too heavy for the problem at hand.
+
+### User Onboarding and Financial Data Processing
+
+Stock price processing, user onboarding, compliance workflows — they all share the same requirement: **they must survive deployments, network failures, and partial errors without manual intervention**.
+
+The infrastructure to solve this usually exists. What's often missing is a simple way to make workflows reliable from day one without onboarding the entire team to distributed systems concepts.
+
+---
+
+## The Realization
+
+Across these situations — different industries, different teams, different scales — the same pattern emerged:
+
+1. **Building reliability from scratch is expensive** — state machines, idempotency keys, retry logic, checkpointing — it all adds up to complexity that slows you down.
+2. **Adopting orchestration platforms is a commitment** — Temporal, Cadence, and similar tools are powerful but introduce concepts, infrastructure, and learning curves that most teams aren't ready for on day one.
+
+So reliability became a "later" problem. Until "later" meant revenue loss, customer churn, or regulatory risk.
+
+---
+
+## The Shift
+
+The landscape is changing. Tools like [Golem](https://www.golem.cloud/), [Temporal](https://temporal.io/), [Absurd](https://earendil-works.github.io/absurd/), [DBOS](https://www.dbos.dev/), [Inngest](https://www.inngest.com/), and [Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/) signal a clear trend: **developers want reliability built in, not bolted on**.
+
+And most people already understand durable execution — they just don't realize it:
+
+<Aside type="tip" title="You Already Use Durable Execution">
+GitHub Actions runs multi-step workflows that survive infrastructure failures, deployments, and network blips. No one configures durability as a non-functional requirement — it's just how the platform works. Zart brings that same default-reliable experience to your Rust backend.
+</Aside>
+
+But here's the gap: most teams don't start with durability in mind. They discover the need after an incident. After lost data. After a customer complaint.
+
+**Zart exists so you don't have to learn that lesson.**
+
+---
+
+## The Philosophy
+
+Zart is a Rust library designed for **high ergonomics and zero orchestration overhead**. You get durable execution using your existing PostgreSQL database — no new infrastructure, no distributed systems primitives, no paradigm shift.
+
+**The core principles:**
+
+- **Reliability from day one** — Every step persists its result. Failures resume, not restart.
+- **No new infrastructure** — Uses the PostgreSQL database you already have.
+- **Progressive complexity** — Start simple. Add retries, parallel steps, and events only when you need them.
+- **Rust-native** — Built on `tokio`, `serde`, and standard Rust patterns. No alien mental models.
+- **Zero vendor lock-in** — It's a library, not a platform. Your workflows are just Rust code.
+
+---
+
+## Who Zart Is For
+
+- **Teams shipping workflows** — payment flows, onboarding pipelines, content generation, data processing — that can't afford to lose progress.
+- **Engineers who want reliability** without adopting a full orchestration platform or learning a new paradigm.
+- **Startups and scale-ups** that need to move fast but can't afford to rebuild workflows after every incident.
+- **Banks, e-commerce, SaaS** — any domain where a failed step has real consequences.
+
+---
+
+## Who Zart Is Not For
+
+- **Massive workflow orchestration** — If you're coordinating thousands of workers across multiple regions, Temporal or a similar platform may be a better fit.
+- **Non-Rust ecosystems** — Zart is a Rust-first library. SDKs for other languages may come later, but the core is Rust.
+- **Teams that need a managed service** — Zart is self-hosted on your infrastructure. There's no Zart Cloud (yet).
+
+---
+
+## Where Zart Is Headed
+
+Zart is actively developed with a focus on **stability, ergonomics, and real-world reliability**. The roadmap includes:
+
+- Enhanced observability and metrics
+- Additional storage backends
+- Developer tooling for debugging and replaying executions
+- SDKs for other languages
+
+If you're building something that can't afford to fail halfway through, Zart is for you.
+
+**[Get Started →](/getting-started)**

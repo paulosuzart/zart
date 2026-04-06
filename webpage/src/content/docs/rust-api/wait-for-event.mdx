@@ -27,9 +27,7 @@ async fn run(
     data: OrderData,
 ) -> Result<(), TaskError> {
     // Process order steps...
-    ctx.step("validate-order", || async {
-        validate(&data).await
-    }).await?;
+    ctx.execute_step(ValidateOrderStep { data: data.clone() }).await?;
 
     // Wait up to 24 hours for manager approval
     let approval: ApprovalPayload = ctx.wait_for_event(
@@ -44,9 +42,7 @@ async fn run(
     }
 
     // Fulfillment continues after approval...
-    ctx.step("fulfill-order", || async {
-        fulfill(&data).await
-    }).await?;
+    ctx.execute_step(FulfillOrderStep { data }).await?;
 
     Ok(())
 }
@@ -113,9 +109,7 @@ match result {
     Ok(payload) => { /* event received */ }
     Err(TaskError::EventTimeout) => {
         // Auto-approve, cancel, or escalate
-        ctx.step("auto-escalate", || async {
-            escalate_to_vp(&data.order_id).await
-        }).await?;
+        ctx.execute_step(EscalateStep { order_id: data.order_id }).await?;
     }
     Err(e) => return Err(e),
 }
@@ -151,9 +145,7 @@ Call an external API asynchronously and wait for a webhook callback:
 
 ```rust
 // Step 1: trigger the async job
-let job_id: String = ctx.step("trigger-job", || async {
-    external_api.start_job(&data).await
-}).await?;
+let job_id: String = ctx.execute_step(TriggerJobStep { data: data.clone() }).await?;
 
 // Step 2: wait for their webhook to call back with the result
 let result: JobWebhookPayload = ctx.wait_for_event(
@@ -169,9 +161,7 @@ Your webhook endpoint then calls `scheduler.offer_event(exec_id, &event_name, pa
 Pause account actions until the user confirms via email or SMS:
 
 ```rust
-ctx.step("send-2fa-code", || async {
-    sms.send_code(&data.phone, &code).await
-}).await?;
+ctx.execute_step(Send2faStep { phone: data.phone.clone(), code }).await?;
 
 let _: TwoFactorConfirm = ctx.wait_for_event(
     "2fa-confirmed",
@@ -185,9 +175,7 @@ Integrate with systems that notify you when work is done rather than polling:
 
 ```rust
 // Start a long-running ML training job
-let run_id: String = ctx.step("start-training", || async {
-    ml_platform.start_training_run(&data.config).await
-}).await?;
+let run_id: String = ctx.execute_step(StartTrainingStep { config: data.config.clone() }).await?;
 
 // Wait for the platform to POST back when training finishes
 let metrics: TrainingMetrics = ctx.wait_for_event(
@@ -223,3 +211,7 @@ println!("Tracking: {}", tracking.tracking_number);
 <Aside type="tip">
 Each `wait_for_event` call creates a unique checkpoint in the execution. Replaying the workflow after a restart will skip already-received events using their stored payloads.
 </Aside>
+
+## See it in action
+
+The [Approval Workflow example](/examples/approval-workflow/) shows a complete human-in-the-loop workflow: validate a request, park at `wait_for_event`, deliver a manager decision, then act on it.

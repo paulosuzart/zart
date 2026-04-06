@@ -11,11 +11,12 @@ Zart's Rust API is organized into three layers that build on each other. You can
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  Macro Layer       #[zart_durable]  z_step!  z_wait_event!     │
+│  Macro Layer       #[zart_durable]  #[zart_step]               │
 │  (zart-macros)     Ergonomic async fn → DurableExecution       │
+│                      Standalone step functions                 │
 ├────────────────────────────────────────────────────────────────┤
-│  Execution Layer   DurableExecution  TaskContext  TaskRegistry │
-│  (zart)            Durable steps, retries, events, sleep       │
+│  Execution Layer   DurableExecution  ZartStep  TaskContext     │
+│  (zart)            Step structs, retries, events, sleep        │
 ├────────────────────────────────────────────────────────────────┤
 │  Scheduler Layer   Scheduler  DurableScheduler  Worker         │
 │  (zart + backend)  PostgreSQL polling via SKIP LOCKED          │
@@ -52,42 +53,33 @@ Optional. The `zart-macros` crate provides proc-macros that transform an ordinar
 | Macro | Purpose |
 |---|---|
 | `#[zart_durable]` | Marks an async fn as a durable workflow |
-| `z_step!` | Executes a named, persisted step |
-| `z_step_with_retry!` | Step with inline retry config |
-| `z_wait_event!` | Durably waits for an external event |
-| `z_durable_loop!` | Stateful loop with persistent iteration counter |
+| `#[zart_step]` | Turns an async fn into a step struct with `impl ZartStep` |
 
 ## Quick Example
 
 ```rust
-use zart::{DurableExecution, TaskContext, TaskError, TaskRegistry, Worker, WorkerConfig};
-use zart::{DurableScheduler, RetryConfig};
-use zart_postgres::PostgresScheduler;
+use zart::prelude::*;
+use zart::{DurableScheduler, Worker, WorkerConfig};
 use async_trait::async_trait;
 use std::time::Duration;
 
-// 1. Implement DurableExecution
-struct MyWorkflow;
-
-#[async_trait]
-impl DurableExecution for MyWorkflow {
-    type Data   = MyInput;
-    type Output = MyOutput;
-
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: MyInput,
-    ) -> Result<MyOutput, TaskError> {
-        let result = ctx.step("step-one", || async {
-            do_something(&data).await
-        }).await?;
-
-        Ok(MyOutput { result })
-    }
+// 1. Define a step function
+#[zart::zart_step("do-something")]
+async fn do_something(input: &MyInput, ctx: StepContext) -> Result<String, StepError> {
+    process(input).await
 }
 
-// 2. Register and start a worker
+// 2. Define the workflow
+#[zart::zart_durable("my-workflow", timeout = "10m")]
+async fn my_workflow(
+    ctx: &mut TaskContext,
+    data: MyInput,
+) -> Result<MyOutput, TaskError> {
+    let result = ctx.execute_step(do_something(&data)).await?;
+    Ok(MyOutput { result })
+}
+
+// 3. Register and start a worker
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let scheduler = PostgresScheduler::connect(&std::env::var("DATABASE_URL")?).await?;
@@ -113,16 +105,16 @@ In most applications the scheduler is shared via `Arc<dyn DurableScheduler>` so 
 
 1. **Schedule** — `DurableScheduler::schedule()` inserts a row into `zart_executions` with status `pending`.
 2. **Claim** — Worker polls with `SELECT … FOR UPDATE SKIP LOCKED`. One worker owns one execution at a time.
-3. **Run** — `DurableExecution::run()` is called. Each `ctx.step()` call checks `zart_steps` for an existing result.
-   - **Step hit** — stored result deserialized and returned without calling the closure.
-   - **Step miss** — closure is called, result serialized and written to `zart_steps`, then returned.
+3. **Run** — `DurableExecution::run()` is called. Each `ctx.execute_step()` call checks `zart_steps` for an existing result.
+   - **Step hit** — stored result deserialized and returned without calling the step logic.
+   - **Step miss** — step's `run()` is called, result serialized and written to `zart_steps`, then returned.
 4. **Complete** — execution status set to `completed`, output stored.
 5. **Fail** — if `run` returns `Err`, execution is retried up to `max_retries()`. Final failure sets status `failed`.
 
 ## Next Steps
 
 - [DurableExecution Trait](/rust-api/task-handler/) — full method reference for `TaskContext`
-- [Macros](/rust-api/macros/) — ergonomic `#[zart_durable]` proc-macro layer
+- [ZartStep Trait](/rust-api/zart-step/) — defining durable steps
 - [Durable Loops](/rust-api/loops/) — iterate over collections durably
 - [Parallel Steps](/rust-api/parallel-steps/) — concurrent fan-out with `wait_all`
 - [Wait for Event](/rust-api/wait-for-event/) — external signals and human approvals

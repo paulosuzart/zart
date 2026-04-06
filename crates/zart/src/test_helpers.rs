@@ -154,10 +154,7 @@ impl Scheduler for RecordingScheduler {
         })
     }
 
-    async fn schedule_at(
-        &self,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError> {
+    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError> {
         let execution_time = params.execution_time;
         self.calls.lock().unwrap().push(Call::ScheduleAt {
             task_id: params.task_id.clone(),
@@ -194,10 +191,9 @@ impl Scheduler for RecordingScheduler {
         _result: Option<serde_json::Value>,
         _lock_token: &str,
     ) -> Result<(), StorageError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(Call::MarkCompleted { task_id: task_id.to_string() });
+        self.calls.lock().unwrap().push(Call::MarkCompleted {
+            task_id: task_id.to_string(),
+        });
         Ok(())
     }
 
@@ -258,10 +254,7 @@ impl DurableStorage for RecordingScheduler {
         &self,
         _wait_for_task_ids: &[String],
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(Call::CheckWaitAllChildren);
+        self.calls.lock().unwrap().push(Call::CheckWaitAllChildren);
         Ok(self.wait_all_response.clone())
     }
 

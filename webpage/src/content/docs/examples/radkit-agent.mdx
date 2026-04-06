@@ -3,20 +3,19 @@ title: Radkit LLM Agent SDK
 description: Combine durable execution with AI agents using radkit for natural language processing and summarization.
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
-This example integrates [radkit](https://github.com/agents-sh/radkit) — a Rust SDK for building reliable AI agent systems — with Zart's durable execution. The workflow takes a natural language query like *"Find me breweries in Portland, Oregon"*, uses an LLM to extract the location, fetches brewery data from an API, and generates a conversational summary.
+This example integrates [radkit](https://github.com/agents-sh/radkit) — a Rust SDK for building reliable AI agent systems — with Zart's durable execution. The workflow takes a natural language query like *"Find breweries in Portland, Oregon"*, uses an LLM to extract the location, fetches brewery data from an API, and generates a conversational summary.
 
 Because the task needs an LLM provider as a dependency, this example uses the manual `DurableExecution` trait instead of the `#[zart_durable]` macro. This lets us define a struct with fields and inject the provider at construction time.
 
-**Features demonstrated:** Manual `DurableExecution` trait with dependency injection, radkit `LlmFunction<T>` structured outputs, `ctx.step()`, `ctx.step_with_retry()`, mixed AI + API workflows.
+**Features demonstrated:** Manual `DurableExecution` trait with dependency injection, radkit `LlmFunction<T>` structured outputs, `#[zart_step]`, `ctx.execute_step()`, mixed AI + API workflows.
 
 ## Data types
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentInput {
-    /// Natural language query, e.g. "Find breweries in Portland, Oregon"
     query: String,
 }
 
@@ -40,33 +39,25 @@ struct AgentOutput {
     location: ExtractedLocation,
     breweries: Vec<BreweryInfo>,
     summary: String,
-    completed_at: String,
+    generated_at: String,
 }
 ```
 
-## LLM schema types
+## LLM schema type
 
-Radkit uses `schemars::JsonSchema` and `radkit::macros::LLMOutput` to drive structured outputs. The LLM populates these types directly:
+Radkit uses `schemars::JsonSchema` and `radkit::macros::LLMOutput` to drive structured outputs. The LLM populates this type directly:
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, radkit::macros::LLMOutput)]
+#[derive(Debug, Clone, Serialize, Deserialize, LLMOutput, schemars::JsonSchema)]
 struct LocationExtraction {
-    /// The city name extracted from the query
     city: String,
-    /// The state abbreviation or full name
     state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, radkit::macros::LLMOutput)]
-struct BrewerySummary {
-    /// A friendly, conversational summary of the results
-    text: String,
 }
 ```
 
-## The task handler struct
+## The Durable Execution struct
 
-Instead of using `#[zart_durable]`, we define the struct manually. The LLM provider is stored as `Arc<dyn BaseLlm>` so it can be cloned into each step closure and any radkit provider type can be injected:
+Instead of using `#[zart_durable]`, we define the struct manually. The LLM provider is stored as `Arc<dyn BaseLlm>` so it can be cloned into each step and any radkit provider type can be injected:
 
 ```rust
 use radkit::models::BaseLlm;
@@ -75,15 +66,111 @@ use std::sync::Arc;
 struct RadkitAgent {
     llm: Arc<dyn BaseLlm>,
 }
+```
 
-impl RadkitAgent {
-    fn new(llm: OpenAILlm) -> Self {
-        Self {
-            llm: Arc::new(llm),
-        }
-    }
+Step functions use `#[zart_step]` to receive the LLM as a parameter:
+
+```rust
+#[zart_step("extract-location", retry = "exponential(3, 2s)")]
+async fn extract_location(
+    llm: Arc<dyn BaseLlm>,
+    query: &str,
+    ctx: StepContext,
+) -> Result<ExtractedLocation, StepError> {
+    println!("[extract-location] Attempt {}", ctx.current_attempt() + 1);
+
+    let prompt = format!(
+        r#"Extract the city and state from this query. Return valid JSON.
+
+Query: "{query}"
+
+Respond with only a JSON object with "city" and "state" fields."#
+    );
+
+    let function = LlmFunction::<LocationExtraction>::new_with_system_instructions(
+        llm,
+        "You are a location extraction assistant. \
+         Always return valid JSON with city and state fields.",
+    );
+
+    let result = function
+        .run(Thread::from_user(&prompt))
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "extract-location".into(),
+            reason: format!("LLM extraction failed: {e}"),
+        })?;
+
+    Ok(ExtractedLocation { city: result.city, state: result.state })
 }
 
+#[zart_step("find-breweries", retry = "exponential(3, 1s)")]
+async fn find_breweries(city: &str, ctx: StepContext) -> Result<Vec<BreweryRaw>, StepError> {
+    println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
+    let client = reqwest::Client::new();
+    client
+        .get("https://api.openbrewerydb.org/v1/breweries")
+        .query(&[("by_city", city)])
+        .send().await
+        .map_err(|e| StepError::Failed { step: "find-breweries".into(), reason: e.to_string() })?
+        .json::<Vec<BreweryRaw>>().await
+        .map_err(|e| StepError::Failed {
+            step: "find-breweries".into(),
+            reason: format!("failed to parse response: {e}"),
+        })
+}
+
+#[zart_step("transform-results")]
+async fn transform_results(
+    raw: Vec<BreweryRaw>,
+    city: &str,
+    state: &str,
+    ctx: StepContext,
+) -> Result<Vec<BreweryInfo>, StepError> {
+    let _ = ctx.current_attempt();
+    Ok(raw.into_iter().map(|b| BreweryInfo {
+        name: b.name,
+        brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".into()),
+        city: b.city.unwrap_or_else(|| city.to_string()),
+        state: b.state.unwrap_or_else(|| state.to_string()),
+    }).collect())
+}
+
+#[zart_step("generate-summary", retry = "exponential(3, 2s)")]
+async fn generate_summary(
+    llm: Arc<dyn BaseLlm>,
+    query: &str,
+    location: &ExtractedLocation,
+    breweries: &[BreweryInfo],
+    ctx: StepContext,
+) -> Result<String, StepError> {
+    println!("[generate-summary] Attempt {}", ctx.current_attempt() + 1);
+
+    let brewery_list = breweries.iter().take(5)
+        .map(|b| format!("- {} ({})", b.name, b.brewery_type))
+        .collect::<Vec<_>>().join("\n");
+
+    let prompt = format!(
+        "You're a friendly beer enthusiast. Write a short summary about: {query}\n\
+         Found {} breweries in {}, {}.\n{brewery_list}",
+        breweries.len(), location.city, location.state
+    );
+
+    let response = llm
+        .generate_content(Thread::from_user(&prompt), None)
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "generate-summary".into(),
+            reason: format!("LLM summary generation failed: {e}"),
+        })?;
+
+    Ok(response.into_content().joined_texts().unwrap_or_default())
+}
+```
+
+The `DurableExecution` impl composes steps with `ctx.execute_step()`:
+
+```rust
 #[async_trait::async_trait]
 impl DurableExecution for RadkitAgent {
     type Data = AgentInput;
@@ -94,150 +181,29 @@ impl DurableExecution for RadkitAgent {
         ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        // Step 1: Extract location from natural language using radkit LLM
-        let location: ExtractedLocation = ctx
-            .step_with_retry(
-                "extract-location",
-                RetryConfig::exponential(3, Duration::from_secs(2)),
-                || {
-                    let llm = self.llm.clone();
-                    let query = data.query.clone();
-                    async move {
-                        let prompt = format!(
-                            r#"Extract the city and state from this query. Return valid JSON.
-
-Query: "{query}"
-
-Respond with only a JSON object with "city" and "state" fields."#
-                        );
-
-                        let function =
-                            LlmFunction::<LocationExtraction>::new_with_system_instructions(
-                                llm,
-                                "You are a location extraction assistant. \
-                                 Always return valid JSON with city and state fields.",
-                            );
-
-                        let result = function.run(&prompt).await.map_err(|e| StepError::Failed {
-                            step: "extract-location".to_string(),
-                            reason: format!("LLM extraction failed: {e}"),
-                        })?;
-
-                        Ok(ExtractedLocation {
-                            city: result.city,
-                            state: result.state,
-                        })
-                    }
-                },
-            )
+        let location = ctx
+            .execute_step(extract_location(self.llm.clone(), data.query.clone()))
             .await?;
 
-        // Step 2: Find breweries in the extracted city via Open Brewery DB
-        let raw_breweries = ctx
-            .step_with_retry(
-                "find-breweries",
-                RetryConfig::exponential(3, Duration::from_secs(1)),
-                || {
-                    let city = location.city.clone();
-                    async move {
-                        let client = reqwest::Client::new();
-                        let resp = client
-                            .get("https://api.openbrewerydb.org/v1/breweries")
-                            .query(&[("by_city", &city)])
-                            .send()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "find-breweries".to_string(),
-                                reason: e.to_string(),
-                            })?
-                            .json::<Vec<BreweryRaw>>()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "find-breweries".to_string(),
-                                reason: format!("failed to parse response: {e}"),
-                            })?;
-                        Ok(resp)
-                    }
-                },
-            )
+        let raw_breweries: Vec<BreweryRaw> = ctx
+            .execute_step(find_breweries(location.city.clone()))
             .await?;
 
-        // Step 3: Transform raw data into structured output (no retries — deterministic)
         let breweries: Vec<BreweryInfo> = ctx
-            .step("transform-results", || {
-                let raw = raw_breweries.clone();
-                let city = location.city.clone();
-                let state = location.state.clone();
-                async move {
-                    Ok(raw
-                        .into_iter()
-                        .map(|b| BreweryInfo {
-                            name: b.name,
-                            brewery_type: b.brewery_type
-                                .unwrap_or_else(|| "unknown".to_string()),
-                            city: b.city.unwrap_or_else(|| city.clone()),
-                            state: b.state.unwrap_or_else(|| state.clone()),
-                        })
-                        .collect())
-                }
-            })
+            .execute_step(transform_results(
+                raw_breweries,
+                location.city.clone(),
+                location.state.clone(),
+            ))
             .await?;
 
-        // Step 4: Generate AI summary using radkit LLM
         let summary = ctx
-            .step_with_retry(
-                "generate-summary",
-                RetryConfig::exponential(3, Duration::from_secs(2)),
-                || {
-                    let llm = self.llm.clone();
-                    let query = data.query.clone();
-                    let location = location.clone();
-                    let breweries = breweries.clone();
-                    async move {
-                        let brewery_list = breweries
-                            .iter()
-                            .take(5)
-                            .map(|b| format!("- {} ({})", b.name, b.brewery_type))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        let more_text = if breweries.len() > 5 {
-                            format!("\n...and {} more", breweries.len() - 5)
-                        } else {
-                            String::new()
-                        };
-
-                        let prompt = format!(
-                            r#"You're a friendly beer enthusiast. Write a short, conversational summary (2-3 sentences) about these brewery results.
-
-User asked: "{query}"
-Found {} breweries in {}, {}.
-
-Top results:
-{brewery_list}{more_text}
-
-Keep it casual and enthusiastic."#,
-                            breweries.len(),
-                            location.city,
-                            location.state
-                        );
-
-                        let function =
-                            LlmFunction::<BrewerySummary>::new_with_system_instructions(
-                                llm,
-                                "You are a friendly beer enthusiast writing casual summaries.",
-                            );
-
-                        let result =
-                            function.run(&prompt).await.map_err(|e| StepError::Failed {
-                                step: "generate-summary".to_string(),
-                                reason: format!("LLM summary generation failed: {e}"),
-                            })?;
-
-                        Ok(result.text)
-                    }
-                },
-            )
+            .execute_step(generate_summary(
+                self.llm.clone(),
+                data.query.clone(),
+                location.clone(),
+                breweries.clone(),
+            ))
             .await?;
 
         Ok(AgentOutput {
@@ -245,7 +211,7 @@ Keep it casual and enthusiastic."#,
             location,
             breweries,
             summary,
-            completed_at: Utc::now().to_rfc3339(),
+            generated_at: Utc::now().to_rfc3339(),
         })
     }
 }
@@ -253,31 +219,27 @@ Keep it casual and enthusiastic."#,
 
 ## Registering and running
 
-The handler is instantiated with the LLM provider and registered at startup:
-
 ```rust
-let llm = OpenAILlm::new("gpt-4o", &openai_key);
+let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
+let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));
 
 let mut registry = TaskRegistry::new();
-registry.register("radkit-agent", RadkitAgent::new(llm));
+registry.register("radkit-agent", RadkitAgent { llm });
 let registry = Arc::new(registry);
 
 let durable = DurableScheduler::new(sched.clone());
 durable
     .start_typed(&execution_id, "radkit-agent", &AgentInput {
-        query: "Find me breweries in Portland, Oregon".to_string(),
+        query: "Find breweries in Portland, Oregon".to_string(),
     })
     .await?;
 ```
 
-## Running the workflow
+## Running the example
 
 ```bash
 # Ensure PostgreSQL is running
 just up
-
-# Run migrations
-just migrate
 
 # Set your OpenAI API key
 export OPENAI_API_KEY="your-key-here"
@@ -287,7 +249,7 @@ just example-radkit-agent
 ```
 
 <Aside type="tip">
-The example exits immediately if `OPENAI_API_KEY` is not set, with a clear error message explaining what's needed.
+The example exits immediately if `OPENAI_API_KEY` is not set, with a clear error message.
 </Aside>
 
 ## What you'll see
@@ -295,53 +257,46 @@ The example exits immediately if `OPENAI_API_KEY` is not set, with a clear error
 ```
 === Zart Radkit Agent Example ===
 
-This example combines durable execution with AI agents using radkit.
-It extracts locations from natural language and generates summaries.
+Starting execution 'radkit-demo-...'...
+  Query: Find breweries in Portland, Oregon
 
-Input query: "Find me breweries in Portland, Oregon"
-
-Starting execution 'radkit-agent-demo-...'...
 Initial execution status: Pending
 
 Waiting for execution to complete...
 
+[extract-location] Attempt 1
   Extracted location: Portland, Oregon
+[find-breweries] Attempt 1
   Found 20 raw brewery results
+[generate-summary] Attempt 1
 
-═══════════════════════════════════════════
 Execution completed!
-═══════════════════════════════════════════
+  Query:       Find breweries in Portland, Oregon
+  Location:    Portland, Oregon
+  Breweries:   20
 
-Query:     Find me breweries in Portland, Oregon
-Location:  Portland, Oregon
-Breweries: 20
+  Summary:
+    Portland is a craft beer paradise with 20 fantastic breweries to explore! ...
 
-── Top Results ──────────────────────────
-  1. Breakside Brewery (micro) — Portland, Oregon
-  2. Cascade Brewing (brewpub) — Portland, Oregon
-  ...
-
-── AI Summary ───────────────────────────
-  I found 20 great breweries in Portland, Oregon for you! From the legendary
-  Breakside Brewery to the sour beer specialists at Cascade Brewing, there's
-  an incredible variety waiting to be explored!
-
-Completed at: 2026-04-05T...
+  Breweries found:
+    1. Breakside Brewery (micro) — Portland, Oregon
+    2. Cascade Brewing (brewpub) — Portland, Oregon
+    ...
 ```
 
 ## Key concepts
 
-**Manual DurableExecution for dependency injection** — When a task needs external dependencies (like an LLM provider, database client, or HTTP client with specific config), implementing `DurableExecution` manually lets you define struct fields and a constructor. The `#[zart_durable]` macro generates a unit struct with no fields.
+**Manual DurableExecution for dependency injection** — When a task needs external dependencies (like an LLM provider), implementing `DurableExecution` manually lets you define struct fields. The `#[zart_durable]` macro generates a unit struct with no fields.
 
-**`Arc<dyn BaseLlm>` for sharable providers** — Radkit's LLM providers don't implement `Clone`. Wrapping them in `Arc<dyn BaseLlm>` lets you clone the Arc reference into each step closure while keeping a single provider instance. The `BaseLlm` trait object also lets you swap any radkit provider type without changing the struct definition.
+**`Arc<dyn BaseLlm>` for shareable providers** — Radkit's `Arc<dyn BaseLlm>` implements `BaseLlm` directly via a blanket impl, so it can be passed to `LlmFunction::new_with_system_instructions` and `generate_content` without unwrapping.
 
-**`LlmFunction<T>` with structured output** — Radkit's typed function leverages `schemars::JsonSchema` and `radkit::macros::LLMOutput` to guarantee the LLM returns valid JSON matching your Rust type. The response is deserialized automatically — no manual parsing.
+**`LlmFunction<T>` for structured output** — Requires `T: LLMOutput + JsonSchema`. Derive `LLMOutput` from `radkit::macros` alongside `schemars::JsonSchema`. The LLM response is parsed and deserialized into `T` automatically.
 
-**Mixed durable workflows** — AI steps (LLM calls) and traditional steps (HTTP APIs, data transformations) coexist in the same durable workflow. Each step is independently persisted.
+**`generate_content` for free-form text** — For steps that return a plain `String`, call `llm.generate_content(Thread::from_user(&prompt), None)` and extract text via `.into_content().joined_texts()`.
 
-**Retry strategy** — LLM calls get aggressive retries with exponential backoff since they're prone to transient failures (rate limits, timeouts). Pure data transformations don't need retries since they're deterministic.
+**Mixed durable workflows** — AI steps (LLM calls) and traditional steps (HTTP APIs, data transformations) coexist in the same durable workflow. Each step is independently persisted and retried.
 
-**Why durable AI?** LLM calls are unreliable by nature — API outages, rate limits, timeouts. Durable execution ensures that if an LLM call succeeds, its result is persisted and never repeated, even if the process crashes. This is especially valuable for expensive or slow LLM operations.
+**Retry strategy** — LLM steps use `retry = "exponential(3, 2s)"` since they're prone to transient failures. The deterministic `transform_results` step needs no retry.
 
 <Aside type="tip">
 Kill the process after step 1 completes and restart — the workflow picks up at step 2 without calling the LLM again. The extracted location is already stored in PostgreSQL.
@@ -349,20 +304,14 @@ Kill the process after step 1 completes and restart — the workflow picks up at
 
 ## Changing the LLM provider
 
-Because the struct stores `Arc<dyn BaseLlm>`, swapping providers only requires changing the initialization — the struct definition stays the same:
+Because the struct stores `Arc<dyn BaseLlm>`, swapping providers only requires changing the initialization:
 
 ```rust
 // Anthropic
-let llm = AnthropicLlm::from_env("claude-sonnet-4-5-20250929")?;
-registry.register("radkit-agent", RadkitAgent::new(llm));
-
-// Gemini
-let llm = GeminiLlm::from_env("gemini-2.0-flash")?;
-registry.register("radkit-agent", RadkitAgent::new(llm));
+let llm = Arc::new(AnthropicLlm::from_env("claude-sonnet-4-5-20250929")?);
+registry.register("radkit-agent", RadkitAgent { llm });
 
 // OpenRouter
-let llm = OpenRouterLlm::from_env("openai/gpt-4o")?;
-registry.register("radkit-agent", RadkitAgent::new(llm));
+let llm = Arc::new(OpenRouterLlm::from_env("openai/gpt-4o")?);
+registry.register("radkit-agent", RadkitAgent { llm });
 ```
-
-Each provider works identically with `LlmFunction<T>` for structured outputs.
