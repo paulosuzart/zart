@@ -231,9 +231,8 @@ impl DurableExecution for RadkitAgent {
         );
 
         // Step 2: Find breweries in the extracted city
-        let raw_breweries: Vec<BreweryRaw> = ctx
-            .execute_step(find_breweries(&location.city))
-            .await?;
+        let raw_breweries: Vec<BreweryRaw> =
+            ctx.execute_step(find_breweries(&location.city)).await?;
 
         println!("  Found {} raw brewery results", raw_breweries.len());
 

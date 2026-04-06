@@ -56,14 +56,33 @@ struct BatchOutput {
 #[zart_step("fetch-reports")]
 async fn fetch_reports(batch_name: String, ctx: StepContext) -> Result<Vec<Report>, StepError> {
     let _ = ctx.current_attempt();
-    println!("  [fetch-reports] Loading reports for batch '{}'", batch_name);
+    println!(
+        "  [fetch-reports] Loading reports for batch '{}'",
+        batch_name
+    );
     // In production this would query a database filtered by batch_name.
     // We return static fake data so the example runs without external dependencies.
     Ok(vec![
-        Report { id: 1, title: "Q1 Sales".into(), value: 84.5 },
-        Report { id: 2, title: "Q2 Sales".into(), value: 91.2 },
-        Report { id: 3, title: "Q3 Sales".into(), value: 72.0 },
-        Report { id: 4, title: "Q4 Sales".into(), value: 110.8 },
+        Report {
+            id: 1,
+            title: "Q1 Sales".into(),
+            value: 84.5,
+        },
+        Report {
+            id: 2,
+            title: "Q2 Sales".into(),
+            value: 91.2,
+        },
+        Report {
+            id: 3,
+            title: "Q3 Sales".into(),
+            value: 72.0,
+        },
+        Report {
+            id: 4,
+            title: "Q4 Sales".into(),
+            value: 110.8,
+        },
     ])
 }
 
@@ -86,7 +105,12 @@ async fn process_report(
         "  [process-report-{}] '{}': value={:.1}, score={}, flagged={}",
         index, report.title, report.value, score, flagged
     );
-    Ok(ProcessedReport { id: report.id, title: report.title, score, flagged })
+    Ok(ProcessedReport {
+        id: report.id,
+        title: report.title,
+        score,
+        flagged,
+    })
 }
 
 /// Sends a notification alert. This step has a static name — callers must
@@ -117,7 +141,9 @@ impl DurableExecution for ReportBatchTask {
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // Step 1: fetch the list inside a step so the same list is used on replay.
-        let reports = ctx.execute_step(fetch_reports(data.batch_name.clone())).await?;
+        let reports = ctx
+            .execute_step(fetch_reports(data.batch_name.clone()))
+            .await?;
         println!("Fetched {} reports\n", reports.len());
 
         // Step 2: process each report.
@@ -179,7 +205,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let execution_id = format!("report-batch-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone());
 
-    let input = BatchInput { batch_name: "2024-annual".into() };
+    let input = BatchInput {
+        batch_name: "2024-annual".into(),
+    };
 
     println!("Starting execution '{}'...\n", execution_id);
     durable

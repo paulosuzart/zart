@@ -6,7 +6,7 @@
 //! # Macros
 //!
 //! - [`#[zart_durable]`](macro@zart_durable) — annotate an async function as a durable handler,
-//!   generating a unit struct that implements [`DurableExecution`](zart::registry::DurableExecution).
+//!   generating a unit struct that implements `DurableExecution`.
 //! - [`#[zart_step]`](macro@zart_step) — annotate an async function as a step builder,
 //!   generating a struct with an `.execute()` method.
 //! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `ctx.wait_for_event(name, timeout)`
@@ -112,9 +112,9 @@ impl Parse for DurableAttr {
 ///
 /// Generates a unit struct (named by converting the function name from
 /// `snake_case` to `PascalCase`) that implements
-/// [`DurableExecution`](zart::registry::DurableExecution).
+/// `DurableExecution`.
 ///
-/// The generated struct can then be registered with a [`TaskRegistry`](zart::registry::TaskRegistry):
+/// The generated struct can then be registered with a `TaskRegistry`:
 ///
 /// ```rust,ignore
 /// registry.register("my-task", MyTask);

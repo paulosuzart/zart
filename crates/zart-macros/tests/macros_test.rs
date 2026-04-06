@@ -33,7 +33,6 @@ impl MockScheduler {
             step_responses: HashMap::new(),
         }
     }
-
 }
 
 #[async_trait]
