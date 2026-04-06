@@ -62,6 +62,9 @@ pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
 pub use worker::{Worker, WorkerConfig};
 
+// Re-export proc macros from zart-macros
+pub use zart_macros::{zart_durable, zart_step, z_step, z_step_with_retry, z_wait_event, z_durable_loop};
+
 /// Commonly used types re-exported for ergonomic imports.
 ///
 /// Add `use zart::prelude::*;` to get access to all core types.

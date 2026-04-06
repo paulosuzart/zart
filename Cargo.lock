@@ -3920,6 +3920,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zart-macros",
 ]
 
 [[package]]

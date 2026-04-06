@@ -7,6 +7,8 @@
 //!
 //! - [`#[zart_durable]`](macro@zart_durable) — annotate an async function as a durable handler,
 //!   generating a unit struct that implements [`DurableExecution`](zart::registry::DurableExecution).
+//! - [`#[zart_step]`](macro@zart_step) — annotate an async function as a step builder,
+//!   generating a struct with an `.execute()` method.
 //! - [`z_step!`](macro@z_step) — ergonomic wrapper around `ctx.step(name, closure)`
 //! - [`z_step_with_retry!`](macro@z_step_with_retry) — wrapper around `ctx.step_with_retry(name, config, closure)`
 //! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `ctx.wait_for_event(name, timeout)`
@@ -47,6 +49,7 @@ use syn::{
     Token, Type,
     parse::{Parse, ParseStream},
     parse_macro_input,
+    Lifetime, LifetimeParam,
 };
 
 // ── Duration string parsing ───────────────────────────────────────────────────
@@ -520,6 +523,481 @@ pub fn z_durable_loop(input: TokenStream) -> TokenStream {
     .into()
 }
 
+// ── #[zart_step] ──────────────────────────────────────────────────────────────
+
+/// Attribute arguments for `#[zart_step]`.
+///
+/// Accepted forms:
+/// - `#[zart_step("step-name")]`
+/// - `#[zart_step("step-name", retry = "fixed(3, 1s)")]`
+/// - `#[zart_step("step-name", retry = "exponential(3, 1s)")]`
+/// - `#[zart_step("step-name", timeout = "5m")]`
+/// - `#[zart_step("step-name", retry = "...", timeout = "...")]`
+struct StepAttr {
+    step_name: String,
+    retry_config: Option<RetryAttr>,
+    timeout_secs: Option<u64>,
+}
+
+/// Parsed retry attribute.
+enum RetryAttr {
+    Fixed { attempts: usize, delay_ms: u64 },
+    Exponential { attempts: usize, delay_ms: u64 },
+}
+
+impl Parse for StepAttr {
+    fn parse(input: ParseStream) -> SynResult<Self> {
+        let step_name: LitStr = input.parse()?;
+        let mut retry_config = None;
+        let mut timeout_secs = None;
+
+        while input.peek(Token![,]) {
+            let _: Token![,] = input.parse()?;
+            let key: Ident = input.parse()?;
+            let _: Token![=] = input.parse()?;
+            let value: LitStr = input.parse()?;
+
+            match key.to_string().as_str() {
+                "retry" => {
+                    retry_config = Some(parse_retry_attr(&value.value(), value.span())?);
+                }
+                "timeout" => {
+                    timeout_secs = Some(parse_duration_str(&value.value(), value.span())?);
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("unknown attribute key '{key}'; expected 'retry' or 'timeout'"),
+                    ));
+                }
+            }
+        }
+
+        Ok(StepAttr {
+            step_name: step_name.value(),
+            retry_config,
+            timeout_secs,
+        })
+    }
+}
+
+/// Parse retry attribute string like "fixed(3, 1s)" or "exponential(5, 2s)".
+fn parse_retry_attr(s: &str, span: Span) -> SynResult<RetryAttr> {
+    if let Some(inner) = s.strip_prefix("fixed(").and_then(|s| s.strip_suffix(')')) {
+        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+        if parts.len() != 2 {
+            return Err(syn::Error::new(
+                span,
+                format!("fixed retry must be 'fixed(n, duration)' — got '{s}'"),
+            ));
+        }
+        let attempts: usize = parts[0].parse().map_err(|_| {
+            syn::Error::new(span, format!("invalid attempt count '{}'", parts[0]))
+        })?;
+        let delay_ms = parse_duration_to_ms(parts[1], span)?;
+        Ok(RetryAttr::Fixed { attempts, delay_ms })
+    } else if let Some(inner) = s
+        .strip_prefix("exponential(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+        if parts.len() != 2 {
+            return Err(syn::Error::new(
+                span,
+                format!("exponential retry must be 'exponential(n, duration)' — got '{s}'"),
+            ));
+        }
+        let attempts: usize = parts[0].parse().map_err(|_| {
+            syn::Error::new(span, format!("invalid attempt count '{}'", parts[0]))
+        })?;
+        let delay_ms = parse_duration_to_ms(parts[1], span)?;
+        Ok(RetryAttr::Exponential { attempts, delay_ms })
+    } else {
+        Err(syn::Error::new(
+            span,
+            format!("retry must be 'fixed(n, duration)' or 'exponential(n, duration)' — got '{s}'"),
+        ))
+    }
+}
+
+/// Parse a duration string to milliseconds.
+fn parse_duration_to_ms(s: &str, span: Span) -> SynResult<u64> {
+    let secs = parse_duration_str(s, span)?;
+    Ok(secs * 1000)
+}
+
+/// Annotate an async function as a Zart step function.
+///
+/// Transforms a plain async function into a **step builder** that can be executed
+/// via `.execute(&mut TaskContext)`.
+///
+/// # Function signature
+///
+/// ```rust,ignore
+/// #[zart_step("step-name", retry = "exponential(3, 1s)")]
+/// async fn my_step(
+///     // ... any number of parameters (become struct fields)
+///     ctx: StepContext,   // ← must be the LAST parameter
+/// ) -> Result<T, StepError>
+/// ```
+///
+/// # Generated code
+///
+/// The macro generates:
+/// 1. A **struct** capturing all parameters except `StepContext`
+/// 2. An **`.execute(&mut TaskContext)` method** that calls `ctx.step()` or `ctx.step_with_retry()`
+/// 3. Rewrites the original function to return the struct (builder pattern)
+/// 4. Moves the original body to a private `_inner` function
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[zart_step("lookup-zip", retry = "exponential(3, 1s)")]
+/// async fn lookup_zip(
+///     client: &reqwest::Client,
+///     zip_code: &str,
+///     ctx: StepContext,
+/// ) -> Result<(String, String), StepError> {
+///     // ... step logic
+/// }
+///
+/// // Usage in durable handler:
+/// let (city, state) = lookup_zip(&client, &data.zip_code).execute(ctx).await?;
+/// ```
+///
+/// # Attributes
+///
+/// | Attribute | Required | Description |
+/// |---|---|---|
+/// | `"step-name"` | Yes | The name used for step tracking in the database. |
+/// | `retry = "..."` | No | Retry configuration. Supports `fixed(n, duration)` and `exponential(n, duration)`. |
+/// | `timeout = "..."` | No | Step timeout. Supports duration strings like `"5m"`, `"30s"`, `"2h"`. |
+#[proc_macro_attribute]
+pub fn zart_step(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as StepAttr);
+    let func = parse_macro_input!(item as ItemFn);
+
+    match expand_zart_step(args, func) {
+        Ok(ts) => ts.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
+    let fn_name = &func.sig.ident;
+    let vis = &func.vis;
+    let asyncness = &func.sig.asyncness;
+    let output = &func.sig.output;
+    let original_body = &func.block;
+
+    // Validate asyncness
+    if asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[zart_step] can only be applied to async functions",
+        ));
+    }
+
+    // Validate return type is Result<_, StepError>
+    validate_step_return_type(output)?;
+
+    // Extract parameters
+    let inputs: Vec<_> = func.sig.inputs.iter().collect();
+    if inputs.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "#[zart_step] requires at least one parameter: `ctx: StepContext`",
+        ));
+    }
+
+    // Last parameter must be ctx: StepContext
+    let ctx_param = inputs.last().unwrap();
+    let (ctx_pat, ctx_type) = match ctx_param {
+        syn::FnArg::Typed(pt) => {
+            // Check type is StepContext (allowing for path like StepContext or zart::context::StepContext)
+            if !is_step_context_type(&pt.ty) {
+                return Err(syn::Error::new_spanned(
+                    &pt.ty,
+                    "last parameter must be `ctx: StepContext`",
+                ));
+            }
+            // Check that the parameter is named `ctx`
+            if let syn::Pat::Ident(pat_ident) = &*pt.pat {
+                if pat_ident.ident != "ctx" {
+                    return Err(syn::Error::new_spanned(
+                        &pt.pat,
+                        format!("last parameter must be named `ctx` (got `{}`)", pat_ident.ident),
+                    ));
+                }
+            } else {
+                return Err(syn::Error::new_spanned(
+                    &pt.pat,
+                    "last parameter must be a simple identifier",
+                ));
+            }
+            (&pt.pat, &pt.ty)
+        }
+        syn::FnArg::Receiver(_) => {
+            return Err(syn::Error::new_spanned(
+                ctx_param,
+                "last parameter cannot be `self`",
+            ));
+        }
+    };
+
+    // All parameters except the last become struct fields
+    let struct_params: Vec<_> = inputs.iter().take(inputs.len() - 1).cloned().collect();
+
+    // Generate struct name: snake_case -> PascalCase + "Step"
+    let struct_name = format!("{}Step", snake_to_pascal(&fn_name.to_string()));
+    let struct_ident = format_ident!("{}", struct_name);
+    let inner_fn_name = format_ident!("{}_inner", fn_name);
+    
+    // Define lifetime 'a that will be used throughout
+    let lifetime_a = Lifetime::new("'a", Span::call_site());
+    let lifetime_param = LifetimeParam::new(lifetime_a.clone());
+
+    // Generate struct fields with lifetime injected into references
+    let struct_fields: Vec<_> = struct_params
+        .iter()
+        .filter_map(|param| match param {
+            syn::FnArg::Typed(pt) => {
+                let pat = &pt.pat;
+                let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
+                Some(quote! { #pat: #ty_with_lifetime })
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Generate field names for struct initialization
+    let field_names: Vec<_> = struct_params
+        .iter()
+        .filter_map(|param| match param {
+            syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
+            _ => None,
+        })
+        .collect();
+    
+    // Generate parameter list for function signatures (with lifetime injected)
+    let struct_param_list: Vec<_> = struct_params
+        .iter()
+        .filter_map(|param| match param {
+            syn::FnArg::Typed(pt) => {
+                let pat = &pt.pat;
+                let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
+                Some(quote! { #pat: #ty_with_lifetime })
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Generate the execute method
+    let execute_method = generate_execute_method(
+        &args,
+        &struct_ident,
+        &lifetime_a,
+        &field_names,
+        ctx_pat,
+        ctx_type,
+        output,
+        &inner_fn_name,
+    )?;
+
+    // Generate the struct with lifetime parameter 'a
+    let struct_def = quote! {
+        #vis struct #struct_ident<#lifetime_param> {
+            #(#struct_fields),*
+        }
+    };
+
+    // Rewrite original function to return the builder struct (not async)
+    let rewritten_fn = quote! {
+        #vis fn #fn_name<#lifetime_param>(
+            #(#struct_param_list),*
+        ) -> #struct_ident<#lifetime_a> {
+            #struct_ident {
+                #(#field_names),*
+            }
+        }
+    };
+
+    // Move original body to inner function with ctx as the parameter name
+    let ctx_ident_for_inner = format_ident!("ctx");
+    let inner_fn = quote! {
+        #asyncness fn #inner_fn_name<#lifetime_param>(
+            #(#struct_param_list),*,
+            #ctx_ident_for_inner: ::zart::context::StepContext,
+        ) #output #original_body
+    };
+
+    Ok(quote! {
+        #struct_def
+
+        impl<#lifetime_param> #struct_ident<#lifetime_a> {
+            #execute_method
+        }
+
+        #rewritten_fn
+
+        #inner_fn
+    })
+}
+
+/// Generate the `.execute()` method for the step struct.
+fn generate_execute_method(
+    args: &StepAttr,
+    _struct_ident: &Ident,
+    _lifetime_a: &Lifetime,
+    field_names: &[Ident],
+    ctx_pat: &Box<syn::Pat>,
+    _ctx_type: &Box<syn::Type>,
+    output: &ReturnType,
+    inner_fn_name: &Ident,
+) -> SynResult<TokenStream2> {
+    let step_name = &args.step_name;
+
+    // Generate field access expressions (self.field_name)
+    let field_accesses: Vec<_> = field_names.iter().map(|ident| quote! { self.#ident }).collect();
+
+    // Generate the closure body that calls the inner function
+    let closure_body = quote! {
+        #inner_fn_name(#(#field_accesses),*, ctx).await
+    };
+
+    // Build the step execution call based on attributes
+    let step_call = if args.retry_config.is_some() {
+        // With retry
+        let retry_config_expr = generate_retry_config_expr(&args.retry_config)?;
+        quote! {
+            ctx.step_with_retry(
+                #step_name,
+                #retry_config_expr,
+                |ctx| async move {
+                    #closure_body
+                }
+            ).await
+        }
+    } else if args.timeout_secs.is_some() {
+        // With timeout only
+        let timeout_secs = args.timeout_secs.unwrap();
+        quote! {
+            ctx.step_with_timeout(
+                #step_name,
+                ::std::time::Duration::from_secs(#timeout_secs),
+                |ctx| async move {
+                    #closure_body
+                }
+            ).await
+        }
+    } else {
+        // No retry, no timeout
+        quote! {
+            ctx.step(
+                #step_name,
+                |ctx| async move {
+                    #closure_body
+                }
+            ).await
+        }
+    };
+
+    Ok(quote! {
+        pub async fn execute(
+            self,
+            #ctx_pat: &'a mut ::zart::context::TaskContext,
+        ) #output {
+            #step_call
+        }
+    })
+}
+
+/// Generate retry config expression from parsed attributes.
+fn generate_retry_config_expr(retry_attr: &Option<RetryAttr>) -> SynResult<TokenStream2> {
+    match retry_attr {
+        Some(RetryAttr::Fixed { attempts, delay_ms }) => Ok(quote! {
+            ::zart::retry::RetryConfig::fixed(#attempts, ::std::time::Duration::from_millis(#delay_ms))
+        }),
+        Some(RetryAttr::Exponential { attempts, delay_ms }) => Ok(quote! {
+            ::zart::retry::RetryConfig::exponential(#attempts, ::std::time::Duration::from_millis(#delay_ms))
+        }),
+        None => Err(syn::Error::new(
+            Span::call_site(),
+            "retry config required for this code path",
+        )),
+    }
+}
+
+/// Inject lifetime 'a into reference types
+fn inject_lifetime(ty: &Type, lifetime_a: &Lifetime) -> TokenStream2 {
+    match ty {
+        Type::Reference(type_ref) => {
+            let elem = inject_lifetime(&type_ref.elem, lifetime_a);
+            if let Some(mut_token) = &type_ref.mutability {
+                if type_ref.lifetime.is_some() {
+                    // Already has a lifetime, keep it
+                    quote! { &#mut_token #elem }
+                } else {
+                    // Inject our lifetime
+                    quote! { &#lifetime_a #mut_token #elem }
+                }
+            } else {
+                if type_ref.lifetime.is_some() {
+                    quote! { &#elem }
+                } else {
+                    quote! { &#lifetime_a #elem }
+                }
+            }
+        }
+        _ => quote! { #ty },
+    }
+}
+
+/// Extract identifier from a pattern (handles simple ident patterns like `client`, `zip_code`, etc.)
+fn extract_ident_from_pattern(pat: &syn::Pat) -> Option<Ident> {
+    match pat {
+        syn::Pat::Ident(pat_ident) => Some(pat_ident.ident.clone()),
+        _ => None, // We only support simple identifier patterns for now
+    }
+}
+
+/// Check if a type is `StepContext` (allowing for various paths).
+fn is_step_context_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(last) = type_path.path.segments.last() {
+            return last.ident == "StepContext";
+        }
+    }
+    false
+}
+
+/// Validate that the return type is `Result<_, StepError>`.
+fn validate_step_return_type(output: &ReturnType) -> SynResult<()> {
+    let ty = match output {
+        ReturnType::Type(_, ty) => ty.as_ref(),
+        ReturnType::Default => {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "#[zart_step] function must return `Result<T, StepError>`",
+            ));
+        }
+    };
+
+    if let Type::Path(type_path) = ty {
+        if let Some(last) = type_path.path.segments.last() {
+            if last.ident == "Result" {
+                // Good enough — we'll trust the user on the error type
+                return Ok(());
+            }
+        }
+    }
+
+    Err(syn::Error::new_spanned(
+        ty,
+        "return type must be `Result<T, StepError>`",
+    ))
+}
+
 // ── Unit tests (compile-only) ─────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -561,5 +1039,17 @@ mod tests {
     #[test]
     fn parse_duration_invalid() {
         assert!(super::parse_duration_str("5x", proc_macro2::Span::call_site()).is_err());
+    }
+
+    #[test]
+    fn step_struct_name_generation() {
+        assert_eq!(
+            format!("{}Step", snake_to_pascal("lookup_zip")),
+            "LookupZipStep"
+        );
+        assert_eq!(
+            format!("{}Step", snake_to_pascal("find_breweries")),
+            "FindBreweriesStep"
+        );
     }
 }
