@@ -173,14 +173,13 @@ impl DurableExecution for BreweryFinderTask {
         let client = reqwest::Client::new();
 
         // Step 1: Look up ZIP code → (city, state)
-        let (city, state) = lookup_zip(&client, &data.zip_code).execute(ctx).await?;
+        let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
 
         // Step 2: Find breweries in the city
-        let raw_breweries = find_breweries(&client, &city).execute(ctx).await?;
+        let raw_breweries = ctx.execute_step(find_breweries(&client, &city)).await?;
 
         // Step 3: Transform into structured output
-        let breweries = transform_results(&raw_breweries, &city, &state)
-            .execute(ctx)
+        let breweries = ctx.execute_step(transform_results(&raw_breweries, &city, &state))
             .await?;
 
         Ok(FinderOutput {

@@ -54,7 +54,7 @@ pub mod worker;
 pub(crate) mod test_helpers;
 
 pub use api_trait::{DurableApi, into_durable_api};
-pub use context::{StepContext, StepHandle, TaskContext, ZartStep, ZartStepExecutor};
+pub use context::{StepContext, StepHandle, TaskContext, ZartStep};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
@@ -71,7 +71,7 @@ pub use zart_macros::{zart_durable, zart_step, z_step, z_step_with_retry, z_wait
 pub mod prelude {
     pub use crate::{
         api_trait::DurableApi,
-        context::{StepContext, StepHandle, TaskContext, ZartStep, ZartStepExecutor},
+        context::{StepContext, StepHandle, TaskContext, ZartStep},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
         registry::{DurableExecution, TaskRegistry},

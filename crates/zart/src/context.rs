@@ -20,31 +20,15 @@ use tracing::instrument;
 /// Implement this trait to define a step without using the `#[zart_step]` macro.
 /// The macro generates a struct and implements this trait automatically.
 ///
-/// # Example
+/// # Usage
 ///
 /// ```rust,ignore
-/// struct LookupZipStep<'a> {
-///     client: &'a reqwest::Client,
-///     zip_code: &'a str,
-/// }
+/// struct LookupZipStep<'a> { /* fields */ }
 ///
-/// #[async_trait]
-/// impl ZartStep for LookupZipStep<'_> {
-///     type Output = (String, String);
+/// impl ZartStep for LookupZipStep<'_> { /* ... */ }
 ///
-///     fn step_name(&self) -> &'static str { "lookup-zip" }
-///
-///     fn retry_config(&self) -> Option<RetryConfig> {
-///         Some(RetryConfig::exponential(3, Duration::from_secs(1)))
-///     }
-///
-///     async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
-///         // ... step logic
-///     }
-/// }
-///
-/// // Usage (execute() provided by ZartStepExecutor, can't be overridden):
-/// let (city, state) = LookupZipStep { client: &client, zip_code: &data.zip_code }.execute(ctx).await?;
+/// // Execute via TaskContext:
+/// let (city, state) = ctx.execute_step(LookupZipStep { client: &client, zip_code: &data.zip_code }).await?;
 /// ```
 #[async_trait::async_trait]
 pub trait ZartStep {
@@ -72,34 +56,9 @@ pub trait ZartStep {
     ///
     /// The `ctx` provides access to retry metadata like `current_attempt()`.
     ///
-    /// **Note**: Do NOT call this directly. Use `.execute(ctx)` from [`ZartStepExecutor`] instead,
+    /// **Note**: Do NOT call this directly. Use `ctx.execute_step(self)` instead,
     /// which handles retry and timeout configuration automatically.
     async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
-}
-
-/// Extension trait that provides `.execute(ctx)` for any `ZartStep`.
-///
-/// This trait is automatically implemented for all types that implement `ZartStep`.
-/// The `execute()` method contains the framework logic (retry, timeout handling) and
-/// **cannot be overridden** by implementors — ensuring consistent behavior across all steps.
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// let result = MyStep { /* params */ }.execute(ctx).await?;
-/// ```
-pub trait ZartStepExecutor: ZartStep + Sized {
-    /// Execute this step with retry and timeout handling.
-    ///
-    /// This method is provided by the framework and cannot be overridden.
-    /// It automatically applies `retry_config()` and `timeout()` from the step.
-    fn execute(self, ctx: &mut TaskContext) -> impl std::future::Future<Output = Result<Self::Output, StepError>> + Send;
-}
-
-impl<S: ZartStep + Send> ZartStepExecutor for S {
-    async fn execute(self, ctx: &mut TaskContext) -> Result<Self::Output, StepError> {
-        ctx.execute_step(self).await
-    }
 }
 
 // ── StepContext (read-only execution metadata) ────────────────────────────────
@@ -727,8 +686,8 @@ impl TaskContext {
     ///     zip_code: &data.zip_code,
     /// }).await?;
     ///
-    /// // Or via #[zart_step] macro (which calls this internally)
-    /// let (city, state) = lookup_zip(&client, &data.zip_code).execute(ctx).await?;
+    /// // Or via #[zart_step] macro (step functions return the struct)
+    /// let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
     /// ```
     #[instrument(name = "step.execute_typed", skip(self, step), fields(step_name = tracing::field::Empty))]
     pub async fn execute_step<S: ZartStep + Send>(&mut self, step: S) -> Result<S::Output, StepError> {

@@ -8,7 +8,7 @@
 //! - Manual `struct` definitions for each step
 //! - Manual `impl ZartStep` with `step_name()`, `retry_config()`, and `run()`
 //! - Manual `impl DurableExecution` with `run()` method
-//! - Clean orchestration using `.execute(ctx)` on step structs
+//! - Clean orchestration using `ctx.execute_step(MyStep { ... })`
 //!
 //! **Compare with other examples:**
 //! | Example | Macros Used | Step Style | Handler Style |
@@ -228,32 +228,23 @@ impl DurableExecution for BreweryFinderRaw {
         let client = reqwest::Client::new();
 
         // Step 1: Look up ZIP code → (city, state)
-        let (city, state) =
-            LookupZipStep {
-                client: &client,
-                zip_code: &data.zip_code,
-            }
-            .execute(ctx)
-            .await?;
+        let (city, state) = ctx.execute_step(LookupZipStep {
+            client: &client,
+            zip_code: &data.zip_code,
+        }).await?;
 
         // Step 2: Find breweries in the city
-        let raw_breweries: Vec<BreweryRaw> =
-            FindBreweriesStep {
-                client: &client,
-                city: &city,
-            }
-            .execute(ctx)
-            .await?;
+        let raw_breweries: Vec<BreweryRaw> = ctx.execute_step(FindBreweriesStep {
+            client: &client,
+            city: &city,
+        }).await?;
 
         // Step 3: Transform into structured output
-        let breweries =
-            TransformResultsStep {
-                raw: &raw_breweries,
-                city: &city,
-                state: &state,
-            }
-            .execute(ctx)
-            .await?;
+        let breweries = ctx.execute_step(TransformResultsStep {
+            raw: &raw_breweries,
+            city: &city,
+            state: &state,
+        }).await?;
 
         Ok(FinderOutput {
             zip_code: data.zip_code,
