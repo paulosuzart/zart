@@ -43,7 +43,7 @@ use tracing::instrument;
 ///     }
 /// }
 ///
-/// // Usage:
+/// // Usage (execute() provided by ZartStepExecutor, can't be overridden):
 /// let (city, state) = LookupZipStep { client: &client, zip_code: &data.zip_code }.execute(ctx).await?;
 /// ```
 #[async_trait::async_trait]
@@ -71,16 +71,33 @@ pub trait ZartStep {
     /// Execute the step logic.
     ///
     /// The `ctx` provides access to retry metadata like `current_attempt()`.
-    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
-
-    /// Execute this step via the given `TaskContext`.
     ///
-    /// This is a provided method that handles the step scheduling and result caching.
-    /// It automatically applies retry and timeout configuration.
-    async fn execute(self, ctx: &mut TaskContext) -> Result<Self::Output, StepError>
-    where
-        Self: Sized,
-    {
+    /// **Note**: Do NOT call this directly. Use `.execute(ctx)` from [`ZartStepExecutor`] instead,
+    /// which handles retry and timeout configuration automatically.
+    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
+}
+
+/// Extension trait that provides `.execute(ctx)` for any `ZartStep`.
+///
+/// This trait is automatically implemented for all types that implement `ZartStep`.
+/// The `execute()` method contains the framework logic (retry, timeout handling) and
+/// **cannot be overridden** by implementors — ensuring consistent behavior across all steps.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let result = MyStep { /* params */ }.execute(ctx).await?;
+/// ```
+pub trait ZartStepExecutor: ZartStep + Sized {
+    /// Execute this step with retry and timeout handling.
+    ///
+    /// This method is provided by the framework and cannot be overridden.
+    /// It automatically applies `retry_config()` and `timeout()` from the step.
+    fn execute(self, ctx: &mut TaskContext) -> impl std::future::Future<Output = Result<Self::Output, StepError>> + Send;
+}
+
+impl<S: ZartStep + Send> ZartStepExecutor for S {
+    async fn execute(self, ctx: &mut TaskContext) -> Result<Self::Output, StepError> {
         let step_name = self.step_name();
         let retry_config = self.retry_config();
         let timeout_duration = self.timeout();
