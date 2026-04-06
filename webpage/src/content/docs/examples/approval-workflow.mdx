@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This example shows how to pause a durable execution and wait for a human decision before proceeding. The workflow validates a resource-access request, parks itself waiting for manager approval, then either provisions the resource or records the rejection — depending on what the manager decides.
 
-**Features demonstrated:** `TaskHandler` trait, `ctx.step()`, `ctx.wait_for_event()`, `durable.offer_event()`.
+**Features demonstrated:** `DurableExecution` trait, `ctx.step()`, `ctx.wait_for_event()`, `durable.offer_event()`.
 
 ## Data types
 
@@ -38,13 +38,13 @@ struct ApprovalOutput {
 
 ## The workflow
 
-This example uses the `TaskHandler` trait directly (without the `#[zart_durable]` macro) to show the underlying mechanics.
+This example uses the `DurableExecution` trait directly (without the `#[zart_durable]` macro) to show the underlying mechanics.
 
 ```rust
 struct ApprovalTask;
 
 #[async_trait]
-impl TaskHandler for ApprovalTask {
+impl DurableExecution for ApprovalTask {
     type Data   = ApprovalRequest;
     type Output = ApprovalOutput;
 

@@ -5,7 +5,7 @@
 //! 2. Find breweries in that city via Open Brewery DB API
 //! 3. Use an LLM to generate a friendly summary of results
 //!
-//! Features: manual TaskHandler trait with struct fields, z_step!,
+//! Features: manual DurableExecution trait with struct fields, z_step!,
 //! z_step_with_retry!, radkit LLM integration, dependency injection,
 //! AI-powered extraction and summarization, structured output.
 
@@ -21,7 +21,7 @@ use uuid::Uuid;
 use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
-use zart::registry::TaskHandler;
+use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ impl RadkitAgent {
 }
 
 #[async_trait::async_trait]
-impl TaskHandler for RadkitAgent {
+impl DurableExecution for RadkitAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 

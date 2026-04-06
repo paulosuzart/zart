@@ -67,7 +67,7 @@ struct BreweryRaw {
     state: Option<String>,
 }
 
-// ── Durable handler (macro-generated TaskHandler) ─────────────────────────────
+// ── Durable handler (macro-generated DurableExecution) ─────────────────────────────
 
 #[zart_durable("brewery-finder", timeout = "5m")]
 async fn brewery_finder(

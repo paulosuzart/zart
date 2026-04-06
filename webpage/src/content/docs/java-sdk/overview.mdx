@@ -18,12 +18,12 @@ The Java SDK will use annotations and a fluent builder pattern consistent with m
 ### Handler Interface
 
 ```java
-import io.zart.TaskHandler;
+import io.zart.DurableExecution;
 import io.zart.TaskContext;
 import io.zart.annotations.DurableTask;
 
 @DurableTask(name = "onboarding", timeout = "30m", retries = 3)
-public class OnboardingTask implements TaskHandler<OnboardingData, Void> {
+public class OnboardingTask implements DurableExecution<OnboardingData, Void> {
 
     private final EmailService emailService;
     private final BillingService billingService;
@@ -111,7 +111,7 @@ scheduler.schedule("checkout") {
     CheckoutData(orderId = "ord-456", total = 9900)
 }
 
-class CheckoutTask : SuspendingTaskHandler<CheckoutData, Receipt> {
+class CheckoutTask : SuspendingDurableExecution<CheckoutData, Receipt> {
     override suspend fun run(ctx: TaskContext, data: CheckoutData): Receipt {
         val charge = ctx.step("charge") {
             stripe.charge(data.card, data.total)

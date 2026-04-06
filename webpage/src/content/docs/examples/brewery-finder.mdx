@@ -37,7 +37,7 @@ struct FinderOutput {
 
 ## The workflow
 
-The `#[zart_durable]` attribute generates a `TaskHandler` impl from a plain async function — no boilerplate struct or `impl` block needed.
+The `#[zart_durable]` attribute generates a `DurableExecution` impl from a plain async function — no boilerplate struct or `impl` block needed.
 
 ```rust
 #[zart_durable("brewery-finder", timeout = "5m")]
@@ -177,7 +177,7 @@ Step results are stored in PostgreSQL after each successful step. Kill the proce
 
 ## Key concepts
 
-**`#[zart_durable]` macro** — generates a unit struct (`BreweryFinder`) that implements `TaskHandler`. The function body becomes the `run()` method. You get the full trait machinery without writing it by hand.
+**`#[zart_durable]` macro** — generates a unit struct (`BreweryFinder`) that implements `DurableExecution`. The function body becomes the `run()` method. You get the full trait machinery without writing it by hand.
 
 **`z_step_with_retry!`** — expands to `ctx.step_with_retry(name, config, closure)`. The retry config here uses exponential backoff: first retry after 1 s, second after 2 s, third after 4 s.
 

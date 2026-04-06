@@ -1,8 +1,10 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import mermaid from "astro-mermaid";
 
 export default defineConfig({
   integrations: [
+    mermaid(),
     starlight({
       title: "Zart",
       description:
@@ -35,7 +37,7 @@ export default defineConfig({
           label: "Rust API",
           items: [
             { label: "Overview", link: "/rust-api/overview" },
-            { label: "TaskHandler Trait", link: "/rust-api/task-handler" },
+            { label: "DurableExecution Trait", link: "/rust-api/task-handler" },
             { label: "Macros", link: "/rust-api/macros" },
             { label: "Durable Loops", link: "/rust-api/loops" },
             {

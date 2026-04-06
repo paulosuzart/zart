@@ -94,7 +94,7 @@ mod example_tests {
         struct BreweryFinderTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for BreweryFinderTask {
+        impl zart::registry::DurableExecution for BreweryFinderTask {
             type Data = FinderInput;
             type Output = FinderOutput;
 
@@ -272,7 +272,7 @@ mod example_tests {
         struct ApprovalTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for ApprovalTask {
+        impl zart::registry::DurableExecution for ApprovalTask {
             type Data = ApprovalRequest;
             type Output = ApprovalOutput;
 
@@ -401,7 +401,7 @@ mod example_tests {
         struct ParallelTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for ParallelTask {
+        impl zart::registry::DurableExecution for ParallelTask {
             type Data = ParallelInput;
             type Output = ParallelOutput;
 
@@ -551,7 +551,7 @@ mod example_tests {
         struct RadkitAgentTask;
 
         #[async_trait::async_trait]
-        impl zart::registry::TaskHandler for RadkitAgentTask {
+        impl zart::registry::DurableExecution for RadkitAgentTask {
             type Data = AgentInput;
             type Output = AgentOutput;
 

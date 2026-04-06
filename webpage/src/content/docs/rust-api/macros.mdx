@@ -5,7 +5,7 @@ description: Ergonomic proc-macros for writing durable workflows as plain async 
 
 import { Aside } from '@astrojs/starlight/components';
 
-The `zart-macros` crate provides a set of proc-macros that transform ordinary Rust async functions into full `TaskHandler` implementations — no trait boilerplate required.
+The `zart-macros` crate provides a set of proc-macros that transform ordinary Rust async functions into full `DurableExecution` implementations — no trait boilerplate required.
 
 ```toml
 [dependencies]
@@ -15,7 +15,7 @@ zart-macros = "0.1"
 
 ## `#[zart_durable]`
 
-Annotate an async function to make it a durable workflow. The macro generates the `TaskHandler` impl, registers the output type, and wires up the `TaskContext`.
+Annotate an async function to make it a durable workflow. The macro generates the `DurableExecution` impl, registers the output type, and wires up the `TaskContext`.
 
 ```rust
 use zart_macros::zart_durable;
@@ -148,14 +148,14 @@ async fn onboarding(data: OnboardingData) -> Result<OnboardingResult> {
 **Manually implementing the trait:**
 
 ```rust
-use zart::{TaskHandler, TaskContext, TaskError, RetryConfig, Scheduler};
+use zart::{DurableExecution, TaskContext, TaskError, RetryConfig, Scheduler};
 use async_trait::async_trait;
 use std::time::Duration;
 
 pub struct OnboardingTask;
 
 #[async_trait]
-impl TaskHandler for OnboardingTask {
+impl DurableExecution for OnboardingTask {
     type Data   = OnboardingData;
     type Output = OnboardingResult;
 

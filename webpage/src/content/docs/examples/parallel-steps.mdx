@@ -7,7 +7,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 This example runs health checks on three services concurrently. Each check is an independent step scheduled at the same time; `wait_all` collects their results once all complete. A final sequential step aggregates the data into a summary.
 
-**Features demonstrated:** `ctx.schedule_step()`, `ctx.wait_all()`, structured output, `TaskHandler` trait.
+**Features demonstrated:** `ctx.schedule_step()`, `ctx.wait_all()`, structured output, `DurableExecution` trait.
 
 ## Data types
 
@@ -39,7 +39,7 @@ struct HealthCheckOutput {
 struct HealthCheckTask;
 
 #[async_trait]
-impl TaskHandler for HealthCheckTask {
+impl DurableExecution for HealthCheckTask {
     type Data   = HealthCheckInput;
     type Output = HealthCheckOutput;
 

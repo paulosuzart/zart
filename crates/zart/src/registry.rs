@@ -5,9 +5,9 @@ use crate::error::TaskError;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
-/// A user-defined task handler.
+/// A user-defined durable execution handler.
 ///
-/// Implement this trait to define durable work. The framework calls [`run`](TaskHandler::run)
+/// Implement this trait to define durable work. The framework calls [`run`](DurableExecution::run)
 /// whenever a task is picked up from the scheduler. Steps inside `run` drive the
 /// durable execution through the control-flow error model.
 ///
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// struct GreetTask;
 ///
 /// #[async_trait]
-/// impl TaskHandler for GreetTask {
+/// impl DurableExecution for GreetTask {
 ///     type Data = String;
 ///     type Output = String;
 ///
@@ -34,7 +34,7 @@ use std::collections::HashMap;
 /// }
 /// ```
 #[async_trait]
-pub trait TaskHandler: Send + Sync + 'static {
+pub trait DurableExecution: Send + Sync + 'static {
     /// The deserialized input type this task expects.
     type Data: serde::de::DeserializeOwned + Send + Sync;
     /// The serialized output type this task produces.
@@ -73,11 +73,11 @@ pub trait RegisteredTask: Send + Sync {
     fn timeout(&self) -> Option<std::time::Duration>;
 }
 
-/// Adapts a concrete [`TaskHandler`] into a type-erased [`RegisteredTask`].
-struct TaskHandlerAdapter<T: TaskHandler>(T);
+/// Adapts a concrete [`DurableExecution`] into a type-erased [`RegisteredTask`].
+struct DurableExecutionAdapter<T: DurableExecution>(T);
 
 #[async_trait]
-impl<T: TaskHandler> RegisteredTask for TaskHandlerAdapter<T> {
+impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
     async fn execute(
         &self,
         ctx: &mut TaskContext,
@@ -117,12 +117,14 @@ impl TaskRegistry {
         }
     }
 
-    /// Register a task handler under the given `task_name`.
+    /// Register a durable execution handler under the given `task_name`.
     ///
     /// The `task_name` must match the name used when scheduling the task.
-    pub fn register<T: TaskHandler>(&mut self, task_name: &str, handler: T) {
-        self.handlers
-            .insert(task_name.to_string(), Box::new(TaskHandlerAdapter(handler)));
+    pub fn register<T: DurableExecution>(&mut self, task_name: &str, handler: T) {
+        self.handlers.insert(
+            task_name.to_string(),
+            Box::new(DurableExecutionAdapter(handler)),
+        );
     }
 
     /// Look up a registered handler by task name.
@@ -155,7 +157,7 @@ mod tests {
     struct EchoTask;
 
     #[async_trait]
-    impl TaskHandler for EchoTask {
+    impl DurableExecution for EchoTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 

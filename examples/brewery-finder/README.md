@@ -4,7 +4,7 @@ Demonstrates a **sequential multi-step durable execution** that calls external A
 
 ## Features Used
 
-- **`#[zart_durable]` macro** — generates a `TaskHandler` impl from a plain async function
+- **`#[zart_durable]` macro** — generates a `DurableExecution` impl from a plain async function
 - **`z_step!` macro** — ergonomic step definition with automatic `ctx.step()` expansion
 - **`z_step_with_retry!` macro** — step with retry configuration
 - **Sequential steps** — each step returns a value used by the next step
@@ -53,13 +53,13 @@ Execution completed!
 
 ## Macro Style
 
-This example uses the macro API that will be featured in the documentation site. Instead of manually implementing `TaskHandler`:
+This example uses the macro API that will be featured in the documentation site. Instead of manually implementing `DurableExecution`:
 
 ```rust
 // Without macros (verbose):
 struct MyTask;
 #[async_trait]
-impl TaskHandler for MyTask { ... }
+impl DurableExecution for MyTask { ... }
 ```
 
 You write a plain async function with an attribute:
@@ -77,6 +77,6 @@ async fn brewery_finder(
 ```
 
 The macro generates:
-- A unit struct `BreweryFinder` implementing `TaskHandler`
+- A unit struct `BreweryFinder` implementing `DurableExecution`
 - Proper type extraction from the function signature
 - The `run()` method wrapping your function body

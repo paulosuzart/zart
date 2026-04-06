@@ -7,9 +7,9 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This example integrates [radkit](https://github.com/agents-sh/radkit) — a Rust SDK for building reliable AI agent systems — with Zart's durable execution. The workflow takes a natural language query like *"Find me breweries in Portland, Oregon"*, uses an LLM to extract the location, fetches brewery data from an API, and generates a conversational summary.
 
-Because the task needs an LLM provider as a dependency, this example uses the manual `TaskHandler` trait instead of the `#[zart_durable]` macro. This lets us define a struct with fields and inject the provider at construction time.
+Because the task needs an LLM provider as a dependency, this example uses the manual `DurableExecution` trait instead of the `#[zart_durable]` macro. This lets us define a struct with fields and inject the provider at construction time.
 
-**Features demonstrated:** Manual `TaskHandler` trait with dependency injection, radkit `LlmFunction<T>` structured outputs, `ctx.step()`, `ctx.step_with_retry()`, mixed AI + API workflows.
+**Features demonstrated:** Manual `DurableExecution` trait with dependency injection, radkit `LlmFunction<T>` structured outputs, `ctx.step()`, `ctx.step_with_retry()`, mixed AI + API workflows.
 
 ## Data types
 
@@ -85,7 +85,7 @@ impl RadkitAgent {
 }
 
 #[async_trait::async_trait]
-impl TaskHandler for RadkitAgent {
+impl DurableExecution for RadkitAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 
@@ -331,7 +331,7 @@ Completed at: 2026-04-05T...
 
 ## Key concepts
 
-**Manual TaskHandler for dependency injection** — When a task needs external dependencies (like an LLM provider, database client, or HTTP client with specific config), implementing `TaskHandler` manually lets you define struct fields and a constructor. The `#[zart_durable]` macro generates a unit struct with no fields.
+**Manual DurableExecution for dependency injection** — When a task needs external dependencies (like an LLM provider, database client, or HTTP client with specific config), implementing `DurableExecution` manually lets you define struct fields and a constructor. The `#[zart_durable]` macro generates a unit struct with no fields.
 
 **`Arc<dyn BaseLlm>` for sharable providers** — Radkit's LLM providers don't implement `Clone`. Wrapping them in `Arc<dyn BaseLlm>` lets you clone the Arc reference into each step closure while keeping a single provider instance. The `BaseLlm` trait object also lets you swap any radkit provider type without changing the struct definition.
 

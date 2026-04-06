@@ -119,7 +119,7 @@ pub struct ExecutionState {
 
 // ── TaskContext ───────────────────────────────────────────────────────────────
 
-/// The context passed to a [`TaskHandler::run`] implementation.
+/// The context passed to a [`DurableExecution::run`] implementation.
 ///
 /// Provides the step execution API (`step`, `step_with_retry`, `step_with_timeout`, …)
 /// and access to the initial payload and execution metadata.

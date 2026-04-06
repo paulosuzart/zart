@@ -9,17 +9,24 @@ Zart's Rust API is organized into three layers that build on each other. You can
 
 ## The Three Layers
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Macro Layer        #[zart_durable], z_step!, z_wait_event! │
-│  (zart-macros)      Ergonomic async fn → TaskHandler      │
-├─────────────────────────────────────────────────────────┤
-│  Execution Layer    TaskHandler, TaskContext, TaskRegistry │
-│  (zart)            Durable steps, retries, events, sleep  │
-├─────────────────────────────────────────────────────────┤
-│  Scheduler Layer    Scheduler, DurableScheduler, Worker   │
-│  (zart + backend)  PostgreSQL polling via SKIP LOCKED      │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph macro["Macro Layer · zart-macros"]
+        A["#[zart_durable]"]
+        B["z_step!"]
+        C["z_wait_event!"]
+    end
+    subgraph exec["Execution Layer · zart"]
+        D["DurableExecution"]
+        E["TaskContext"]
+        F["TaskRegistry"]
+    end
+    subgraph sched["Scheduler Layer · zart + backend"]
+        G["Scheduler"]
+        H["DurableScheduler"]
+        I["Worker"]
+    end
+    macro --> exec --> sched
 ```
 
 ### Scheduler Layer
@@ -35,19 +42,19 @@ Responsible for persisting and claiming executions. Implements `SKIP LOCKED` pol
 
 ### Execution Layer
 
-Where your workflow logic lives. A `TaskHandler` receives a `TaskContext` and calls methods on it to execute durable steps.
+Where your workflow logic lives. A `DurableExecution` receives a `TaskContext` and calls methods on it to execute durable steps.
 
 | Type | Role |
 |---|---|
-| `TaskHandler` | Trait you implement — defines `Data`, `Output`, `run` |
+| `DurableExecution` | Trait you implement — defines `Data`, `Output`, `run` |
 | `TaskContext` | Passed into `run` — the API for steps, sleep, events |
-| `TaskRegistry` | Maps task name strings to `TaskHandler` instances |
+| `TaskRegistry` | Maps task name strings to `DurableExecution` instances |
 | `RetryConfig` | Per-step retry policy (none / fixed / exponential) |
 | `TaskError` | Error type for workflow failures |
 
 ### Macro Layer
 
-Optional. The `zart-macros` crate provides proc-macros that transform an ordinary `async fn` into a full `TaskHandler` implementation, removing the boilerplate of the trait impl.
+Optional. The `zart-macros` crate provides proc-macros that transform an ordinary `async fn` into a full `DurableExecution` implementation, removing the boilerplate of the trait impl.
 
 | Macro | Purpose |
 |---|---|
@@ -60,17 +67,17 @@ Optional. The `zart-macros` crate provides proc-macros that transform an ordinar
 ## Quick Example
 
 ```rust
-use zart::{TaskHandler, TaskContext, TaskError, TaskRegistry, Worker, WorkerConfig};
+use zart::{DurableExecution, TaskContext, TaskError, TaskRegistry, Worker, WorkerConfig};
 use zart::{DurableScheduler, RetryConfig};
 use zart_postgres::PostgresScheduler;
 use async_trait::async_trait;
 use std::time::Duration;
 
-// 1. Implement TaskHandler
+// 1. Implement DurableExecution
 struct MyWorkflow;
 
 #[async_trait]
-impl TaskHandler for MyWorkflow {
+impl DurableExecution for MyWorkflow {
     type Data   = MyInput;
     type Output = MyOutput;
 
@@ -113,7 +120,7 @@ In most applications the scheduler is shared via `Arc<dyn DurableScheduler>` so 
 
 1. **Schedule** — `DurableScheduler::schedule()` inserts a row into `zart_executions` with status `pending`.
 2. **Claim** — Worker polls with `SELECT … FOR UPDATE SKIP LOCKED`. One worker owns one execution at a time.
-3. **Run** — `TaskHandler::run()` is called. Each `ctx.step()` call checks `zart_steps` for an existing result.
+3. **Run** — `DurableExecution::run()` is called. Each `ctx.step()` call checks `zart_steps` for an existing result.
    - **Step hit** — stored result deserialized and returned without calling the closure.
    - **Step miss** — closure is called, result serialized and written to `zart_steps`, then returned.
 4. **Complete** — execution status set to `completed`, output stored.
@@ -121,7 +128,7 @@ In most applications the scheduler is shared via `Arc<dyn DurableScheduler>` so 
 
 ## Next Steps
 
-- [TaskHandler Trait](/rust-api/task-handler/) — full method reference for `TaskContext`
+- [DurableExecution Trait](/rust-api/task-handler/) — full method reference for `TaskContext`
 - [Macros](/rust-api/macros/) — ergonomic `#[zart_durable]` proc-macro layer
 - [Durable Loops](/rust-api/loops/) — iterate over collections durably
 - [Parallel Steps](/rust-api/parallel-steps/) — concurrent fan-out with `wait_all`

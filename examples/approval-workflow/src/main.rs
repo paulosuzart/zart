@@ -16,7 +16,7 @@ use std::time::Duration;
 use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
-use zart::registry::TaskHandler;
+use zart::registry::DurableExecution;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ struct ApprovalOutput {
 struct ApprovalTask;
 
 #[async_trait]
-impl TaskHandler for ApprovalTask {
+impl DurableExecution for ApprovalTask {
     type Data = ApprovalRequest;
     type Output = ApprovalOutput;
 

@@ -24,7 +24,7 @@
 //! struct MyTask;
 //!
 //! #[async_trait]
-//! impl TaskHandler for MyTask {
+//! impl DurableExecution for MyTask {
 //!     type Data = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
@@ -58,7 +58,7 @@ pub use context::{StepHandle, TaskContext};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
-pub use registry::{TaskHandler, TaskRegistry};
+pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
 pub use worker::{Worker, WorkerConfig};
 
@@ -71,7 +71,7 @@ pub mod prelude {
         context::{StepHandle, TaskContext},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
-        registry::{TaskHandler, TaskRegistry},
+        registry::{DurableExecution, TaskRegistry},
         retry::RetryConfig,
         worker::{Worker, WorkerConfig},
     };

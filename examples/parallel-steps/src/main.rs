@@ -14,7 +14,7 @@ use std::time::Duration;
 use zart::context::TaskContext;
 use zart::error::TaskError;
 use zart::prelude::*;
-use zart::registry::TaskHandler;
+use zart::registry::DurableExecution;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ struct HealthCheckOutput {
 struct HealthCheckTask;
 
 #[async_trait]
-impl TaskHandler for HealthCheckTask {
+impl DurableExecution for HealthCheckTask {
     type Data = HealthCheckInput;
     type Output = HealthCheckOutput;
 

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
-use zart::registry::TaskHandler;
+use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
 use zart_macros::{z_durable_loop, z_step, z_step_with_retry, z_wait_event, zart_durable};
 
@@ -311,7 +311,7 @@ async fn zart_durable_pascal_case_struct_name() {
     assert_eq!(result, 42);
 }
 
-/// The `timeout` attribute is reflected in `TaskHandler::timeout()`.
+/// The `timeout` attribute is reflected in `DurableExecution::timeout()`.
 #[zart_durable("timed-task", timeout = "5m")]
 async fn timed_handler(_ctx: &mut TaskContext, data: ()) -> Result<(), TaskError> {
     Ok(data)

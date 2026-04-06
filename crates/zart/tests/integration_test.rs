@@ -17,7 +17,7 @@ mod integration {
         DurableScheduler, RetryConfig, TaskRegistry, Worker, WorkerConfig,
         context::TaskContext,
         error::{StepError, TaskError},
-        registry::TaskHandler,
+        registry::DurableExecution,
     };
 
     // ── Shared helpers ────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ mod integration {
     struct SequentialTask;
 
     #[async_trait::async_trait]
-    impl TaskHandler for SequentialTask {
+    impl DurableExecution for SequentialTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
@@ -82,7 +82,7 @@ mod integration {
     struct FailingTask;
 
     #[async_trait::async_trait]
-    impl TaskHandler for FailingTask {
+    impl DurableExecution for FailingTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
@@ -109,7 +109,7 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for TransientFailTask {
+    impl DurableExecution for TransientFailTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
@@ -255,7 +255,7 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for WaitEventTask {
+    impl DurableExecution for WaitEventTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
@@ -419,7 +419,7 @@ mod integration {
     struct ParallelTask;
 
     #[async_trait::async_trait]
-    impl TaskHandler for ParallelTask {
+    impl DurableExecution for ParallelTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
@@ -503,7 +503,7 @@ mod integration {
         }
 
         #[async_trait::async_trait]
-        impl TaskHandler for CounterTask {
+        impl DurableExecution for CounterTask {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
@@ -572,7 +572,7 @@ mod integration {
         struct AlwaysFailTask;
 
         #[async_trait::async_trait]
-        impl TaskHandler for AlwaysFailTask {
+        impl DurableExecution for AlwaysFailTask {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
@@ -638,7 +638,7 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for GatedTask {
+    impl DurableExecution for GatedTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
@@ -661,7 +661,7 @@ mod integration {
     }
 
     #[async_trait::async_trait]
-    impl TaskHandler for GatedStepTask {
+    impl DurableExecution for GatedStepTask {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
