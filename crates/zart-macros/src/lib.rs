@@ -599,7 +599,7 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
 
     // Last parameter must be ctx: StepContext
     let ctx_param = inputs.last().unwrap();
-    let (ctx_pat, ctx_type) = match ctx_param {
+    match ctx_param {
         syn::FnArg::Typed(pt) => {
             // Check type is StepContext (allowing for path like StepContext or zart::context::StepContext)
             if !is_step_context_type(&pt.ty) {
@@ -625,7 +625,6 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
                     "last parameter must be a simple identifier",
                 ));
             }
-            (&pt.pat, &pt.ty)
         }
         syn::FnArg::Receiver(_) => {
             return Err(syn::Error::new_spanned(
@@ -740,8 +739,6 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
         lifetime_a.as_ref(),
         &struct_params,
         &field_names,
-        ctx_pat,
-        ctx_type,
         output,
         &inner_fn_name,
     )?;
@@ -854,8 +851,6 @@ fn generate_zart_step_impl(
     lifetime_a: Option<&Lifetime>,
     struct_params: &[&syn::FnArg],
     _field_names: &[Ident],
-    _ctx_pat: &Box<syn::Pat>,
-    _ctx_type: &Box<syn::Type>,
     output: &ReturnType,
     inner_fn_name: &Ident,
 ) -> SynResult<TokenStream2> {
@@ -976,14 +971,14 @@ fn type_has_references(ty: &Type) -> bool {
     match ty {
         Type::Reference(_) => true,
         Type::Path(type_path) => {
-            if let Some(last) = type_path.path.segments.last() {
-                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                    for arg in &args.args {
-                        if let syn::GenericArgument::Type(inner_ty) = arg {
-                            if type_has_references(inner_ty) {
-                                return true;
-                            }
-                        }
+            if let Some(last) = type_path.path.segments.last()
+                && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+            {
+                for arg in &args.args {
+                    if let syn::GenericArgument::Type(inner_ty) = arg
+                        && type_has_references(inner_ty)
+                    {
+                        return true;
                     }
                 }
             }
@@ -1028,10 +1023,10 @@ fn extract_ident_from_pattern(pat: &syn::Pat) -> Option<Ident> {
 
 /// Check if a type is `StepContext` (allowing for various paths).
 fn is_step_context_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(last) = type_path.path.segments.last() {
-            return last.ident == "StepContext";
-        }
+    if let Type::Path(type_path) = ty
+        && let Some(last) = type_path.path.segments.last()
+    {
+        return last.ident == "StepContext";
     }
     false
 }
@@ -1048,13 +1043,12 @@ fn validate_step_return_type(output: &ReturnType) -> SynResult<()> {
         }
     };
 
-    if let Type::Path(type_path) = ty {
-        if let Some(last) = type_path.path.segments.last() {
-            if last.ident == "Result" {
-                // Good enough — we'll trust the user on the error type
-                return Ok(());
-            }
-        }
+    if let Type::Path(type_path) = ty
+        && let Some(last) = type_path.path.segments.last()
+        && last.ident == "Result"
+    {
+        // Good enough — we'll trust the user on the error type
+        return Ok(());
     }
 
     Err(syn::Error::new_spanned(

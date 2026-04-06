@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
     DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler, StepLookup,
-    StorageError, TaskStatus,
+    StorageError,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -34,17 +34,6 @@ impl MockScheduler {
         }
     }
 
-    fn with_step_completed(mut self, exec_id: &str, step: &str, result: serde_json::Value) -> Self {
-        self.step_responses.insert(
-            (exec_id.to_string(), step.to_string()),
-            Some(StepLookup {
-                task_id: format!("{exec_id}:step:{step}"),
-                status: TaskStatus::Completed,
-                result: Some(result),
-            }),
-        );
-        self
-    }
 }
 
 #[async_trait]

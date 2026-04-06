@@ -59,7 +59,6 @@ mod integration {
 
     /// Runs two sequential steps, each returning a value used by the next.
     /// Proves the full re-entry and caching path.
-
     struct StepOne;
 
     #[async_trait::async_trait]

@@ -11,18 +11,17 @@
 
 use chrono::Utc;
 use radkit::agent::LlmFunction;
-use radkit::models::BaseLlm;
+use radkit::macros::LLMOutput;
 use radkit::models::providers::OpenAILlm;
+use radkit::models::{BaseLlm, Thread};
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::context::StepContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
 use zart::registry::DurableExecution;
-use zart::retry::RetryConfig;
 use zart::zart_step;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
@@ -57,7 +56,7 @@ struct AgentOutput {
 
 // ── Radkit LLM types ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, LLMOutput, schemars::JsonSchema)]
 struct LocationExtraction {
     city: String,
     state: String,
@@ -97,10 +96,13 @@ Respond with only a JSON object with "city" and "state" fields."#
          Always return valid JSON with city and state fields.",
     );
 
-    let result = function.run(&prompt).await.map_err(|e| StepError::Failed {
-        step: "extract-location".to_string(),
-        reason: format!("LLM extraction failed: {e}"),
-    })?;
+    let result = function
+        .run(Thread::from_user(&prompt))
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "extract-location".to_string(),
+            reason: format!("LLM extraction failed: {e}"),
+        })?;
 
     Ok(ExtractedLocation {
         city: result.city,
@@ -191,12 +193,15 @@ Make it friendly and helpful."#,
         more_text,
     );
 
-    let result = llm.complete(&prompt).await.map_err(|e| StepError::Failed {
-        step: "generate-summary".to_string(),
-        reason: format!("LLM summary generation failed: {e}"),
-    })?;
+    let response = llm
+        .generate_content(Thread::from_user(&prompt), None)
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "generate-summary".to_string(),
+            reason: format!("LLM summary generation failed: {e}"),
+        })?;
 
-    Ok(result)
+    Ok(response.into_content().joined_texts().unwrap_or_default())
 }
 
 // ── Task handler ──────────────────────────────────────────────────────────────
@@ -283,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create LLM provider
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-    let llm = Arc::new(OpenAILlm::new(&api_key));
+    let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));
 
     let agent = RadkitAgent { llm };
 
