@@ -205,8 +205,13 @@ run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
     just example-retry-simulation {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)
+# The examples themselves serve as integration tests — run them via just run-all-examples
 test-examples:
-    cargo test -p zart-examples -- --include-ignored --test-threads=1
+    @echo "Example tests have been removed. Run examples directly with:"
+    @echo "  just example-brewery-finder"
+    @echo "  just example-approval"
+    @echo "  just example-parallel"
+    @echo "  just run-all-examples"
 
 # Check that examples compile without running them
 check-examples:
