@@ -77,7 +77,7 @@ struct BreweryRaw {
 #[zart_step("extract-location", retry = "exponential(3, 2s)")]
 async fn extract_location(
     llm: Arc<dyn BaseLlm>,
-    query: String,
+    query: &str,
     ctx: StepContext,
 ) -> Result<ExtractedLocation, StepError> {
     println!("[extract-location] Attempt {}", ctx.current_attempt() + 1);
@@ -111,13 +111,13 @@ Respond with only a JSON object with "city" and "state" fields."#
 }
 
 #[zart_step("find-breweries", retry = "exponential(3, 1s)")]
-async fn find_breweries(city: String, ctx: StepContext) -> Result<Vec<BreweryRaw>, StepError> {
+async fn find_breweries(city: &str, ctx: StepContext) -> Result<Vec<BreweryRaw>, StepError> {
     println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
 
     let client = reqwest::Client::new();
     let resp = client
         .get("https://api.openbrewerydb.org/v1/breweries")
-        .query(&[("by_city", &city)])
+        .query(&[("by_city", city)])
         .send()
         .await
         .map_err(|e| StepError::Failed {
@@ -137,8 +137,8 @@ async fn find_breweries(city: String, ctx: StepContext) -> Result<Vec<BreweryRaw
 #[zart_step("transform-results")]
 async fn transform_results(
     raw: Vec<BreweryRaw>,
-    city: String,
-    state: String,
+    city: &str,
+    state: &str,
     ctx: StepContext,
 ) -> Result<Vec<BreweryInfo>, StepError> {
     let _ = ctx.current_attempt();
@@ -147,8 +147,8 @@ async fn transform_results(
         .map(|b| BreweryInfo {
             name: b.name,
             brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
-            city: b.city.unwrap_or_else(|| city.clone()),
-            state: b.state.unwrap_or_else(|| state.clone()),
+            city: b.city.unwrap_or_else(|| city.to_string()),
+            state: b.state.unwrap_or_else(|| state.to_string()),
         })
         .collect())
 }
@@ -156,9 +156,9 @@ async fn transform_results(
 #[zart_step("generate-summary", retry = "exponential(3, 2s)")]
 async fn generate_summary(
     llm: Arc<dyn BaseLlm>,
-    query: String,
-    location: ExtractedLocation,
-    breweries: Vec<BreweryInfo>,
+    query: &str,
+    location: &ExtractedLocation,
+    breweries: &[BreweryInfo],
     ctx: StepContext,
 ) -> Result<String, StepError> {
     println!("[generate-summary] Attempt {}", ctx.current_attempt() + 1);
@@ -222,7 +222,7 @@ impl DurableExecution for RadkitAgent {
     ) -> Result<Self::Output, TaskError> {
         // Step 1: Use radkit LLM to extract location
         let location = ctx
-            .execute_step(extract_location(self.llm.clone(), data.query.clone()))
+            .execute_step(extract_location(self.llm.clone(), &data.query))
             .await?;
 
         println!(
@@ -232,7 +232,7 @@ impl DurableExecution for RadkitAgent {
 
         // Step 2: Find breweries in the extracted city
         let raw_breweries: Vec<BreweryRaw> = ctx
-            .execute_step(find_breweries(location.city.clone()))
+            .execute_step(find_breweries(&location.city))
             .await?;
 
         println!("  Found {} raw brewery results", raw_breweries.len());
@@ -240,9 +240,9 @@ impl DurableExecution for RadkitAgent {
         // Step 3: Transform raw data into structured output
         let breweries: Vec<BreweryInfo> = ctx
             .execute_step(transform_results(
-                raw_breweries.clone(),
-                location.city.clone(),
-                location.state.clone(),
+                raw_breweries,
+                &location.city,
+                &location.state,
             ))
             .await?;
 
@@ -250,9 +250,9 @@ impl DurableExecution for RadkitAgent {
         let summary = ctx
             .execute_step(generate_summary(
                 self.llm.clone(),
-                data.query.clone(),
-                location.clone(),
-                breweries.clone(),
+                &data.query,
+                &location,
+                &breweries,
             ))
             .await?;
 
