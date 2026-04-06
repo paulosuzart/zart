@@ -10,16 +10,16 @@ Zart's Rust API is organized into three layers that build on each other. You can
 ## The Three Layers
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Macro Layer       #[zart_durable]  z_step!  z_wait_event!   │
-│  (zart-macros)     Ergonomic async fn → DurableExecution      │
-├──────────────────────────────────────────────────────────────┤
-│  Execution Layer   DurableExecution  TaskContext  TaskRegistry│
-│  (zart)            Durable steps, retries, events, sleep      │
-├──────────────────────────────────────────────────────────────┤
-│  Scheduler Layer   Scheduler  DurableScheduler  Worker        │
-│  (zart + backend)  PostgreSQL polling via SKIP LOCKED         │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│  Macro Layer       #[zart_durable]  z_step!  z_wait_event!     │
+│  (zart-macros)     Ergonomic async fn → DurableExecution       │
+├────────────────────────────────────────────────────────────────┤
+│  Execution Layer   DurableExecution  TaskContext  TaskRegistry │
+│  (zart)            Durable steps, retries, events, sleep       │
+├────────────────────────────────────────────────────────────────┤
+│  Scheduler Layer   Scheduler  DurableScheduler  Worker         │
+│  (zart + backend)  PostgreSQL polling via SKIP LOCKED          │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ### Scheduler Layer
