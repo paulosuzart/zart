@@ -11,6 +11,7 @@ use scheduler::{
     StorageError, TaskStatus,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -285,7 +286,9 @@ struct ProcessStep {
 #[async_trait]
 impl ZartStep for ProcessStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "process" }
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("process")
+    }
     async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
         Ok(self.input.to_uppercase())
     }
@@ -318,7 +321,9 @@ struct ComputeStep {
 #[async_trait]
 impl ZartStep for ComputeStep {
     type Output = u32;
-    fn step_name(&self) -> &'static str { "compute" }
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("compute")
+    }
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::fixed(3, Duration::from_millis(10)))
     }
@@ -371,20 +376,34 @@ async fn zart_durable_struct_data_type() {
 }
 
 /// `z_durable_loop!` combined with `ctx.execute_step()` inside a `#[zart_durable]` handler.
+/// Each iteration uses a unique step name via dynamic `Cow::Owned` — required because the
+/// database tracks steps by name (`{execution_id}:step:{step_name}`) and the `task_id`
+/// is PRIMARY KEY. Without unique names, all iterations would share the same cached result.
 #[zart_durable("loop-task")]
 async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, TaskError> {
     let mut total = 0u32;
-    for item in data {
-        struct LoopItemStep { value: u32 }
+    for (index, item) in data.into_iter().enumerate() {
+        struct LoopItemStep {
+            index: usize,
+            value: u32,
+        }
         #[async_trait]
         impl ZartStep for LoopItemStep {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "loop-item" }
-            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            // Unique per iteration: "loop-item-0", "loop-item-1", etc.
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Owned(format!("loop-item-{}", self.index))
+            }
+            async fn run(
+                &self,
+                _ctx: zart::context::StepContext,
+            ) -> Result<Self::Output, StepError> {
                 Ok(self.value * 2)
             }
         }
-        let v = ctx.execute_step(LoopItemStep { value: item }).await?;
+        let v = ctx
+            .execute_step(LoopItemStep { index, value: item })
+            .await?;
         total += v;
     }
     Ok(total)
@@ -400,4 +419,33 @@ async fn zart_durable_loop_with_execute_step_schedules_first_item() {
         matches!(result, Err(TaskError::StepFailed { .. })),
         "expected step to be scheduled, got: {result:?}"
     );
+}
+
+// ── Dynamic step name tests ───────────────────────────────────────────────────
+
+/// A step whose name encodes a loop index via the {field} template.
+#[zart_macros::zart_step("process-item-{index}")]
+async fn process_item(index: u32, ctx: zart::context::StepContext) -> Result<u32, StepError> {
+    Ok(index * 10)
+}
+
+#[test]
+fn zart_step_template_name_generates_dynamic_cow() {
+    // step name must embed the field value at runtime
+    let step = process_item(3);
+    assert_eq!(step.step_name(), "process-item-3");
+
+    let step = process_item(42);
+    assert_eq!(step.step_name(), "process-item-42");
+}
+
+#[test]
+fn with_id_overrides_static_step_name() {
+    let step = ProcessStep {
+        input: "hello".to_string(),
+    };
+    assert_eq!(step.step_name(), "process");
+
+    let overridden = step.with_id("process-0");
+    assert_eq!(overridden.step_name(), "process-0");
 }

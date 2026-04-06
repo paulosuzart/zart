@@ -333,7 +333,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output: AgentOutput = serde_json::from_value(record.result.unwrap())?;
             println!("Execution completed!");
             println!("  Query:       {}", output.query);
-            println!("  Location:    {}, {}", output.location.city, output.location.state);
+            println!(
+                "  Location:    {}, {}",
+                output.location.city, output.location.state
+            );
             println!("  Breweries:   {}", output.breweries.len());
             println!("\n  Summary:");
             println!("    {}", output.summary);

@@ -16,8 +16,8 @@
 
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
 use zart::error::{StepError, TaskError};
@@ -89,10 +89,7 @@ async fn intentional_failure_step(
     }
 
     // Retry attempts: succeed
-    let msg = format!(
-        "✓  Succeeded for '{}' on retry attempt #{}",
-        name, current
-    );
+    let msg = format!("✓  Succeeded for '{}' on retry attempt #{}", name, current);
     println!("{}", msg);
 
     Ok(RetryStepResult {
@@ -135,10 +132,12 @@ impl DurableExecution for RetrySimulationTask {
         println!("  - Each step receives its own StepContext with retry metadata");
 
         // Step 1: This step intentionally fails on attempt 0, succeeds on attempt 1
-        let result = ctx.execute_step(intentional_failure_step(
-            data.name.clone(),
-            attempt_counter.clone(),
-        )).await?;
+        let result = ctx
+            .execute_step(intentional_failure_step(
+                data.name.clone(),
+                attempt_counter.clone(),
+            ))
+            .await?;
 
         let total_attempts = attempt_counter.load(Ordering::SeqCst);
         let mut attempts_log = vec![format!(

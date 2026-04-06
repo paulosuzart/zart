@@ -136,7 +136,10 @@ async fn transform_results(
         .iter()
         .map(|b| BreweryInfo {
             name: b.name.clone(),
-            brewery_type: b.brewery_type.clone().unwrap_or_else(|| "unknown".to_string()),
+            brewery_type: b
+                .brewery_type
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             city: b.city.clone().unwrap_or_else(|| city.to_string()),
             state: b.state.clone().unwrap_or_else(|| state.to_string()),
         })
@@ -153,13 +156,17 @@ async fn brewery_finder(
     let client = reqwest::Client::new();
 
     // Step 1: Look up ZIP code → (city, state)
-    let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
+    let (city, state) = ctx
+        .execute_step(lookup_zip(&client, &data.zip_code))
+        .await?;
 
     // Step 2: Find breweries in the city
     let raw_breweries = ctx.execute_step(find_breweries(&client, &city)).await?;
 
     // Step 3: Transform into structured output
-    let breweries = ctx.execute_step(transform_results(&raw_breweries, &city, &state)).await?;
+    let breweries = ctx
+        .execute_step(transform_results(&raw_breweries, &city, &state))
+        .await?;
 
     Ok(FinderOutput {
         zip_code: data.zip_code,

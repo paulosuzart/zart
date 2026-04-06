@@ -63,7 +63,7 @@ pub use retry::RetryConfig;
 pub use worker::{Worker, WorkerConfig};
 
 // Re-export proc macros from zart-macros
-pub use zart_macros::{zart_durable, zart_step, z_wait_event, z_durable_loop};
+pub use zart_macros::{z_durable_loop, z_wait_event, zart_durable, zart_step};
 
 /// Commonly used types re-exported for ergonomic imports.
 ///

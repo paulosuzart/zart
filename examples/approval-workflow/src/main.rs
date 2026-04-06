@@ -44,7 +44,10 @@ struct ApprovalOutput {
 // ── Step definitions ──────────────────────────────────────────────────────────
 
 #[zart_step("validate-request")]
-async fn validate_request(request: &ApprovalRequest, ctx: StepContext) -> Result<String, StepError> {
+async fn validate_request(
+    request: &ApprovalRequest,
+    ctx: StepContext,
+) -> Result<String, StepError> {
     let _ = ctx.current_attempt();
     if request.requester_name.is_empty() {
         return Err(StepError::Failed {
@@ -59,7 +62,11 @@ async fn validate_request(request: &ApprovalRequest, ctx: StepContext) -> Result
 }
 
 #[zart_step("process-approved")]
-async fn process_approved(resource: &str, requester: &str, ctx: StepContext) -> Result<String, StepError> {
+async fn process_approved(
+    resource: &str,
+    requester: &str,
+    ctx: StepContext,
+) -> Result<String, StepError> {
     let _ = ctx.current_attempt();
     // In a real system, this would provision the resource
     Ok(format!("Provisioned {} for {}", resource, requester))
@@ -89,7 +96,9 @@ impl DurableExecution for ApprovalTask {
 
         // Step 3: Act on the decision
         if decision.approved {
-            let _provisioned = ctx.execute_step(process_approved(&data.resource, &data.requester_name)).await?;
+            let _provisioned = ctx
+                .execute_step(process_approved(&data.resource, &data.requester_name))
+                .await?;
         }
 
         Ok(ApprovalOutput {

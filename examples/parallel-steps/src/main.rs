@@ -43,10 +43,7 @@ struct HealthCheckOutput {
 
 /// A health check step that simulates checking a service.
 #[zart_step("check-service")]
-async fn check_service(
-    service: String,
-    ctx: StepContext,
-) -> Result<ServiceResult, StepError> {
+async fn check_service(service: String, ctx: StepContext) -> Result<ServiceResult, StepError> {
     println!("[check-{}] Attempt {}", service, ctx.current_attempt() + 1);
     // Simulate a health check with varying latency and status
     let (status, response_ms, issues) = match service.as_str() {

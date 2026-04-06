@@ -7,7 +7,8 @@ use crate::retry::RetryConfig;
 use crate::step_ops;
 use scheduler::{StepLookup, StorageBackend, TaskStatus};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -36,7 +37,31 @@ pub trait ZartStep {
     type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
 
     /// The name of this step (used for tracking in the database).
-    fn step_name(&self) -> &'static str;
+    ///
+    /// For static step names return `Cow::Borrowed("my-step")`.
+    /// For dynamic names (e.g. loop iterations) return `Cow::Owned(format!("my-step-{}", n))`,
+    /// or use the `{field}` template syntax in `#[zart_step]` which generates this automatically.
+    fn step_name(&self) -> Cow<'static, str>;
+
+    /// Override the step's tracking identity at the call site.
+    ///
+    /// Useful when the same step definition is called multiple times within a single durable
+    /// handler and each call must be uniquely identified in the database.
+    ///
+    /// ```rust,ignore
+    /// for page in 0..num_pages {
+    ///     let items = ctx.execute_step(fetch_page(page).with_id(format!("fetch-page-{page}"))).await?;
+    /// }
+    /// ```
+    fn with_id(self, id: impl Into<String>) -> StepWithId<Self>
+    where
+        Self: Sized,
+    {
+        StepWithId {
+            inner: self,
+            id: id.into(),
+        }
+    }
 
     /// Optional retry configuration for this step.
     ///
@@ -59,6 +84,43 @@ pub trait ZartStep {
     /// **Note**: Do NOT call this directly. Use `ctx.execute_step(self)` instead,
     /// which handles retry and timeout configuration automatically.
     async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
+}
+
+// ── StepWithId — call-site identity override ──────────────────────────────────
+
+/// Wraps any [`ZartStep`] and overrides its tracking identity.
+///
+/// Created by [`ZartStep::with_id`]. Delegates all behaviour to the inner step
+/// but reports a different name to the durable execution engine, enabling the
+/// same step definition to be called multiple times (e.g. in a loop) with a
+/// unique database key per call.
+pub struct StepWithId<S> {
+    inner: S,
+    id: String,
+}
+
+#[async_trait::async_trait]
+impl<S> ZartStep for StepWithId<S>
+where
+    S: ZartStep + Send + Sync,
+{
+    type Output = S::Output;
+
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Owned(self.id.clone())
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        self.inner.retry_config()
+    }
+
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.inner.timeout()
+    }
+
+    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
+        self.inner.run(ctx).await
+    }
 }
 
 // ── StepContext (read-only execution metadata) ────────────────────────────────
@@ -242,6 +304,18 @@ pub struct TaskContext {
     /// How this task should behave when executing steps.
     /// `Body`/`Step` use per-row tasks.
     pub(crate) execution_mode: ExecutionMode,
+    /// Step names whose cached result has been returned during the current body re-run.
+    ///
+    /// The database enforces `task_id PRIMARY KEY` which prevents duplicate step task rows
+    /// (each step ID is `{execution_id}:step:{step_name}`). However, that constraint only
+    /// applies at INSERT time. On body re-run, the framework returns cached Completed results
+    /// without re-inserting — so two calls with the same step name in a loop would silently
+    /// return the same cached value for both iterations.
+    ///
+    /// This set provides a fast-fail complement to the DB constraint: if a step name is
+    /// encountered twice after its cached result has already been returned in the same
+    /// body re-run, return an error immediately with a clear diagnosis.
+    seen_step_names: HashSet<String>,
 }
 
 impl TaskContext {
@@ -265,6 +339,7 @@ impl TaskContext {
             lock_token: lock_token.into(),
             data,
             execution_mode: ExecutionMode::Body { segment: 0 },
+            seen_step_names: HashSet::new(),
         }
     }
 
@@ -362,10 +437,28 @@ impl TaskContext {
                 status: TaskStatus::Completed,
                 result: Some(json),
                 ..
-            }) => serde_json::from_value(json).map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: format!("failed to deserialize cached result: {e}"),
-            }),
+            }) => {
+                // Complement to the DB `task_id PRIMARY KEY` constraint: the DB prevents
+                // duplicate step task rows at INSERT time, but on re-run the framework
+                // returns cached Completed results without inserting. Two calls with the
+                // same step name in a loop would silently return the same cached value.
+                // Fast-fail here with a clear error before wrong data is returned.
+                if !self.seen_step_names.insert(step_name.to_string()) {
+                    return Err(StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: format!(
+                            "duplicate step name '{step_name}' in the same execution — \
+                             each call must produce a unique step name. \
+                             Use a {{field}} template in #[zart_step] (e.g. \"my-step-{{index}}\") \
+                             or call `.with_id(\"...\")` at the call site."
+                        ),
+                    });
+                }
+                serde_json::from_value(json).map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: format!("failed to deserialize cached result: {e}"),
+                })
+            }
             Some(StepLookup {
                 status: TaskStatus::Completed,
                 result: None,
@@ -555,12 +648,10 @@ impl TaskContext {
                     step: step_name.to_string(),
                     reason: "step completed but result is missing".to_string(),
                 }),
-                _ => {
-                    Err(StepError::Scheduled {
-                        step: step_name.to_string(),
-                        next_execution: None,
-                    })
-                }
+                _ => Err(StepError::Scheduled {
+                    step: step_name.to_string(),
+                    next_execution: None,
+                }),
             }
         }
     }
@@ -590,13 +681,16 @@ impl TaskContext {
     /// let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
     /// ```
     #[instrument(name = "step.execute_typed", skip(self, step), fields(step_name = tracing::field::Empty))]
-    pub async fn execute_step<S: ZartStep + Send>(&mut self, step: S) -> Result<S::Output, StepError> {
+    pub async fn execute_step<S: ZartStep + Send>(
+        &mut self,
+        step: S,
+    ) -> Result<S::Output, StepError> {
         let step_name = step.step_name();
         let retry_config = step.retry_config();
         let timeout_duration = step.timeout();
 
         // Set the span field
-        tracing::Span::current().record("step_name", step_name);
+        tracing::Span::current().record("step_name", step_name.as_ref());
 
         // Build the step logic
         let step_fn = move |sctx: StepContext| {
@@ -612,19 +706,17 @@ impl TaskContext {
                 let wrapped_fn = move |sctx: StepContext| {
                     let f = step_fn(sctx);
                     async move {
-                        tokio::time::timeout(timeout_dur, f)
-                            .await
-                            .map_err(|_| StepError::Timeout {
+                        tokio::time::timeout(timeout_dur, f).await.map_err(|_| {
+                            StepError::Timeout {
                                 step: step_name_owned.clone(),
                                 duration: timeout_dur,
-                            })?
+                            }
+                        })?
                     }
                 };
-                self.step_internal(step_name, retry_cfg, wrapped_fn).await
+                self.step_internal(&step_name, retry_cfg, wrapped_fn).await
             }
-            None => {
-                self.step_internal(step_name, retry_config, step_fn).await
-            }
+            None => self.step_internal(&step_name, retry_config, step_fn).await,
         }
     }
 
@@ -638,7 +730,10 @@ impl TaskContext {
     /// - **Step absent**: registers it as `Scheduled` and stores the lambda.
     /// - **Step `Scheduled`**: stores the lambda for execution in `wait_all`.
     /// - **Step `Completed`**: discards the lambda; `wait_all` will return the cached result.
-    pub fn schedule_step<S: ZartStep + Send + 'static>(&mut self, step: S) -> StepHandle<S::Output> {
+    pub fn schedule_step<S: ZartStep + Send + 'static>(
+        &mut self,
+        step: S,
+    ) -> StepHandle<S::Output> {
         let step_name = step.step_name();
         let step_name_str = step_name.to_string();
 
@@ -646,7 +741,7 @@ impl TaskContext {
         // Actual scheduling (DB insert) happens in wait_all.
         // In step mode, only the target step handle carries the lambda.
         let is_target = matches!(&self.execution_mode,
-            ExecutionMode::Step { target_step, .. } if target_step == step_name);
+            ExecutionMode::Step { target_step, .. } if target_step.as_str() == step_name.as_ref());
 
         let pending: Option<PendingFn> =
             if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
@@ -1339,7 +1434,9 @@ mod tests {
     #[async_trait::async_trait]
     impl ZartStep for ChargeCardStep {
         type Output = u32;
-        fn step_name(&self) -> &'static str { "charge-card" }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("charge-card")
+        }
         async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
             Ok(99)
         }
@@ -1352,7 +1449,9 @@ mod tests {
     #[async_trait::async_trait]
     impl ZartStep for ChargeCardStepWithResult {
         type Output = u32;
-        fn step_name(&self) -> &'static str { "charge-card" }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("charge-card")
+        }
         async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
             Ok(self.result)
         }
@@ -1363,7 +1462,9 @@ mod tests {
     #[async_trait::async_trait]
     impl ZartStep for FailingChargeCardStep {
         type Output = u32;
-        fn step_name(&self) -> &'static str { "charge-card" }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("charge-card")
+        }
         async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
             Err(StepError::Failed {
                 step: "charge-card".to_string(),
@@ -1377,7 +1478,9 @@ mod tests {
     #[async_trait::async_trait]
     impl ZartStep for StepOne {
         type Output = i32;
-        fn step_name(&self) -> &'static str { "step-one" }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("step-one")
+        }
         async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
             Ok(21)
         }
@@ -1390,20 +1493,32 @@ mod tests {
     #[async_trait::async_trait]
     impl ZartStep for StepA {
         type Output = u32;
-        fn step_name(&self) -> &'static str { "step-a" }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(1) }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("step-a")
+        }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Ok(1)
+        }
     }
     #[async_trait::async_trait]
     impl ZartStep for StepB {
         type Output = u32;
-        fn step_name(&self) -> &'static str { "step-b" }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(2) }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("step-b")
+        }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Ok(2)
+        }
     }
     #[async_trait::async_trait]
     impl ZartStep for StepC {
         type Output = u32;
-        fn step_name(&self) -> &'static str { "step-c" }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(3) }
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("step-c")
+        }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Ok(3)
+        }
     }
 
     // ── body mode: execute_step ───────────────────────────────────────────────
@@ -1449,7 +1564,9 @@ mod tests {
             .build();
         let mut ctx = make_body_ctx(scheduler, 1);
 
-        let result: Result<u32, _> = ctx.execute_step(ChargeCardStepWithResult { result: 0 }).await;
+        let result: Result<u32, _> = ctx
+            .execute_step(ChargeCardStepWithResult { result: 0 })
+            .await;
 
         assert_eq!(result.unwrap(), 42, "cached result must be returned");
 
@@ -1612,15 +1729,23 @@ mod tests {
         #[async_trait::async_trait]
         impl ZartStep for CachedStepA {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "step-a" }
-            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(99) }
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("step-a")
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(99)
+            }
         }
         struct CachedStepB;
         #[async_trait::async_trait]
         impl ZartStep for CachedStepB {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "step-b" }
-            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(99) }
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("step-b")
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(99)
+            }
         }
 
         let h1 = ctx.schedule_step(CachedStepA);
@@ -1671,20 +1796,32 @@ mod tests {
         #[async_trait::async_trait]
         impl ZartStep for WaitAllStepA {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "step-a" }
-            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(0) }
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("step-a")
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(0)
+            }
         }
         #[async_trait::async_trait]
         impl ZartStep for WaitAllStepB {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "step-b" }
-            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(2) }
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("step-b")
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(2)
+            }
         }
         #[async_trait::async_trait]
         impl ZartStep for WaitAllStepC {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "step-c" }
-            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(0) }
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("step-c")
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(0)
+            }
         }
 
         let h1 = ctx.schedule_step(WaitAllStepA);
@@ -1807,11 +1944,15 @@ mod tests {
         #[async_trait::async_trait]
         impl ZartStep for RetryStep {
             type Output = u32;
-            fn step_name(&self) -> &'static str { "charge-card" }
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("charge-card")
+            }
             fn retry_config(&self) -> Option<RetryConfig> {
                 Some(RetryConfig::fixed(3, Duration::from_secs(5)))
             }
-            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(99) }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(99)
+            }
         }
 
         let result = ctx.execute_step(RetryStep).await;
@@ -1938,6 +2079,88 @@ mod tests {
             log.iter().filter(|c| c.is_complete_and_schedule()).count(),
             1,
             "complete_and_schedule called once to commit step and schedule next body"
+        );
+    }
+
+    // ── Step name uniqueness ──────────────────────────────────────────────────
+
+    /// Two sequential `execute_step` calls with unique names on a body re-run must each
+    /// return their own cached result — the correct behaviour for loops with unique step names.
+    #[tokio::test]
+    async fn body_mode_loop_with_unique_names_returns_correct_per_iteration_result() {
+        let (scheduler, _calls) = RecordingScheduler::builder()
+            .step_completed("exec-1", "loop-item-0", serde_json::json!(10u32))
+            .step_completed("exec-1", "loop-item-1", serde_json::json!(20u32))
+            .build();
+        let mut ctx = make_body_ctx(scheduler, 1);
+
+        struct LoopItemStep {
+            index: usize,
+        }
+        #[async_trait::async_trait]
+        impl ZartStep for LoopItemStep {
+            type Output = u32;
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Owned(format!("loop-item-{}", self.index))
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+                Ok(0)
+            }
+        }
+
+        let r0 = ctx.execute_step(LoopItemStep { index: 0 }).await.unwrap();
+        let r1 = ctx.execute_step(LoopItemStep { index: 1 }).await.unwrap();
+
+        assert_eq!(r0, 10u32, "iteration 0 must return its own cached value");
+        assert_eq!(r1, 20u32, "iteration 1 must return its own cached value");
+    }
+
+    /// Using `.with_id()` at the call site produces the same unique-name guarantee.
+    #[tokio::test]
+    async fn body_mode_loop_with_id_override_returns_correct_per_iteration_result() {
+        let (scheduler, _calls) = RecordingScheduler::builder()
+            .step_completed("exec-1", "process-item-0", serde_json::json!(100u32))
+            .step_completed("exec-1", "process-item-1", serde_json::json!(200u32))
+            .build();
+        let mut ctx = make_body_ctx(scheduler, 1);
+
+        let r0 = ctx
+            .execute_step(ChargeCardStep.with_id("process-item-0"))
+            .await
+            .unwrap();
+        let r1 = ctx
+            .execute_step(ChargeCardStep.with_id("process-item-1"))
+            .await
+            .unwrap();
+
+        assert_eq!(r0, 100u32);
+        assert_eq!(r1, 200u32);
+    }
+
+    /// Calling `execute_step` twice with the same step name in a body re-run must return
+    /// an error rather than silently returning stale cached data for the second call.
+    /// The DB `task_id PRIMARY KEY` prevents duplicate rows at INSERT time, but on re-run
+    /// cached Completed results are returned without inserting — this guard catches that.
+    #[tokio::test]
+    async fn body_mode_duplicate_step_name_in_loop_returns_error() {
+        let (scheduler, _calls) = RecordingScheduler::builder()
+            .step_completed("exec-1", "charge-card", serde_json::json!(99u32))
+            .build();
+        let mut ctx = make_body_ctx(scheduler, 1);
+
+        // First call: returns the cached value correctly.
+        let first = ctx.execute_step(ChargeCardStep).await;
+        assert!(first.is_ok(), "first call must succeed: {first:?}");
+
+        // Second call with the same name: must error rather than return stale data.
+        let second = ctx.execute_step(ChargeCardStep).await;
+        assert!(
+            matches!(
+                second,
+                Err(StepError::Failed { ref step, ref reason })
+                    if step == "charge-card" && reason.contains("duplicate step name")
+            ),
+            "second call with duplicate step name must fail with a clear error, got: {second:?}"
         );
     }
 }

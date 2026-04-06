@@ -40,11 +40,10 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    Expr, GenericArgument, Ident, ItemFn, LitStr, PathArguments, Result as SynResult, ReturnType,
-    Token, Type,
+    Expr, GenericArgument, Ident, ItemFn, Lifetime, LifetimeParam, LitStr, PathArguments,
+    Result as SynResult, ReturnType, Token, Type,
     parse::{Parse, ParseStream},
     parse_macro_input,
-    Lifetime, LifetimeParam,
 };
 
 // ── Duration string parsing ───────────────────────────────────────────────────
@@ -479,9 +478,9 @@ fn parse_retry_attr(s: &str, span: Span) -> SynResult<RetryAttr> {
                 format!("fixed retry must be 'fixed(n, duration)' — got '{s}'"),
             ));
         }
-        let attempts: usize = parts[0].parse().map_err(|_| {
-            syn::Error::new(span, format!("invalid attempt count '{}'", parts[0]))
-        })?;
+        let attempts: usize = parts[0]
+            .parse()
+            .map_err(|_| syn::Error::new(span, format!("invalid attempt count '{}'", parts[0])))?;
         let delay_ms = parse_duration_to_ms(parts[1], span)?;
         Ok(RetryAttr::Fixed { attempts, delay_ms })
     } else if let Some(inner) = s
@@ -495,9 +494,9 @@ fn parse_retry_attr(s: &str, span: Span) -> SynResult<RetryAttr> {
                 format!("exponential retry must be 'exponential(n, duration)' — got '{s}'"),
             ));
         }
-        let attempts: usize = parts[0].parse().map_err(|_| {
-            syn::Error::new(span, format!("invalid attempt count '{}'", parts[0]))
-        })?;
+        let attempts: usize = parts[0]
+            .parse()
+            .map_err(|_| syn::Error::new(span, format!("invalid attempt count '{}'", parts[0])))?;
         let delay_ms = parse_duration_to_ms(parts[1], span)?;
         Ok(RetryAttr::Exponential { attempts, delay_ms })
     } else {
@@ -614,7 +613,10 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
                 if pat_ident.ident != "ctx" {
                     return Err(syn::Error::new_spanned(
                         &pt.pat,
-                        format!("last parameter must be named `ctx` (got `{}`)", pat_ident.ident),
+                        format!(
+                            "last parameter must be named `ctx` (got `{}`)",
+                            pat_ident.ident
+                        ),
                     ));
                 }
             } else {
@@ -651,78 +653,85 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
     });
 
     // Generate lifetime and struct components
-    let (lifetime_a, lifetime_param, struct_fields, field_names, struct_param_list) = if has_references {
-        let lifetime_a = Lifetime::new("'a", Span::call_site());
-        let lifetime_param = LifetimeParam::new(lifetime_a.clone());
-        
-        let struct_fields: Vec<_> = struct_params
-            .iter()
-            .filter_map(|param| match param {
-                syn::FnArg::Typed(pt) => {
-                    let pat = &pt.pat;
-                    let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
-                    Some(quote! { #pat: #ty_with_lifetime })
-                }
-                _ => None,
-            })
-            .collect();
+    let (lifetime_a, lifetime_param, struct_fields, field_names, struct_param_list) =
+        if has_references {
+            let lifetime_a = Lifetime::new("'a", Span::call_site());
+            let lifetime_param = LifetimeParam::new(lifetime_a.clone());
 
-        let field_names: Vec<_> = struct_params
-            .iter()
-            .filter_map(|param| match param {
-                syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
-                _ => None,
-            })
-            .collect();
+            let struct_fields: Vec<_> = struct_params
+                .iter()
+                .filter_map(|param| match param {
+                    syn::FnArg::Typed(pt) => {
+                        let pat = &pt.pat;
+                        let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
+                        Some(quote! { #pat: #ty_with_lifetime })
+                    }
+                    _ => None,
+                })
+                .collect();
 
-        let struct_param_list: Vec<_> = struct_params
-            .iter()
-            .filter_map(|param| match param {
-                syn::FnArg::Typed(pt) => {
-                    let pat = &pt.pat;
-                    let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
-                    Some(quote! { #pat: #ty_with_lifetime })
-                }
-                _ => None,
-            })
-            .collect();
+            let field_names: Vec<_> = struct_params
+                .iter()
+                .filter_map(|param| match param {
+                    syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
+                    _ => None,
+                })
+                .collect();
 
-        (Some(lifetime_a), Some(lifetime_param), struct_fields, field_names, struct_param_list)
-    } else {
-        let struct_fields: Vec<_> = struct_params
-            .iter()
-            .filter_map(|param| match param {
-                syn::FnArg::Typed(pt) => {
-                    let pat = &pt.pat;
-                    let ty = &pt.ty;
-                    Some(quote! { #pat: #ty })
-                }
-                _ => None,
-            })
-            .collect();
+            let struct_param_list: Vec<_> = struct_params
+                .iter()
+                .filter_map(|param| match param {
+                    syn::FnArg::Typed(pt) => {
+                        let pat = &pt.pat;
+                        let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
+                        Some(quote! { #pat: #ty_with_lifetime })
+                    }
+                    _ => None,
+                })
+                .collect();
 
-        let field_names: Vec<_> = struct_params
-            .iter()
-            .filter_map(|param| match param {
-                syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
-                _ => None,
-            })
-            .collect();
+            (
+                Some(lifetime_a),
+                Some(lifetime_param),
+                struct_fields,
+                field_names,
+                struct_param_list,
+            )
+        } else {
+            let struct_fields: Vec<_> = struct_params
+                .iter()
+                .filter_map(|param| match param {
+                    syn::FnArg::Typed(pt) => {
+                        let pat = &pt.pat;
+                        let ty = &pt.ty;
+                        Some(quote! { #pat: #ty })
+                    }
+                    _ => None,
+                })
+                .collect();
 
-        let struct_param_list: Vec<_> = struct_params
-            .iter()
-            .filter_map(|param| match param {
-                syn::FnArg::Typed(pt) => {
-                    let pat = &pt.pat;
-                    let ty = &pt.ty;
-                    Some(quote! { #pat: #ty })
-                }
-                _ => None,
-            })
-            .collect();
+            let field_names: Vec<_> = struct_params
+                .iter()
+                .filter_map(|param| match param {
+                    syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
+                    _ => None,
+                })
+                .collect();
 
-        (None, None, struct_fields, field_names, struct_param_list)
-    };
+            let struct_param_list: Vec<_> = struct_params
+                .iter()
+                .filter_map(|param| match param {
+                    syn::FnArg::Typed(pt) => {
+                        let pat = &pt.pat;
+                        let ty = &pt.ty;
+                        Some(quote! { #pat: #ty })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            (None, None, struct_fields, field_names, struct_param_list)
+        };
 
     // Generate the ZartStep trait implementation
     let zart_step_impl = generate_zart_step_impl(
@@ -753,27 +762,28 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
     };
 
     // Rewrite original function to return the builder struct (not async)
-    let rewritten_fn = if let (Some(lifetime_param), Some(lifetime_a)) = (&lifetime_param, &lifetime_a) {
-        quote! {
-            #vis fn #fn_name<#lifetime_param>(
-                #(#struct_param_list),*
-            ) -> #struct_ident<#lifetime_a> {
-                #struct_ident {
-                    #(#field_names),*
+    let rewritten_fn =
+        if let (Some(lifetime_param), Some(lifetime_a)) = (&lifetime_param, &lifetime_a) {
+            quote! {
+                #vis fn #fn_name<#lifetime_param>(
+                    #(#struct_param_list),*
+                ) -> #struct_ident<#lifetime_a> {
+                    #struct_ident {
+                        #(#field_names),*
+                    }
                 }
             }
-        }
-    } else {
-        quote! {
-            #vis fn #fn_name(
-                #(#struct_param_list),*
-            ) -> #struct_ident {
-                #struct_ident {
-                    #(#field_names),*
+        } else {
+            quote! {
+                #vis fn #fn_name(
+                    #(#struct_param_list),*
+                ) -> #struct_ident {
+                    #struct_ident {
+                        #(#field_names),*
+                    }
                 }
             }
-        }
-    };
+        };
 
     // Move original body to inner function with ctx as the parameter name
     let ctx_ident_for_inner = format_ident!("ctx");
@@ -804,6 +814,39 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
     })
 }
 
+/// Parse `{field_name}` template placeholders in a step name string.
+///
+/// Returns `None` for plain static names. Returns `Some((format_str, fields))` when
+/// at least one `{field}` placeholder is found, where `format_str` has each placeholder
+/// replaced with `{}` (suitable for `format!`) and `fields` lists the field names in order.
+///
+/// # Example
+/// `"fetch-page-{page}"` → `Some(("fetch-page-{}", vec!["page"]))`
+fn parse_step_name_template(name: &str) -> Option<(String, Vec<String>)> {
+    if !name.contains('{') {
+        return None;
+    }
+    let mut fmt = String::with_capacity(name.len());
+    let mut fields = Vec::new();
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            let mut field = String::new();
+            for fc in chars.by_ref() {
+                if fc == '}' {
+                    break;
+                }
+                field.push(fc);
+            }
+            fmt.push_str("{}");
+            fields.push(field);
+        } else {
+            fmt.push(c);
+        }
+    }
+    Some((fmt, fields))
+}
+
 /// Generate the `impl ZartStep` trait implementation for the step struct.
 fn generate_zart_step_impl(
     args: &StepAttr,
@@ -817,6 +860,27 @@ fn generate_zart_step_impl(
     inner_fn_name: &Ident,
 ) -> SynResult<TokenStream2> {
     let step_name = &args.step_name;
+
+    // Build the step_name() method — static or dynamic based on {field} templates.
+    let step_name_method = match parse_step_name_template(step_name) {
+        None => {
+            // Plain static name — zero-cost Cow::Borrowed.
+            quote! {
+                fn step_name(&self) -> ::std::borrow::Cow<'static, str> {
+                    ::std::borrow::Cow::Borrowed(#step_name)
+                }
+            }
+        }
+        Some((fmt_str, fields)) => {
+            // Template name — generate Cow::Owned(format!(...)) using struct fields.
+            let field_idents: Vec<_> = fields.iter().map(|f| format_ident!("{}", f)).collect();
+            quote! {
+                fn step_name(&self) -> ::std::borrow::Cow<'static, str> {
+                    ::std::borrow::Cow::Owned(::std::format!(#fmt_str, #(self.#field_idents),*))
+                }
+            }
+        }
+    };
 
     // Generate field access expressions for run method (clone owned types, reference refs)
     let run_field_accesses: Vec<_> = struct_params
@@ -883,9 +947,7 @@ fn generate_zart_step_impl(
         #impl_header {
             type Output = #output_type;
 
-            fn step_name(&self) -> &'static str {
-                #step_name
-            }
+            #step_name_method
 
             #retry_config_method
             #timeout_method
