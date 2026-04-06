@@ -211,3 +211,7 @@ println!("Tracking: {}", tracking.tracking_number);
 <Aside type="tip">
 Each `wait_for_event` call creates a unique checkpoint in the execution. Replaying the workflow after a restart will skip already-received events using their stored payloads.
 </Aside>
+
+## See it in action
+
+The [Approval Workflow example](/examples/approval-workflow/) shows a complete human-in-the-loop workflow: validate a request, park at `wait_for_event`, deliver a manager decision, then act on it.

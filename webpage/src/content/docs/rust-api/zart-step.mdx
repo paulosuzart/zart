@@ -17,14 +17,20 @@ pub trait ZartStep {
     /// The output type this step produces.
     type Output: Serialize + DeserializeOwned + Send + Sync;
 
-    /// Unique name for this step (used in database tracking).
-    fn step_name(&self) -> &'static str;
+    /// Unique name for this step — used as the database key.
+    ///
+    /// Return `Cow::Borrowed("my-step")` for a static name.
+    /// Return `Cow::Owned(format!("my-step-{}", self.n))` for a dynamic name.
+    fn step_name(&self) -> Cow<'static, str>;
 
     /// Optional retry configuration. Default: None (no retries).
     fn retry_config(&self) -> Option<RetryConfig> { None }
 
     /// Optional wall-clock timeout. Default: None.
     fn timeout(&self) -> Option<Duration> { None }
+
+    /// Override the step identity at the call site.
+    fn with_id(self, id: impl Into<String>) -> StepWithId<Self> where Self: Sized;
 
     /// The step's actual logic.
     async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
@@ -35,6 +41,17 @@ pub trait ZartStep {
 The `run()` method receives a `StepContext` (not `TaskContext`) — a read-only view of execution metadata like `current_attempt()`, `max_retries()`, and `is_retry_attempt()`. Use these to inspect retry state inside your step.
 </Aside>
 
+## Step Name Uniqueness
+
+Every step call within a durable execution must have a **unique name**. The name is concatenated with the execution ID to form the database task ID (`{execution_id}:step:{step_name}`), which has a `PRIMARY KEY` constraint. Reusing the same step name in a loop or calling a step twice with different parameters will silently return the cached result of the first call — producing wrong data.
+
+Two mechanisms ensure uniqueness:
+
+| Mechanism | Where the name is set | Best for |
+|---|---|---|
+| `{field}` template in `#[zart_step]` | Step definition | Loop index or key fields that are always part of the identity |
+| `.with_id("...")` at the call site | Call site in the durable body | When the naming scheme depends on orchestration context |
+
 ## Manual Implementation
 
 Define a struct that captures your step's dependencies, then implement `ZartStep`:
@@ -42,6 +59,7 @@ Define a struct that captures your step's dependencies, then implement `ZartStep
 ```rust
 use zart::prelude::*;
 use async_trait::async_trait;
+use std::borrow::Cow;
 use std::time::Duration;
 
 struct LookupZipStep<'a> {
@@ -53,7 +71,9 @@ struct LookupZipStep<'a> {
 impl ZartStep for LookupZipStep<'_> {
     type Output = (String, String);
 
-    fn step_name(&self) -> &'static str { "lookup-zip" }
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("lookup-zip")
+    }
 
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::exponential(3, Duration::from_secs(1)))
@@ -78,6 +98,29 @@ impl ZartStep for LookupZipStep<'_> {
 }
 ```
 
+### Dynamic Names in Manual Implementations
+
+When the step name must include runtime data, return `Cow::Owned`:
+
+```rust
+struct ProcessRegionStep {
+    region: String,
+}
+
+#[async_trait]
+impl ZartStep for ProcessRegionStep {
+    type Output = RegionResult;
+
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Owned(format!("process-{}", self.region))
+    }
+
+    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        process_region(&self.region).await
+    }
+}
+```
+
 ### Using the Step
 
 Execute it via `ctx.execute_step()`:
@@ -88,8 +131,6 @@ let (city, state) = ctx.execute_step(LookupZipStep {
     zip_code: &data.zip_code,
 }).await?;
 ```
-
-The framework reads `step_name()` for tracking, applies `retry_config()` if set, and calls `run()` to execute the step logic. Results are persisted to the database automatically.
 
 ## Retry Configuration
 
@@ -126,6 +167,17 @@ fn timeout(&self) -> Option<Duration> {
 ```
 
 If the step does not complete within the timeout, it returns `StepError::Timeout`. You can combine retry and timeout — each individual attempt gets the timeout deadline.
+
+## Loops and Repeated Calls
+
+Each step call in an execution must have a **unique name** — reusing the same name in a loop silently returns the first iteration's cached result for all subsequent iterations.
+
+Two mechanisms make this easy:
+
+- **`{field}` template** — embed a struct field in the step name at definition time: `#[zart_step("fetch-page-{page}")]`. The macro generates a dynamic name at runtime.
+- **`.with_id()`** — override the step identity at the call site: `ctx.execute_step(my_step().with_id(format!("my-step-{i}")))`.
+
+See [Durable Loops](/rust-api/loops/) for full patterns, examples, and guidance on which mechanism to use.
 
 ## Parallel Steps
 
@@ -180,6 +232,7 @@ A complete durable handler using manual `ZartStep` structs:
 ```rust
 use zart::prelude::*;
 use async_trait::async_trait;
+use std::borrow::Cow;
 use std::time::Duration;
 
 // ── Step 1: Validate the request ──────────────────────────────────────────────
@@ -191,7 +244,11 @@ struct ValidateRequestStep {
 #[async_trait]
 impl ZartStep for ValidateRequestStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "validate-request" }
+
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("validate-request")
+    }
+
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         if self.request.requester_name.is_empty() {
             return Err(StepError::Failed {
@@ -213,7 +270,11 @@ struct ProcessApprovedStep {
 #[async_trait]
 impl ZartStep for ProcessApprovedStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "process-approved" }
+
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("process-approved")
+    }
+
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         Ok(format!("Provisioned {} for {}", self.resource, self.requester))
     }
@@ -233,15 +294,12 @@ impl DurableExecution for ApprovalTask {
         ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        // Validate
         ctx.execute_step(ValidateRequestStep { request: data.clone() }).await?;
 
-        // Wait for manager approval (up to 2 hours)
         let decision: ApprovalDecision = ctx
             .wait_for_event("manager-approval", Some(Duration::from_secs(7200)))
             .await?;
 
-        // Process if approved
         if decision.approved {
             ctx.execute_step(ProcessApprovedStep {
                 resource: data.resource.clone(),

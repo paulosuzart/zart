@@ -71,7 +71,7 @@ struct PlaceOrderStep;
 #[async_trait]
 impl ZartStep for PlaceOrderStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "place-order" }
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("place-order") }
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::exponential(5, Duration::from_secs(1)))
     }

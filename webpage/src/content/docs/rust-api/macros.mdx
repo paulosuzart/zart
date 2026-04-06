@@ -171,7 +171,7 @@ struct SendEmailStep { email: String }
 #[async_trait]
 impl ZartStep for SendEmailStep {
     type Output = ();
-    fn step_name(&self) -> &'static str { "send-email" }
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("send-email") }
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         send_welcome_email(&self.email).await
     }
@@ -182,7 +182,7 @@ struct CreateCustomerStep { email: String }
 #[async_trait]
 impl ZartStep for CreateCustomerStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "create-stripe-customer" }
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("create-stripe-customer") }
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::exponential(3, Duration::from_secs(2)))
     }

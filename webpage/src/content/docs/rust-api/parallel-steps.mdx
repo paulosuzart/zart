@@ -19,7 +19,7 @@ struct SendEmailStep { email: String }
 #[async_trait]
 impl ZartStep for SendEmailStep {
     type Output = ();
-    fn step_name(&self) -> &'static str { "send-email" }
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("send-email") }
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         send_email(&self.email).await
     }
@@ -30,7 +30,7 @@ struct SetupBillingStep { email: String }
 #[async_trait]
 impl ZartStep for SetupBillingStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "setup-billing" }
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("setup-billing") }
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         setup_stripe_customer(&self.email).await
     }
@@ -41,7 +41,7 @@ struct ProvisionResourceStep { user_id: String }
 #[async_trait]
 impl ZartStep for ProvisionResourceStep {
     type Output = String;
-    fn step_name(&self) -> &'static str { "provision-resources" }
+    fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("provision-resources") }
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         provision_aws(&self.user_id).await
     }
@@ -143,7 +143,12 @@ struct ProcessRegionStep { region: String }
 #[async_trait]
 impl ZartStep for ProcessRegionStep {
     type Output = RegionResult;
-    fn step_name(&self) -> &'static str { &self.region }
+
+    // Dynamic name — each region gets its own database key.
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Owned(format!("process-{}", self.region))
+    }
+
     async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
         process_region(&self.region).await
     }
@@ -201,3 +206,7 @@ Each level is fully durable and can span multiple worker nodes.
 | Result storage | Yes | Yes |
 | Best for | Sequential work | Independent, parallelizable work |
 | Blocking | Awaits immediately | Awaits all at `wait_all` |
+
+## See it in action
+
+The [Parallel Steps example](/examples/parallel-steps/) runs three concurrent service health checks and aggregates the results — a complete, runnable demonstration of `schedule_step` and `wait_all`.

@@ -1053,6 +1053,7 @@
         <div class="tab-code-window">
           <pre style="padding:1.25rem 1.5rem;font-family:var(--font-mono);font-size:0.82rem;line-height:1.7;overflow-x:auto;"><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> async_trait::async_trait;
+<span class="kw">use</span> std::borrow::<span class="ty">Cow</span>;
 
 <span class="cmt">/// Define a step struct — holds your dependencies</span>
 <span class="kw">struct</span> <span class="ty">SendEmailStep</span>&#123; email: <span class="ty">String</span> &#125;
@@ -1060,7 +1061,7 @@
 <span class="attr">#[async_trait]</span>
 <span class="kw">impl</span> <span class="ty">ZartStep</span> <span class="kw">for</span> <span class="ty">SendEmailStep</span> &#123;
     <span class="kw">type</span> <span class="ty">Output</span> = ();
-    <span class="kw">fn</span> <span class="fn">step_name</span>(&amp;self) -> &amp;'static <span class="ty">str</span> &#123; <span class="str">"send-email"</span> &#125;
+    <span class="kw">fn</span> <span class="fn">step_name</span>(&amp;self) -> <span class="ty">Cow</span>&lt;'static, <span class="ty">str</span>&gt; &#123; <span class="ty">Cow</span>::<span class="ty">Borrowed</span>(<span class="str">"send-email"</span>) &#125;
     <span class="kw">fn</span> <span class="fn">retry_config</span>(&amp;self) -> <span class="ty">Option</span>&lt;<span class="ty">RetryConfig</span>&gt; &#123;
         <span class="ty">Some</span>(<span class="ty">RetryConfig</span>::<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">2</span>)))
     &#125;

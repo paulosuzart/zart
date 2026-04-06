@@ -24,6 +24,10 @@ path = "radkit-agent/src/main.rs"
 name = "example-retry-simulation"
 path = "retry-simulation/src/main.rs"
 
+[[bin]]
+name = "example-durable-loops"
+path = "durable-loops/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }
