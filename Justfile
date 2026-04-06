@@ -151,11 +151,23 @@ example-brewery-finder db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate
     RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-brewery-finder
 
+# Run the brewery-finder-raw example (NO macros — pure DurableExecution trait + ctx.step closures)
+# Usage: just example-brewery-finder-raw [DATABASE_URL]
+example-brewery-finder-raw db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-brewery-finder-raw
+
 # Run the brewery-finder-step-fn example (#[zart_step] macro, standalone step functions)
 # Usage: just example-brewery-finder-step-fn [DATABASE_URL]
 example-brewery-finder-step-fn db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate
     RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-brewery-finder-step-fn
+
+# Run the brewery-finder-trait example (raw DurableExecution trait, no #[zart_durable])
+# Usage: just example-brewery-finder-trait [DATABASE_URL]
+example-brewery-finder-trait db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=info DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-brewery-finder-trait
 
 # Run the approval-workflow example (human-in-the-loop with wait_for_event)
 # Usage: just example-approval [DATABASE_URL]
@@ -184,7 +196,9 @@ example-retry-simulation db_url='postgres://zart:zart@localhost:5432/zart':
 # Run all examples sequentially (requires PostgreSQL and internet)
 run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
     just example-brewery-finder {{db_url}}
+    just example-brewery-finder-raw {{db_url}}
     just example-brewery-finder-step-fn {{db_url}}
+    just example-brewery-finder-trait {{db_url}}
     just example-approval {{db_url}}
     just example-parallel {{db_url}}
     just example-radkit-agent {{db_url}}

@@ -9,8 +9,16 @@ name = "example-brewery-finder"
 path = "brewery-finder/src/main.rs"
 
 [[bin]]
+name = "example-brewery-finder-raw"
+path = "brewery-finder-raw/src/main.rs"
+
+[[bin]]
 name = "example-brewery-finder-step-fn"
 path = "brewery-finder-step-fn/src/main.rs"
+
+[[bin]]
+name = "example-brewery-finder-trait"
+path = "brewery-finder-trait-impl/src/main.rs"
 
 [[bin]]
 name = "example-approval-workflow"

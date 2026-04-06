@@ -13,6 +13,117 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tracing::instrument;
 
+// ── ZartStep trait (raw step definition without macros) ────────────────────────
+
+/// A durable step definition — the trait that `#[zart_step]` implements under the hood.
+///
+/// Implement this trait to define a step without using the `#[zart_step]` macro.
+/// The macro generates a struct and implements this trait automatically.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// struct LookupZipStep<'a> {
+///     client: &'a reqwest::Client,
+///     zip_code: &'a str,
+/// }
+///
+/// #[async_trait]
+/// impl ZartStep for LookupZipStep<'_> {
+///     type Output = (String, String);
+///
+///     fn step_name(&self) -> &'static str { "lookup-zip" }
+///
+///     fn retry_config(&self) -> Option<RetryConfig> {
+///         Some(RetryConfig::exponential(3, Duration::from_secs(1)))
+///     }
+///
+///     async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
+///         // ... step logic
+///     }
+/// }
+///
+/// // Usage:
+/// let (city, state) = LookupZipStep { client: &client, zip_code: &data.zip_code }.execute(ctx).await?;
+/// ```
+#[async_trait::async_trait]
+pub trait ZartStep {
+    /// The output type this step produces.
+    type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
+
+    /// The name of this step (used for tracking in the database).
+    fn step_name(&self) -> &'static str;
+
+    /// Optional retry configuration for this step.
+    ///
+    /// Returns `None` for steps without retry, or `Some(config)` to enable retries.
+    fn retry_config(&self) -> Option<RetryConfig> {
+        None
+    }
+
+    /// Optional wall-clock timeout for this step.
+    ///
+    /// Returns `None` for steps without timeout, or `Some(duration)` to enable timeout.
+    fn timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// Execute the step logic.
+    ///
+    /// The `ctx` provides access to retry metadata like `current_attempt()`.
+    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
+
+    /// Execute this step via the given `TaskContext`.
+    ///
+    /// This is a provided method that handles the step scheduling and result caching.
+    /// It automatically applies retry and timeout configuration.
+    async fn execute(self, ctx: &mut TaskContext) -> Result<Self::Output, StepError>
+    where
+        Self: Sized,
+    {
+        let step_name = self.step_name();
+        let retry_config = self.retry_config();
+        let timeout_duration = self.timeout();
+
+        // Build the core step logic
+        let step_fn = move |sctx: StepContext| {
+            let this = self;
+            async move { this.run(sctx).await }
+        };
+
+        // Apply retry/timeout/no-config as appropriate
+        match (retry_config, timeout_duration) {
+            (Some(retry_cfg), Some(timeout_dur)) => {
+                // Both retry and timeout
+                ctx.step_with_retry(step_name, retry_cfg, move |sctx| {
+                    let this = step_fn(sctx);
+                    async move {
+                        tokio::time::timeout(timeout_dur, this)
+                            .await
+                            .map_err(|_| StepError::Timeout {
+                                step: step_name.to_string(),
+                                duration: timeout_dur,
+                            })?
+                    }
+                })
+                .await
+            }
+            (Some(retry_cfg), None) => {
+                // Retry only
+                ctx.step_with_retry(step_name, retry_cfg, step_fn).await
+            }
+            (None, Some(timeout_dur)) => {
+                // Timeout only
+                ctx.step_with_timeout(step_name, timeout_dur, step_fn).await
+            }
+            (None, None) => {
+                // No retry, no timeout
+                ctx.step(step_name, step_fn).await
+            }
+        }
+    }
+}
+
 // ── StepContext (read-only execution metadata) ────────────────────────────────
 
 /// Read-only execution metadata passed to step closures.

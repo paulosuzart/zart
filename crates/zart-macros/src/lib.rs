@@ -792,8 +792,8 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
         })
         .collect();
 
-    // Generate the execute method
-    let execute_method = generate_execute_method(
+    // Generate the ZartStep trait implementation
+    let zart_step_impl = generate_zart_step_impl(
         &args,
         &struct_ident,
         &lifetime_a,
@@ -834,9 +834,7 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
     Ok(quote! {
         #struct_def
 
-        impl<#lifetime_param> #struct_ident<#lifetime_a> {
-            #execute_method
-        }
+        #zart_step_impl
 
         #rewritten_fn
 
@@ -844,13 +842,13 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
     })
 }
 
-/// Generate the `.execute()` method for the step struct.
-fn generate_execute_method(
+/// Generate the `impl ZartStep` trait implementation for the step struct.
+fn generate_zart_step_impl(
     args: &StepAttr,
-    _struct_ident: &Ident,
-    _lifetime_a: &Lifetime,
+    struct_ident: &Ident,
+    lifetime_a: &Lifetime,
     field_names: &[Ident],
-    ctx_pat: &Box<syn::Pat>,
+    _ctx_pat: &Box<syn::Pat>,
     _ctx_type: &Box<syn::Type>,
     output: &ReturnType,
     inner_fn_name: &Ident,
@@ -860,71 +858,65 @@ fn generate_execute_method(
     // Generate field access expressions (self.field_name)
     let field_accesses: Vec<_> = field_names.iter().map(|ident| quote! { self.#ident }).collect();
 
-    // Generate the closure body that calls the inner function
-    let closure_body = quote! {
+    // Generate the run method body that calls the inner function
+    let run_body = quote! {
         #inner_fn_name(#(#field_accesses),*, ctx).await
     };
 
-    // Build the step execution call based on attributes
-    let step_call = if args.retry_config.is_some() {
-        // With retry
-        let retry_config_expr = generate_retry_config_expr(&args.retry_config)?;
+    // Generate retry_config method
+    let retry_config_method = if let Some(retry_attr) = &args.retry_config {
+        let retry_expr = generate_retry_config_expr(retry_attr)?;
         quote! {
-            ctx.step_with_retry(
-                #step_name,
-                #retry_config_expr,
-                |ctx| async move {
-                    #closure_body
-                }
-            ).await
-        }
-    } else if args.timeout_secs.is_some() {
-        // With timeout only
-        let timeout_secs = args.timeout_secs.unwrap();
-        quote! {
-            ctx.step_with_timeout(
-                #step_name,
-                ::std::time::Duration::from_secs(#timeout_secs),
-                |ctx| async move {
-                    #closure_body
-                }
-            ).await
+            fn retry_config(&self) -> ::std::option::Option<::zart::retry::RetryConfig> {
+                ::std::option::Option::Some(#retry_expr)
+            }
         }
     } else {
-        // No retry, no timeout
-        quote! {
-            ctx.step(
-                #step_name,
-                |ctx| async move {
-                    #closure_body
-                }
-            ).await
-        }
+        quote! {} // Uses trait default (None)
     };
 
+    // Generate timeout method
+    let timeout_method = if let Some(timeout_secs) = args.timeout_secs {
+        quote! {
+            fn timeout(&self) -> ::std::option::Option<::std::time::Duration> {
+                ::std::option::Option::Some(::std::time::Duration::from_secs(#timeout_secs))
+            }
+        }
+    } else {
+        quote! {} // Uses trait default (None)
+    };
+
+    // Extract the Output type from Result<T, StepError>
+    let output_type = extract_ok_type(output)?;
+
     Ok(quote! {
-        pub async fn execute(
-            self,
-            #ctx_pat: &'a mut ::zart::context::TaskContext,
-        ) #output {
-            #step_call
+        #[::async_trait::async_trait]
+        impl<#lifetime_a> ::zart::context::ZartStep for #struct_ident<#lifetime_a> {
+            type Output = #output_type;
+
+            fn step_name(&self) -> &'static str {
+                #step_name
+            }
+
+            #retry_config_method
+            #timeout_method
+
+            async fn run(&self, ctx: ::zart::context::StepContext) -> ::std::result::Result<Self::Output, ::zart::error::StepError> {
+                #run_body
+            }
         }
     })
 }
 
 /// Generate retry config expression from parsed attributes.
-fn generate_retry_config_expr(retry_attr: &Option<RetryAttr>) -> SynResult<TokenStream2> {
+fn generate_retry_config_expr(retry_attr: &RetryAttr) -> SynResult<TokenStream2> {
     match retry_attr {
-        Some(RetryAttr::Fixed { attempts, delay_ms }) => Ok(quote! {
+        RetryAttr::Fixed { attempts, delay_ms } => Ok(quote! {
             ::zart::retry::RetryConfig::fixed(#attempts, ::std::time::Duration::from_millis(#delay_ms))
         }),
-        Some(RetryAttr::Exponential { attempts, delay_ms }) => Ok(quote! {
+        RetryAttr::Exponential { attempts, delay_ms } => Ok(quote! {
             ::zart::retry::RetryConfig::exponential(#attempts, ::std::time::Duration::from_millis(#delay_ms))
         }),
-        None => Err(syn::Error::new(
-            Span::call_site(),
-            "retry config required for this code path",
-        )),
     }
 }
 
