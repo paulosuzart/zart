@@ -91,6 +91,63 @@ mod example_tests {
             state: Option<String>,
         }
 
+        // Step definitions using ZartStep trait
+        struct LookupZipStep;
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for LookupZipStep {
+            type Output = (String, String);
+            fn step_name(&self) -> &'static str { "lookup-zip" }
+            fn retry_config(&self) -> Option<zart::RetryConfig> {
+                Some(zart::RetryConfig::exponential(3, Duration::from_millis(100)))
+            }
+            async fn run(&self, ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                let _ = ctx;
+                // This test uses a mock context — actual API calls won't happen
+                Ok(("Beverly Hills".to_string(), "CA".to_string()))
+            }
+        }
+
+        struct FindBreweriesStep {
+            city: String,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for FindBreweriesStep {
+            type Output = Vec<BreweryRaw>;
+            fn step_name(&self) -> &'static str { "find-breweries" }
+            fn retry_config(&self) -> Option<zart::RetryConfig> {
+                Some(zart::RetryConfig::exponential(3, Duration::from_millis(100)))
+            }
+            async fn run(&self, ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                let _ = ctx;
+                Ok(vec![])
+            }
+        }
+
+        struct TransformResultsStep {
+            raw: Vec<BreweryRaw>,
+            city: String,
+            state: String,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for TransformResultsStep {
+            type Output = Vec<BreweryInfo>;
+            fn step_name(&self) -> &'static str { "transform" }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                Ok(self.raw
+                    .into_iter()
+                    .map(|b| BreweryInfo {
+                        name: b.name,
+                        brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
+                        city: b.city.unwrap_or_else(|| self.city.clone()),
+                        state: b.state.unwrap_or_else(|| self.state.clone()),
+                    })
+                    .collect())
+            }
+        }
+
         struct BreweryFinderTask;
 
         #[async_trait::async_trait]
@@ -103,97 +160,13 @@ mod example_tests {
                 ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
-                let client = reqwest::Client::new();
-
-                // Step 1: Look up ZIP code
-                let (city, state) = ctx
-                    .step_with_retry(
-                        "lookup-zip",
-                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        |sctx| {
-                            let client = client.clone();
-                            let zip = data.zip_code.clone();
-                            async move {
-                                let _ = sctx;
-                                let resp = client
-                                    .get(format!("https://api.zippopotam.us/us/{zip}"))
-                                    .send()
-                                    .await
-                                    .map_err(|e| zart::error::StepError::Failed {
-                                        step: "lookup-zip".to_string(),
-                                        reason: e.to_string(),
-                                    })?;
-                                let zip_resp: ZipResponse = resp.json().await.map_err(|e| {
-                                    zart::error::StepError::Failed {
-                                        step: "lookup-zip".to_string(),
-                                        reason: format!("parse error: {e}"),
-                                    }
-                                })?;
-                                let place = zip_resp.places.first().ok_or_else(|| {
-                                    zart::error::StepError::Failed {
-                                        step: "lookup-zip".to_string(),
-                                        reason: format!("no place found for ZIP {zip}"),
-                                    }
-                                })?;
-                                Ok((place.place_name.clone(), place.state.clone()))
-                            }
-                        },
-                    )
-                    .await?;
-
-                // Step 2: Find breweries
-                let raw: Vec<BreweryRaw> = ctx
-                    .step_with_retry(
-                        "find-breweries",
-                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        |sctx| {
-                            let client = client.clone();
-                            let city = city.clone();
-                            async move {
-                                let _ = sctx;
-                                let resp = client
-                                    .get("https://api.openbrewerydb.org/v1/breweries")
-                                    .query(&[("by_city", &city)])
-                                    .send()
-                                    .await
-                                    .map_err(|e| zart::error::StepError::Failed {
-                                        step: "find-breweries".to_string(),
-                                        reason: e.to_string(),
-                                    })?;
-                                let breweries: Vec<BreweryRaw> =
-                                    resp.json().await.map_err(|e| {
-                                        zart::error::StepError::Failed {
-                                            step: "find-breweries".to_string(),
-                                            reason: format!("parse error: {e}"),
-                                        }
-                                    })?;
-                                Ok(breweries)
-                            }
-                        },
-                    )
-                    .await?;
-
-                // Step 3: Transform to output type
-                let breweries: Vec<BreweryInfo> = ctx
-                    .step("transform", |_sctx| {
-                        let raw = raw.clone();
-                        let city = city.clone();
-                        let state = state.clone();
-                        async move {
-                            Ok(raw
-                                .into_iter()
-                                .map(|b| BreweryInfo {
-                                    name: b.name,
-                                    brewery_type: b
-                                        .brewery_type
-                                        .unwrap_or_else(|| "unknown".to_string()),
-                                    city: b.city.unwrap_or_else(|| city.clone()),
-                                    state: b.state.unwrap_or_else(|| state.clone()),
-                                })
-                                .collect())
-                        }
-                    })
-                    .await?;
+                let (city, state) = ctx.execute_step(LookupZipStep).await?;
+                let raw: Vec<BreweryRaw> = ctx.execute_step(FindBreweriesStep { city: city.clone() }).await?;
+                let breweries: Vec<BreweryInfo> = ctx.execute_step(TransformResultsStep {
+                    raw,
+                    city: city.clone(),
+                    state: state.clone(),
+                }).await?;
 
                 Ok(FinderOutput {
                     zip_code: data.zip_code,
@@ -248,7 +221,7 @@ mod example_tests {
     mod approval_workflow {
         use super::*;
 
-        #[derive(serde::Serialize, serde::Deserialize, Debug)]
+        #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
         struct ApprovalRequest {
             requester_name: String,
             resource: String,
@@ -271,6 +244,25 @@ mod example_tests {
             comment: String,
         }
 
+        struct ValidateRequestStep {
+            request: ApprovalRequest,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for ValidateRequestStep {
+            type Output = String;
+            fn step_name(&self) -> &'static str { "validate-request" }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                if self.request.requester_name.is_empty() {
+                    return Err(zart::error::StepError::Failed {
+                        step: "validate-request".to_string(),
+                        reason: "empty name".to_string(),
+                    });
+                }
+                Ok(format!("Validated request from {}", self.request.requester_name))
+            }
+        }
+
         struct ApprovalTask;
 
         #[async_trait::async_trait]
@@ -283,22 +275,8 @@ mod example_tests {
                 ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
-                // Step 1: Validate request (fake step)
-                ctx.step("validate-request", |_sctx| {
-                    let name = data.requester_name.clone();
-                    async move {
-                        if name.is_empty() {
-                            return Err(zart::error::StepError::Failed {
-                                step: "validate-request".to_string(),
-                                reason: "empty name".to_string(),
-                            });
-                        }
-                        Ok(format!("Validated request from {name}"))
-                    }
-                })
-                .await?;
+                ctx.execute_step(ValidateRequestStep { request: data.clone() }).await?;
 
-                // Step 2: Wait for approval
                 let decision: ApprovalDecision = ctx
                     .wait_for_event("manager-approval", Some(Duration::from_secs(30)))
                     .await?;
@@ -400,6 +378,38 @@ mod example_tests {
             results: Vec<ServiceResult>,
         }
 
+        struct CheckServiceStep {
+            service: String,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for CheckServiceStep {
+            type Output = ServiceResult;
+            fn step_name(&self) -> &'static str { "check-service" }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                let (status, response_ms, issues) = match self.service.as_str() {
+                    "auth-api" => ("healthy".to_string(), 42, vec![]),
+                    "payments" => (
+                        "degraded".to_string(),
+                        156,
+                        vec!["high latency".to_string()],
+                    ),
+                    "users-db" => ("healthy".to_string(), 28, vec![]),
+                    _ => (
+                        "unknown".to_string(),
+                        0,
+                        vec!["no check configured".to_string()],
+                    ),
+                };
+                Ok(ServiceResult {
+                    name: self.service.clone(),
+                    status,
+                    response_ms,
+                    issues,
+                })
+            }
+        }
+
         struct ParallelTask;
 
         #[async_trait::async_trait]
@@ -412,38 +422,11 @@ mod example_tests {
                 ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
-                let mut handles = vec![];
-                for service in &data.services {
-                    let handle = ctx.schedule_step(&format!("check-{service}"), {
-                        let service = service.clone();
-                        move |_sctx| {
-                            let service = service.clone();
-                            async move {
-                                let (status, response_ms, issues) = match service.as_str() {
-                                    "auth-api" => ("healthy".to_string(), 42, vec![]),
-                                    "payments" => (
-                                        "degraded".to_string(),
-                                        156,
-                                        vec!["high latency".to_string()],
-                                    ),
-                                    "users-db" => ("healthy".to_string(), 28, vec![]),
-                                    _ => (
-                                        "unknown".to_string(),
-                                        0,
-                                        vec!["no check configured".to_string()],
-                                    ),
-                                };
-                                Ok(ServiceResult {
-                                    name: service,
-                                    status,
-                                    response_ms,
-                                    issues,
-                                })
-                            }
-                        }
-                    });
-                    handles.push(handle);
-                }
+                let handles: Vec<zart::context::StepHandle<ServiceResult>> = data
+                    .services
+                    .iter()
+                    .map(|service| ctx.schedule_step(CheckServiceStep { service: service.clone() }))
+                    .collect();
 
                 let results = ctx.wait_all(handles).await?;
                 let mut service_results = vec![];
@@ -552,6 +535,90 @@ mod example_tests {
 
         struct RadkitAgentTask;
 
+        struct ExtractLocationStep {
+            query: String,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for ExtractLocationStep {
+            type Output = ExtractedLocation;
+            fn step_name(&self) -> &'static str { "extract-location" }
+            fn retry_config(&self) -> Option<zart::RetryConfig> {
+                Some(zart::RetryConfig::exponential(3, Duration::from_millis(100)))
+            }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                let (city, state) = if self.query.contains("Portland") {
+                    ("Portland".to_string(), "Oregon".to_string())
+                } else if self.query.contains("Asheville") {
+                    ("Asheville".to_string(), "North Carolina".to_string())
+                } else {
+                    ("Unknown".to_string(), "Unknown".to_string())
+                };
+                Ok(ExtractedLocation { city, state })
+            }
+        }
+
+        struct FindBreweriesStep {
+            city: String,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for FindBreweriesStep {
+            type Output = Vec<BreweryRaw>;
+            fn step_name(&self) -> &'static str { "find-breweries" }
+            fn retry_config(&self) -> Option<zart::RetryConfig> {
+                Some(zart::RetryConfig::exponential(3, Duration::from_millis(100)))
+            }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                Ok(vec![])
+            }
+        }
+
+        struct TransformResultsStep {
+            raw: Vec<BreweryRaw>,
+            city: String,
+            state: String,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for TransformResultsStep {
+            type Output = Vec<BreweryInfo>;
+            fn step_name(&self) -> &'static str { "transform-results" }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                Ok(self.raw
+                    .into_iter()
+                    .map(|b| BreweryInfo {
+                        name: b.name,
+                        brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
+                        city: b.city.unwrap_or_else(|| self.city.clone()),
+                        state: b.state.unwrap_or_else(|| self.state.clone()),
+                    })
+                    .collect())
+            }
+        }
+
+        struct GenerateSummaryStep {
+            location: ExtractedLocation,
+            breweries: Vec<BreweryInfo>,
+        }
+
+        #[async_trait::async_trait]
+        impl zart::context::ZartStep for GenerateSummaryStep {
+            type Output = String;
+            fn step_name(&self) -> &'static str { "generate-summary" }
+            fn retry_config(&self) -> Option<zart::RetryConfig> {
+                Some(zart::RetryConfig::exponential(3, Duration::from_millis(100)))
+            }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, zart::error::StepError> {
+                Ok(format!(
+                    "Found {} breweries in {}, {}!",
+                    self.breweries.len(),
+                    self.location.city,
+                    self.location.state
+                ))
+            }
+        }
+
         #[async_trait::async_trait]
         impl zart::registry::DurableExecution for RadkitAgentTask {
             type Data = AgentInput;
@@ -562,106 +629,17 @@ mod example_tests {
                 ctx: &mut zart::context::TaskContext,
                 data: Self::Data,
             ) -> Result<Self::Output, zart::error::TaskError> {
-                // For testing, we skip the LLM extraction and use hardcoded values
-                // In production, this would use radkit's LlmFunction
-
-                // Step 1: Extract location (simulated for test - in real code uses LLM)
-                let location = ctx
-                    .step_with_retry(
-                        "extract-location",
-                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        |_sctx| {
-                            let query = data.query.clone();
-                            async move {
-                                // Simulate LLM extraction with simple parsing
-                                // In real implementation, this calls radkit's LLM
-                                let (city, state) = if query.contains("Portland") {
-                                    ("Portland".to_string(), "Oregon".to_string())
-                                } else if query.contains("Asheville") {
-                                    ("Asheville".to_string(), "North Carolina".to_string())
-                                } else {
-                                    ("Unknown".to_string(), "Unknown".to_string())
-                                };
-                                Ok(ExtractedLocation { city, state })
-                            }
-                        },
-                    )
-                    .await?;
-
-                // Step 2: Find breweries via external API
-                let raw: Vec<BreweryRaw> = ctx
-                    .step_with_retry(
-                        "find-breweries",
-                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        |sctx| {
-                            let city = location.city.clone();
-                            async move {
-                                let _ = sctx;
-                                let client = reqwest::Client::new();
-                                let resp = client
-                                    .get("https://api.openbrewerydb.org/v1/breweries")
-                                    .query(&[("by_city", &city)])
-                                    .send()
-                                    .await
-                                    .map_err(|e| zart::error::StepError::Failed {
-                                        step: "find-breweries".to_string(),
-                                        reason: e.to_string(),
-                                    })?;
-                                let breweries: Vec<BreweryRaw> =
-                                    resp.json().await.map_err(|e| {
-                                        zart::error::StepError::Failed {
-                                            step: "find-breweries".to_string(),
-                                            reason: format!("parse error: {e}"),
-                                        }
-                                    })?;
-                                Ok(breweries)
-                            }
-                        },
-                    )
-                    .await?;
-
-                // Step 3: Transform to output type
-                let breweries: Vec<BreweryInfo> = ctx
-                    .step("transform-results", |_sctx| {
-                        let raw = raw.clone();
-                        let city = location.city.clone();
-                        let state = location.state.clone();
-                        async move {
-                            Ok(raw
-                                .into_iter()
-                                .map(|b| BreweryInfo {
-                                    name: b.name,
-                                    brewery_type: b
-                                        .brewery_type
-                                        .unwrap_or_else(|| "unknown".to_string()),
-                                    city: b.city.unwrap_or_else(|| city.clone()),
-                                    state: b.state.unwrap_or_else(|| state.clone()),
-                                })
-                                .collect())
-                        }
-                    })
-                    .await?;
-
-                // Step 4: Generate summary (simulated for test - in real code uses LLM)
-                let summary = ctx
-                    .step_with_retry(
-                        "generate-summary",
-                        zart::RetryConfig::exponential(3, Duration::from_millis(100)),
-                        |_sctx| {
-                            let location = location.clone();
-                            let breweries = breweries.clone();
-                            async move {
-                                // Simulated summary for testing
-                                Ok(format!(
-                                    "Found {} breweries in {}, {}!",
-                                    breweries.len(),
-                                    location.city,
-                                    location.state
-                                ))
-                            }
-                        },
-                    )
-                    .await?;
+                let location = ctx.execute_step(ExtractLocationStep { query: data.query.clone() }).await?;
+                let raw: Vec<BreweryRaw> = ctx.execute_step(FindBreweriesStep { city: location.city.clone() }).await?;
+                let breweries: Vec<BreweryInfo> = ctx.execute_step(TransformResultsStep {
+                    raw,
+                    city: location.city.clone(),
+                    state: location.state.clone(),
+                }).await?;
+                let summary = ctx.execute_step(GenerateSummaryStep {
+                    location: location.clone(),
+                    breweries: breweries.clone(),
+                }).await?;
 
                 Ok(AgentOutput {
                     query: data.query,

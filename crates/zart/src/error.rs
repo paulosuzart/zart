@@ -114,7 +114,7 @@ pub enum StepError {
 /// Converts a [`StepError`] into a [`TaskError::StepFailed`].
 ///
 /// This enables the `?` operator in task handlers that return
-/// `Result<_, TaskError>` when calling `ctx.step(...)`.
+/// `Result<_, TaskError>` when calling `ctx.execute_step(...)`.
 ///
 /// [`StepError::Scheduled`] is a control-flow signal, not a real failure —
 /// the worker inspects the wrapped variant and handles it specially.

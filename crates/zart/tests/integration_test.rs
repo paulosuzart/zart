@@ -58,6 +58,33 @@ mod integration {
 
     /// Runs two sequential steps, each returning a value used by the next.
     /// Proves the full re-entry and caching path.
+
+    struct StepOne;
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepOne {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "step-one" }
+        async fn run(&self, ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[step-one] Attempt {}", ctx.current_attempt() + 1);
+            Ok(21i32)
+        }
+    }
+
+    struct StepTwo {
+        step1_result: i32,
+    }
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepTwo {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "step-two" }
+        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[step-two] running");
+            Ok(self.step1_result * 2)
+        }
+    }
+
     struct SequentialTask;
 
     #[async_trait::async_trait]
@@ -70,25 +97,28 @@ mod integration {
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            let step1: i32 = ctx
-                .step("step-one", |sctx| async move {
-                    println!("[step-one] Attempt {}", sctx.current_attempt() + 1);
-                    Ok(21i32)
-                })
-                .await?;
-
-            let step2: i32 = ctx
-                .step("step-two", |_sctx| async move {
-                    println!("[step-two] running");
-                    Ok(step1 * 2)
-                })
-                .await?;
-
+            let step1: i32 = ctx.execute_step(StepOne).await?;
+            let step2: i32 = ctx.execute_step(StepTwo { step1_result: step1 }).await?;
             Ok(serde_json::json!({ "answer": step2 }))
         }
     }
 
     /// A task whose first step always fails with a non-control-flow error.
+    struct FailStep;
+
+    #[async_trait::async_trait]
+    impl ZartStep for FailStep {
+        type Output = serde_json::Value;
+        fn step_name(&self) -> &'static str { "fail-step" }
+        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[fail-step] Failing intentionally");
+            Err(StepError::Failed {
+                step: "fail-step".to_string(),
+                reason: "intentional failure".to_string(),
+            })
+        }
+    }
+
     struct FailingTask;
 
     #[async_trait::async_trait]
@@ -101,20 +131,41 @@ mod integration {
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            ctx.step("fail-step", |_sctx| async {
-                println!("[fail-step] Failing intentionally");
-                Err::<serde_json::Value, _>(StepError::Failed {
-                    step: "fail-step".to_string(),
-                    reason: "intentional failure".to_string(),
-                })
-            })
-            .await?;
-
+            ctx.execute_step(FailStep).await?;
             Ok(serde_json::json!({}))
         }
     }
 
     /// A task whose first step fails twice then succeeds on the third attempt.
+    struct TransientStep {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ZartStep for TransientStep {
+        type Output = String;
+        fn step_name(&self) -> &'static str { "transient-step" }
+        fn retry_config(&self) -> Option<RetryConfig> {
+            Some(RetryConfig::fixed(3, Duration::from_millis(50)))
+        }
+        async fn run(&self, ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            let count = self.attempts.fetch_add(1, Ordering::SeqCst);
+            println!(
+                "[transient-step] Attempt {} (0-indexed: {})",
+                ctx.current_attempt() + 1,
+                ctx.current_attempt()
+            );
+            if count < 2 {
+                Err(StepError::Failed {
+                    step: "transient-step".to_string(),
+                    reason: format!("transient error #{}", count + 1),
+                })
+            } else {
+                Ok("success".to_string())
+            }
+        }
+    }
+
     struct TransientFailTask {
         attempts: Arc<AtomicUsize>,
     }
@@ -129,32 +180,9 @@ mod integration {
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            let attempts = self.attempts.clone();
-            let result: String = ctx
-                .step_with_retry(
-                    "transient-step",
-                    RetryConfig::fixed(3, Duration::from_millis(50)),
-                    move |sctx| {
-                        let count = attempts.fetch_add(1, Ordering::SeqCst);
-                        async move {
-                            println!(
-                                "[transient-step] Attempt {} (0-indexed: {})",
-                                sctx.current_attempt() + 1,
-                                sctx.current_attempt()
-                            );
-                            if count < 2 {
-                                Err(StepError::Failed {
-                                    step: "transient-step".to_string(),
-                                    reason: format!("transient error #{}", count + 1),
-                                })
-                            } else {
-                                Ok("success".to_string())
-                            }
-                        }
-                    },
-                )
-                .await?;
-
+            let result: String = ctx.execute_step(TransientStep {
+                attempts: self.attempts.clone(),
+            }).await?;
             Ok(serde_json::json!({ "result": result }))
         }
     }
@@ -430,14 +458,6 @@ mod integration {
 
     // ── Parallel steps ────────────────────────────────────────────────────────
 
-    /// A task that schedules three steps in parallel and waits for all of them.
-    struct ParallelTask;
-
-    #[async_trait::async_trait]
-    impl DurableExecution for ParallelTask {
-        type Data = serde_json::Value;
-        type Output = serde_json::Value;
-
     // ── Parallel steps task ───────────────────────────────────────────────────
 
     struct StepA;
@@ -625,6 +645,23 @@ mod integration {
     async fn step_exhausts_retries_and_fails_execution() {
         let scheduler = setup().await;
 
+        struct AlwaysFailStep;
+
+        #[async_trait::async_trait]
+        impl ZartStep for AlwaysFailStep {
+            type Output = String;
+            fn step_name(&self) -> &'static str { "always-fail" }
+            fn retry_config(&self) -> Option<RetryConfig> {
+                Some(RetryConfig::fixed(1, Duration::from_millis(50)))
+            }
+            async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+                Err(StepError::Failed {
+                    step: "always-fail".to_string(),
+                    reason: "permanent error".to_string(),
+                })
+            }
+        }
+
         struct AlwaysFailTask;
 
         #[async_trait::async_trait]
@@ -637,17 +674,7 @@ mod integration {
                 ctx: &mut TaskContext,
                 _data: Self::Data,
             ) -> Result<Self::Output, TaskError> {
-                ctx.step_with_retry(
-                    "always-fail",
-                    RetryConfig::fixed(1, Duration::from_millis(50)),
-                    |_sctx| async {
-                        Err::<String, _>(StepError::Failed {
-                            step: "always-fail".to_string(),
-                            reason: "permanent error".to_string(),
-                        })
-                    },
-                )
-                .await?;
+                ctx.execute_step(AlwaysFailStep).await?;
                 Ok(serde_json::json!({}))
             }
         }
@@ -711,6 +738,18 @@ mod integration {
 
     /// A task whose FIRST step triggers the StepError::Scheduled control-flow path
     /// and then signals the test before re-queuing.
+    struct GatedStep;
+
+    #[async_trait::async_trait]
+    impl ZartStep for GatedStep {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "gated-step" }
+        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[gated-step] Scheduling step");
+            Ok(1)
+        }
+    }
+
     struct GatedStepTask {
         started: Arc<tokio::sync::Notify>,
         gate: Arc<tokio::sync::Notify>,
@@ -733,11 +772,7 @@ mod integration {
 
             // This is the first call: returns StepError::Scheduled, causing
             // the worker to call update_task_state and re-queue the task.
-            ctx.step("gated-step", |_sctx| async {
-                println!("[gated-step] Scheduling step");
-                Ok::<i32, StepError>(1)
-            })
-            .await?;
+            ctx.execute_step(GatedStep).await?;
 
             Ok(serde_json::json!({}))
         }
@@ -829,7 +864,7 @@ mod integration {
         // Cancel the execution while the handler is still paused.
         durable.cancel(&execution_id).await.expect("cancel failed");
 
-        // Release the handler; it will now call ctx.step(...) for the first time,
+        // Release the handler; it will now call ctx.execute_step(...) for the first time,
         // which returns StepError::Scheduled.
         gate.notify_one();
 

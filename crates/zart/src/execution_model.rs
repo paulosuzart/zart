@@ -26,7 +26,7 @@ pub enum ExecutionMode {
     /// when it reaches the step matching `target_step`, the lambda is executed.
     /// On success the step is atomically completed and the next body segment scheduled.
     Step {
-        /// The `step_name` this task represents — matched against `ctx.step(name, ...)` calls.
+        /// The `step_name` this task represents — matched against `ctx.execute_step(...)` calls.
         target_step: String,
         /// What kind of step this is (controls completion behaviour).
         step_type: StepKind,

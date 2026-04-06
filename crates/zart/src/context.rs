@@ -303,21 +303,9 @@ impl TaskContext {
         }
     }
 
-    /// Execute a named step with no retries and no timeout.
-    ///
-    /// **Deprecated**: Use [`execute_step`](Self::execute_step) with a `ZartStep` instead.
-    #[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` instead")]
-    #[instrument(name = "step.execute", skip(self, step_fn), fields(step_name = step_name))]
-    pub async fn step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> Result<T, StepError>
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce(StepContext) -> Fut,
-        Fut: std::future::Future<Output = Result<T, StepError>>,
-    {
-        self.step_internal(step_name, None, step_fn).await
-    }
+    // ── Internal step execution helpers (used by execute_step) ────────────────
 
-    /// Internal dispatcher for `step` and `step_with_retry`, sharing the same logic.
+    /// Internal dispatcher for step execution, routing to body or step mode.
     async fn step_internal<T, F, Fut>(
         &mut self,
         step_name: &str,
@@ -344,9 +332,7 @@ impl TaskContext {
         }
     }
 
-    // ── New execution model — body mode ───────────────────────────────────────
-
-    /// `step()` in body mode: look up the step task in the DB.
+    /// Step execution in body mode: look up the step task in the DB.
     ///
     /// - Completed → return cached result (no lambda execution).
     /// - Scheduled/PickedUp → step is in-flight, return `Err(Scheduled)` so body exits.
@@ -427,9 +413,7 @@ impl TaskContext {
         }
     }
 
-    // ── New execution model — step mode ───────────────────────────────────────
-
-    /// `step()` in step mode: replay the body until the target step is reached.
+    /// Step execution in step mode: replay the body until the target step is reached.
     ///
     /// - Non-target steps → DB lookup, return cached result (must be completed).
     /// - Target step → execute lambda, complete transactionally, return `Err(StepExecuted)`.
@@ -498,9 +482,8 @@ impl TaskContext {
                 ExecutionMode::Step {
                     next_body_segment, ..
                 } => {
-                    // Check metadata for wait_all child flag (stored in execution_model module).
-                    let wac = false; // sequential step: never a wait_all child
-                    (*next_body_segment, wac)
+                    // sequential step: never a wait_all child
+                    (*next_body_segment, false)
                 }
                 _ => (1, false),
             };
@@ -573,8 +556,6 @@ impl TaskContext {
                     reason: "step completed but result is missing".to_string(),
                 }),
                 _ => {
-                    // Step not yet completed. This shouldn't happen in sequential flow
-                    // but treat as "body must wait".
                     Err(StepError::Scheduled {
                         step: step_name.to_string(),
                         next_execution: None,
@@ -582,52 +563,6 @@ impl TaskContext {
                 }
             }
         }
-    }
-
-    /// Internal: execute a named step with a retry policy.
-    ///
-    /// **Deprecated**: Use [`execute_step`](Self::execute_step) with a `ZartStep` instead.
-    #[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` instead")]
-    pub async fn step_with_retry<T, F, Fut>(
-        &mut self,
-        step_name: &str,
-        retry_config: RetryConfig,
-        step_fn: F,
-    ) -> Result<T, StepError>
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce(StepContext) -> Fut,
-        Fut: std::future::Future<Output = Result<T, StepError>>,
-    {
-        self.step_internal(step_name, Some(retry_config), step_fn)
-            .await
-    }
-
-    /// Internal: execute a named step with a wall-clock timeout.
-    ///
-    /// **Deprecated**: Use [`execute_step`](Self::execute_step) with a `ZartStep` instead.
-    #[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` instead")]
-    pub(crate) async fn step_with_timeout<T, F, Fut>(
-        &mut self,
-        step_name: &str,
-        timeout: std::time::Duration,
-        step_fn: F,
-    ) -> Result<T, StepError>
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce(StepContext) -> Fut,
-        Fut: std::future::Future<Output = Result<T, StepError>>,
-    {
-        let step_name_owned = step_name.to_string();
-        self.step(step_name, move |sctx| async move {
-            tokio::time::timeout(timeout, step_fn(sctx))
-                .await
-                .map_err(|_| StepError::Timeout {
-                    step: step_name_owned,
-                    duration: timeout,
-                })?
-        })
-        .await
     }
 
     /// Execute a [`ZartStep`] struct with automatic retry and timeout handling.
@@ -669,30 +604,26 @@ impl TaskContext {
             async move { this.run(sctx).await }
         };
 
-        // Apply retry/timeout as appropriate
-        match (retry_config, timeout_duration) {
-            (Some(retry_cfg), Some(timeout_dur)) => {
-                self.step_with_retry(step_name, retry_cfg, move |sctx| {
+        // Apply timeout wrapper if needed, then delegate to step_internal
+        match timeout_duration {
+            Some(timeout_dur) => {
+                let retry_cfg = retry_config;
+                let step_name_owned = step_name.to_string();
+                let wrapped_fn = move |sctx: StepContext| {
                     let f = step_fn(sctx);
                     async move {
                         tokio::time::timeout(timeout_dur, f)
                             .await
                             .map_err(|_| StepError::Timeout {
-                                step: step_name.to_string(),
+                                step: step_name_owned.clone(),
                                 duration: timeout_dur,
                             })?
                     }
-                })
-                .await
+                };
+                self.step_internal(step_name, retry_cfg, wrapped_fn).await
             }
-            (Some(retry_cfg), None) => {
-                self.step_with_retry(step_name, retry_cfg, step_fn).await
-            }
-            (None, Some(timeout_dur)) => {
-                self.step_with_timeout(step_name, timeout_dur, step_fn).await
-            }
-            (None, None) => {
-                self.step(step_name, step_fn).await
+            None => {
+                self.step_internal(step_name, retry_config, step_fn).await
             }
         }
     }
@@ -710,7 +641,6 @@ impl TaskContext {
     pub fn schedule_step<S: ZartStep + Send + 'static>(&mut self, step: S) -> StepHandle<S::Output> {
         let step_name = step.step_name();
         let step_name_str = step_name.to_string();
-        let retry_config = step.retry_config();
 
         // schedule_step just returns a handle with the lambda.
         // Actual scheduling (DB insert) happens in wait_all.
@@ -1167,14 +1097,13 @@ impl TaskContext {
     /// # Example
     ///
     /// ```ignore
-    /// ctx.step_with_retry("risky-op", RetryConfig::fixed(3, Duration::from_secs(1)), |ctx| async move {
-    ///     if ctx.current_attempt() == 0 {
-    ///         // Simulate transient failure on first attempt
-    ///         return Err(anyhow!("Temporary failure - will retry"));
-    ///     }
-    ///     // Succeed on retry
-    ///     Ok(SuccessResult { message: "Succeeded!" })
-    /// }).await
+    /// // Inside a ZartStep::run implementation:
+    /// if ctx.current_attempt() == 0 {
+    ///     // Simulate transient failure on first attempt
+    ///     return Err(StepError::Failed { step: "my-step".into(), reason: "Temporary failure".into() });
+    /// }
+    /// // Succeed on retry
+    /// Ok(SuccessResult { message: "Succeeded!" })
     /// ```
     pub fn current_attempt(&self) -> usize {
         match &self.execution_mode {
@@ -1185,7 +1114,7 @@ impl TaskContext {
 
     /// Returns the maximum number of retry attempts configured for this step.
     ///
-    /// Returns `None` if no retry policy is configured (i.e., using `step()` instead of `step_with_retry()`).
+    /// Returns `None` if no retry policy is configured for the current step.
     /// Returns `Some(n)` where `n` is the max retry count from the [`RetryConfig`].
     ///
     /// Note: This is the maximum number of *retries*, not total attempts.
@@ -1300,7 +1229,6 @@ mod tests {
             assert_eq!(metadata["step_type"], "wait_for_event");
             assert_eq!(metadata["step_name"], "approval");
             assert_eq!(metadata["segment"], 1);
-            // execution_time should be approximately now + 1h (in the future)
             assert!(
                 *execution_time > chrono::Utc::now(),
                 "deadline must be in the future"
@@ -1347,7 +1275,6 @@ mod tests {
 
         assert!(result.is_ok(), "should return Ok for completed event step");
         assert_eq!(result.unwrap()["ok"], true);
-        // No schedule_at should have been called.
         let log = calls.lock().unwrap();
         assert!(
             log.iter().all(|c| !c.is_schedule_at()),
@@ -1365,15 +1292,11 @@ mod tests {
         let result: Result<i32, _> = ctx.wait_for_event("signed", None).await;
 
         assert_eq!(result.unwrap(), 42);
-        // No schedule_at.
         let log = calls.lock().unwrap();
         assert!(log.iter().all(|c| !c.is_schedule_at()));
     }
 
     // ── New execution model: call-counting tests ──────────────────────────────
-    //
-    // These tests use RecordingScheduler to assert exactly which DB operations
-    // each execution-model code path triggers and how many task rows are created.
 
     fn make_body_ctx(scheduler: std::sync::Arc<dyn StorageBackend>, segment: usize) -> TaskContext {
         TaskContext::new(
@@ -1409,16 +1332,88 @@ mod tests {
         })
     }
 
-    // ── body mode: step() ─────────────────────────────────────────────────────
+    // ── Helper ZartStep structs for tests ─────────────────────────────────────
+
+    struct ChargeCardStep;
+
+    #[async_trait::async_trait]
+    impl ZartStep for ChargeCardStep {
+        type Output = u32;
+        fn step_name(&self) -> &'static str { "charge-card" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Ok(99)
+        }
+    }
+
+    struct ChargeCardStepWithResult {
+        result: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl ZartStep for ChargeCardStepWithResult {
+        type Output = u32;
+        fn step_name(&self) -> &'static str { "charge-card" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Ok(self.result)
+        }
+    }
+
+    struct FailingChargeCardStep;
+
+    #[async_trait::async_trait]
+    impl ZartStep for FailingChargeCardStep {
+        type Output = u32;
+        fn step_name(&self) -> &'static str { "charge-card" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Err(StepError::Failed {
+                step: "charge-card".to_string(),
+                reason: "card declined".to_string(),
+            })
+        }
+    }
+
+    struct StepOne;
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepOne {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "step-one" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+            Ok(21)
+        }
+    }
+
+    struct StepA;
+    struct StepB;
+    struct StepC;
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepA {
+        type Output = u32;
+        fn step_name(&self) -> &'static str { "step-a" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(1) }
+    }
+    #[async_trait::async_trait]
+    impl ZartStep for StepB {
+        type Output = u32;
+        fn step_name(&self) -> &'static str { "step-b" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(2) }
+    }
+    #[async_trait::async_trait]
+    impl ZartStep for StepC {
+        type Output = u32;
+        fn step_name(&self) -> &'static str { "step-c" }
+        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(3) }
+    }
+
+    // ── body mode: execute_step ───────────────────────────────────────────────
 
     #[tokio::test]
     async fn body_mode_first_step_inserts_exactly_one_task_row() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
 
-        let result = ctx
-            .step("charge-card", |_sctx| async { Ok::<u32, StepError>(99) })
-            .await;
+        let result = ctx.execute_step(ChargeCardStep).await;
 
         assert!(
             matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "charge-card"),
@@ -1454,16 +1449,9 @@ mod tests {
             .build();
         let mut ctx = make_body_ctx(scheduler, 1);
 
-        let mut lambda_called = false;
-        let result: Result<i32, _> = ctx
-            .step("charge-card", |_sctx| {
-                lambda_called = true;
-                async { Ok::<i32, StepError>(0) }
-            })
-            .await;
+        let result: Result<u32, _> = ctx.execute_step(ChargeCardStepWithResult { result: 0 }).await;
 
         assert_eq!(result.unwrap(), 42, "cached result must be returned");
-        assert!(!lambda_called, "lambda must not run for a completed step");
 
         let log = calls.lock().unwrap();
         assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
@@ -1480,9 +1468,7 @@ mod tests {
             .build();
         let mut ctx = make_body_ctx(scheduler, 1);
 
-        let result = ctx
-            .step("charge-card", |_sctx| async { Ok::<u32, StepError>(1) })
-            .await;
+        let result = ctx.execute_step(ChargeCardStep).await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
         let log = calls.lock().unwrap();
@@ -1500,19 +1486,12 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_step_ctx(scheduler, "charge-card", 1);
 
-        let mut lambda_called = false;
-        let result: Result<u32, _> = ctx
-            .step("charge-card", |_sctx| {
-                lambda_called = true;
-                async { Ok::<u32, StepError>(99) }
-            })
-            .await;
+        let result: Result<u32, _> = ctx.execute_step(ChargeCardStep).await;
 
         assert!(
             matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
             "target step must return StepExecuted (transactional completion)"
         );
-        assert!(lambda_called, "lambda must execute for the target step");
 
         let log = calls.lock().unwrap();
         assert_eq!(
@@ -1551,16 +1530,9 @@ mod tests {
             .build();
         let mut ctx = make_step_ctx(scheduler, "step-two", 2);
 
-        let mut lambda_called = false;
-        let result: Result<i32, _> = ctx
-            .step("step-one", |_sctx| {
-                lambda_called = true;
-                async { Ok::<i32, StepError>(0) }
-            })
-            .await;
+        let result: Result<i32, _> = ctx.execute_step(StepOne).await;
 
         assert_eq!(result.unwrap(), 21, "should return the cached result");
-        assert!(!lambda_called, "lambda must not run for a non-target step");
 
         let log = calls.lock().unwrap();
         assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
@@ -1574,13 +1546,12 @@ mod tests {
 
     #[tokio::test]
     async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children_plus_one_coordinator() {
-        // All three steps are unconfigured → get_step_status returns Ok(None).
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
 
-        let h1 = ctx.schedule_step("step-a", |_sctx| async { Ok::<u32, StepError>(1) });
-        let h2 = ctx.schedule_step("step-b", |_sctx| async { Ok::<u32, StepError>(2) });
-        let h3 = ctx.schedule_step("step-c", |_sctx| async { Ok::<u32, StepError>(3) });
+        let h1 = ctx.schedule_step(StepA);
+        let h2 = ctx.schedule_step(StepB);
+        let h3 = ctx.schedule_step(StepC);
         let result = ctx.wait_all(vec![h1, h2, h3]).await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
@@ -1637,8 +1608,23 @@ mod tests {
             .build();
         let mut ctx = make_body_ctx(scheduler, 1);
 
-        let h1 = ctx.schedule_step("step-a", |_sctx| async { Ok::<u32, StepError>(99) });
-        let h2 = ctx.schedule_step("step-b", |_sctx| async { Ok::<u32, StepError>(99) });
+        struct CachedStepA;
+        #[async_trait::async_trait]
+        impl ZartStep for CachedStepA {
+            type Output = u32;
+            fn step_name(&self) -> &'static str { "step-a" }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(99) }
+        }
+        struct CachedStepB;
+        #[async_trait::async_trait]
+        impl ZartStep for CachedStepB {
+            type Output = u32;
+            fn step_name(&self) -> &'static str { "step-b" }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(99) }
+        }
+
+        let h1 = ctx.schedule_step(CachedStepA);
+        let h2 = ctx.schedule_step(CachedStepB);
         let results = ctx.wait_all(vec![h1, h2]).await.unwrap();
 
         assert_eq!(results.len(), 2);
@@ -1679,9 +1665,31 @@ mod tests {
             retry_config: None,
         });
 
-        let h1 = ctx.schedule_step("step-a", |_sctx| async { Ok::<u32, StepError>(0) });
-        let h2 = ctx.schedule_step("step-b", |_sctx| async { Ok::<u32, StepError>(2) });
-        let h3 = ctx.schedule_step("step-c", |_sctx| async { Ok::<u32, StepError>(0) });
+        struct WaitAllStepA;
+        struct WaitAllStepB;
+        struct WaitAllStepC;
+        #[async_trait::async_trait]
+        impl ZartStep for WaitAllStepA {
+            type Output = u32;
+            fn step_name(&self) -> &'static str { "step-a" }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(0) }
+        }
+        #[async_trait::async_trait]
+        impl ZartStep for WaitAllStepB {
+            type Output = u32;
+            fn step_name(&self) -> &'static str { "step-b" }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(2) }
+        }
+        #[async_trait::async_trait]
+        impl ZartStep for WaitAllStepC {
+            type Output = u32;
+            fn step_name(&self) -> &'static str { "step-c" }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(0) }
+        }
+
+        let h1 = ctx.schedule_step(WaitAllStepA);
+        let h2 = ctx.schedule_step(WaitAllStepB);
+        let h3 = ctx.schedule_step(WaitAllStepC);
         let result = ctx.wait_all(vec![h1, h2, h3]).await;
 
         assert!(
@@ -1760,7 +1768,7 @@ mod tests {
         );
     }
 
-    // ── step_with_retry: new execution model ──────────────────────────────────
+    // ── execute_step with retry: new execution model ──────────────────────────
 
     /// Helper: make a step-mode context with a retry config embedded.
     fn make_step_ctx_with_retry(
@@ -1788,21 +1796,29 @@ mod tests {
         })
     }
 
-    /// In body mode, `step_with_retry` must embed the retry_config in the
+    /// In body mode, `execute_step` must embed the retry_config in the
     /// scheduled step task's metadata so the step task can retry on failure.
     #[tokio::test]
-    async fn body_mode_step_with_retry_embeds_retry_config_in_metadata() {
+    async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
 
-        let config = RetryConfig::fixed(3, Duration::from_secs(5));
-        let result = ctx
-            .step_with_retry("charge-card", config, |_sctx| async { Ok::<u32, StepError>(99) })
-            .await;
+        struct RetryStep;
+        #[async_trait::async_trait]
+        impl ZartStep for RetryStep {
+            type Output = u32;
+            fn step_name(&self) -> &'static str { "charge-card" }
+            fn retry_config(&self) -> Option<RetryConfig> {
+                Some(RetryConfig::fixed(3, Duration::from_secs(5)))
+            }
+            async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> { Ok(99) }
+        }
+
+        let result = ctx.execute_step(RetryStep).await;
 
         assert!(
             matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "charge-card"),
-            "step_with_retry in body mode returns Scheduled on first call"
+            "execute_step with retry in body mode returns Scheduled on first call"
         );
 
         let log = calls.lock().unwrap();
@@ -1820,13 +1836,11 @@ mod tests {
         }
     }
 
-    /// When the step lambda fails and retries remain, `step_step_mode` must call
-    /// `mark_failed` with a future execution time (the retry delay) and return
-    /// `StepExecuted` so the worker does not also call `mark_failed`.
+    /// When the step fails and retries remain, `step_step_mode` must call
+    /// `mark_failed` with a future execution time and return `StepExecuted`.
     #[tokio::test]
     async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_failed() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        // retry_attempt=0 means this is the first attempt; 3 retries are allowed.
         let mut ctx = make_step_ctx_with_retry(
             scheduler,
             "charge-card",
@@ -1835,16 +1849,8 @@ mod tests {
             RetryConfig::fixed(3, Duration::from_secs(10)),
         );
 
-        let result = ctx
-            .step("charge-card", |_sctx| async {
-                Err::<u32, _>(StepError::Failed {
-                    step: "charge-card".to_string(),
-                    reason: "card declined".to_string(),
-                })
-            })
-            .await;
+        let result = ctx.execute_step(FailingChargeCardStep).await;
 
-        // Worker receives StepExecuted — it does nothing further (no double mark_failed).
         assert!(
             matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
             "must return StepExecuted so the worker skips its own mark_failed"
@@ -1876,11 +1882,10 @@ mod tests {
     }
 
     /// When all retries are exhausted the original error propagates and
-    /// `mark_failed` is NOT called (the worker handles task failure itself).
+    /// `mark_failed` is NOT called.
     #[tokio::test]
     async fn step_mode_failure_with_retries_exhausted_propagates_error() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        // retry_attempt=3 means 3 retries have already happened; max is 3.
         let mut ctx = make_step_ctx_with_retry(
             scheduler,
             "charge-card",
@@ -1889,21 +1894,13 @@ mod tests {
             RetryConfig::fixed(3, Duration::from_secs(10)),
         );
 
-        let result = ctx
-            .step("charge-card", |_sctx| async {
-                Err::<u32, _>(StepError::Failed {
-                    step: "charge-card".to_string(),
-                    reason: "still declining".to_string(),
-                })
-            })
-            .await;
+        let result = ctx.execute_step(FailingChargeCardStep).await;
 
         assert!(
             matches!(result, Err(StepError::Failed { .. })),
             "error must propagate when retries are exhausted"
         );
 
-        // The worker's generic Err arm calls mark_failed; step_step_mode must NOT.
         let log = calls.lock().unwrap();
         assert_eq!(
             log.iter().filter(|c| c.is_mark_failed()).count(),
@@ -1912,8 +1909,7 @@ mod tests {
         );
     }
 
-    /// A successful step in step mode must NOT trigger a retry — it must
-    /// complete transactionally and schedule the next body segment as usual.
+    /// A successful step in step mode must NOT trigger a retry.
     #[tokio::test]
     async fn step_mode_success_with_retry_config_completes_normally() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
@@ -1925,9 +1921,7 @@ mod tests {
             RetryConfig::fixed(3, Duration::from_secs(10)),
         );
 
-        let result = ctx
-            .step("charge-card", |_sctx| async { Ok::<u32, StepError>(42) })
-            .await;
+        let result = ctx.execute_step(ChargeCardStep).await;
 
         assert!(
             matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),

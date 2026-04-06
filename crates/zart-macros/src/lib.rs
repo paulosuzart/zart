@@ -1,6 +1,6 @@
 //! Procedural macros for the Zart durable execution framework.
 //!
-//! These macros are **optional** — the raw `ctx.step()` API works without them.
+//! These macros are **optional** — the raw `ctx.execute_step()` API works without them.
 //! They reduce boilerplate and enable a more ergonomic step-definition style.
 //!
 //! # Macros
@@ -9,8 +9,6 @@
 //!   generating a unit struct that implements [`DurableExecution`](zart::registry::DurableExecution).
 //! - [`#[zart_step]`](macro@zart_step) — annotate an async function as a step builder,
 //!   generating a struct with an `.execute()` method.
-//! - [`z_step!`](macro@z_step) — ergonomic wrapper around `ctx.step(name, closure)`
-//! - [`z_step_with_retry!`](macro@z_step_with_retry) — wrapper around `ctx.step_with_retry(name, config, closure)`
 //! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `ctx.wait_for_event(name, timeout)`
 //! - [`z_durable_loop!`](macro@z_durable_loop) — durable `for` loop over an iterator
 //!
@@ -22,7 +20,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use zart_macros::{zart_durable, z_step};
+//! use zart_macros::zart_durable;
 //! use zart::prelude::*;
 //!
 //! #[zart_durable("user-onboard", timeout = "5m")]
@@ -30,10 +28,7 @@
 //!     ctx: &mut TaskContext,
 //!     data: OnboardingData,
 //! ) -> Result<OnboardingResult, TaskError> {
-//!     z_step!("send-welcome-email", || async {
-//!         Ok(send_email(&data.email).await?)
-//!     }).await?;
-//!
+//!     // Use ctx.execute_step(MyStep { ... }) for step execution
 //!     Ok(OnboardingResult { /* ... */ })
 //! }
 //!
@@ -143,7 +138,7 @@ impl Parse for DurableAttr {
 /// ```
 ///
 /// The first parameter **must** be named `ctx` when used together with
-/// [`z_step!`], [`z_step_with_retry!`], or [`z_wait_event!`].
+/// [`z_wait_event!`].
 ///
 /// # Example
 ///
@@ -153,7 +148,8 @@ impl Parse for DurableAttr {
 ///     ctx: &mut TaskContext,
 ///     data: ReportRequest,
 /// ) -> Result<ReportId, TaskError> {
-///     let id = z_step!("generate", || async { Ok(generate_report(&data).await?) }).await?;
+///     // Use ctx.execute_step(MyStep { ... }) for step execution
+///     let id = generate_report(&data).await?;
 ///     Ok(id)
 /// }
 ///
@@ -291,118 +287,6 @@ fn extract_ok_type(ret: &ReturnType) -> SynResult<&Type> {
     ))
 }
 
-// ── z_step! ───────────────────────────────────────────────────────────────────
-
-struct ZStepInput {
-    name: Expr,
-    closure: Expr,
-}
-
-impl Parse for ZStepInput {
-    fn parse(input: ParseStream) -> SynResult<Self> {
-        let name = input.parse()?;
-        let _: Token![,] = input.parse()?;
-        let closure = input.parse()?;
-        Ok(ZStepInput { name, closure })
-    }
-}
-
-/// Ergonomic wrapper around [`ctx.step()`](zart::context::TaskContext::step).
-///
-/// **Deprecated**: Use `ctx.execute_step(MyStep { ... })` instead, or the `#[zart_step]` macro.
-///
-/// Expands to `ctx.step(name, closure)`. The variable `ctx` must be in scope
-/// (it is always available inside a `#[zart_durable]` handler).
-///
-/// The closure receives a [`StepContext`](zart::context::StepContext) so you can access
-/// execution metadata like `sctx.current_attempt()`, `sctx.max_retries()`, and
-/// `sctx.is_retry_attempt()`.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let email_id = z_step!("send-email", |sctx| async move {
-///     println!("Attempt: {}", sctx.current_attempt());
-///     Ok(send_email(&data.email).await?)
-/// }).await?;
-/// ```
-///
-/// Expands to:
-///
-/// ```rust,ignore
-/// let email_id = ctx.step("send-email", |sctx| async move {
-///     println!("Attempt: {}", sctx.current_attempt());
-///     Ok(send_email(&data.email).await?)
-/// }).await?;
-/// ```
-#[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` or `#[zart_step]` instead")]
-#[proc_macro]
-pub fn z_step(input: TokenStream) -> TokenStream {
-    let ZStepInput { name, closure } = parse_macro_input!(input as ZStepInput);
-    quote! { ctx.step(#name, #closure) }.into()
-}
-
-// ── z_step_with_retry! ────────────────────────────────────────────────────────
-
-struct ZStepRetryInput {
-    name: Expr,
-    config: Expr,
-    closure: Expr,
-}
-
-impl Parse for ZStepRetryInput {
-    fn parse(input: ParseStream) -> SynResult<Self> {
-        let name = input.parse()?;
-        let _: Token![,] = input.parse()?;
-        let config = input.parse()?;
-        let _: Token![,] = input.parse()?;
-        let closure = input.parse()?;
-        Ok(ZStepRetryInput {
-            name,
-            config,
-            closure,
-        })
-    }
-}
-
-/// Ergonomic wrapper around
-/// [`ctx.step_with_retry()`](zart::context::TaskContext::step_with_retry).
-///
-/// **Deprecated**: Use `#[zart_step("name", retry = "...")]` instead, which generates
-/// a step struct with automatic retry configuration.
-///
-/// Expands to `ctx.step_with_retry(name, config, closure)`.
-///
-/// The closure receives a [`StepContext`](zart::context::StepContext) so you can access
-/// execution metadata like `sctx.current_attempt()`, `sctx.max_retries()`, and
-/// `sctx.is_retry_attempt()`.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// z_step_with_retry!(
-///     "call-api",
-///     RetryConfig::exponential(3, Duration::from_secs(5)),
-///     |sctx| async move {
-///         if sctx.current_attempt() == 0 {
-///             // Simulate transient failure on first attempt
-///             return Err(StepError::Failed { step: "call-api".into(), reason: "timeout".into() });
-///         }
-///         external_api.call().await
-///     }
-/// ).await?;
-/// ```
-#[deprecated(since = "0.2.0", note = "use `#[zart_step(\"name\", retry = \"...\")]` instead")]
-#[proc_macro]
-pub fn z_step_with_retry(input: TokenStream) -> TokenStream {
-    let ZStepRetryInput {
-        name,
-        config,
-        closure,
-    } = parse_macro_input!(input as ZStepRetryInput);
-    quote! { ctx.step_with_retry(#name, #config, #closure) }.into()
-}
-
 // ── z_wait_event! ─────────────────────────────────────────────────────────────
 
 struct ZWaitEventInput {
@@ -495,7 +379,7 @@ impl Parse for ZDurableLoopInput {
 
 /// Durable loop — iterates over a collection, running the body for each item.
 ///
-/// Expands to a plain `for` loop. When combined with [`z_step!`] inside the
+/// Expands to a plain `for` loop. When combined with `ctx.execute_step()` inside the
 /// body, each iteration's step result is cached by the framework, so re-entry
 /// skips completed iterations automatically (provided each step name is unique
 /// per iteration, e.g., `format!("process-{}", item.id)`).
@@ -503,20 +387,17 @@ impl Parse for ZDurableLoopInput {
 /// # Example
 ///
 /// ```rust,ignore
-/// z_durable_loop!(items, |item| {
-///     z_step!(&format!("process-{}", item.id), || async {
-///         process_item(&item).await
-///     }).await?;
-/// });
+/// for item in items {
+///     let step = ProcessItemStep { item: item.clone() };
+///     ctx.execute_step(step).await?;
+/// }
 /// ```
 ///
 /// Expands to:
 ///
 /// ```rust,ignore
 /// for item in (items).into_iter() {
-///     z_step!(&format!("process-{}", item.id), || async {
-///         process_item(&item).await
-///     }).await?;
+///     // body
 /// }
 /// ```
 #[proc_macro]
@@ -652,7 +533,7 @@ fn parse_duration_to_ms(s: &str, span: Span) -> SynResult<u64> {
 ///
 /// The macro generates:
 /// 1. A **struct** capturing all parameters except `StepContext`
-/// 2. An **`.execute(&mut TaskContext)` method** that calls `ctx.step()` or `ctx.step_with_retry()`
+/// 2. An **`.execute(&mut TaskContext)` method** that calls `ctx.execute_step()`
 /// 3. Rewrites the original function to return the struct (builder pattern)
 /// 4. Moves the original body to a private `_inner` function
 ///

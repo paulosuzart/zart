@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::context::StepContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
 use zart::zart_step;
