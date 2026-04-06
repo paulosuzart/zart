@@ -1,22 +1,20 @@
 //! Approval Workflow Example
 //!
-//! Demonstrates a human-in-the-loop durable execution:
-//! 1. Validate the approval request (fake step)
-//! 2. Wait for manager approval (via wait_for_event)
-//! 3. On approval: process the request and return a result
-//! 4. On rejection: return a rejection notice
+//! Demonstrates a human-in-the-loop durable workflow using wait_for_event:
+//! 1. Validate the request
+//! 2. Wait for manager approval event (with timeout)
+//! 3. Act on the approval decision
 //!
-//! Features: wait_for_event, offer_event, sequential steps.
+//! Features: #[zart_durable], #[zart_step], wait_for_event, event delivery.
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
-use zart::registry::DurableExecution;
+use zart::zart_step;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -43,6 +41,30 @@ struct ApprovalOutput {
     comment: String,
 }
 
+// ── Step definitions ──────────────────────────────────────────────────────────
+
+#[zart_step("validate-request")]
+async fn validate_request(request: &ApprovalRequest, ctx: StepContext) -> Result<String, StepError> {
+    let _ = ctx.current_attempt();
+    if request.requester_name.is_empty() {
+        return Err(StepError::Failed {
+            step: "validate-request".to_string(),
+            reason: "requester name is required".to_string(),
+        });
+    }
+    Ok(format!(
+        "Validated request from {} for {}",
+        request.requester_name, request.resource
+    ))
+}
+
+#[zart_step("process-approved")]
+async fn process_approved(resource: &str, requester: &str, ctx: StepContext) -> Result<String, StepError> {
+    let _ = ctx.current_attempt();
+    // In a real system, this would provision the resource
+    Ok(format!("Provisioned {} for {}", resource, requester))
+}
+
 // ── Task handler ──────────────────────────────────────────────────────────────
 
 struct ApprovalTask;
@@ -57,25 +79,8 @@ impl DurableExecution for ApprovalTask {
         ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        // Step 1: Validate the request (fake step)
-        let _validated = ctx
-            .step("validate-request", |ctx| {
-                let request = data.clone();
-                async move {
-                    println!("[validate-request] Attempt {}", ctx.current_attempt() + 1);
-                    if request.requester_name.is_empty() {
-                        return Err(StepError::Failed {
-                            step: "validate-request".to_string(),
-                            reason: "requester name is required".to_string(),
-                        });
-                    }
-                    Ok(format!(
-                        "Validated request from {} for {}",
-                        request.requester_name, request.resource
-                    ))
-                }
-            })
-            .await?;
+        // Step 1: Validate the request
+        let _validated = ctx.execute_step(validate_request(&data)).await?;
 
         // Step 2: Wait for manager approval
         let decision: ApprovalDecision = ctx
@@ -84,16 +89,7 @@ impl DurableExecution for ApprovalTask {
 
         // Step 3: Act on the decision
         if decision.approved {
-            ctx.step("process-approved", |ctx| {
-                let resource = data.resource.clone();
-                let requester = data.requester_name.clone();
-                async move {
-                    println!("[process-approved] Attempt {}", ctx.current_attempt() + 1);
-                    // In a real system, this would provision the resource
-                    Ok(format!("Provisioned {} for {}", resource, requester))
-                }
-            })
-            .await?;
+            let _provisioned = ctx.execute_step(process_approved(&data.resource, &data.requester_name)).await?;
         }
 
         Ok(ApprovalOutput {
@@ -169,14 +165,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nExecution is waiting for manager approval...");
     println!("(Simulating manager delivering the event after 2 seconds)\n");
 
-    // Deliver the approval event (simulates a manager clicking "Approve" in a UI)
+    // Simulate manager approval
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let decision = ApprovalDecision {
         approved: true,
-        reviewer: "Manager Carol".to_string(),
-        comment: "Looks good — proceed!".to_string(),
+        reviewer: "Alice (Manager)".to_string(),
+        comment: "Approved for testing purposes".to_string(),
     };
 
-    println!("Delivering approval event...");
+    println!("Manager decision: {:?}", decision);
+
     durable
         .offer_event(
             &execution_id,
@@ -185,10 +183,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    // Now wait for the execution to complete
-    println!("Approval received! Processing approved request...\n");
+    // Wait for completion
     let record = durable
-        .wait(&execution_id, Duration::from_secs(60), None)
+        .wait(&execution_id, Duration::from_secs(30), None)
         .await?;
 
     worker.stop();
@@ -196,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match record.status {
         scheduler::ExecutionStatus::Completed => {
             let output: ApprovalOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("Execution completed!");
+            println!("\n=== Execution Completed ===");
             println!("  Decision:  {}", output.decision);
             println!("  Requester: {}", output.requester);
             println!("  Resource:  {}", output.resource);
@@ -205,9 +202,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
-            }
         }
     }
 

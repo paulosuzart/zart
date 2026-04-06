@@ -305,17 +305,8 @@ impl TaskContext {
 
     /// Execute a named step with no retries and no timeout.
     ///
-    /// # Control flow
-    ///
-    /// - **Step absent**: inserts a child step task row, returns `Err(StepError::Scheduled)`.
-    ///   The body task is then marked complete; the step runs independently.
-    /// - **Step `Completed`**: deserializes the stored result and returns `Ok(T)`
-    ///   immediately (lambda not called).
-    ///
-    /// # Closure signature
-    ///
-    /// The closure receives a [`StepContext`] so you can access execution metadata
-    /// like `ctx.current_attempt()`, `ctx.max_retries()`, and `ctx.is_retry_attempt()`.
+    /// **Deprecated**: Use [`execute_step`](Self::execute_step) with a `ZartStep` instead.
+    #[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` instead")]
     #[instrument(name = "step.execute", skip(self, step_fn), fields(step_name = step_name))]
     pub async fn step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> Result<T, StepError>
     where
@@ -593,16 +584,10 @@ impl TaskContext {
         }
     }
 
-    /// Execute a named step with a retry policy.
+    /// Internal: execute a named step with a retry policy.
     ///
-    /// In body mode, embeds the retry config in the step task's metadata so the
-    /// worker can reschedule on failure. In step mode, uses the config from the
-    /// task metadata (already loaded into `execution_mode`) to retry on failure.
-    ///
-    /// # Closure signature
-    ///
-    /// The closure receives a [`StepContext`] so you can access execution metadata
-    /// like `ctx.current_attempt()`, `ctx.max_retries()`, and `ctx.is_retry_attempt()`.
+    /// **Deprecated**: Use [`execute_step`](Self::execute_step) with a `ZartStep` instead.
+    #[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` instead")]
     pub async fn step_with_retry<T, F, Fut>(
         &mut self,
         step_name: &str,
@@ -618,31 +603,11 @@ impl TaskContext {
             .await
     }
 
-    /// Execute a named step immediately.
+    /// Internal: execute a named step with a wall-clock timeout.
     ///
-    /// In the new execution model, this delegates to [`step`](Self::step).
-    /// Kept for API compatibility with existing handlers.
-    #[instrument(name = "step.immediate", skip(self, step_fn), fields(step_name = step_name))]
-    pub async fn step_immediate<T, F, Fut>(
-        &mut self,
-        step_name: &str,
-        step_fn: F,
-    ) -> Result<T, StepError>
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce(StepContext) -> Fut,
-        Fut: std::future::Future<Output = Result<T, StepError>>,
-    {
-        self.step(step_name, step_fn).await
-    }
-
-    /// Execute a named step with a wall-clock timeout.
-    ///
-    /// If the lambda does not complete within `timeout`, the step is marked as
-    /// [`StepError::Timeout`] — a real error, not a control-flow signal.
-    /// No retries are applied; combine with [`step_with_retry`](Self::step_with_retry)
-    /// at the call-site if both are needed.
-    pub async fn step_with_timeout<T, F, Fut>(
+    /// **Deprecated**: Use [`execute_step`](Self::execute_step) with a `ZartStep` instead.
+    #[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` instead")]
+    pub(crate) async fn step_with_timeout<T, F, Fut>(
         &mut self,
         step_name: &str,
         timeout: std::time::Duration,
@@ -732,9 +697,9 @@ impl TaskContext {
         }
     }
 
-    /// Register a step for parallel execution without waiting for it to complete.
+    /// Register a [`ZartStep`] for parallel execution without waiting for it to complete.
     ///
-    /// Unlike [`step`](Self::step), this method does **not** block. All registered
+    /// Unlike [`execute_step`](Self::execute_step), this method does **not** block. All registered
     /// steps run when [`wait_all`](Self::wait_all) is called.
     ///
     /// # Re-entry behaviour
@@ -742,13 +707,10 @@ impl TaskContext {
     /// - **Step absent**: registers it as `Scheduled` and stores the lambda.
     /// - **Step `Scheduled`**: stores the lambda for execution in `wait_all`.
     /// - **Step `Completed`**: discards the lambda; `wait_all` will return the cached result.
-    pub fn schedule_step<T, F, Fut>(&mut self, step_name: &str, step_fn: F) -> StepHandle<T>
-    where
-        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: FnOnce(StepContext) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, StepError>> + Send + 'static,
-    {
+    pub fn schedule_step<S: ZartStep + Send + 'static>(&mut self, step: S) -> StepHandle<S::Output> {
+        let step_name = step.step_name();
         let step_name_str = step_name.to_string();
+        let retry_config = step.retry_config();
 
         // schedule_step just returns a handle with the lambda.
         // Actual scheduling (DB insert) happens in wait_all.
@@ -760,8 +722,9 @@ impl TaskContext {
             if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
                 let name_for_err = step_name_str.clone();
                 Some(Box::new(move |sctx: StepContext| {
+                    let step = step;
                     Box::pin(async move {
-                        let result = step_fn(sctx).await?;
+                        let result = step.run(sctx).await?;
                         serde_json::to_value(result).map_err(|e| StepError::Failed {
                             step: name_for_err,
                             reason: format!("serialize error: {e}"),

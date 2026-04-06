@@ -4,7 +4,7 @@
 //! 1. Schedule 3 independent simulated health checks
 //! 2. Aggregate results into a summary
 //!
-//! Features: schedule_step, wait_all, structured output.
+//! Features: schedule_step, wait_all, structured output, #[zart_step].
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use zart::context::TaskContext;
-use zart::error::TaskError;
+use zart::error::{StepError, TaskError};
 use zart::prelude::*;
 use zart::registry::DurableExecution;
+use zart::zart_step;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -38,6 +39,38 @@ struct HealthCheckOutput {
     results: Vec<ServiceResult>,
 }
 
+// ── Step definition using #[zart_step] ────────────────────────────────────────
+
+/// A health check step that simulates checking a service.
+#[zart_step("check-service")]
+async fn check_service(
+    service: String,
+    ctx: StepContext,
+) -> Result<ServiceResult, StepError> {
+    println!("[check-{}] Attempt {}", service, ctx.current_attempt() + 1);
+    // Simulate a health check with varying latency and status
+    let (status, response_ms, issues) = match service.as_str() {
+        "auth-api" => ("healthy".to_string(), 42, vec![]),
+        "payments" => (
+            "degraded".to_string(),
+            156,
+            vec!["high latency detected".to_string()],
+        ),
+        "users-db" => ("healthy".to_string(), 28, vec![]),
+        _ => (
+            "unknown".to_string(),
+            0,
+            vec!["no check configured".to_string()],
+        ),
+    };
+    Ok(ServiceResult {
+        name: service.to_string(),
+        status,
+        response_ms,
+        issues,
+    })
+}
+
 // ── Task handler ──────────────────────────────────────────────────────────────
 
 struct HealthCheckTask;
@@ -53,40 +86,11 @@ impl DurableExecution for HealthCheckTask {
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // Schedule parallel health checks — one per service
-        let mut handles = vec![];
-        for service in &data.services {
-            let handle = ctx.schedule_step(&format!("check-{service}"), {
-                let service = service.clone();
-                move |ctx| {
-                    let service = service.clone();
-                    async move {
-                        println!("[check-{}] Attempt {}", service, ctx.current_attempt() + 1);
-                        // Simulate a health check with varying latency and status
-                        let (status, response_ms, issues) = match service.as_str() {
-                            "auth-api" => ("healthy".to_string(), 42, vec![]),
-                            "payments" => (
-                                "degraded".to_string(),
-                                156,
-                                vec!["high latency detected".to_string()],
-                            ),
-                            "users-db" => ("healthy".to_string(), 28, vec![]),
-                            _ => (
-                                "unknown".to_string(),
-                                0,
-                                vec!["no check configured".to_string()],
-                            ),
-                        };
-                        Ok(ServiceResult {
-                            name: service,
-                            status,
-                            response_ms,
-                            issues,
-                        })
-                    }
-                }
-            });
-            handles.push(handle);
-        }
+        let handles: Vec<StepHandle<ServiceResult>> = data
+            .services
+            .iter()
+            .map(|service| ctx.schedule_step(check_service(service.clone())))
+            .collect();
 
         // Wait for all checks to complete
         let results = ctx.wait_all(handles).await?;
@@ -133,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register("health-check", HealthCheckTask);
     let registry = Arc::new(registry);
 
-    let execution_id = format!("parallel-demo-{}", uuid::Uuid::new_v4());
+    let execution_id = format!("health-check-demo-{}", uuid::Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone());
 
     let input = HealthCheckInput {
@@ -144,13 +148,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     };
 
-    println!("Starting execution '{execution_id}'...");
-    println!("  Services: {:?}", input.services);
+    println!(
+        "Starting execution '{}' for {} services...",
+        execution_id,
+        input.services.len()
+    );
     durable
         .start_typed(&execution_id, "health-check", &input)
         .await?;
 
-    // Start worker
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
@@ -163,7 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    println!("\nWorker started. Steps executing...\n");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let initial_status = durable.status(&execution_id).await?;
+    println!("Initial execution status: {:?}\n", initial_status.status);
+
+    println!("Waiting for execution to complete...\n");
     let record = durable
         .wait(&execution_id, Duration::from_secs(60), None)
         .await?;
@@ -173,17 +184,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match record.status {
         scheduler::ExecutionStatus::Completed => {
             let output: HealthCheckOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\nExecution completed!");
+            println!("Execution completed!");
             println!("  Services checked: {}", output.services_checked);
             println!("  Total issues:     {}", output.total_issues);
 
-            for svc in &output.results {
-                println!(
-                    "\n  Service: {} — status: {} ({}ms)",
-                    svc.name, svc.status, svc.response_ms,
-                );
-                for issue in &svc.issues {
-                    println!("    Issue: {}", issue);
+            if !output.results.is_empty() {
+                println!();
+                for r in &output.results {
+                    println!("  {} — {} ({}ms)", r.name, r.status, r.response_ms);
+                    for issue in &r.issues {
+                        println!("    ⚠️  {}", issue);
+                    }
                 }
             }
         }

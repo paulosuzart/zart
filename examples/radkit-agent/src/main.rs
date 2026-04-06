@@ -5,8 +5,8 @@
 //! 2. Find breweries in that city via Open Brewery DB API
 //! 3. Use an LLM to generate a friendly summary of results
 //!
-//! Features: manual DurableExecution trait with struct fields, z_step!,
-//! z_step_with_retry!, radkit LLM integration, dependency injection,
+//! Features: manual DurableExecution trait, #[zart_step],
+//! radkit LLM integration, dependency injection,
 //! AI-powered extraction and summarization, structured output.
 
 use chrono::Utc;
@@ -18,17 +18,17 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::context::TaskContext;
+use zart::context::StepContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
+use zart::zart_step;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentInput {
-    /// Natural language query, e.g. "Find breweries in Portland, Oregon"
     query: String,
 }
 
@@ -52,10 +52,16 @@ struct AgentOutput {
     location: ExtractedLocation,
     breweries: Vec<BreweryInfo>,
     summary: String,
-    completed_at: String,
+    generated_at: String,
 }
 
-// ── API response types ────────────────────────────────────────────────────────
+// ── Radkit LLM types ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+struct LocationExtraction {
+    city: String,
+    state: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BreweryRaw {
@@ -67,34 +73,136 @@ struct BreweryRaw {
     state: Option<String>,
 }
 
-// ── LLM extraction types ─────────────────────────────────────────────────────
+// ── Step definitions ─────────────────────────────────────────────────────────
 
-/// Schema for the LLM to extract location from natural language
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, radkit::macros::LLMOutput)]
-struct LocationExtraction {
-    /// The city name extracted from the query
+#[zart_step("extract-location", retry = "exponential(3, 2s)")]
+async fn extract_location(
+    llm: Arc<dyn BaseLlm>,
+    query: String,
+    ctx: StepContext,
+) -> Result<ExtractedLocation, StepError> {
+    println!("[extract-location] Attempt {}", ctx.current_attempt() + 1);
+
+    let prompt = format!(
+        r#"Extract the city and state from this query. Return valid JSON.
+
+Query: "{query}"
+
+Respond with only a JSON object with "city" and "state" fields."#
+    );
+
+    let function = LlmFunction::<LocationExtraction>::new_with_system_instructions(
+        llm,
+        "You are a location extraction assistant. \
+         Always return valid JSON with city and state fields.",
+    );
+
+    let result = function.run(&prompt).await.map_err(|e| StepError::Failed {
+        step: "extract-location".to_string(),
+        reason: format!("LLM extraction failed: {e}"),
+    })?;
+
+    Ok(ExtractedLocation {
+        city: result.city,
+        state: result.state,
+    })
+}
+
+#[zart_step("find-breweries", retry = "exponential(3, 1s)")]
+async fn find_breweries(city: String, ctx: StepContext) -> Result<Vec<BreweryRaw>, StepError> {
+    println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.openbrewerydb.org/v1/breweries")
+        .query(&[("by_city", &city)])
+        .send()
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "find-breweries".to_string(),
+            reason: e.to_string(),
+        })?
+        .json::<Vec<BreweryRaw>>()
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "find-breweries".to_string(),
+            reason: format!("failed to parse response: {e}"),
+        })?;
+
+    Ok(resp)
+}
+
+#[zart_step("transform-results")]
+async fn transform_results(
+    raw: Vec<BreweryRaw>,
     city: String,
-    /// The state abbreviation or full name
     state: String,
+    ctx: StepContext,
+) -> Result<Vec<BreweryInfo>, StepError> {
+    let _ = ctx.current_attempt();
+    Ok(raw
+        .into_iter()
+        .map(|b| BreweryInfo {
+            name: b.name,
+            brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
+            city: b.city.unwrap_or_else(|| city.clone()),
+            state: b.state.unwrap_or_else(|| state.clone()),
+        })
+        .collect())
 }
 
-/// Schema for the LLM to generate a summary
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, radkit::macros::LLMOutput)]
-struct BrewerySummary {
-    /// A friendly, conversational summary of the results
-    text: String,
+#[zart_step("generate-summary", retry = "exponential(3, 2s)")]
+async fn generate_summary(
+    llm: Arc<dyn BaseLlm>,
+    query: String,
+    location: ExtractedLocation,
+    breweries: Vec<BreweryInfo>,
+    ctx: StepContext,
+) -> Result<String, StepError> {
+    println!("[generate-summary] Attempt {}", ctx.current_attempt() + 1);
+
+    let brewery_list = breweries
+        .iter()
+        .take(5)
+        .map(|b| format!("- {} ({})", b.name, b.brewery_type))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let more_text = if breweries.len() > 5 {
+        format!("\n...and {} more", breweries.len() - 5)
+    } else {
+        String::new()
+    };
+
+    let prompt = format!(
+        r#"You're a friendly beer enthusiast. Write a short, conversational summary (2-3 sentences) about these brewery results.
+
+User asked: "{query}"
+Found {} breweries in {}, {}.
+
+{}
+{}
+
+Make it friendly and helpful."#,
+        breweries.len(),
+        location.city,
+        location.state,
+        brewery_list,
+        more_text,
+    );
+
+    let result = llm.complete(&prompt).await.map_err(|e| StepError::Failed {
+        step: "generate-summary".to_string(),
+        reason: format!("LLM summary generation failed: {e}"),
+    })?;
+
+    Ok(result)
 }
 
-// ── Task handler struct (with injected LLM dependency) ────────────────────────
+// ── Task handler ──────────────────────────────────────────────────────────────
 
 struct RadkitAgent {
     llm: Arc<dyn BaseLlm>,
-}
-
-impl RadkitAgent {
-    fn new(llm: OpenAILlm) -> Self {
-        Self { llm: Arc::new(llm) }
-    }
 }
 
 #[async_trait::async_trait]
@@ -107,46 +215,9 @@ impl DurableExecution for RadkitAgent {
         ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        // Step 1: Use radkit LLM to extract location from natural language query
-        let location: ExtractedLocation = ctx
-            .step_with_retry(
-                "extract-location",
-                RetryConfig::exponential(3, Duration::from_secs(2)),
-                |sctx| {
-                    let llm = self.llm.clone();
-                    let query = data.query.clone();
-                    async move {
-                        println!("[extract-location] Attempt {}", sctx.current_attempt() + 1);
-                        // Build extraction prompt
-                        let prompt = format!(
-                            r#"Extract the city and state from this query. Return valid JSON.
-
-Query: "{query}"
-
-Respond with only a JSON object with "city" and "state" fields."#
-                        );
-
-                        // Use radkit's structured output via LlmFunction
-                        let function =
-                            LlmFunction::<LocationExtraction>::new_with_system_instructions(
-                                llm,
-                                "You are a location extraction assistant. \
-                                 Always return valid JSON with city and state fields.",
-                            );
-
-                        let result =
-                            function.run(&prompt).await.map_err(|e| StepError::Failed {
-                                step: "extract-location".to_string(),
-                                reason: format!("LLM extraction failed: {e}"),
-                            })?;
-
-                        Ok(ExtractedLocation {
-                            city: result.city,
-                            state: result.state,
-                        })
-                    }
-                },
-            )
+        // Step 1: Use radkit LLM to extract location
+        let location = ctx
+            .execute_step(extract_location(self.llm.clone(), data.query.clone()))
             .await?;
 
         println!(
@@ -154,115 +225,30 @@ Respond with only a JSON object with "city" and "state" fields."#
             location.city, location.state
         );
 
-        // Step 2: Find breweries in the extracted city via Open Brewery DB (with retries)
+        // Step 2: Find breweries in the extracted city
         let raw_breweries: Vec<BreweryRaw> = ctx
-            .step_with_retry(
-                "find-breweries",
-                RetryConfig::exponential(3, Duration::from_secs(1)),
-                |sctx| {
-                    let city = location.city.clone();
-                    async move {
-                        println!("[find-breweries] Attempt {}", sctx.current_attempt() + 1);
-                        let client = reqwest::Client::new();
-                        let resp = client
-                            .get("https://api.openbrewerydb.org/v1/breweries")
-                            .query(&[("by_city", &city)])
-                            .send()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "find-breweries".to_string(),
-                                reason: e.to_string(),
-                            })?
-                            .json::<Vec<BreweryRaw>>()
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: "find-breweries".to_string(),
-                                reason: format!("failed to parse response: {e}"),
-                            })?;
-                        Ok(resp)
-                    }
-                },
-            )
+            .execute_step(find_breweries(location.city.clone()))
             .await?;
 
         println!("  Found {} raw brewery results", raw_breweries.len());
 
         // Step 3: Transform raw data into structured output
         let breweries: Vec<BreweryInfo> = ctx
-            .step("transform-results", |_sctx| {
-                let raw = raw_breweries.clone();
-                let city = location.city.clone();
-                let state = location.state.clone();
-                async move {
-                    Ok(raw
-                        .into_iter()
-                        .map(|b| BreweryInfo {
-                            name: b.name,
-                            brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
-                            city: b.city.unwrap_or_else(|| city.clone()),
-                            state: b.state.unwrap_or_else(|| state.clone()),
-                        })
-                        .collect())
-                }
-            })
+            .execute_step(transform_results(
+                raw_breweries.clone(),
+                location.city.clone(),
+                location.state.clone(),
+            ))
             .await?;
 
         // Step 4: Use radkit LLM to generate a friendly summary
         let summary = ctx
-            .step_with_retry(
-                "generate-summary",
-                RetryConfig::exponential(3, Duration::from_secs(2)),
-                |sctx| {
-                    let llm = self.llm.clone();
-                    let query = data.query.clone();
-                    let location = location.clone();
-                    let breweries = breweries.clone();
-                    async move {
-                        println!("[generate-summary] Attempt {}", sctx.current_attempt() + 1);
-                        let brewery_list = breweries
-                            .iter()
-                            .take(5)
-                            .map(|b| format!("- {} ({})", b.name, b.brewery_type))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        let more_text = if breweries.len() > 5 {
-                            format!("\n...and {} more", breweries.len() - 5)
-                        } else {
-                            String::new()
-                        };
-
-                        let prompt = format!(
-                            r#"You're a friendly beer enthusiast. Write a short, conversational summary (2-3 sentences) about these brewery results.
-
-User asked: "{query}"
-Found {} breweries in {}, {}.
-
-Top results:
-{brewery_list}{more_text}
-
-Keep it casual and enthusiastic."#,
-                            breweries.len(),
-                            location.city,
-                            location.state
-                        );
-
-                        let function =
-                            LlmFunction::<BrewerySummary>::new_with_system_instructions(
-                                llm,
-                                "You are a friendly beer enthusiast writing casual summaries.",
-                            );
-
-                        let result =
-                            function.run(&prompt).await.map_err(|e| StepError::Failed {
-                                step: "generate-summary".to_string(),
-                                reason: format!("LLM summary generation failed: {e}"),
-                            })?;
-
-                        Ok(result.text)
-                    }
-                },
-            )
+            .execute_step(generate_summary(
+                self.llm.clone(),
+                data.query.clone(),
+                location.clone(),
+                breweries.clone(),
+            ))
             .await?;
 
         Ok(AgentOutput {
@@ -270,7 +256,7 @@ Keep it casual and enthusiastic."#,
             location,
             breweries,
             summary,
-            completed_at: Utc::now().to_rfc3339(),
+            generated_at: Utc::now().to_rfc3339(),
         })
     }
 }
@@ -286,46 +272,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    // Fail fast if OpenAI API key is not set
-    let openai_key = std::env::var("OPENAI_API_KEY").expect(
-        "OPENAI_API_KEY must be set. Export your OpenAI API key before running this example.",
-    );
-
     println!("=== Zart Radkit Agent Example ===\n");
-    println!("This example combines durable execution with AI agents using radkit.");
-    println!("It extracts locations from natural language and generates summaries.\n");
 
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
-    // Connect and run migrations
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresScheduler::new(pool));
     sched.run_migrations().await?;
 
-    // Initialize the LLM provider
-    let llm = OpenAILlm::new("gpt-4o", &openai_key);
+    // Create LLM provider
+    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
+    let llm = Arc::new(OpenAILlm::new(&api_key));
 
-    // Register the handler with injected dependency
+    let agent = RadkitAgent { llm };
+
     let mut registry = TaskRegistry::new();
-    registry.register("radkit-agent", RadkitAgent::new(llm));
+    registry.register("radkit-agent", agent);
     let registry = Arc::new(registry);
 
-    // Start durable execution
-    let execution_id = format!("radkit-agent-demo-{}", Uuid::new_v4());
+    let execution_id = format!("radkit-demo-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone());
 
     let input = AgentInput {
-        query: "Find me breweries in Portland, Oregon".to_string(),
+        query: "Find breweries in Portland, Oregon".to_string(),
     };
 
-    println!("Input query: \"{}\"\n", input.query);
-    println!("Starting execution '{execution_id}'...");
+    println!("Starting execution '{}'...", execution_id);
+    println!("  Query: {}\n", input.query);
     durable
         .start_typed(&execution_id, "radkit-agent", &input)
         .await?;
 
-    // Run worker
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
@@ -338,17 +316,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    // Wait a moment for the worker to start polling
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Check initial status
     let initial_status = durable.status(&execution_id).await?;
     println!("Initial execution status: {:?}\n", initial_status.status);
 
-    // Wait for completion
     println!("Waiting for execution to complete...\n");
     let record = durable
-        .wait(&execution_id, Duration::from_secs(180), None)
+        .wait(&execution_id, Duration::from_secs(120), None)
         .await?;
 
     worker.stop();
@@ -356,23 +331,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match record.status {
         scheduler::ExecutionStatus::Completed => {
             let output: AgentOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("═══════════════════════════════════════════");
             println!("Execution completed!");
-            println!("═══════════════════════════════════════════");
-            println!();
-            println!("Query:     {}", output.query);
-            println!(
-                "Location:  {}, {}",
-                output.location.city, output.location.state
-            );
-            println!("Breweries: {}", output.breweries.len());
-            println!();
+            println!("  Query:       {}", output.query);
+            println!("  Location:    {}, {}", output.location.city, output.location.state);
+            println!("  Breweries:   {}", output.breweries.len());
+            println!("\n  Summary:");
+            println!("    {}", output.summary);
 
             if !output.breweries.is_empty() {
-                println!("── Top Results ──────────────────────────");
-                for (i, b) in output.breweries.iter().take(10).enumerate() {
+                println!("\n  Breweries found:");
+                for (i, b) in output.breweries.iter().enumerate() {
                     println!(
-                        "  {}. {} ({}) — {}, {}",
+                        "    {}. {} ({}) — {}, {}",
                         i + 1,
                         b.name,
                         b.brewery_type,
@@ -380,16 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         b.state,
                     );
                 }
-                if output.breweries.len() > 10 {
-                    println!("  ... and {} more", output.breweries.len() - 10);
-                }
-                println!();
             }
-
-            println!("── AI Summary ───────────────────────────");
-            println!("  {}", output.summary);
-            println!();
-            println!("Completed at: {}", output.completed_at);
         }
         _ => {
             eprintln!("Execution ended with status: {:?}", record.status);

@@ -309,6 +309,8 @@ impl Parse for ZStepInput {
 
 /// Ergonomic wrapper around [`ctx.step()`](zart::context::TaskContext::step).
 ///
+/// **Deprecated**: Use `ctx.execute_step(MyStep { ... })` instead, or the `#[zart_step]` macro.
+///
 /// Expands to `ctx.step(name, closure)`. The variable `ctx` must be in scope
 /// (it is always available inside a `#[zart_durable]` handler).
 ///
@@ -333,6 +335,7 @@ impl Parse for ZStepInput {
 ///     Ok(send_email(&data.email).await?)
 /// }).await?;
 /// ```
+#[deprecated(since = "0.2.0", note = "use `ctx.execute_step(step_struct)` or `#[zart_step]` instead")]
 #[proc_macro]
 pub fn z_step(input: TokenStream) -> TokenStream {
     let ZStepInput { name, closure } = parse_macro_input!(input as ZStepInput);
@@ -365,6 +368,9 @@ impl Parse for ZStepRetryInput {
 /// Ergonomic wrapper around
 /// [`ctx.step_with_retry()`](zart::context::TaskContext::step_with_retry).
 ///
+/// **Deprecated**: Use `#[zart_step("name", retry = "...")]` instead, which generates
+/// a step struct with automatic retry configuration.
+///
 /// Expands to `ctx.step_with_retry(name, config, closure)`.
 ///
 /// The closure receives a [`StepContext`](zart::context::StepContext) so you can access
@@ -386,6 +392,7 @@ impl Parse for ZStepRetryInput {
 ///     }
 /// ).await?;
 /// ```
+#[deprecated(since = "0.2.0", note = "use `#[zart_step(\"name\", retry = \"...\")]` instead")]
 #[proc_macro]
 pub fn z_step_with_retry(input: TokenStream) -> TokenStream {
     let ZStepRetryInput {
@@ -752,51 +759,96 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
     let struct_name = format!("{}Step", snake_to_pascal(&fn_name.to_string()));
     let struct_ident = format_ident!("{}", struct_name);
     let inner_fn_name = format_ident!("{}_inner", fn_name);
-    
-    // Define lifetime 'a that will be used throughout
-    let lifetime_a = Lifetime::new("'a", Span::call_site());
-    let lifetime_param = LifetimeParam::new(lifetime_a.clone());
 
-    // Generate struct fields with lifetime injected into references
-    let struct_fields: Vec<_> = struct_params
-        .iter()
-        .filter_map(|param| match param {
-            syn::FnArg::Typed(pt) => {
-                let pat = &pt.pat;
-                let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
-                Some(quote! { #pat: #ty_with_lifetime })
-            }
-            _ => None,
-        })
-        .collect();
+    // Check if any parameters contain references - only then do we need a lifetime
+    let has_references = struct_params.iter().any(|param| {
+        if let syn::FnArg::Typed(pt) = param {
+            type_has_references(&pt.ty)
+        } else {
+            false
+        }
+    });
 
-    // Generate field names for struct initialization
-    let field_names: Vec<_> = struct_params
-        .iter()
-        .filter_map(|param| match param {
-            syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
-            _ => None,
-        })
-        .collect();
-    
-    // Generate parameter list for function signatures (with lifetime injected)
-    let struct_param_list: Vec<_> = struct_params
-        .iter()
-        .filter_map(|param| match param {
-            syn::FnArg::Typed(pt) => {
-                let pat = &pt.pat;
-                let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
-                Some(quote! { #pat: #ty_with_lifetime })
-            }
-            _ => None,
-        })
-        .collect();
+    // Generate lifetime and struct components
+    let (lifetime_a, lifetime_param, struct_fields, field_names, struct_param_list) = if has_references {
+        let lifetime_a = Lifetime::new("'a", Span::call_site());
+        let lifetime_param = LifetimeParam::new(lifetime_a.clone());
+        
+        let struct_fields: Vec<_> = struct_params
+            .iter()
+            .filter_map(|param| match param {
+                syn::FnArg::Typed(pt) => {
+                    let pat = &pt.pat;
+                    let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
+                    Some(quote! { #pat: #ty_with_lifetime })
+                }
+                _ => None,
+            })
+            .collect();
+
+        let field_names: Vec<_> = struct_params
+            .iter()
+            .filter_map(|param| match param {
+                syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
+                _ => None,
+            })
+            .collect();
+
+        let struct_param_list: Vec<_> = struct_params
+            .iter()
+            .filter_map(|param| match param {
+                syn::FnArg::Typed(pt) => {
+                    let pat = &pt.pat;
+                    let ty_with_lifetime = inject_lifetime(&pt.ty, &lifetime_a);
+                    Some(quote! { #pat: #ty_with_lifetime })
+                }
+                _ => None,
+            })
+            .collect();
+
+        (Some(lifetime_a), Some(lifetime_param), struct_fields, field_names, struct_param_list)
+    } else {
+        let struct_fields: Vec<_> = struct_params
+            .iter()
+            .filter_map(|param| match param {
+                syn::FnArg::Typed(pt) => {
+                    let pat = &pt.pat;
+                    let ty = &pt.ty;
+                    Some(quote! { #pat: #ty })
+                }
+                _ => None,
+            })
+            .collect();
+
+        let field_names: Vec<_> = struct_params
+            .iter()
+            .filter_map(|param| match param {
+                syn::FnArg::Typed(pt) => extract_ident_from_pattern(&pt.pat),
+                _ => None,
+            })
+            .collect();
+
+        let struct_param_list: Vec<_> = struct_params
+            .iter()
+            .filter_map(|param| match param {
+                syn::FnArg::Typed(pt) => {
+                    let pat = &pt.pat;
+                    let ty = &pt.ty;
+                    Some(quote! { #pat: #ty })
+                }
+                _ => None,
+            })
+            .collect();
+
+        (None, None, struct_fields, field_names, struct_param_list)
+    };
 
     // Generate the ZartStep trait implementation
     let zart_step_impl = generate_zart_step_impl(
         &args,
         &struct_ident,
-        &lifetime_a,
+        lifetime_a.as_ref(),
+        &struct_params,
         &field_names,
         ctx_pat,
         ctx_type,
@@ -804,31 +856,60 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
         &inner_fn_name,
     )?;
 
-    // Generate the struct with lifetime parameter 'a
-    let struct_def = quote! {
-        #vis struct #struct_ident<#lifetime_param> {
-            #(#struct_fields),*
+    // Generate the struct
+    let struct_def = if let Some(ref lifetime_param) = lifetime_param {
+        quote! {
+            #vis struct #struct_ident<#lifetime_param> {
+                #(#struct_fields),*
+            }
+        }
+    } else {
+        quote! {
+            #vis struct #struct_ident {
+                #(#struct_fields),*
+            }
         }
     };
 
     // Rewrite original function to return the builder struct (not async)
-    let rewritten_fn = quote! {
-        #vis fn #fn_name<#lifetime_param>(
-            #(#struct_param_list),*
-        ) -> #struct_ident<#lifetime_a> {
-            #struct_ident {
-                #(#field_names),*
+    let rewritten_fn = if let (Some(lifetime_param), Some(lifetime_a)) = (&lifetime_param, &lifetime_a) {
+        quote! {
+            #vis fn #fn_name<#lifetime_param>(
+                #(#struct_param_list),*
+            ) -> #struct_ident<#lifetime_a> {
+                #struct_ident {
+                    #(#field_names),*
+                }
+            }
+        }
+    } else {
+        quote! {
+            #vis fn #fn_name(
+                #(#struct_param_list),*
+            ) -> #struct_ident {
+                #struct_ident {
+                    #(#field_names),*
+                }
             }
         }
     };
 
     // Move original body to inner function with ctx as the parameter name
     let ctx_ident_for_inner = format_ident!("ctx");
-    let inner_fn = quote! {
-        #asyncness fn #inner_fn_name<#lifetime_param>(
-            #(#struct_param_list),*,
-            #ctx_ident_for_inner: ::zart::context::StepContext,
-        ) #output #original_body
+    let inner_fn = if let Some(ref lifetime_param) = lifetime_param {
+        quote! {
+            #asyncness fn #inner_fn_name<#lifetime_param>(
+                #(#struct_param_list),*,
+                #ctx_ident_for_inner: ::zart::context::StepContext,
+            ) #output #original_body
+        }
+    } else {
+        quote! {
+            #asyncness fn #inner_fn_name(
+                #(#struct_param_list),*,
+                #ctx_ident_for_inner: ::zart::context::StepContext,
+            ) #output #original_body
+        }
     };
 
     Ok(quote! {
@@ -846,8 +927,9 @@ fn expand_zart_step(args: StepAttr, func: ItemFn) -> SynResult<TokenStream2> {
 fn generate_zart_step_impl(
     args: &StepAttr,
     struct_ident: &Ident,
-    lifetime_a: &Lifetime,
-    field_names: &[Ident],
+    lifetime_a: Option<&Lifetime>,
+    struct_params: &[&syn::FnArg],
+    _field_names: &[Ident],
     _ctx_pat: &Box<syn::Pat>,
     _ctx_type: &Box<syn::Type>,
     output: &ReturnType,
@@ -855,12 +937,27 @@ fn generate_zart_step_impl(
 ) -> SynResult<TokenStream2> {
     let step_name = &args.step_name;
 
-    // Generate field access expressions (self.field_name)
-    let field_accesses: Vec<_> = field_names.iter().map(|ident| quote! { self.#ident }).collect();
+    // Generate field access expressions for run method (clone owned types, reference refs)
+    let run_field_accesses: Vec<_> = struct_params
+        .iter()
+        .filter_map(|param| match param {
+            syn::FnArg::Typed(pt) => {
+                let ident = extract_ident_from_pattern(&pt.pat)?;
+                // Check if the type is a reference
+                if type_has_references(&pt.ty) {
+                    Some(quote! { self.#ident })
+                } else {
+                    // Owned type - needs clone
+                    Some(quote! { self.#ident.clone() })
+                }
+            }
+            _ => None,
+        })
+        .collect();
 
     // Generate the run method body that calls the inner function
     let run_body = quote! {
-        #inner_fn_name(#(#field_accesses),*, ctx).await
+        #inner_fn_name(#(#run_field_accesses),*, ctx).await
     };
 
     // Generate retry_config method
@@ -889,9 +986,20 @@ fn generate_zart_step_impl(
     // Extract the Output type from Result<T, StepError>
     let output_type = extract_ok_type(output)?;
 
+    // Generate impl header with or without lifetime
+    let impl_header = if let Some(lifetime_a) = lifetime_a {
+        quote! {
+            impl<#lifetime_a> ::zart::context::ZartStep for #struct_ident<#lifetime_a>
+        }
+    } else {
+        quote! {
+            impl ::zart::context::ZartStep for #struct_ident
+        }
+    };
+
     Ok(quote! {
         #[::async_trait::async_trait]
-        impl<#lifetime_a> ::zart::context::ZartStep for #struct_ident<#lifetime_a> {
+        #impl_header {
             type Output = #output_type;
 
             fn step_name(&self) -> &'static str {
@@ -917,6 +1025,28 @@ fn generate_retry_config_expr(retry_attr: &RetryAttr) -> SynResult<TokenStream2>
         RetryAttr::Exponential { attempts, delay_ms } => Ok(quote! {
             ::zart::retry::RetryConfig::exponential(#attempts, ::std::time::Duration::from_millis(#delay_ms))
         }),
+    }
+}
+
+/// Check if a type contains any references.
+fn type_has_references(ty: &Type) -> bool {
+    match ty {
+        Type::Reference(_) => true,
+        Type::Path(type_path) => {
+            if let Some(last) = type_path.path.segments.last() {
+                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Type(inner_ty) = arg {
+                            if type_has_references(inner_ty) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
     }
 }
 

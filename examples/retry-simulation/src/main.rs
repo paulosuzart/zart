@@ -5,9 +5,8 @@
 //! showing how the framework handles transient failures automatically.
 //!
 //! Key concepts demonstrated:
-//! - Using Arc<AtomicUsize> to track attempts across retries
 //! - Using `ctx.current_attempt()`, `ctx.max_retries()`, `ctx.is_retry_attempt()` accessors
-//! - Using `step_with_retry` with a `RetryConfig` for automatic retry handling
+//! - Using `#[zart_step]` with retry configuration for automatic retry handling
 //! - Observing the retry behavior in real-time with logging
 //!
 //! This pattern is useful for:
@@ -15,15 +14,16 @@
 //! - Demonstrating resilient behavior in examples and documentation
 //! - Implementing "fail fast, retry successfully" patterns in production
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
-use zart::error::StepError;
+use zart::context::StepContext;
+use zart::error::{StepError, TaskError};
 use zart::prelude::*;
-use zart::retry::RetryConfig;
+use zart::zart_step;
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 
@@ -41,6 +41,77 @@ struct RetrySimulationOutput {
     pub attempts_log: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetryStepResult {
+    message: String,
+    attempt_number: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NormalStepResult {
+    message: String,
+}
+
+// ── Step definitions using #[zart_step] ───────────────────────────────────────
+
+/// Step that intentionally fails on first attempt, succeeds on retry.
+#[zart_step("intentional-failure", retry = "fixed(3, 1s)")]
+async fn intentional_failure_step(
+    name: String,
+    attempt_counter: Arc<AtomicUsize>,
+    ctx: StepContext,
+) -> Result<RetryStepResult, StepError> {
+    let current = ctx.current_attempt();
+    let max = ctx.max_retries();
+    let is_retry = ctx.is_retry_attempt();
+
+    println!(
+        "[intentional-failure] Attempt #{} (0-indexed) | is_retry={} | max_retries={:?}",
+        current, is_retry, max
+    );
+
+    // Track attempts for logging
+    attempt_counter.fetch_add(1, Ordering::SeqCst);
+
+    if current == 0 {
+        // First attempt: simulate a transient failure
+        let msg = format!(
+            "⚠️  Simulated transient failure for '{}' on attempt #{}",
+            name, current
+        );
+        println!("{}", msg);
+        return Err(StepError::Failed {
+            step: "intentional-failure".to_string(),
+            reason: format!(
+                "Simulated transient error (attempt {}): connection timeout",
+                current + 1
+            ),
+        });
+    }
+
+    // Retry attempts: succeed
+    let msg = format!(
+        "✓  Succeeded for '{}' on retry attempt #{}",
+        name, current
+    );
+    println!("{}", msg);
+
+    Ok(RetryStepResult {
+        message: msg.clone(),
+        attempt_number: current,
+    })
+}
+
+/// A simple step that always succeeds.
+#[zart_step("normal-step")]
+async fn normal_step(_name: String, ctx: StepContext) -> Result<NormalStepResult, StepError> {
+    let _ = ctx.current_attempt();
+    println!("\n[normal-step] Running (no retries needed)");
+    Ok(NormalStepResult {
+        message: "Normal step completed successfully".to_string(),
+    })
+}
+
 // ── Durable Execution Implementation ─────────────────────────────────────────
 
 /// Manual implementation to demonstrate direct TaskContext usage
@@ -56,135 +127,45 @@ impl DurableExecution for RetrySimulationTask {
         ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
-        // Demonstrate the TaskContext accessors BEFORE the retry
-        println!("\n=== TaskContext Retry Accessors Demo ===\n");
+        let attempt_counter = Arc::new(AtomicUsize::new(0));
+
+        // Demonstrate the StepContext accessors BEFORE the retry
+        println!("\n=== StepContext Retry Accessors Demo ===\n");
         println!("Before retry (in body mode):");
-        println!(
-            "  - ctx.current_attempt() = {} (0 = body mode default)",
-            ctx.current_attempt()
-        );
-        println!(
-            "  - ctx.max_retries() = {:?} (None = no retry in body mode)",
-            ctx.max_retries()
-        );
-        println!(
-            "  - ctx.is_retry_attempt() = {} (false = not a retry)",
-            ctx.is_retry_attempt()
-        );
+        println!("  - StepContext is only available inside step closures");
+        println!("  - Each step receives its own StepContext with retry metadata");
 
-        // This step intentionally fails on attempt 0, succeeds on attempt 1
-        // The closure receives &TaskContext so we can access retry metadata directly
-        let result = ctx
-            .step_with_retry(
-                "intentional-failure",
-                RetryConfig::fixed(3, Duration::from_secs(1)), // 3 retries, 1s delay
-                |ctx| {
-                    let name = data.name.clone();
-                    async move {
-                        // Access execution metadata directly from context!
-                        let current = ctx.current_attempt();
-                        let max = ctx.max_retries();
-                        let is_retry = ctx.is_retry_attempt();
+        // Step 1: This step intentionally fails on attempt 0, succeeds on attempt 1
+        let result = ctx.execute_step(intentional_failure_step(
+            data.name.clone(),
+            attempt_counter.clone(),
+        )).await?;
 
-                        println!(
-                            "[intentional-failure] Attempt #{} (0-indexed) | is_retry={} | max_retries={:?}",
-                            current, is_retry, max
-                        );
-
-                        if current == 0 {
-                            // First attempt: simulate a transient failure
-                            let msg = format!(
-                                "⚠️  Simulated transient failure for '{}' on attempt #{}",
-                                name, current
-                            );
-                            println!("{}", msg);
-                            return Err(StepError::Failed {
-                                step: "intentional-failure".to_string(),
-                                reason: format!(
-                                    "Simulated transient error (attempt {}): connection timeout",
-                                    current + 1
-                                ),
-                            });
-                        }
-
-                        // Retry attempts: succeed
-                        let msg = format!(
-                            "✓  Succeeded for '{}' on retry attempt #{}",
-                            name, current
-                        );
-                        println!("{}", msg);
-
-                        Ok(RetryStepResult {
-                            message: msg.clone(),
-                            attempt_number: current,
-                        })
-                    }
-                },
-            )
-            .await?;
-
+        let total_attempts = attempt_counter.load(Ordering::SeqCst);
         let mut attempts_log = vec![format!(
             "intentional-failure: succeeded on attempt #{} ({} retries)",
             result.attempt_number, result.attempt_number
         )];
 
-        // Demonstrate the accessors after retry completion
-        println!("\nAfter retry completion (back in body mode):");
-        println!(
-            "  - ctx.current_attempt() = {} (0 = body mode)",
-            ctx.current_attempt()
-        );
-        println!(
-            "  - ctx.max_retries() = {:?} (None = no retry in body mode)",
-            ctx.max_retries()
-        );
-        println!(
-            "  - ctx.is_retry_attempt() = {} (false)",
-            ctx.is_retry_attempt()
-        );
-        println!("\nDuring the retry, the context would have shown:");
-        println!("  - ctx.current_attempt() = {}", result.attempt_number);
-        println!("  - ctx.is_retry_attempt() = {}", result.attempt_number > 0);
-        println!("  - ctx.max_retries() = Some(3)");
+        println!("\nAfter retry completion:");
+        println!("  - Total attempts made: {}", total_attempts);
+        println!("  - Succeeded on attempt #{}", result.attempt_number);
+        println!("  - Number of retries: {}", result.attempt_number);
 
-        // A second step that always succeeds - demonstrates normal behavior
-        let normal_result = ctx
-            .step("normal-step", |ctx| async move {
-                println!(
-                    "\n[normal-step] Running (no retries needed, attempt {})",
-                    ctx.current_attempt() + 1
-                );
-                Ok(NormalStepResult {
-                    message: "Normal step completed successfully".to_string(),
-                })
-            })
-            .await?;
-
+        // Step 2: A normal step that always succeeds
+        let normal_result = ctx.execute_step(normal_step(data.name.clone())).await?;
         attempts_log.push(format!("normal-step: {}", normal_result.message));
 
         Ok(RetrySimulationOutput {
             name: data.name,
-            total_attempts: result.attempt_number + 1, // Convert 0-indexed to count
+            total_attempts,
             message: format!(
-                "Completed with {} total attempt(s) - retry simulation successful!",
-                result.attempt_number + 1
+                "Completed after {} attempt(s), succeeded on retry #{}",
+                total_attempts, result.attempt_number
             ),
             attempts_log,
         })
     }
-}
-
-// ── Step result types ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RetryStepResult {
-    message: String,
-    attempt_number: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NormalStepResult {
-    message: String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -199,44 +180,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     println!("=== Zart Retry Simulation Example ===\n");
-    println!("This example demonstrates intentional failure and automatic retry.");
-    println!("The first attempt will fail, and the framework will retry automatically.\n");
 
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
-    // Connect and run migrations
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresScheduler::new(pool));
     sched.run_migrations().await?;
 
-    // Register the handler
     let mut registry = TaskRegistry::new();
     registry.register("retry-simulation", RetrySimulationTask);
     let registry = Arc::new(registry);
 
-    // Start durable execution
     let execution_id = format!("retry-sim-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone());
 
     let input = RetrySimulationInput {
-        name: "Paulo".to_string(),
+        name: "retry-demo".to_string(),
     };
 
-    println!(
-        "Starting execution '{}' with name '{}'...",
-        execution_id, input.name
-    );
+    println!("Starting execution '{}'...", execution_id);
     durable
         .start_typed(&execution_id, "retry-simulation", &input)
         .await?;
 
-    // Run worker
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
         max_concurrent_tasks: 4,
-        shutdown_timeout: Duration::from_secs(5),
+        shutdown_timeout: Duration::from_secs(10),
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
@@ -244,43 +216,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    // Wait a moment for the worker to start polling
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Check initial status
     let initial_status = durable.status(&execution_id).await?;
     println!("\nInitial execution status: {:?}\n", initial_status.status);
 
-    // Wait for completion (with generous timeout to allow retries)
-    println!("Waiting for execution to complete (including retries)...\n");
+    println!("Waiting for execution to complete (watch the retries)...\n");
     let record = durable
-        .wait(&execution_id, Duration::from_secs(120), None)
+        .wait(&execution_id, Duration::from_secs(60), None)
         .await?;
 
     worker.stop();
 
-    // Display results
     match record.status {
         scheduler::ExecutionStatus::Completed => {
             let output: RetrySimulationOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\n{}", "=".repeat(60));
-            println!("✓ Execution completed successfully!");
-            println!("{}", "=".repeat(60));
+            println!("\n=== Execution Completed ===");
             println!("  Name:            {}", output.name);
             println!("  Total attempts:  {}", output.total_attempts);
             println!("  Message:         {}", output.message);
-            println!("\nAttempts Log:");
-            for (i, log) in output.attempts_log.iter().enumerate() {
-                println!("  {}. {}", i + 1, log);
+            println!("\nAttempts log:");
+            for (i, entry) in output.attempts_log.iter().enumerate() {
+                println!("  {}. {}", i + 1, entry);
             }
-            println!("{}", "=".repeat(60));
         }
         _ => {
-            eprintln!("\n❌ Execution ended with status: {:?}", record.status);
+            eprintln!("Execution ended with status: {:?}", record.status);
             if let Some(result) = &record.result {
                 eprintln!("Result: {}", result);
             }
-            std::process::exit(1);
         }
     }
 

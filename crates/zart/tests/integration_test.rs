@@ -15,7 +15,7 @@ mod integration {
     use uuid::Uuid;
     use zart::{
         DurableScheduler, RetryConfig, TaskRegistry, Worker, WorkerConfig,
-        context::TaskContext,
+        context::{TaskContext, ZartStep},
         error::{StepError, TaskError},
         registry::DurableExecution,
     };
@@ -438,23 +438,59 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
+    // ── Parallel steps task ───────────────────────────────────────────────────
+
+    struct StepA;
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepA {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "step-a" }
+        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[step-a] running");
+            Ok(1)
+        }
+    }
+
+    struct StepB;
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepB {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "step-b" }
+        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[step-b] running");
+            Ok(2)
+        }
+    }
+
+    struct StepC;
+
+    #[async_trait::async_trait]
+    impl ZartStep for StepC {
+        type Output = i32;
+        fn step_name(&self) -> &'static str { "step-c" }
+        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+            println!("[step-c] running");
+            Ok(3)
+        }
+    }
+
+    struct ParallelTask;
+
+    #[async_trait::async_trait]
+    impl DurableExecution for ParallelTask {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
         async fn run(
             &self,
             ctx: &mut TaskContext,
             _data: Self::Data,
         ) -> Result<Self::Output, TaskError> {
-            let h1 = ctx.schedule_step("step-a", |_sctx| async {
-                println!("[step-a] running");
-                Ok::<i32, _>(1)
-            });
-            let h2 = ctx.schedule_step("step-b", |_sctx| async {
-                println!("[step-b] running");
-                Ok::<i32, _>(2)
-            });
-            let h3 = ctx.schedule_step("step-c", |_sctx| async {
-                println!("[step-c] running");
-                Ok::<i32, _>(3)
-            });
+            let h1 = ctx.schedule_step(StepA);
+            let h2 = ctx.schedule_step(StepB);
+            let h3 = ctx.schedule_step(StepC);
 
             let results = ctx.wait_all(vec![h1, h2, h3]).await?;
             let sum: i32 = results.into_iter().map(|r| r.unwrap()).sum();
