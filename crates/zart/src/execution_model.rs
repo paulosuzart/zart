@@ -102,7 +102,10 @@ impl ExecutionMode {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        ExecutionMode::Coordinator { wait_for, next_segment }
+                        ExecutionMode::Coordinator {
+                            wait_for,
+                            next_segment,
+                        }
                     }
 
                     _ => {
@@ -180,13 +183,19 @@ mod tests {
     #[test]
     fn from_metadata_body_parses_segment() {
         let meta = json!({ "mode": "body", "segment": 3 });
-        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body { segment: 3 });
+        assert_eq!(
+            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::Body { segment: 3 }
+        );
     }
 
     #[test]
     fn from_metadata_body_defaults_segment_to_zero_when_absent() {
         let meta = json!({ "mode": "body" });
-        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body { segment: 0 });
+        assert_eq!(
+            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::Body { segment: 0 }
+        );
     }
 
     #[test]
@@ -215,7 +224,14 @@ mod tests {
     fn from_metadata_step_defaults_segment_and_retry_to_sensible_values() {
         let meta = json!({ "mode": "step", "step_name": "send-email" });
         let mode = ExecutionMode::from_metadata(&meta);
-        assert!(matches!(mode, ExecutionMode::Step { next_body_segment: 1, retry_attempt: 0, .. }));
+        assert!(matches!(
+            mode,
+            ExecutionMode::Step {
+                next_body_segment: 1,
+                retry_attempt: 0,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -228,7 +244,10 @@ mod tests {
         });
         assert!(matches!(
             ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Step { step_type: StepKind::Sleep, .. }
+            ExecutionMode::Step {
+                step_type: StepKind::Sleep,
+                ..
+            }
         ));
     }
 
@@ -254,7 +273,10 @@ mod tests {
         let meta = json!({ "mode": "step", "step_type": "wait_all", "segment": 1 });
         assert_eq!(
             ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Coordinator { next_segment: 1, wait_for: vec![] }
+            ExecutionMode::Coordinator {
+                next_segment: 1,
+                wait_for: vec![]
+            }
         );
     }
 

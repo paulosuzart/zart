@@ -133,9 +133,9 @@ impl TaskHandler for RadkitAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 
-    async fn run<S: Scheduler + DurableStorage>(
+    async fn run(
         &self,
-        ctx: &mut TaskContext<S>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // self.llm is available in every step

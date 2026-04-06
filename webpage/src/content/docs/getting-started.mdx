@@ -16,7 +16,7 @@ impl TaskHandler for OnboardingTask {
     type Data   = OnboardingData;
     type Output = ();
 
-    async fn run(&self, ctx: &mut TaskContext<impl Scheduler>, data: OnboardingData)
+    async fn run(&self, ctx: &mut TaskContext, data: OnboardingData)
         -> Result<(), TaskError>
     {
         // Each step runs exactly once — result is stored in the DB

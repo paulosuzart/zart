@@ -71,7 +71,7 @@ struct BreweryRaw {
 
 #[zart_durable("brewery-finder", timeout = "5m")]
 async fn brewery_finder(
-    ctx: &mut TaskContext<impl scheduler::Scheduler + scheduler::DurableStorage>,
+    ctx: &mut TaskContext,
     data: FinderInput,
 ) -> Result<FinderOutput, TaskError> {
     let client = reqwest::Client::new();
@@ -92,13 +92,10 @@ async fn brewery_finder(
                         step: "lookup-zip".to_string(),
                         reason: e.to_string(),
                     })?;
-                let zip_resp: ZipResponse = resp
-                    .json()
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: "lookup-zip".to_string(),
-                        reason: format!("failed to parse response: {e}"),
-                    })?;
+                let zip_resp: ZipResponse = resp.json().await.map_err(|e| StepError::Failed {
+                    step: "lookup-zip".to_string(),
+                    reason: format!("failed to parse response: {e}"),
+                })?;
                 let place = zip_resp.places.first().ok_or_else(|| StepError::Failed {
                     step: "lookup-zip".to_string(),
                     reason: format!("no place found for ZIP {zip}"),

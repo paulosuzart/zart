@@ -40,7 +40,7 @@ Where your workflow logic lives. A `TaskHandler` receives a `TaskContext` and ca
 | Type | Role |
 |---|---|
 | `TaskHandler` | Trait you implement — defines `Data`, `Output`, `run` |
-| `TaskContext<S>` | Passed into `run` — the API for steps, sleep, events |
+| `TaskContext` | Passed into `run` — the API for steps, sleep, events |
 | `TaskRegistry` | Maps task name strings to `TaskHandler` instances |
 | `RetryConfig` | Per-step retry policy (none / fixed / exponential) |
 | `TaskError` | Error type for workflow failures |
@@ -76,7 +76,7 @@ impl TaskHandler for MyWorkflow {
 
     async fn run(
         &self,
-        ctx: &mut TaskContext<impl Scheduler>,
+        ctx: &mut TaskContext,
         data: MyInput,
     ) -> Result<MyOutput, TaskError> {
         let result = ctx.step("step-one", || async {

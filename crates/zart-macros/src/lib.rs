@@ -25,7 +25,7 @@
 //!
 //! #[zart_durable("user-onboard", timeout = "5m")]
 //! async fn onboard_user(
-//!     ctx: &mut TaskContext<impl Scheduler>,
+//!     ctx: &mut TaskContext,
 //!     data: OnboardingData,
 //! ) -> Result<OnboardingResult, TaskError> {
 //!     z_step!("send-welcome-email", || async {
@@ -134,7 +134,7 @@ impl Parse for DurableAttr {
 ///
 /// ```rust,ignore
 /// async fn fn_name(
-///     ctx: &mut TaskContext<impl Scheduler>,
+///     ctx: &mut TaskContext,
 ///     data: DataType,
 /// ) -> Result<OutputType, TaskError>
 /// ```
@@ -147,7 +147,7 @@ impl Parse for DurableAttr {
 /// ```rust,ignore
 /// #[zart_durable("send-report", timeout = "10m")]
 /// async fn send_report(
-///     ctx: &mut TaskContext<impl Scheduler>,
+///     ctx: &mut TaskContext,
 ///     data: ReportRequest,
 /// ) -> Result<ReportId, TaskError> {
 ///     let id = z_step!("generate", || async { Ok(generate_report(&data).await?) }).await?;
@@ -229,9 +229,9 @@ fn expand_zart_durable(args: DurableAttr, func: ItemFn) -> SynResult<TokenStream
             type Data = #data_type;
             type Output = #ok_type;
 
-            async fn run<S: ::scheduler::Scheduler + ::scheduler::DurableStorage>(
+            async fn run(
                 &self,
-                #ctx_pat: &mut ::zart::context::TaskContext<S>,
+                #ctx_pat: &mut ::zart::context::TaskContext,
                 #data_pat: Self::Data,
             ) -> ::std::result::Result<Self::Output, ::zart::error::TaskError> {
                 #body

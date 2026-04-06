@@ -43,9 +43,9 @@ impl TaskHandler for HealthCheckTask {
     type Data   = HealthCheckInput;
     type Output = HealthCheckOutput;
 
-    async fn run<S: Scheduler>(
+    async fn run(
         &self,
-        ctx: &mut TaskContext<S>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // Schedule one step per service — all are registered before any runs

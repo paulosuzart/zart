@@ -24,7 +24,9 @@ pub mod postgres;
 
 pub use error::StorageError;
 pub use recurrence::Recurrence;
-pub use types::{ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, StepLookup, TaskStatus};
+pub use types::{
+    ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, StepLookup, TaskStatus,
+};
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresScheduler;
@@ -51,6 +53,7 @@ pub trait Scheduler: Send + Sync {
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Schedule a task for execution at a specific point in time.
+    #[allow(clippy::too_many_arguments)]
     async fn schedule_at(
         &self,
         task_id: &str,
@@ -134,11 +137,7 @@ pub trait Scheduler: Send + Sync {
     ///
     /// Used by the worker's background heartbeat loop to prevent orphan recovery
     /// from reclaiming legitimately long-running tasks.
-    async fn renew_lease(
-        &self,
-        _task_id: &str,
-        _lock_token: &str,
-    ) -> Result<bool, StorageError> {
+    async fn renew_lease(&self, _task_id: &str, _lock_token: &str) -> Result<bool, StorageError> {
         Ok(false)
     }
 
@@ -146,6 +145,7 @@ pub trait Scheduler: Send + Sync {
     ///
     /// Used by the execution model to complete a step/coordinator/sleep task and
     /// schedule the next body segment without a gap between the two operations.
+    #[allow(clippy::too_many_arguments)]
     async fn complete_and_schedule(
         &self,
         completed_task_id: &str,
@@ -158,11 +158,19 @@ pub trait Scheduler: Send + Sync {
         new_execution_id: Option<&str>,
         new_metadata: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let _ = (completed_task_id, result, lock_token, new_task_id, new_task_name,
-                 new_execution_time, new_data, new_execution_id, new_metadata);
+        let _ = (
+            completed_task_id,
+            result,
+            lock_token,
+            new_task_id,
+            new_task_name,
+            new_execution_time,
+            new_data,
+            new_execution_id,
+            new_metadata,
+        );
         Err(StorageError::NotImplemented("complete_and_schedule"))
     }
-
 }
 
 /// Storage operations for durable executions and the per-row step model.
@@ -244,7 +252,9 @@ pub trait DurableStorage: Send + Sync {
         payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
         let _ = (execution_id, event_name, payload);
-        Err(StorageError::NotImplemented("complete_event_step_and_schedule_body"))
+        Err(StorageError::NotImplemented(
+            "complete_event_step_and_schedule_body",
+        ))
     }
 
     /// Reset a terminal execution so it can be retried.
@@ -276,6 +286,17 @@ pub trait DurableStorage: Send + Sync {
         Err(StorageError::NotImplemented("check_wait_all_children"))
     }
 }
+
+/// Combined backend trait for schedulers that support both task-queue and
+/// durable-execution storage.
+///
+/// A blanket impl covers every concrete type that already satisfies both
+/// [`Scheduler`] and [`DurableStorage`], so backends don't need to implement
+/// this trait explicitly — they just implement the two component traits.
+///
+/// Use `Arc<dyn StorageBackend>` wherever you need a type-erased backend.
+pub trait StorageBackend: Scheduler + DurableStorage + Send + Sync {}
+impl<T: Scheduler + DurableStorage + Send + Sync> StorageBackend for T {}
 
 #[cfg(test)]
 mod tests {
@@ -394,19 +415,75 @@ mod tests {
 
     #[async_trait]
     impl Scheduler for StubDurableStorage {
-        async fn schedule_now(&self, task_id: &str, _: &str, _: serde_json::Value, _: Option<&str>) -> Result<ScheduleResult, StorageError> {
-            Ok(ScheduleResult { task_id: task_id.to_string(), execution_time: Utc::now() })
+        async fn schedule_now(
+            &self,
+            task_id: &str,
+            _: &str,
+            _: serde_json::Value,
+            _: Option<&str>,
+        ) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult {
+                task_id: task_id.to_string(),
+                execution_time: Utc::now(),
+            })
         }
-        async fn schedule_at(&self, task_id: &str, _: &str, execution_time: DateTime<Utc>, _: serde_json::Value, _: Option<Recurrence>, _: Option<&str>, _: serde_json::Value) -> Result<ScheduleResult, StorageError> {
-            Ok(ScheduleResult { task_id: task_id.to_string(), execution_time })
+        async fn schedule_at(
+            &self,
+            task_id: &str,
+            _: &str,
+            execution_time: DateTime<Utc>,
+            _: serde_json::Value,
+            _: Option<Recurrence>,
+            _: Option<&str>,
+            _: serde_json::Value,
+        ) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult {
+                task_id: task_id.to_string(),
+                execution_time,
+            })
         }
-        async fn poll_due(&self, _: DateTime<Utc>, _: usize) -> Result<Vec<FetchedTask>, StorageError> { Ok(vec![]) }
-        async fn update_task_state(&self, _: &str, _: serde_json::Value, _: DateTime<Utc>, _: &str) -> Result<(), StorageError> { Ok(()) }
-        async fn mark_completed(&self, _: &str, _: Option<serde_json::Value>, _: &str) -> Result<(), StorageError> { Ok(()) }
-        async fn mark_failed(&self, _: &str, _: &str, _: Option<DateTime<Utc>>, _: &str) -> Result<(), StorageError> { Ok(()) }
-        async fn cancel_task(&self, _: &str) -> Result<bool, StorageError> { Ok(true) }
-        async fn delete_task(&self, _: &str) -> Result<(), StorageError> { Ok(()) }
-        async fn run_migrations(&self) -> Result<(), StorageError> { Ok(()) }
+        async fn poll_due(
+            &self,
+            _: DateTime<Utc>,
+            _: usize,
+        ) -> Result<Vec<FetchedTask>, StorageError> {
+            Ok(vec![])
+        }
+        async fn update_task_state(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+            _: DateTime<Utc>,
+            _: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn mark_completed(
+            &self,
+            _: &str,
+            _: Option<serde_json::Value>,
+            _: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn mark_failed(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<DateTime<Utc>>,
+            _: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn cancel_task(&self, _: &str) -> Result<bool, StorageError> {
+            Ok(true)
+        }
+        async fn delete_task(&self, _: &str) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn run_migrations(&self) -> Result<(), StorageError> {
+            Ok(())
+        }
     }
 
     impl DurableStorage for StubDurableStorage {}

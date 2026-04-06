@@ -28,7 +28,9 @@ struct MockScheduler {
 
 impl MockScheduler {
     fn new() -> Self {
-        Self { step_responses: HashMap::new() }
+        Self {
+            step_responses: HashMap::new(),
+        }
     }
 
     fn with_step_completed(mut self, exec_id: &str, step: &str, result: serde_json::Value) -> Self {
@@ -150,7 +152,7 @@ impl DurableStorage for MockScheduler {
 }
 
 /// Construct a fresh TaskContext backed by the MockScheduler.
-fn make_ctx() -> TaskContext<MockScheduler> {
+fn make_ctx() -> TaskContext {
     TaskContext::new(
         Arc::new(MockScheduler::new()),
         "test-execution",
@@ -181,8 +183,8 @@ async fn z_step_first_call_returns_scheduled() {
 /// without running the closure again.
 #[tokio::test]
 async fn z_step_completed_step_returns_cached_result() {
-    let mock = MockScheduler::new()
-        .with_step_completed("exec", "cached-step", serde_json::json!(99));
+    let mock =
+        MockScheduler::new().with_step_completed("exec", "cached-step", serde_json::json!(99));
 
     let mut ctx = TaskContext::new(
         Arc::new(mock),
@@ -283,10 +285,7 @@ fn z_durable_loop_empty_collection() {
 /// A simple handler with no steps: the macro generates `EchoHandler` and the
 /// `run` method executes the body correctly.
 #[zart_durable("echo-task")]
-async fn echo_handler(
-    _ctx: &mut TaskContext<impl Scheduler>,
-    data: String,
-) -> Result<String, TaskError> {
+async fn echo_handler(_ctx: &mut TaskContext, data: String) -> Result<String, TaskError> {
     Ok(format!("echo: {data}"))
 }
 
@@ -300,10 +299,7 @@ async fn zart_durable_generates_handler_struct() {
 
 /// The generated struct name follows `snake_case → PascalCase` convention.
 #[zart_durable("multi-word-task")]
-async fn multi_word_task_handler(
-    _ctx: &mut TaskContext<impl Scheduler>,
-    data: u32,
-) -> Result<u32, TaskError> {
+async fn multi_word_task_handler(_ctx: &mut TaskContext, data: u32) -> Result<u32, TaskError> {
     Ok(data * 2)
 }
 
@@ -317,7 +313,7 @@ async fn zart_durable_pascal_case_struct_name() {
 
 /// The `timeout` attribute is reflected in `TaskHandler::timeout()`.
 #[zart_durable("timed-task", timeout = "5m")]
-async fn timed_handler(_ctx: &mut TaskContext<impl Scheduler>, data: ()) -> Result<(), TaskError> {
+async fn timed_handler(_ctx: &mut TaskContext, data: ()) -> Result<(), TaskError> {
     Ok(data)
 }
 
@@ -328,7 +324,7 @@ fn zart_durable_timeout_attribute() {
 }
 
 #[zart_durable("hours-task", timeout = "2h")]
-async fn hours_handler(_ctx: &mut TaskContext<impl Scheduler>, _data: ()) -> Result<(), TaskError> {
+async fn hours_handler(_ctx: &mut TaskContext, _data: ()) -> Result<(), TaskError> {
     Ok(())
 }
 
@@ -340,10 +336,7 @@ fn zart_durable_timeout_hours() {
 
 /// A handler with no timeout returns `None` from `timeout()`.
 #[zart_durable("no-timeout-task")]
-async fn no_timeout_handler(
-    _ctx: &mut TaskContext<impl Scheduler>,
-    _data: (),
-) -> Result<(), TaskError> {
+async fn no_timeout_handler(_ctx: &mut TaskContext, _data: ()) -> Result<(), TaskError> {
     Ok(())
 }
 
@@ -356,10 +349,7 @@ fn zart_durable_no_timeout_returns_none() {
 /// A handler that uses `z_step!` inside: on first call the step is scheduled,
 /// causing the handler to return `Err(TaskError::StepFailed)`.
 #[zart_durable("step-task")]
-async fn step_using_handler(
-    ctx: &mut TaskContext<impl Scheduler>,
-    data: String,
-) -> Result<String, TaskError> {
+async fn step_using_handler(ctx: &mut TaskContext, data: String) -> Result<String, TaskError> {
     let processed = z_step!("process", || async {
         Ok::<String, StepError>(data.to_uppercase())
     })
@@ -382,10 +372,7 @@ async fn zart_durable_with_z_step_first_call_schedules() {
 
 /// A handler that uses `z_step_with_retry!` compiles and schedules on first call.
 #[zart_durable("retry-task")]
-async fn retry_step_handler(
-    ctx: &mut TaskContext<impl Scheduler>,
-    data: u32,
-) -> Result<u32, TaskError> {
+async fn retry_step_handler(ctx: &mut TaskContext, data: u32) -> Result<u32, TaskError> {
     let result = z_step_with_retry!(
         "compute",
         RetryConfig::fixed(3, Duration::from_millis(10)),
@@ -411,10 +398,7 @@ struct OrderData {
 }
 
 #[zart_durable("order-task")]
-async fn order_handler(
-    _ctx: &mut TaskContext<impl Scheduler>,
-    data: OrderData,
-) -> Result<String, TaskError> {
+async fn order_handler(_ctx: &mut TaskContext, data: OrderData) -> Result<String, TaskError> {
     Ok(format!("order-{}-{:.2}", data.id, data.amount))
 }
 
@@ -437,10 +421,7 @@ async fn zart_durable_struct_data_type() {
 
 /// `z_durable_loop!` combined with `z_step!` inside a `#[zart_durable]` handler.
 #[zart_durable("loop-task")]
-async fn loop_handler(
-    ctx: &mut TaskContext<impl Scheduler>,
-    data: Vec<u32>,
-) -> Result<u32, TaskError> {
+async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, TaskError> {
     let mut total = 0u32;
     z_durable_loop!(data, |item| {
         let v = z_step!(&format!("item-{item}"), || async {

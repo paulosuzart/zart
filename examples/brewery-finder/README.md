@@ -67,7 +67,7 @@ You write a plain async function with an attribute:
 ```rust
 #[zart_durable("brewery-finder", timeout = "5m")]
 async fn brewery_finder(
-    ctx: &mut TaskContext<impl Scheduler>,
+    ctx: &mut TaskContext,
     data: FinderInput,
 ) -> Result<FinderOutput, TaskError> {
     let city = z_step!("lookup-zip", || async { ... }).await?;

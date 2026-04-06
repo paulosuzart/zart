@@ -5,7 +5,7 @@ use crate::execution_model::ExecutionMode;
 
 use crate::retry::RetryConfig;
 use crate::step_ops;
-use scheduler::{DurableStorage, Scheduler, StepLookup, TaskStatus};
+use scheduler::{StepLookup, StorageBackend, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -123,12 +123,9 @@ pub struct ExecutionState {
 ///
 /// Provides the step execution API (`step`, `step_with_retry`, `step_with_timeout`, …)
 /// and access to the initial payload and execution metadata.
-///
-/// The context is generic over the [`Scheduler`] so that the scheduler backend
-/// can be swapped (PostgreSQL, SQLite, in-memory for testing, etc.).
-pub struct TaskContext<S: Scheduler + DurableStorage> {
+pub struct TaskContext {
     /// The underlying scheduler (used to schedule step tasks).
-    pub(crate) scheduler: Arc<S>,
+    pub(crate) scheduler: Arc<dyn StorageBackend>,
     /// Unique identifier of the enclosing durable execution.
     execution_id: String,
     /// The `task_id` of the task currently being executed.
@@ -137,6 +134,7 @@ pub struct TaskContext<S: Scheduler + DurableStorage> {
     /// Registered name of the task handler.
     task_name: String,
     /// Mutable in-memory state; written back to the DB on re-schedule.
+    #[allow(dead_code)]
     pub(crate) state: ExecutionState,
     /// Opaque lock token from the current pick-up. Required for scheduler calls.
     pub(crate) lock_token: String,
@@ -147,12 +145,12 @@ pub struct TaskContext<S: Scheduler + DurableStorage> {
     pub(crate) execution_mode: ExecutionMode,
 }
 
-impl<S: Scheduler + DurableStorage> TaskContext<S> {
+impl TaskContext {
     /// Construct a new `TaskContext`.
     ///
     /// Called by the [`Worker`] when it picks up a task.
     pub fn new(
-        scheduler: Arc<S>,
+        scheduler: Arc<dyn StorageBackend>,
         execution_id: impl Into<String>,
         task_name: impl Into<String>,
         state: ExecutionState,
@@ -216,7 +214,9 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body { .. } => self.step_body_mode(step_name, retry_config, step_fn).await,
+            ExecutionMode::Body { .. } => {
+                self.step_body_mode(step_name, retry_config, step_fn).await
+            }
             ExecutionMode::Step { target_step, .. } => {
                 let target = target_step.clone();
                 self.step_step_mode(&target, step_name, step_fn).await
@@ -256,18 +256,22 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
             })?;
 
         match lookup {
-            Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
-                serde_json::from_value(json).map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: format!("failed to deserialize cached result: {e}"),
-                })
-            }
-            Some(StepLookup { status: TaskStatus::Completed, result: None, .. }) => {
-                Err(StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: "step completed but result is missing".to_string(),
-                })
-            }
+            Some(StepLookup {
+                status: TaskStatus::Completed,
+                result: Some(json),
+                ..
+            }) => serde_json::from_value(json).map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: format!("failed to deserialize cached result: {e}"),
+            }),
+            Some(StepLookup {
+                status: TaskStatus::Completed,
+                result: None,
+                ..
+            }) => Err(StepError::Failed {
+                step: step_name.to_string(),
+                reason: "step completed but result is missing".to_string(),
+            }),
             Some(_) => {
                 // Scheduled or PickedUp — step task exists, body should exit and wait.
                 Err(StepError::Scheduled {
@@ -330,37 +334,38 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
                 Err(e) => {
                     // Check if retry is configured and allowed.
                     let (retry_config, retry_attempt) = match &self.execution_mode {
-                        ExecutionMode::Step { retry_config, retry_attempt, .. } => {
-                            (retry_config.clone(), *retry_attempt)
-                        }
+                        ExecutionMode::Step {
+                            retry_config,
+                            retry_attempt,
+                            ..
+                        } => (retry_config.clone(), *retry_attempt),
                         _ => (None, 0),
                     };
 
-                    if let Some(rc) = retry_config {
-                        if let Some(delay) = rc.delay_for(retry_attempt + 1) {
-                            let retry_time = chrono::Utc::now()
-                                + chrono::Duration::from_std(delay)
-                                    .unwrap_or(chrono::Duration::zero());
-                            // Reschedule this step task for retry.
-                            if let Err(sched_err) = step_ops::reschedule_step_for_retry(
-                                &*self.scheduler,
-                                &self.task_id,
-                                &e.to_string(),
-                                retry_time,
-                                &self.lock_token,
-                            )
-                            .await
-                            {
-                                return Err(StepError::Failed {
-                                    step: step_name.to_string(),
-                                    reason: format!("failed to schedule retry: {sched_err}"),
-                                });
-                            }
-                            // Signal the worker that this step task managed its own transition.
-                            return Err(StepError::StepExecuted {
+                    if let Some(rc) = retry_config
+                        && let Some(delay) = rc.delay_for(retry_attempt + 1)
+                    {
+                        let retry_time = chrono::Utc::now()
+                            + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero());
+                        // Reschedule this step task for retry.
+                        if let Err(sched_err) = step_ops::reschedule_step_for_retry(
+                            &*self.scheduler,
+                            &self.task_id,
+                            &e.to_string(),
+                            retry_time,
+                            &self.lock_token,
+                        )
+                        .await
+                        {
+                            return Err(StepError::Failed {
                                 step: step_name.to_string(),
+                                reason: format!("failed to schedule retry: {sched_err}"),
                             });
                         }
+                        // Signal the worker that this step task managed its own transition.
+                        return Err(StepError::StepExecuted {
+                            step: step_name.to_string(),
+                        });
                     }
 
                     return Err(e);
@@ -372,7 +377,9 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
             })?;
 
             let (next_body_segment, is_wait_all_child) = match &self.execution_mode {
-                ExecutionMode::Step { next_body_segment, .. } => {
+                ExecutionMode::Step {
+                    next_body_segment, ..
+                } => {
                     // Check metadata for wait_all child flag (stored in execution_model module).
                     let wac = false; // sequential step: never a wait_all child
                     (*next_body_segment, wac)
@@ -395,8 +402,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
                     reason: e.to_string(),
                 })?;
             } else {
-                let next_body_task_id =
-                    format!("{}-b{}", self.execution_id, next_body_segment);
+                let next_body_task_id = format!("{}-b{}", self.execution_id, next_body_segment);
                 step_ops::complete_step_and_schedule_body(
                     &*self.scheduler,
                     &step_task_id,
@@ -430,18 +436,22 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
                 })?;
 
             match lookup {
-                Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
-                    serde_json::from_value(json).map_err(|e| StepError::Failed {
-                        step: step_name.to_string(),
-                        reason: format!("failed to deserialize cached result: {e}"),
-                    })
-                }
-                Some(StepLookup { status: TaskStatus::Completed, result: None, .. }) => {
-                    Err(StepError::Failed {
-                        step: step_name.to_string(),
-                        reason: "step completed but result is missing".to_string(),
-                    })
-                }
+                Some(StepLookup {
+                    status: TaskStatus::Completed,
+                    result: Some(json),
+                    ..
+                }) => serde_json::from_value(json).map_err(|e| StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: format!("failed to deserialize cached result: {e}"),
+                }),
+                Some(StepLookup {
+                    status: TaskStatus::Completed,
+                    result: None,
+                    ..
+                }) => Err(StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: "step completed but result is missing".to_string(),
+                }),
                 _ => {
                     // Step not yet completed. This shouldn't happen in sequential flow
                     // but treat as "body must wait".
@@ -470,7 +480,8 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
-        self.step_internal(step_name, Some(retry_config), step_fn).await
+        self.step_internal(step_name, Some(retry_config), step_fn)
+            .await
     }
 
     /// Execute a named step immediately.
@@ -544,21 +555,22 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         let is_target = matches!(&self.execution_mode,
             ExecutionMode::Step { target_step, .. } if target_step == step_name);
 
-        let pending: Option<PendingFn> = if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
-            let name_for_err = step_name_str.clone();
-            Some(Box::new(move || {
-                Box::pin(async move {
-                    let result = step_fn().await?;
-                    serde_json::to_value(result).map_err(|e| StepError::Failed {
-                        step: name_for_err,
-                        reason: format!("serialize error: {e}"),
+        let pending: Option<PendingFn> =
+            if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
+                let name_for_err = step_name_str.clone();
+                Some(Box::new(move || {
+                    Box::pin(async move {
+                        let result = step_fn().await?;
+                        serde_json::to_value(result).map_err(|e| StepError::Failed {
+                            step: name_for_err,
+                            reason: format!("serialize error: {e}"),
+                        })
                     })
-                })
-            }))
-        } else {
-            // In step mode but not the target: lambda not needed.
-            None
-        };
+                }))
+            } else {
+                // In step mode but not the target: lambda not needed.
+                None
+            };
 
         StepHandle {
             step_name: step_name_str,
@@ -583,9 +595,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         T: Serialize + for<'de> Deserialize<'de>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body { segment } => {
-                self.wait_all_body_mode(handles, *segment).await
-            }
+            ExecutionMode::Body { segment } => self.wait_all_body_mode(handles, *segment).await,
             ExecutionMode::Step { target_step, .. } => {
                 let target = target_step.clone();
                 self.wait_all_step_mode(handles, &target).await
@@ -612,10 +622,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         T: Serialize + for<'de> Deserialize<'de>,
     {
         let next_segment = segment + 1;
-        let coordinator_id = format!(
-            "{}:coord:wait_all:{}",
-            self.execution_id, next_segment
-        );
+        let coordinator_id = format!("{}:coord:wait_all:{}", self.execution_id, next_segment);
 
         // Extract step names upfront so we don't hold &StepHandle<T> across await points
         // (PendingFn is Send but not Sync, so &StepHandle<T> is not Send).
@@ -638,7 +645,10 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
                 })?;
 
             match lookup {
-                Some(StepLookup { status: TaskStatus::Completed, .. }) => {}
+                Some(StepLookup {
+                    status: TaskStatus::Completed,
+                    ..
+                }) => {}
                 Some(_) => {
                     all_completed = false;
                 }
@@ -674,7 +684,11 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
                         reason: e.to_string(),
                     })?;
                 match lookup {
-                    Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
+                    Some(StepLookup {
+                        status: TaskStatus::Completed,
+                        result: Some(json),
+                        ..
+                    }) => {
                         let val = serde_json::from_value(json).map_err(|e| StepError::Failed {
                             step: step_name.clone(),
                             reason: format!("deserialize error: {e}"),
@@ -780,8 +794,7 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         match &self.execution_mode {
             ExecutionMode::Body { segment } => {
                 let next_segment = segment + 1;
-                let sleep_task_id =
-                    format!("{}:sleep:{}", self.execution_id, next_segment);
+                let sleep_task_id = format!("{}:sleep:{}", self.execution_id, next_segment);
                 step_ops::schedule_sleep_task(
                     &*self.scheduler,
                     &sleep_task_id,
@@ -832,12 +845,8 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
         T: for<'de> Deserialize<'de>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body { .. } => {
-                self.wait_for_event_body_mode(event_name, timeout).await
-            }
-            ExecutionMode::Step { .. } => {
-                self.wait_for_event_step_mode(event_name).await
-            }
+            ExecutionMode::Body { .. } => self.wait_for_event_body_mode(event_name, timeout).await,
+            ExecutionMode::Step { .. } => self.wait_for_event_step_mode(event_name).await,
             ExecutionMode::Coordinator { .. } => Err(StepError::Failed {
                 step: event_name.to_string(),
                 reason: "wait_for_event() called in coordinator mode — not supported".to_string(),
@@ -863,18 +872,22 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
             })?;
 
         match lookup {
-            Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
-                serde_json::from_value(json).map_err(|e| StepError::Failed {
-                    step: event_name.to_string(),
-                    reason: format!("failed to deserialize event result: {e}"),
-                })
-            }
-            Some(StepLookup { status: TaskStatus::Completed, result: None, .. }) => {
-                Err(StepError::Failed {
-                    step: event_name.to_string(),
-                    reason: "event step completed but result is missing".to_string(),
-                })
-            }
+            Some(StepLookup {
+                status: TaskStatus::Completed,
+                result: Some(json),
+                ..
+            }) => serde_json::from_value(json).map_err(|e| StepError::Failed {
+                step: event_name.to_string(),
+                reason: format!("failed to deserialize event result: {e}"),
+            }),
+            Some(StepLookup {
+                status: TaskStatus::Completed,
+                result: None,
+                ..
+            }) => Err(StepError::Failed {
+                step: event_name.to_string(),
+                reason: "event step completed but result is missing".to_string(),
+            }),
             Some(_) => {
                 // Step task exists but not yet completed (scheduled or picked_up).
                 Err(StepError::Scheduled {
@@ -931,18 +944,22 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
             })?;
 
         match lookup {
-            Some(StepLookup { status: TaskStatus::Completed, result: Some(json), .. }) => {
-                serde_json::from_value(json).map_err(|e| StepError::Failed {
-                    step: event_name.to_string(),
-                    reason: format!("failed to deserialize event result: {e}"),
-                })
-            }
-            Some(StepLookup { status: TaskStatus::Completed, result: None, .. }) => {
-                Err(StepError::Failed {
-                    step: event_name.to_string(),
-                    reason: "event step completed but result is missing".to_string(),
-                })
-            }
+            Some(StepLookup {
+                status: TaskStatus::Completed,
+                result: Some(json),
+                ..
+            }) => serde_json::from_value(json).map_err(|e| StepError::Failed {
+                step: event_name.to_string(),
+                reason: format!("failed to deserialize event result: {e}"),
+            }),
+            Some(StepLookup {
+                status: TaskStatus::Completed,
+                result: None,
+                ..
+            }) => Err(StepError::Failed {
+                step: event_name.to_string(),
+                reason: "event step completed but result is missing".to_string(),
+            }),
             _ => {
                 // Shouldn't happen in well-formed sequential flow.
                 Err(StepError::Scheduled {
@@ -979,10 +996,13 @@ impl<S: Scheduler + DurableStorage> TaskContext<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scheduler::{DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError};
+    use scheduler::{
+        DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError,
+    };
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[allow(dead_code)]
     struct NoopScheduler;
 
     #[async_trait::async_trait]
@@ -1068,7 +1088,8 @@ mod tests {
 
     impl DurableStorage for NoopScheduler {}
 
-    fn make_ctx() -> TaskContext<NoopScheduler> {
+    #[allow(dead_code)]
+    fn make_ctx() -> TaskContext {
         TaskContext::new(
             Arc::new(NoopScheduler),
             "exec-1",
@@ -1140,8 +1161,9 @@ mod tests {
     async fn body_mode_wait_for_event_first_call_schedules_step_task() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
-        let result: Result<serde_json::Value, _> =
-            ctx.wait_for_event("approval", Some(Duration::from_secs(3600))).await;
+        let result: Result<serde_json::Value, _> = ctx
+            .wait_for_event("approval", Some(Duration::from_secs(3600)))
+            .await;
 
         assert!(
             matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "approval"),
@@ -1152,13 +1174,22 @@ mod tests {
         let schedules: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
         assert_eq!(schedules.len(), 1, "exactly one schedule_at call");
 
-        if let Call::ScheduleAt { task_id, metadata, execution_time, .. } = &schedules[0] {
+        if let Call::ScheduleAt {
+            task_id,
+            metadata,
+            execution_time,
+            ..
+        } = &schedules[0]
+        {
             assert_eq!(task_id, "exec-1:step:approval");
             assert_eq!(metadata["step_type"], "wait_for_event");
             assert_eq!(metadata["step_name"], "approval");
             assert_eq!(metadata["segment"], 1);
             // execution_time should be approximately now + 1h (in the future)
-            assert!(*execution_time > chrono::Utc::now(), "deadline must be in the future");
+            assert!(
+                *execution_time > chrono::Utc::now(),
+                "deadline must be in the future"
+            );
         }
     }
 
@@ -1167,8 +1198,7 @@ mod tests {
     async fn body_mode_wait_for_event_no_timeout_uses_max_execution_time() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
-        let result: Result<serde_json::Value, _> =
-            ctx.wait_for_event("no-deadline", None).await;
+        let result: Result<serde_json::Value, _> = ctx.wait_for_event("no-deadline", None).await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
 
@@ -1176,9 +1206,17 @@ mod tests {
         let schedules: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
         assert_eq!(schedules.len(), 1);
 
-        if let Call::ScheduleAt { execution_time, metadata, .. } = &schedules[0] {
-            assert_eq!(*execution_time, chrono::DateTime::<chrono::Utc>::MAX_UTC,
-                "no-timeout event step must use MAX_UTC");
+        if let Call::ScheduleAt {
+            execution_time,
+            metadata,
+            ..
+        } = &schedules[0]
+        {
+            assert_eq!(
+                *execution_time,
+                chrono::DateTime::<chrono::Utc>::MAX_UTC,
+                "no-timeout event step must use MAX_UTC"
+            );
             assert_eq!(metadata["step_type"], "wait_for_event");
         }
     }
@@ -1190,14 +1228,16 @@ mod tests {
             .step_completed("exec-1", "approved", serde_json::json!({"ok": true}))
             .build();
         let mut ctx = make_body_ctx(scheduler, 0);
-        let result: Result<serde_json::Value, _> =
-            ctx.wait_for_event("approved", None).await;
+        let result: Result<serde_json::Value, _> = ctx.wait_for_event("approved", None).await;
 
         assert!(result.is_ok(), "should return Ok for completed event step");
         assert_eq!(result.unwrap()["ok"], true);
         // No schedule_at should have been called.
         let log = calls.lock().unwrap();
-        assert!(log.iter().all(|c| !c.is_schedule_at()), "no schedule_at for cached event");
+        assert!(
+            log.iter().all(|c| !c.is_schedule_at()),
+            "no schedule_at for cached event"
+        );
     }
 
     /// In step mode, a completed event step returns the cached result.
@@ -1220,10 +1260,7 @@ mod tests {
     // These tests use RecordingScheduler to assert exactly which DB operations
     // each execution-model code path triggers and how many task rows are created.
 
-    fn make_body_ctx(
-        scheduler: std::sync::Arc<RecordingScheduler>,
-        segment: usize,
-    ) -> TaskContext<RecordingScheduler> {
+    fn make_body_ctx(scheduler: std::sync::Arc<dyn StorageBackend>, segment: usize) -> TaskContext {
         TaskContext::new(
             scheduler,
             "exec-1",
@@ -1236,10 +1273,10 @@ mod tests {
     }
 
     fn make_step_ctx(
-        scheduler: std::sync::Arc<RecordingScheduler>,
+        scheduler: std::sync::Arc<dyn StorageBackend>,
         target: &str,
         next_body_segment: usize,
-    ) -> TaskContext<RecordingScheduler> {
+    ) -> TaskContext {
         let task_id = format!("exec-1:step:{target}");
         TaskContext::new(
             scheduler,
@@ -1266,7 +1303,9 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder().build();
         let mut ctx = make_body_ctx(scheduler, 0);
 
-        let result = ctx.step("charge-card", || async { Ok::<u32, StepError>(99) }).await;
+        let result = ctx
+            .step("charge-card", || async { Ok::<u32, StepError>(99) })
+            .await;
 
         assert!(
             matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "charge-card"),
@@ -1277,12 +1316,18 @@ mod tests {
         let inserts: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
         assert_eq!(inserts.len(), 1, "exactly one task row inserted");
 
-        if let Call::ScheduleAt { task_id, metadata, .. } = &inserts[0] {
+        if let Call::ScheduleAt {
+            task_id, metadata, ..
+        } = &inserts[0]
+        {
             assert_eq!(task_id, "exec-1:step:charge-card");
             assert_eq!(metadata["mode"], "step");
             assert_eq!(metadata["step_type"], "step");
             assert_eq!(metadata["step_name"], "charge-card");
-            assert_eq!(metadata["segment"], 1, "next_body_segment = current segment + 1");
+            assert_eq!(
+                metadata["segment"], 1,
+                "next_body_segment = current segment + 1"
+            );
             assert_eq!(metadata["execution_id"], "exec-1");
         } else {
             panic!("unexpected call variant");
@@ -1309,7 +1354,10 @@ mod tests {
 
         let log = calls.lock().unwrap();
         assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
-        assert_eq!(log.iter().filter(|c| c.is_complete_and_schedule()).count(), 0);
+        assert_eq!(
+            log.iter().filter(|c| c.is_complete_and_schedule()).count(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1319,7 +1367,9 @@ mod tests {
             .build();
         let mut ctx = make_body_ctx(scheduler, 1);
 
-        let result = ctx.step("charge-card", || async { Ok::<u32, StepError>(1) }).await;
+        let result = ctx
+            .step("charge-card", || async { Ok::<u32, StepError>(1) })
+            .await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
         let log = calls.lock().unwrap();
@@ -1352,13 +1402,24 @@ mod tests {
         assert!(lambda_called, "lambda must execute for the target step");
 
         let log = calls.lock().unwrap();
-        assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0, "no new rows in step mode");
+        assert_eq!(
+            log.iter().filter(|c| c.is_schedule_at()).count(),
+            0,
+            "no new rows in step mode"
+        );
 
-        let cas: Vec<_> = log.iter().filter(|c| c.is_complete_and_schedule()).collect();
+        let cas: Vec<_> = log
+            .iter()
+            .filter(|c| c.is_complete_and_schedule())
+            .collect();
         assert_eq!(cas.len(), 1, "complete_and_schedule called exactly once");
 
-        if let Call::CompleteAndSchedule { completed_task_id, new_task_id, new_metadata, .. } =
-            &cas[0]
+        if let Call::CompleteAndSchedule {
+            completed_task_id,
+            new_task_id,
+            new_metadata,
+            ..
+        } = &cas[0]
         {
             assert_eq!(completed_task_id, "exec-1:step:charge-card");
             assert_eq!(new_task_id, "exec-1-b1");
@@ -1390,7 +1451,10 @@ mod tests {
 
         let log = calls.lock().unwrap();
         assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
-        assert_eq!(log.iter().filter(|c| c.is_complete_and_schedule()).count(), 0);
+        assert_eq!(
+            log.iter().filter(|c| c.is_complete_and_schedule()).count(),
+            0
+        );
     }
 
     // ── body mode: wait_all ───────────────────────────────────────────────────
@@ -1412,22 +1476,43 @@ mod tests {
         let inserts: Vec<&serde_json::Value> = log
             .iter()
             .filter_map(|c| {
-                if let Call::ScheduleAt { metadata, .. } = c { Some(metadata) } else { None }
+                if let Call::ScheduleAt { metadata, .. } = c {
+                    Some(metadata)
+                } else {
+                    None
+                }
             })
             .collect();
 
-        assert_eq!(inserts.len(), 4, "3 child step rows + 1 coordinator = 4 total inserts");
+        assert_eq!(
+            inserts.len(),
+            4,
+            "3 child step rows + 1 coordinator = 4 total inserts"
+        );
 
         let children: Vec<_> = inserts
             .iter()
-            .filter(|m| m.get("is_wait_all_child").and_then(|v| v.as_bool()).unwrap_or(false))
+            .filter(|m| {
+                m.get("is_wait_all_child")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            })
             .collect();
-        assert_eq!(children.len(), 3, "three children each marked is_wait_all_child=true");
+        assert_eq!(
+            children.len(),
+            3,
+            "three children each marked is_wait_all_child=true"
+        );
 
-        let coordinators: Vec<_> =
-            inserts.iter().filter(|m| m["step_type"] == "wait_all").collect();
+        let coordinators: Vec<_> = inserts
+            .iter()
+            .filter(|m| m["step_type"] == "wait_all")
+            .collect();
         assert_eq!(coordinators.len(), 1, "exactly one coordinator task");
-        assert_eq!(coordinators[0]["segment"], 1, "coordinator targets the next body segment");
+        assert_eq!(
+            coordinators[0]["segment"], 1,
+            "coordinator targets the next body segment"
+        );
         assert_eq!(coordinators[0]["mode"], "step");
     }
 
@@ -1453,7 +1538,10 @@ mod tests {
             0,
             "all steps already completed — no new rows inserted"
         );
-        assert_eq!(log.iter().filter(|c| c.is_complete_and_schedule()).count(), 0);
+        assert_eq!(
+            log.iter().filter(|c| c.is_complete_and_schedule()).count(),
+            0
+        );
     }
 
     // ── step mode: wait_all child execution ───────────────────────────────────
@@ -1494,10 +1582,18 @@ mod tests {
         let mc: Vec<_> = log
             .iter()
             .filter_map(|c| {
-                if let Call::MarkCompleted { task_id, .. } = c { Some(task_id.as_str()) } else { None }
+                if let Call::MarkCompleted { task_id, .. } = c {
+                    Some(task_id.as_str())
+                } else {
+                    None
+                }
             })
             .collect();
-        assert_eq!(mc.len(), 1, "complete_step_no_resume delegates to mark_completed once");
+        assert_eq!(
+            mc.len(),
+            1,
+            "complete_step_no_resume delegates to mark_completed once"
+        );
         assert_eq!(mc[0], "exec-1:step:step-b");
 
         assert_eq!(
@@ -1524,7 +1620,13 @@ mod tests {
         let inserts: Vec<_> = log
             .iter()
             .filter_map(|c| {
-                if let Call::ScheduleAt { task_id, execution_time, metadata, .. } = c {
+                if let Call::ScheduleAt {
+                    task_id,
+                    execution_time,
+                    metadata,
+                    ..
+                } = c
+                {
                     Some((task_id, execution_time, metadata))
                 } else {
                     None
@@ -1540,19 +1642,22 @@ mod tests {
         assert_eq!(meta["segment"], 1);
         assert_eq!(meta["execution_id"], "exec-1");
         let diff = (*exec_time - wake_time).num_seconds().abs();
-        assert!(diff < 1, "sleep task execution_time must equal the requested wake_time");
+        assert!(
+            diff < 1,
+            "sleep task execution_time must equal the requested wake_time"
+        );
     }
 
     // ── step_with_retry: new execution model ──────────────────────────────────
 
     /// Helper: make a step-mode context with a retry config embedded.
     fn make_step_ctx_with_retry(
-        scheduler: std::sync::Arc<RecordingScheduler>,
+        scheduler: std::sync::Arc<dyn StorageBackend>,
         target: &str,
         next_body_segment: usize,
         retry_attempt: usize,
         retry_config: RetryConfig,
-    ) -> TaskContext<RecordingScheduler> {
+    ) -> TaskContext {
         let task_id = format!("exec-1:step:{target}");
         TaskContext::new(
             scheduler,
@@ -1581,9 +1686,7 @@ mod tests {
 
         let config = RetryConfig::fixed(3, Duration::from_secs(5));
         let result = ctx
-            .step_with_retry("charge-card", config, || async {
-                Ok::<u32, StepError>(99)
-            })
+            .step_with_retry("charge-card", config, || async { Ok::<u32, StepError>(99) })
             .await;
 
         assert!(
@@ -1638,16 +1741,25 @@ mod tests {
 
         let log = calls.lock().unwrap();
         let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-        assert_eq!(failures.len(), 1, "exactly one mark_failed call for the retry");
+        assert_eq!(
+            failures.len(),
+            1,
+            "exactly one mark_failed call for the retry"
+        );
 
-        if let Call::MarkFailed { task_id, next_execution_time, .. } = &failures[0] {
+        if let Call::MarkFailed {
+            task_id,
+            next_execution_time,
+            ..
+        } = &failures[0]
+        {
             assert_eq!(task_id, "exec-1:step:charge-card");
             assert!(
                 next_execution_time.is_some(),
                 "retry must carry a future execution_time for the delay"
             );
-            let delay_secs = (*next_execution_time.as_ref().unwrap() - chrono::Utc::now())
-                .num_seconds();
+            let delay_secs =
+                (*next_execution_time.as_ref().unwrap() - chrono::Utc::now()).num_seconds();
             assert!(delay_secs > 0, "retry must be in the future");
         }
     }

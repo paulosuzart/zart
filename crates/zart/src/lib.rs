@@ -20,7 +20,6 @@
 //! ```rust,no_run
 //! use zart::prelude::*;
 //! use async_trait::async_trait;
-//! use scheduler::{DurableStorage, Scheduler};
 //!
 //! struct MyTask;
 //!
@@ -29,9 +28,9 @@
 //!     type Data = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
-//!     async fn run<S: Scheduler + DurableStorage>(
+//!     async fn run(
 //!         &self,
-//!         _ctx: &mut TaskContext<S>,
+//!         _ctx: &mut TaskContext,
 //!         data: Self::Data,
 //!     ) -> Result<Self::Output, TaskError> {
 //!         Ok(data)
@@ -76,5 +75,7 @@ pub mod prelude {
         retry::RetryConfig,
         worker::{Worker, WorkerConfig},
     };
-    pub use scheduler::{DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler};
+    pub use scheduler::{
+        DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler, StorageBackend,
+    };
 }

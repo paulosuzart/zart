@@ -23,7 +23,7 @@ struct ApprovalPayload {
 
 async fn run(
     &self,
-    ctx: &mut TaskContext<impl Scheduler>,
+    ctx: &mut TaskContext,
     data: OrderData,
 ) -> Result<(), TaskError> {
     // Process order steps...

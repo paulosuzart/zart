@@ -8,7 +8,7 @@
 use crate::durable::DurableScheduler;
 use crate::error::SchedulerError;
 use async_trait::async_trait;
-use scheduler::{DurableStorage, ExecutionRecord, ExecutionStatus, ScheduleResult, Scheduler};
+use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,7 +67,7 @@ pub trait DurableApi: Send + Sync {
 }
 
 #[async_trait]
-impl<S: Scheduler + DurableStorage + 'static> DurableApi for DurableScheduler<S> {
+impl DurableApi for DurableScheduler {
     async fn start(
         &self,
         execution_id: &str,
@@ -114,9 +114,7 @@ impl<S: Scheduler + DurableStorage + 'static> DurableApi for DurableScheduler<S>
     }
 }
 
-/// Convenience constructor — wrap any `DurableScheduler<S>` into an `Arc<dyn DurableApi>`.
-pub fn into_durable_api<S: Scheduler + DurableStorage + 'static>(
-    scheduler: DurableScheduler<S>,
-) -> Arc<dyn DurableApi> {
+/// Convenience constructor — wrap a `DurableScheduler` into an `Arc<dyn DurableApi>`.
+pub fn into_durable_api(scheduler: DurableScheduler) -> Arc<dyn DurableApi> {
     Arc::new(scheduler)
 }

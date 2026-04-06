@@ -11,8 +11,8 @@
 
 use chrono::Utc;
 use radkit::agent::LlmFunction;
-use radkit::models::providers::OpenAILlm;
 use radkit::models::BaseLlm;
+use radkit::models::providers::OpenAILlm;
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -93,9 +93,7 @@ struct RadkitAgent {
 
 impl RadkitAgent {
     fn new(llm: OpenAILlm) -> Self {
-        Self {
-            llm: Arc::new(llm),
-        }
+        Self { llm: Arc::new(llm) }
     }
 }
 
@@ -104,9 +102,9 @@ impl TaskHandler for RadkitAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 
-    async fn run<S: scheduler::Scheduler + scheduler::DurableStorage>(
+    async fn run(
         &self,
-        ctx: &mut TaskContext<S>,
+        ctx: &mut TaskContext,
         data: Self::Data,
     ) -> Result<Self::Output, TaskError> {
         // Step 1: Use radkit LLM to extract location from natural language query
@@ -135,10 +133,11 @@ Respond with only a JSON object with "city" and "state" fields."#
                                  Always return valid JSON with city and state fields.",
                             );
 
-                        let result = function.run(&prompt).await.map_err(|e| StepError::Failed {
-                            step: "extract-location".to_string(),
-                            reason: format!("LLM extraction failed: {e}"),
-                        })?;
+                        let result =
+                            function.run(&prompt).await.map_err(|e| StepError::Failed {
+                                step: "extract-location".to_string(),
+                                reason: format!("LLM extraction failed: {e}"),
+                            })?;
 
                         Ok(ExtractedLocation {
                             city: result.city,
@@ -197,9 +196,7 @@ Respond with only a JSON object with "city" and "state" fields."#
                         .into_iter()
                         .map(|b| BreweryInfo {
                             name: b.name,
-                            brewery_type: b
-                                .brewery_type
-                                .unwrap_or_else(|| "unknown".to_string()),
+                            brewery_type: b.brewery_type.unwrap_or_else(|| "unknown".to_string()),
                             city: b.city.unwrap_or_else(|| city.clone()),
                             state: b.state.unwrap_or_else(|| state.clone()),
                         })
@@ -361,7 +358,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("═══════════════════════════════════════════");
             println!();
             println!("Query:     {}", output.query);
-            println!("Location:  {}, {}", output.location.city, output.location.state);
+            println!(
+                "Location:  {}, {}",
+                output.location.city, output.location.state
+            );
             println!("Breweries: {}", output.breweries.len());
             println!();
 

@@ -42,7 +42,7 @@ The `#[zart_durable]` attribute generates a `TaskHandler` impl from a plain asyn
 ```rust
 #[zart_durable("brewery-finder", timeout = "5m")]
 async fn brewery_finder(
-    ctx: &mut TaskContext<impl Scheduler>,
+    ctx: &mut TaskContext,
     data: FinderInput,
 ) -> Result<FinderOutput, TaskError> {
     let client = reqwest::Client::new();
