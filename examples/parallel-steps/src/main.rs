@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(registry);
 
     let execution_id = format!("parallel-demo-{}", uuid::Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone(), registry.clone());
+    let durable = DurableScheduler::new(sched.clone());
 
     let input = HealthCheckInput {
         services: vec![

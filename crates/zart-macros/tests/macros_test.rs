@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
-    DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StepLookup, StorageError,
-    TaskStatus,
+    DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler, StepLookup,
+    StorageError, TaskStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -63,17 +63,11 @@ impl Scheduler for MockScheduler {
 
     async fn schedule_at(
         &self,
-        task_id: &str,
-        _task_name: &str,
-        execution_time: DateTime<Utc>,
-        _data: serde_json::Value,
-        _recurrence: Option<Recurrence>,
-        _execution_id: Option<&str>,
-        _metadata: serde_json::Value,
+        params: ScheduleAtParams,
     ) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
-            task_id: task_id.to_string(),
-            execution_time,
+            task_id: params.task_id,
+            execution_time: params.execution_time,
         })
     }
 
@@ -157,7 +151,6 @@ fn make_ctx() -> TaskContext {
         Arc::new(MockScheduler::new()),
         "test-execution",
         "test-task",
-        Default::default(),
         "lock-token",
         serde_json::Value::Null,
     )
@@ -190,7 +183,6 @@ async fn z_step_completed_step_returns_cached_result() {
         Arc::new(mock),
         "exec",
         "task",
-        Default::default(),
         "token",
         serde_json::Value::Null,
     );

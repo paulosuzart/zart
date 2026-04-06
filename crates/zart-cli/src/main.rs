@@ -20,7 +20,7 @@
 use clap::{Parser, Subcommand};
 use scheduler::Scheduler as _;
 use std::sync::Arc;
-use zart::{DurableScheduler, TaskRegistry};
+use zart::DurableScheduler;
 
 /// Zart — Durable Execution Framework CLI
 #[derive(Parser)]
@@ -130,8 +130,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
-            let durable = DurableScheduler::new(scheduler, registry);
+            let durable = DurableScheduler::new(scheduler);
 
             durable
                 .start(&execution_id, &task_name, payload)
@@ -148,8 +147,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
-            let durable = DurableScheduler::new(scheduler, registry);
+            let durable = DurableScheduler::new(scheduler);
 
             let record = durable.status(&execution_id).await.unwrap_or_else(|e| {
                 eprintln!("error: {e}");
@@ -172,8 +170,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
-            let durable = DurableScheduler::new(scheduler, registry);
+            let durable = DurableScheduler::new(scheduler);
 
             let cancelled = durable.cancel(&execution_id).await.unwrap_or_else(|e| {
                 eprintln!("error: {e}");
@@ -195,8 +192,7 @@ async fn main() {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
             let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
-            let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
-            let durable = DurableScheduler::new(scheduler, registry);
+            let durable = DurableScheduler::new(scheduler);
 
             let record = durable
                 .wait(

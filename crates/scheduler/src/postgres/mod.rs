@@ -15,8 +15,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    DurableStorage, ExecutionRecord, ExecutionStatus, FetchedTask, Recurrence, ScheduleResult,
-    Scheduler, StepLookup, StorageError,
+    CompleteAndScheduleParams, DurableStorage, ExecutionRecord, ExecutionStatus, FetchedTask,
+    ScheduleAtParams, ScheduleResult, Scheduler, StepLookup, StorageError,
 };
 
 /// A [`Scheduler`] backed by a PostgreSQL database.
@@ -44,30 +44,21 @@ impl Scheduler for PostgresScheduler {
         data: serde_json::Value,
         execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError> {
-        let now = Utc::now();
-        self.schedule_at(
-            task_id,
-            task_name,
-            now,
+        self.schedule_at(ScheduleAtParams {
+            task_id: task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: Utc::now(),
             data,
-            None,
-            execution_id,
-            serde_json::Value::Null,
-        )
+            recurrence: None,
+            execution_id: execution_id.map(String::from),
+            metadata: serde_json::Value::Null,
+        })
         .await
     }
 
-    async fn schedule_at(
-        &self,
-        task_id: &str,
-        task_name: &str,
-        execution_time: DateTime<Utc>,
-        data: serde_json::Value,
-        recurrence: Option<Recurrence>,
-        execution_id: Option<&str>,
-        metadata: serde_json::Value,
-    ) -> Result<ScheduleResult, StorageError> {
-        let recurrence_json = recurrence
+    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError> {
+        let recurrence_json = params
+            .recurrence
             .as_ref()
             .map(serde_json::to_value)
             .transpose()
@@ -81,20 +72,20 @@ impl Scheduler for PostgresScheduler {
             ON CONFLICT (task_id) DO NOTHING
             "#,
         )
-        .bind(task_id)
-        .bind(task_name)
-        .bind(execution_time)
-        .bind(&data)
+        .bind(&params.task_id)
+        .bind(&params.task_name)
+        .bind(params.execution_time)
+        .bind(&params.data)
         .bind(&recurrence_json)
-        .bind(execution_id)
-        .bind(&metadata)
+        .bind(params.execution_id.as_deref())
+        .bind(&params.metadata)
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         Ok(ScheduleResult {
-            task_id: task_id.to_string(),
-            execution_time,
+            task_id: params.task_id,
+            execution_time: params.execution_time,
         })
     }
 
@@ -405,15 +396,7 @@ impl Scheduler for PostgresScheduler {
 
     async fn complete_and_schedule(
         &self,
-        completed_task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-        new_task_id: &str,
-        new_task_name: &str,
-        new_execution_time: DateTime<Utc>,
-        new_data: serde_json::Value,
-        new_execution_id: Option<&str>,
-        new_metadata: serde_json::Value,
+        params: CompleteAndScheduleParams,
     ) -> Result<(), StorageError> {
         let mut tx = self
             .pool
@@ -434,9 +417,9 @@ impl Scheduler for PostgresScheduler {
               AND worker_id = $3
             "#,
         )
-        .bind(&result)
-        .bind(completed_task_id)
-        .bind(lock_token)
+        .bind(&params.result)
+        .bind(&params.completed_task_id)
+        .bind(&params.lock_token)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
@@ -446,7 +429,7 @@ impl Scheduler for PostgresScheduler {
             tx.rollback()
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
-            return Err(StorageError::LockMismatch(completed_task_id.to_string()));
+            return Err(StorageError::LockMismatch(params.completed_task_id));
         }
 
         sqlx::query(
@@ -457,12 +440,12 @@ impl Scheduler for PostgresScheduler {
             ON CONFLICT (task_id) DO NOTHING
             "#,
         )
-        .bind(new_task_id)
-        .bind(new_task_name)
-        .bind(new_execution_time)
-        .bind(&new_data)
-        .bind(new_execution_id)
-        .bind(&new_metadata)
+        .bind(&params.new_task_id)
+        .bind(&params.new_task_name)
+        .bind(params.new_execution_time)
+        .bind(&params.new_data)
+        .bind(params.new_execution_id.as_deref())
+        .bind(&params.new_metadata)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;

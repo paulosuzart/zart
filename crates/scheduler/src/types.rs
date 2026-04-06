@@ -134,6 +134,54 @@ impl std::str::FromStr for ExecutionStatus {
     }
 }
 
+/// Parameters for [`Scheduler::schedule_at`].
+///
+/// Groups the seven positional arguments into a single struct so call sites
+/// stay readable and the trait method stays within clippy's argument limit.
+#[derive(Debug)]
+pub struct ScheduleAtParams {
+    /// Unique identifier for the new task row.
+    pub task_id: String,
+    /// Registered handler name.
+    pub task_name: String,
+    /// Earliest time the task may be picked up.
+    pub execution_time: DateTime<Utc>,
+    /// Serialized input payload.
+    pub data: serde_json::Value,
+    /// Optional recurrence rule for repeating tasks.
+    pub recurrence: Option<Recurrence>,
+    /// The durable execution this task belongs to, if any.
+    pub execution_id: Option<String>,
+    /// Execution-model metadata (mode, segment, step_name, …).
+    pub metadata: serde_json::Value,
+}
+
+/// Parameters for [`Scheduler::complete_and_schedule`].
+///
+/// Groups the nine positional arguments into a single struct so the atomic
+/// "complete one task and insert the next" operation remains readable.
+#[derive(Debug)]
+pub struct CompleteAndScheduleParams {
+    /// Task ID of the task being completed.
+    pub completed_task_id: String,
+    /// Optional result payload for the completed task.
+    pub result: Option<serde_json::Value>,
+    /// Lock token that must match the worker's current hold.
+    pub lock_token: String,
+    /// Task ID for the newly inserted task.
+    pub new_task_id: String,
+    /// Handler name for the newly inserted task.
+    pub new_task_name: String,
+    /// Scheduled execution time for the new task.
+    pub new_execution_time: DateTime<Utc>,
+    /// Input payload for the new task.
+    pub new_data: serde_json::Value,
+    /// Execution ID for the new task.
+    pub new_execution_id: Option<String>,
+    /// Execution-model metadata for the new task.
+    pub new_metadata: serde_json::Value,
+}
+
 /// A durable execution record fetched from `zart_executions`.
 #[derive(Debug, Clone)]
 pub struct ExecutionRecord {

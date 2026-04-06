@@ -23,8 +23,7 @@
 //!
 //! # async fn example() {
 //! // let scheduler = Arc::new(/* PostgresScheduler */);
-//! // let registry = Arc::new(TaskRegistry::new());
-//! // let durable = into_durable_api(DurableScheduler::new(scheduler, registry));
+//! // let durable = into_durable_api(DurableScheduler::new(scheduler));
 //! // ApiServer::new("0.0.0.0:8080", durable).serve().await.unwrap();
 //! # }
 //! ```

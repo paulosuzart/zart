@@ -191,7 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start durable execution
     let execution_id = format!("brewery-finder-demo-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone(), registry.clone());
+    let durable = DurableScheduler::new(sched.clone());
 
     let input = FinderInput {
         zip_code: "97209".to_string(), // Portland, OR — lots of breweries

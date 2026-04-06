@@ -213,7 +213,7 @@ mod example_tests {
             let registry = Arc::new(registry);
 
             let execution_id = format!("test-brewery-{}", Uuid::new_v4());
-            let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+            let durable = DurableScheduler::new(scheduler.clone());
 
             let input = FinderInput {
                 zip_code: "90210".to_string(),
@@ -325,7 +325,7 @@ mod example_tests {
             let registry = Arc::new(registry);
 
             let execution_id = format!("test-approval-{}", Uuid::new_v4());
-            let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+            let durable = DurableScheduler::new(scheduler.clone());
 
             let request = ApprovalRequest {
                 requester_name: "TestRequester".to_string(),
@@ -473,7 +473,7 @@ mod example_tests {
             let registry = Arc::new(registry);
 
             let execution_id = format!("test-parallel-{}", Uuid::new_v4());
-            let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+            let durable = DurableScheduler::new(scheduler.clone());
 
             let input = ParallelInput {
                 services: vec![
@@ -680,7 +680,7 @@ mod example_tests {
             let registry = Arc::new(registry);
 
             let execution_id = format!("test-radkit-{}", Uuid::new_v4());
-            let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+            let durable = DurableScheduler::new(scheduler.clone());
 
             let input = AgentInput {
                 query: "Find breweries in Portland".to_string(),

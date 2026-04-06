@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(registry);
 
     let execution_id = format!("approval-demo-{}", uuid::Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone(), registry.clone());
+    let durable = DurableScheduler::new(sched.clone());
 
     let request = ApprovalRequest {
         requester_name: "Bob".to_string(),

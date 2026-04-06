@@ -155,7 +155,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-seq-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "sequential-task", serde_json::json!({}))
@@ -186,7 +186,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-fail-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "failing-task", serde_json::json!({}))
@@ -221,7 +221,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-retry-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "transient-fail-task", serde_json::json!({}))
@@ -281,7 +281,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-event-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "wait-event-task", serde_json::json!({}))
@@ -330,7 +330,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-cancel-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "wait-event-task", serde_json::json!({}))
@@ -360,7 +360,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-timeout-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "wait-event-task", serde_json::json!({}))
@@ -387,8 +387,7 @@ mod integration {
     async fn list_executions_returns_started_executions() {
         let scheduler = setup().await;
 
-        let registry: Arc<TaskRegistry> = Arc::new(TaskRegistry::new());
-        let durable = DurableScheduler::new(scheduler.clone(), registry);
+        let durable = DurableScheduler::new(scheduler.clone());
 
         let base_id = Uuid::new_v4().to_string();
         let id_a = format!("test-list-a-{base_id}");
@@ -447,7 +446,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-par-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "parallel-task", serde_json::json!({}))
@@ -473,12 +472,8 @@ mod integration {
     async fn cancel_stops_execution_before_it_runs() {
         let scheduler = setup().await;
 
-        let mut registry = TaskRegistry::new();
-        registry.register("sequential-task", SequentialTask);
-        let registry = Arc::new(registry);
-
         let execution_id = format!("test-cancel-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "sequential-task", serde_json::json!({}))
@@ -532,15 +527,15 @@ mod integration {
         // Schedule a recurring task with a 200 ms fixed delay.
         let task_id = format!("recurring-{}", Uuid::new_v4());
         scheduler
-            .schedule_at(
-                &task_id,
-                "counter-task",
-                chrono::Utc::now(),
-                serde_json::json!({}),
-                Some(Recurrence::FixedDelay { duration_ms: 200 }),
-                None,
-                serde_json::Value::Null,
-            )
+            .schedule_at(scheduler::ScheduleAtParams {
+                task_id: task_id.clone(),
+                task_name: "counter-task".to_string(),
+                execution_time: chrono::Utc::now(),
+                data: serde_json::json!({}),
+                recurrence: Some(Recurrence::FixedDelay { duration_ms: 200 }),
+                execution_id: None,
+                metadata: serde_json::Value::Null,
+            })
             .await
             .expect("schedule_at failed");
 
@@ -601,7 +596,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-exhaust-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
 
         durable
             .start(&execution_id, "always-fail-task", serde_json::json!({}))
@@ -704,7 +699,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-cancel-race-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
         durable
             .start(&execution_id, "gated-task", serde_json::json!({}))
             .await
@@ -756,7 +751,7 @@ mod integration {
         let registry = Arc::new(registry);
 
         let execution_id = format!("test-cancel-step-race-{}", Uuid::new_v4());
-        let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+        let durable = DurableScheduler::new(scheduler.clone());
         durable
             .start(&execution_id, "gated-step-task", serde_json::json!({}))
             .await

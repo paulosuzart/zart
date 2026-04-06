@@ -194,15 +194,15 @@ mod postgres_tests {
         let far_future = chrono::Utc::now() + chrono::Duration::hours(24);
 
         scheduler
-            .schedule_at(
-                &task_id,
-                "test-task",
-                far_future,
-                serde_json::json!({}),
-                None,
-                None,
-                serde_json::Value::Null,
-            )
+            .schedule_at(scheduler::ScheduleAtParams {
+                task_id: task_id.clone(),
+                task_name: "test-task".to_string(),
+                execution_time: far_future,
+                data: serde_json::json!({}),
+                recurrence: None,
+                execution_id: None,
+                metadata: serde_json::Value::Null,
+            })
             .await
             .expect("schedule_at failed");
 
@@ -232,15 +232,15 @@ mod postgres_tests {
         };
 
         scheduler
-            .schedule_at(
-                &task_id,
-                "recurring-task",
-                chrono::Utc::now(),
-                serde_json::json!({}),
-                Some(recurrence),
-                None,
-                serde_json::Value::Null,
-            )
+            .schedule_at(scheduler::ScheduleAtParams {
+                task_id: task_id.clone(),
+                task_name: "recurring-task".to_string(),
+                execution_time: chrono::Utc::now(),
+                data: serde_json::json!({}),
+                recurrence: Some(recurrence),
+                execution_id: None,
+                metadata: serde_json::Value::Null,
+            })
             .await
             .expect("schedule_at with recurrence failed");
 

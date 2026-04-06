@@ -262,7 +262,7 @@ let mut registry = TaskRegistry::new();
 registry.register("radkit-agent", RadkitAgent::new(llm));
 let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone(), registry.clone());
+let durable = DurableScheduler::new(sched.clone());
 durable
     .start_typed(&execution_id, "radkit-agent", &AgentInput {
         query: "Find me breweries in Portland, Oregon".to_string(),

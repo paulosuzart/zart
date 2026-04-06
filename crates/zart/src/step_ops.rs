@@ -8,41 +8,68 @@
 //! generic storage backend with no execution-model knowledge.
 
 use chrono::Utc;
-use scheduler::{ScheduleResult, Scheduler, StorageError};
+use scheduler::{CompleteAndScheduleParams, ScheduleAtParams, ScheduleResult, Scheduler, StorageError};
+
+/// Parameters for [`schedule_step_task`].
+pub struct StepTaskSpec<'a> {
+    pub task_id: &'a str,
+    pub task_name: &'a str,
+    pub execution_id: &'a str,
+    pub step_name: &'a str,
+    pub next_body_segment: usize,
+    pub data: serde_json::Value,
+    pub retry_config: Option<&'a crate::retry::RetryConfig>,
+}
+
+/// Parameters for [`complete_step_and_schedule_body`].
+pub struct ResumeBodySpec<'a> {
+    pub step_task_id: &'a str,
+    pub result: serde_json::Value,
+    pub lock_token: &'a str,
+    pub next_body_task_id: &'a str,
+    pub task_name: &'a str,
+    pub execution_id: &'a str,
+    pub next_segment: usize,
+    pub data: serde_json::Value,
+}
+
+/// Parameters for [`schedule_wait_for_event_task`].
+pub struct EventStepSpec<'a> {
+    pub task_id: &'a str,
+    pub task_name: &'a str,
+    pub execution_id: &'a str,
+    pub event_name: &'a str,
+    pub next_body_segment: usize,
+    pub data: serde_json::Value,
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
+}
 
 /// Insert a new step task row for a sequential (non-wait_all) step.
-#[allow(clippy::too_many_arguments)]
 pub async fn schedule_step_task<S: Scheduler + ?Sized>(
     scheduler: &S,
-    task_id: &str,
-    task_name: &str,
-    execution_id: &str,
-    step_name: &str,
-    next_body_segment: usize,
-    data: serde_json::Value,
-    retry_config: Option<&crate::retry::RetryConfig>,
+    spec: StepTaskSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
     let mut metadata = serde_json::json!({
         "mode": "step",
         "step_type": "step",
-        "execution_id": execution_id,
-        "step_name": step_name,
-        "segment": next_body_segment,
+        "execution_id": spec.execution_id,
+        "step_name": spec.step_name,
+        "segment": spec.next_body_segment,
         "retry_attempt": 0,
     });
-    if let Some(rc) = retry_config {
+    if let Some(rc) = spec.retry_config {
         metadata["retry_config"] = serde_json::to_value(rc).unwrap_or(serde_json::Value::Null);
     }
     scheduler
-        .schedule_at(
-            task_id,
-            task_name,
-            Utc::now(),
-            data,
-            None,
-            Some(execution_id),
+        .schedule_at(ScheduleAtParams {
+            task_id: spec.task_id.to_string(),
+            task_name: spec.task_name.to_string(),
+            execution_time: Utc::now(),
+            data: spec.data,
+            recurrence: None,
+            execution_id: Some(spec.execution_id.to_string()),
             metadata,
-        )
+        })
         .await
 }
 
@@ -84,48 +111,40 @@ pub async fn schedule_wait_all_child<S: Scheduler + ?Sized>(
         "coordinator_id": coordinator_id,
     });
     scheduler
-        .schedule_at(
-            task_id,
-            task_name,
-            Utc::now(),
+        .schedule_at(ScheduleAtParams {
+            task_id: task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: Utc::now(),
             data,
-            None,
-            Some(execution_id),
+            recurrence: None,
+            execution_id: Some(execution_id.to_string()),
             metadata,
-        )
+        })
         .await
 }
 
 /// Atomically complete a step task and schedule the next body segment.
-#[allow(clippy::too_many_arguments)]
 pub async fn complete_step_and_schedule_body<S: Scheduler + ?Sized>(
     scheduler: &S,
-    step_task_id: &str,
-    result: serde_json::Value,
-    lock_token: &str,
-    next_body_task_id: &str,
-    task_name: &str,
-    execution_id: &str,
-    next_segment: usize,
-    data: serde_json::Value,
+    spec: ResumeBodySpec<'_>,
 ) -> Result<(), StorageError> {
     let body_metadata = serde_json::json!({
         "mode": "body",
-        "execution_id": execution_id,
-        "segment": next_segment,
+        "execution_id": spec.execution_id,
+        "segment": spec.next_segment,
     });
     scheduler
-        .complete_and_schedule(
-            step_task_id,
-            Some(result),
-            lock_token,
-            next_body_task_id,
-            task_name,
-            Utc::now(),
-            data,
-            Some(execution_id),
-            body_metadata,
-        )
+        .complete_and_schedule(CompleteAndScheduleParams {
+            completed_task_id: spec.step_task_id.to_string(),
+            result: Some(spec.result),
+            lock_token: spec.lock_token.to_string(),
+            new_task_id: spec.next_body_task_id.to_string(),
+            new_task_name: spec.task_name.to_string(),
+            new_execution_time: Utc::now(),
+            new_data: spec.data,
+            new_execution_id: Some(spec.execution_id.to_string()),
+            new_metadata: body_metadata,
+        })
         .await
 }
 
@@ -161,22 +180,22 @@ pub async fn schedule_coordinator<S: Scheduler + ?Sized>(
         "wait_for": wait_for,
     });
     scheduler
-        .schedule_at(
-            coordinator_task_id,
-            task_name,
-            Utc::now(),
+        .schedule_at(ScheduleAtParams {
+            task_id: coordinator_task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: Utc::now(),
             data,
-            None,
-            Some(execution_id),
+            recurrence: None,
+            execution_id: Some(execution_id.to_string()),
             metadata,
-        )
+        })
         .await
 }
 
 /// Insert a wait_for_event step task row.
 ///
-/// If `deadline` is `None`, the task is scheduled for `DateTime::MAX_UTC` (year
-/// 262142) so it effectively never fires unless `offer_event` arrives first.
+/// If `spec.deadline` is `None`, the task is scheduled for `DateTime::MAX_UTC`
+/// (year 262142) so it effectively never fires unless `offer_event` arrives first.
 ///
 /// **Trade-off**: using a sentinel far-future timestamp is simpler than a dedicated
 /// `parked` status or a nullable `execution_time`, but it means the scheduler's
@@ -184,35 +203,30 @@ pub async fn schedule_coordinator<S: Scheduler + ?Sized>(
 /// only completed via `complete_event_step_and_schedule_body`, which bypasses the
 /// `execution_time` check entirely. Operators querying for "scheduled" tasks with
 /// far-future times can identify these as pending event waits.
-#[allow(clippy::too_many_arguments)]
 pub async fn schedule_wait_for_event_task<S: Scheduler + ?Sized>(
     scheduler: &S,
-    task_id: &str,
-    task_name: &str,
-    execution_id: &str,
-    event_name: &str,
-    next_body_segment: usize,
-    data: serde_json::Value,
-    deadline: Option<chrono::DateTime<chrono::Utc>>,
+    spec: EventStepSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
-    let execution_time = deadline.unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
+    let execution_time = spec
+        .deadline
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
     let metadata = serde_json::json!({
         "mode":         "step",
         "step_type":    "wait_for_event",
-        "execution_id": execution_id,
-        "step_name":    event_name,
-        "segment":      next_body_segment,
+        "execution_id": spec.execution_id,
+        "step_name":    spec.event_name,
+        "segment":      spec.next_body_segment,
     });
     scheduler
-        .schedule_at(
-            task_id,
-            task_name,
+        .schedule_at(ScheduleAtParams {
+            task_id: spec.task_id.to_string(),
+            task_name: spec.task_name.to_string(),
             execution_time,
-            data,
-            None,
-            Some(execution_id),
+            data: spec.data,
+            recurrence: None,
+            execution_id: Some(spec.execution_id.to_string()),
             metadata,
-        )
+        })
         .await
 }
 
@@ -233,14 +247,14 @@ pub async fn schedule_sleep_task<S: Scheduler + ?Sized>(
         "segment": next_segment,
     });
     scheduler
-        .schedule_at(
-            sleep_task_id,
-            task_name,
-            wake_time,
+        .schedule_at(ScheduleAtParams {
+            task_id: sleep_task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: wake_time,
             data,
-            None,
-            Some(execution_id),
+            recurrence: None,
+            execution_id: Some(execution_id.to_string()),
             metadata,
-        )
+        })
         .await
 }

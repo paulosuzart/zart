@@ -107,7 +107,7 @@ let mut registry = TaskRegistry::new();
 registry.register("approval-task", ApprovalTask);
 let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone(), registry.clone());
+let durable = DurableScheduler::new(sched.clone());
 let execution_id = "approval-demo-1";
 
 // Start the workflow — it will run step 1, then park at wait_for_event

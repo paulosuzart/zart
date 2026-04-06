@@ -137,7 +137,7 @@ let mut registry = TaskRegistry::new();
 registry.register("brewery-finder", BreweryFinder);
 let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone(), registry.clone());
+let durable = DurableScheduler::new(sched.clone());
 durable
     .start_typed("my-run-1", "brewery-finder", &FinderInput {
         zip_code: "97209".to_string(), // Portland, OR

@@ -8,13 +8,11 @@
 //! `check_wait_all_children`. Tests use it to assert *which* DB operations the
 //! execution model triggers and *how many* task rows are inserted per scenario.
 
-#![allow(dead_code)]
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
-    DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StepLookup, StorageError,
-    TaskStatus,
+    CompleteAndScheduleParams, DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult,
+    Scheduler, StepLookup, StorageError, TaskStatus,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -26,36 +24,23 @@ use std::sync::{Arc, Mutex};
 pub enum Call {
     ScheduleAt {
         task_id: String,
-        task_name: String,
         execution_time: DateTime<Utc>,
-        execution_id: Option<String>,
         metadata: serde_json::Value,
     },
     CompleteAndSchedule {
         completed_task_id: String,
-        result: Option<serde_json::Value>,
         new_task_id: String,
-        new_task_name: String,
-        new_execution_time: DateTime<Utc>,
-        new_execution_id: Option<String>,
         new_metadata: serde_json::Value,
     },
     MarkCompleted {
         task_id: String,
-        result: Option<serde_json::Value>,
     },
     MarkFailed {
         task_id: String,
-        error: String,
         next_execution_time: Option<DateTime<Utc>>,
     },
-    CheckWaitAllChildren {
-        task_ids: Vec<String>,
-    },
-    CompleteEventStepAndScheduleBody {
-        execution_id: String,
-        event_name: String,
-    },
+    CheckWaitAllChildren,
+    CompleteEventStepAndScheduleBody,
     FailExecution {
         execution_id: String,
     },
@@ -68,14 +53,8 @@ impl Call {
     pub fn is_complete_and_schedule(&self) -> bool {
         matches!(self, Self::CompleteAndSchedule { .. })
     }
-    pub fn is_mark_completed(&self) -> bool {
-        matches!(self, Self::MarkCompleted { .. })
-    }
     pub fn is_mark_failed(&self) -> bool {
         matches!(self, Self::MarkFailed { .. })
-    }
-    pub fn is_complete_event_step(&self) -> bool {
-        matches!(self, Self::CompleteEventStepAndScheduleBody { .. })
     }
     pub fn is_fail_execution(&self) -> bool {
         matches!(self, Self::FailExecution { .. })
@@ -111,13 +90,6 @@ pub struct RecordingSchedulerBuilder {
 }
 
 impl RecordingSchedulerBuilder {
-    /// `get_step_status(exec_id, step)` → `Ok(None)` (step row not yet inserted).
-    pub fn step_not_found(mut self, exec_id: &str, step: &str) -> Self {
-        self.step_responses
-            .insert((exec_id.into(), step.into()), None);
-        self
-    }
-
     /// `get_step_status(exec_id, step)` → `Ok(Some(Completed { result }))`.
     pub fn step_completed(mut self, exec_id: &str, step: &str, result: serde_json::Value) -> Self {
         self.step_responses.insert(
@@ -184,23 +156,16 @@ impl Scheduler for RecordingScheduler {
 
     async fn schedule_at(
         &self,
-        task_id: &str,
-        task_name: &str,
-        execution_time: DateTime<Utc>,
-        _data: serde_json::Value,
-        _recurrence: Option<Recurrence>,
-        execution_id: Option<&str>,
-        metadata: serde_json::Value,
+        params: ScheduleAtParams,
     ) -> Result<ScheduleResult, StorageError> {
+        let execution_time = params.execution_time;
         self.calls.lock().unwrap().push(Call::ScheduleAt {
-            task_id: task_id.to_string(),
-            task_name: task_name.to_string(),
+            task_id: params.task_id.clone(),
             execution_time,
-            execution_id: execution_id.map(String::from),
-            metadata,
+            metadata: params.metadata,
         });
         Ok(ScheduleResult {
-            task_id: task_id.to_string(),
+            task_id: params.task_id,
             execution_time,
         })
     }
@@ -226,26 +191,25 @@ impl Scheduler for RecordingScheduler {
     async fn mark_completed(
         &self,
         task_id: &str,
-        result: Option<serde_json::Value>,
+        _result: Option<serde_json::Value>,
         _lock_token: &str,
     ) -> Result<(), StorageError> {
-        self.calls.lock().unwrap().push(Call::MarkCompleted {
-            task_id: task_id.to_string(),
-            result,
-        });
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::MarkCompleted { task_id: task_id.to_string() });
         Ok(())
     }
 
     async fn mark_failed(
         &self,
         task_id: &str,
-        error: &str,
+        _error: &str,
         next_execution_time: Option<DateTime<Utc>>,
         _lock_token: &str,
     ) -> Result<(), StorageError> {
         self.calls.lock().unwrap().push(Call::MarkFailed {
             task_id: task_id.to_string(),
-            error: error.to_string(),
             next_execution_time,
         });
         Ok(())
@@ -265,24 +229,12 @@ impl Scheduler for RecordingScheduler {
 
     async fn complete_and_schedule(
         &self,
-        completed_task_id: &str,
-        result: Option<serde_json::Value>,
-        _lock_token: &str,
-        new_task_id: &str,
-        new_task_name: &str,
-        new_execution_time: DateTime<Utc>,
-        _new_data: serde_json::Value,
-        new_execution_id: Option<&str>,
-        new_metadata: serde_json::Value,
+        params: CompleteAndScheduleParams,
     ) -> Result<(), StorageError> {
         self.calls.lock().unwrap().push(Call::CompleteAndSchedule {
-            completed_task_id: completed_task_id.to_string(),
-            result,
-            new_task_id: new_task_id.to_string(),
-            new_task_name: new_task_name.to_string(),
-            new_execution_time,
-            new_execution_id: new_execution_id.map(String::from),
-            new_metadata,
+            completed_task_id: params.completed_task_id,
+            new_task_id: params.new_task_id,
+            new_metadata: params.new_metadata,
         });
         Ok(())
     }
@@ -304,27 +256,25 @@ impl DurableStorage for RecordingScheduler {
 
     async fn check_wait_all_children(
         &self,
-        wait_for_task_ids: &[String],
+        _wait_for_task_ids: &[String],
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-        self.calls.lock().unwrap().push(Call::CheckWaitAllChildren {
-            task_ids: wait_for_task_ids.to_vec(),
-        });
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::CheckWaitAllChildren);
         Ok(self.wait_all_response.clone())
     }
 
     async fn complete_event_step_and_schedule_body(
         &self,
-        execution_id: &str,
-        event_name: &str,
+        _execution_id: &str,
+        _event_name: &str,
         _payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
         self.calls
             .lock()
             .unwrap()
-            .push(Call::CompleteEventStepAndScheduleBody {
-                execution_id: execution_id.to_string(),
-                event_name: event_name.to_string(),
-            });
+            .push(Call::CompleteEventStepAndScheduleBody);
         Ok(true)
     }
 

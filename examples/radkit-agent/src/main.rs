@@ -310,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start durable execution
     let execution_id = format!("radkit-agent-demo-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone(), registry.clone());
+    let durable = DurableScheduler::new(sched.clone());
 
     let input = AgentInput {
         query: "Find me breweries in Portland, Oregon".to_string(),

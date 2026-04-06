@@ -1,6 +1,6 @@
 //! Worker — polls the scheduler and dispatches tasks to registered handlers.
 
-use crate::context::{ExecutionState, TaskContext};
+use crate::context::TaskContext;
 use crate::error::{StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 use crate::metrics::{
@@ -377,7 +377,6 @@ async fn dispatch_task(
         }
     };
 
-    let state: ExecutionState = serde_json::from_value(task.state.clone()).unwrap_or_default();
     let has_execution = task.execution_id.is_some();
     let execution_id = task
         .execution_id
@@ -388,7 +387,6 @@ async fn dispatch_task(
         scheduler.clone(),
         execution_id.clone(),
         task.task_name.clone(),
-        state,
         task.lock_token.clone(),
         task.data.clone(),
     )
@@ -470,15 +468,15 @@ async fn dispatch_task(
                     let task_data = ctx.data().clone();
                     if let Err(e) = ctx
                         .scheduler
-                        .schedule_at(
-                            &new_task_id,
-                            &task.task_name,
-                            next_time,
-                            task_data,
-                            Some(recurrence.clone()),
-                            task.execution_id.as_deref(),
-                            serde_json::Value::Null,
-                        )
+                        .schedule_at(scheduler::ScheduleAtParams {
+                            task_id: new_task_id.clone(),
+                            task_name: task.task_name.clone(),
+                            execution_time: next_time,
+                            data: task_data,
+                            recurrence: Some(recurrence.clone()),
+                            execution_id: task.execution_id.clone(),
+                            metadata: serde_json::Value::Null,
+                        })
                         .await
                     {
                         error!(
@@ -607,14 +605,16 @@ async fn dispatch_coordinator(
         let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
         if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
             &*scheduler,
-            &task.task_id,
-            serde_json::Value::Null,
-            &task.lock_token,
-            &next_body_task_id,
-            &task.task_name,
-            &execution_id,
-            next_segment,
-            task.data.clone(),
+            crate::step_ops::ResumeBodySpec {
+                step_task_id: &task.task_id,
+                result: serde_json::Value::Null,
+                lock_token: &task.lock_token,
+                next_body_task_id: &next_body_task_id,
+                task_name: &task.task_name,
+                execution_id: &execution_id,
+                next_segment,
+                data: task.data.clone(),
+            },
         )
         .await
         {
@@ -688,14 +688,16 @@ async fn dispatch_sleep_continuation(
 
     if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
         &*scheduler,
-        &task.task_id,
-        serde_json::Value::Null,
-        &task.lock_token,
-        &next_body_task_id,
-        &task.task_name,
-        &execution_id,
-        next_segment,
-        task.data.clone(),
+        crate::step_ops::ResumeBodySpec {
+            step_task_id: &task.task_id,
+            result: serde_json::Value::Null,
+            lock_token: &task.lock_token,
+            next_body_task_id: &next_body_task_id,
+            task_name: &task.task_name,
+            execution_id: &execution_id,
+            next_segment,
+            data: task.data.clone(),
+        },
     )
     .await
     {

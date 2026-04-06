@@ -133,9 +133,6 @@ pub struct TaskContext {
     pub(crate) task_id: String,
     /// Registered name of the task handler.
     task_name: String,
-    /// Mutable in-memory state; written back to the DB on re-schedule.
-    #[allow(dead_code)]
-    pub(crate) state: ExecutionState,
     /// Opaque lock token from the current pick-up. Required for scheduler calls.
     pub(crate) lock_token: String,
     /// The original JSON payload supplied when the execution was started.
@@ -153,7 +150,6 @@ impl TaskContext {
         scheduler: Arc<dyn StorageBackend>,
         execution_id: impl Into<String>,
         task_name: impl Into<String>,
-        state: ExecutionState,
         lock_token: impl Into<String>,
         data: serde_json::Value,
     ) -> Self {
@@ -164,7 +160,6 @@ impl TaskContext {
             task_id,
             execution_id,
             task_name: task_name.into(),
-            state,
             lock_token: lock_token.into(),
             data,
             execution_mode: ExecutionMode::Body { segment: 0 },
@@ -288,13 +283,15 @@ impl TaskContext {
                 let task_id = format!("{}:step:{}", self.execution_id, step_name);
                 step_ops::schedule_step_task(
                     &*self.scheduler,
-                    &task_id,
-                    &self.task_name,
-                    &self.execution_id,
-                    step_name,
-                    current_segment + 1,
-                    self.data.clone(),
-                    retry_config.as_ref(),
+                    step_ops::StepTaskSpec {
+                        task_id: &task_id,
+                        task_name: &self.task_name,
+                        execution_id: &self.execution_id,
+                        step_name,
+                        next_body_segment: current_segment + 1,
+                        data: self.data.clone(),
+                        retry_config: retry_config.as_ref(),
+                    },
                 )
                 .await
                 .map_err(|e| StepError::Failed {
@@ -405,14 +402,16 @@ impl TaskContext {
                 let next_body_task_id = format!("{}-b{}", self.execution_id, next_body_segment);
                 step_ops::complete_step_and_schedule_body(
                     &*self.scheduler,
-                    &step_task_id,
-                    serialized,
-                    &self.lock_token,
-                    &next_body_task_id,
-                    &self.task_name,
-                    &self.execution_id,
-                    next_body_segment,
-                    self.data.clone(),
+                    step_ops::ResumeBodySpec {
+                        step_task_id: &step_task_id,
+                        result: serialized,
+                        lock_token: &self.lock_token,
+                        next_body_task_id: &next_body_task_id,
+                        task_name: &self.task_name,
+                        execution_id: &self.execution_id,
+                        next_segment: next_body_segment,
+                        data: self.data.clone(),
+                    },
                 )
                 .await
                 .map_err(|e| StepError::Failed {
@@ -909,13 +908,15 @@ impl TaskContext {
                 let task_id = format!("{}:step:{}", self.execution_id, event_name);
                 step_ops::schedule_wait_for_event_task(
                     &*self.scheduler,
-                    &task_id,
-                    &self.task_name,
-                    &self.execution_id,
-                    event_name,
-                    current_segment + 1,
-                    self.data.clone(),
-                    deadline,
+                    step_ops::EventStepSpec {
+                        task_id: &task_id,
+                        task_name: &self.task_name,
+                        execution_id: &self.execution_id,
+                        event_name,
+                        next_body_segment: current_segment + 1,
+                        data: self.data.clone(),
+                        deadline,
+                    },
                 )
                 .await
                 .map_err(|e| StepError::Failed {
@@ -996,109 +997,7 @@ impl TaskContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scheduler::{
-        DurableStorage, FetchedTask, Recurrence, ScheduleResult, Scheduler, StorageError,
-    };
-    use std::sync::Arc;
     use std::time::Duration;
-
-    #[allow(dead_code)]
-    struct NoopScheduler;
-
-    #[async_trait::async_trait]
-    impl Scheduler for NoopScheduler {
-        async fn schedule_now(
-            &self,
-            task_id: &str,
-            _task_name: &str,
-            _data: serde_json::Value,
-            _execution_id: Option<&str>,
-        ) -> Result<ScheduleResult, StorageError> {
-            Ok(ScheduleResult {
-                task_id: task_id.to_string(),
-                execution_time: chrono::Utc::now(),
-            })
-        }
-
-        async fn schedule_at(
-            &self,
-            task_id: &str,
-            _task_name: &str,
-            execution_time: chrono::DateTime<chrono::Utc>,
-            _data: serde_json::Value,
-            _recurrence: Option<Recurrence>,
-            _execution_id: Option<&str>,
-            _metadata: serde_json::Value,
-        ) -> Result<ScheduleResult, StorageError> {
-            Ok(ScheduleResult {
-                task_id: task_id.to_string(),
-                execution_time,
-            })
-        }
-
-        async fn poll_due(
-            &self,
-            _now: chrono::DateTime<chrono::Utc>,
-            _limit: usize,
-        ) -> Result<Vec<FetchedTask>, StorageError> {
-            Ok(vec![])
-        }
-
-        async fn update_task_state(
-            &self,
-            _task_id: &str,
-            _state: serde_json::Value,
-            _next_execution_time: chrono::DateTime<chrono::Utc>,
-            _lock_token: &str,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn mark_completed(
-            &self,
-            _task_id: &str,
-            _result: Option<serde_json::Value>,
-            _lock_token: &str,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn mark_failed(
-            &self,
-            _task_id: &str,
-            _error: &str,
-            _next_execution_time: Option<chrono::DateTime<chrono::Utc>>,
-            _lock_token: &str,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn cancel_task(&self, _task_id: &str) -> Result<bool, StorageError> {
-            Ok(true)
-        }
-
-        async fn delete_task(&self, _task_id: &str) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn run_migrations(&self) -> Result<(), StorageError> {
-            Ok(())
-        }
-    }
-
-    impl DurableStorage for NoopScheduler {}
-
-    #[allow(dead_code)]
-    fn make_ctx() -> TaskContext {
-        TaskContext::new(
-            Arc::new(NoopScheduler),
-            "exec-1",
-            "test-task",
-            ExecutionState::default(),
-            "lock-token",
-            serde_json::json!({}),
-        )
-    }
 
     // ── Retry config serde ────────────────────────────────────────────────────
 
@@ -1265,7 +1164,6 @@ mod tests {
             scheduler,
             "exec-1",
             "test-task",
-            ExecutionState::default(),
             "lock-tok",
             serde_json::json!({"input": "data"}),
         )
@@ -1282,7 +1180,6 @@ mod tests {
             scheduler,
             "exec-1",
             "test-task",
-            ExecutionState::default(),
             "lock-tok",
             serde_json::json!({"input": "data"}),
         )
@@ -1554,7 +1451,6 @@ mod tests {
             scheduler,
             "exec-1",
             "test-task",
-            ExecutionState::default(),
             "lock-tok",
             serde_json::json!({}),
         )
@@ -1663,7 +1559,6 @@ mod tests {
             scheduler,
             "exec-1",
             "test-task",
-            ExecutionState::default(),
             "lock-tok",
             serde_json::json!({}),
         )

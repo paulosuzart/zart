@@ -5,7 +5,6 @@
 //! querying status, and waiting for completion.
 
 use crate::error::SchedulerError;
-use crate::registry::TaskRegistry;
 use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult, StorageBackend};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,17 +21,12 @@ const MAX_WAIT_SECS: u64 = 30;
 /// - querying and waiting for execution completion
 pub struct DurableScheduler {
     scheduler: Arc<dyn StorageBackend>,
-    #[allow(dead_code)]
-    registry: Arc<TaskRegistry>,
 }
 
 impl DurableScheduler {
     /// Create a new `DurableScheduler`.
-    pub fn new(scheduler: Arc<dyn StorageBackend>, registry: Arc<TaskRegistry>) -> Self {
-        Self {
-            scheduler,
-            registry,
-        }
+    pub fn new(scheduler: Arc<dyn StorageBackend>) -> Self {
+        Self { scheduler }
     }
 
     /// Start a new durable execution with a typed input value.

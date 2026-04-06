@@ -100,7 +100,7 @@ let mut registry = TaskRegistry::new();
 registry.register("health-check", HealthCheckTask);
 let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone(), registry.clone());
+let durable = DurableScheduler::new(sched.clone());
 durable
     .start_typed("health-check-run-1", "health-check", &HealthCheckInput {
         services: vec!["auth-api".into(), "payments".into(), "users-db".into()],

@@ -25,7 +25,8 @@ pub mod postgres;
 pub use error::StorageError;
 pub use recurrence::Recurrence;
 pub use types::{
-    ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleResult, StepLookup, TaskStatus,
+    CompleteAndScheduleParams, ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleAtParams,
+    ScheduleResult, StepLookup, TaskStatus,
 };
 
 #[cfg(feature = "postgres")]
@@ -53,16 +54,9 @@ pub trait Scheduler: Send + Sync {
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Schedule a task for execution at a specific point in time.
-    #[allow(clippy::too_many_arguments)]
     async fn schedule_at(
         &self,
-        task_id: &str,
-        task_name: &str,
-        execution_time: DateTime<Utc>,
-        data: serde_json::Value,
-        recurrence: Option<Recurrence>,
-        execution_id: Option<&str>,
-        metadata: serde_json::Value,
+        params: ScheduleAtParams,
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Poll for tasks that are due for execution.
@@ -145,30 +139,11 @@ pub trait Scheduler: Send + Sync {
     ///
     /// Used by the execution model to complete a step/coordinator/sleep task and
     /// schedule the next body segment without a gap between the two operations.
-    #[allow(clippy::too_many_arguments)]
     async fn complete_and_schedule(
         &self,
-        completed_task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-        new_task_id: &str,
-        new_task_name: &str,
-        new_execution_time: DateTime<Utc>,
-        new_data: serde_json::Value,
-        new_execution_id: Option<&str>,
-        new_metadata: serde_json::Value,
+        params: CompleteAndScheduleParams,
     ) -> Result<(), StorageError> {
-        let _ = (
-            completed_task_id,
-            result,
-            lock_token,
-            new_task_id,
-            new_task_name,
-            new_execution_time,
-            new_data,
-            new_execution_id,
-            new_metadata,
-        );
+        let _ = params;
         Err(StorageError::NotImplemented("complete_and_schedule"))
     }
 }
@@ -323,17 +298,11 @@ mod tests {
 
         async fn schedule_at(
             &self,
-            task_id: &str,
-            _task_name: &str,
-            execution_time: DateTime<Utc>,
-            _data: serde_json::Value,
-            _recurrence: Option<Recurrence>,
-            _execution_id: Option<&str>,
-            _metadata: serde_json::Value,
+            params: ScheduleAtParams,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
-                task_id: task_id.to_string(),
-                execution_time,
+                task_id: params.task_id,
+                execution_time: params.execution_time,
             })
         }
 
@@ -429,17 +398,11 @@ mod tests {
         }
         async fn schedule_at(
             &self,
-            task_id: &str,
-            _: &str,
-            execution_time: DateTime<Utc>,
-            _: serde_json::Value,
-            _: Option<Recurrence>,
-            _: Option<&str>,
-            _: serde_json::Value,
+            params: ScheduleAtParams,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
-                task_id: task_id.to_string(),
-                execution_time,
+                task_id: params.task_id,
+                execution_time: params.execution_time,
             })
         }
         async fn poll_due(

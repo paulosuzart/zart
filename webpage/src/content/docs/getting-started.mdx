@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
 Call this from anywhere — a web handler, a background task, a test:
 
 ```rust
-let durable = DurableScheduler::new(scheduler.clone(), registry.clone());
+let durable = DurableScheduler::new(scheduler.clone());
 
 durable.start_typed(
     "signup-user-42",   // idempotency key — safe to call twice
