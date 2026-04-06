@@ -9,24 +9,17 @@ Zart's Rust API is organized into three layers that build on each other. You can
 
 ## The Three Layers
 
-```mermaid
-flowchart TD
-    subgraph macro["Macro Layer · zart-macros"]
-        A["#[zart_durable]"]
-        B["z_step!"]
-        C["z_wait_event!"]
-    end
-    subgraph exec["Execution Layer · zart"]
-        D["DurableExecution"]
-        E["TaskContext"]
-        F["TaskRegistry"]
-    end
-    subgraph sched["Scheduler Layer · zart + backend"]
-        G["Scheduler"]
-        H["DurableScheduler"]
-        I["Worker"]
-    end
-    macro --> exec --> sched
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Macro Layer       #[zart_durable]  z_step!  z_wait_event!   │
+│  (zart-macros)     Ergonomic async fn → DurableExecution      │
+├──────────────────────────────────────────────────────────────┤
+│  Execution Layer   DurableExecution  TaskContext  TaskRegistry│
+│  (zart)            Durable steps, retries, events, sleep      │
+├──────────────────────────────────────────────────────────────┤
+│  Scheduler Layer   Scheduler  DurableScheduler  Worker        │
+│  (zart + backend)  PostgreSQL polling via SKIP LOCKED         │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### Scheduler Layer
