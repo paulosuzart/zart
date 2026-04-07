@@ -1,6 +1,6 @@
 [package]
 name = "zart-macros"
-description = "Procedural macros for Zart — #[zart_durable], z_step!, z_step_with_retry!, z_wait_event!, z_durable_loop!"
+description = "Procedural macros for Zart — #[zart_durable], #[zart_step], z_wait_event!, z_durable_loop!"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

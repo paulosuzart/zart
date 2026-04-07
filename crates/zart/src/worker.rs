@@ -325,13 +325,11 @@ async fn dispatch_task(
         ExecutionMode::Step {
             target_step,
             step_type,
-            next_body_segment,
             retry_config,
             ..
         } => ExecutionMode::Step {
             target_step,
             step_type,
-            next_body_segment,
             retry_attempt: task.attempt.saturating_sub(1),
             retry_config,
         },
@@ -341,12 +339,8 @@ async fn dispatch_task(
     // ── Coordinator tasks (wait_all) ─────────────────────────────────────────
     // These don't dispatch to a handler. They poll children and schedule the
     // next body segment when all children are done.
-    if let ExecutionMode::Coordinator {
-        ref wait_for,
-        next_segment,
-    } = exec_mode
-    {
-        dispatch_coordinator(scheduler, task, wait_for.clone(), next_segment).await;
+    if let ExecutionMode::Coordinator { ref wait_for } = exec_mode {
+        dispatch_coordinator(scheduler, task, wait_for.clone()).await;
         return;
     }
 
@@ -619,9 +613,8 @@ async fn dispatch_coordinator(
     scheduler: Arc<dyn StorageBackend>,
     task: scheduler::FetchedTask,
     wait_for: Vec<String>,
-    next_segment: usize,
 ) {
-    let execution_id = task
+    let run_id = task
         .execution_id
         .as_deref()
         .unwrap_or(&task.task_id)
@@ -640,19 +633,17 @@ async fn dispatch_coordinator(
 
     if completed.len() == wait_for.len() {
         // All done — atomically mark coordinator completed + schedule next body segment.
-        // complete_step_and_schedule_body inserts the body task with correct metadata
-        // ({mode:body, execution_id, segment}) in a single transaction.
-        let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
+        let next_body_task_id = uuid::Uuid::new_v4().to_string();
         if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
             &*scheduler,
             crate::step_ops::ResumeBodySpec {
                 step_task_id: &task.task_id,
+                step_id: &task.task_id,
                 result: serde_json::Value::Null,
                 lock_token: &task.lock_token,
                 next_body_task_id: &next_body_task_id,
                 task_name: &task.task_name,
-                execution_id: &execution_id,
-                next_segment,
+                run_id: &run_id,
                 data: task.data.clone(),
             },
         )
@@ -664,10 +655,7 @@ async fn dispatch_coordinator(
                 .await;
             return;
         }
-        info!(
-            next_segment,
-            "Coordinator: all children done, next body scheduled"
-        );
+        info!("Coordinator: all children done, next body scheduled");
     } else {
         // Not all done — re-queue with a short backoff.
         let retry_at = chrono::Utc::now() + chrono::Duration::seconds(5);
@@ -700,42 +688,44 @@ async fn dispatch_sleep_continuation(
     task: scheduler::FetchedTask,
     exec_mode: &ExecutionMode,
 ) {
-    let next_segment = match exec_mode {
+    // Verify this is a step mode with sleep type
+    if !matches!(
+        exec_mode,
         ExecutionMode::Step {
-            next_body_segment, ..
-        } => *next_body_segment,
-        _ => {
-            error!("Sleep task has unexpected execution mode");
-            let _ = scheduler
-                .mark_failed(
-                    &task.task_id,
-                    "unexpected mode for sleep task",
-                    None,
-                    &task.lock_token,
-                )
-                .await;
-            return;
+            step_type: crate::execution_model::StepKind::Sleep,
+            ..
         }
-    };
+    ) {
+        error!("Sleep task has unexpected execution mode");
+        let _ = scheduler
+            .mark_failed(
+                &task.task_id,
+                "unexpected mode for sleep task",
+                None,
+                &task.lock_token,
+            )
+            .await;
+        return;
+    }
 
-    let execution_id = task
+    let run_id = task
         .execution_id
         .as_deref()
         .unwrap_or(&task.task_id)
         .to_string();
 
-    let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
+    let next_body_task_id = uuid::Uuid::new_v4().to_string();
 
     if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
         &*scheduler,
         crate::step_ops::ResumeBodySpec {
             step_task_id: &task.task_id,
+            step_id: &task.task_id,
             result: serde_json::Value::Null,
             lock_token: &task.lock_token,
             next_body_task_id: &next_body_task_id,
             task_name: &task.task_name,
-            execution_id: &execution_id,
-            next_segment,
+            run_id: &run_id,
             data: task.data.clone(),
         },
     )
@@ -746,7 +736,7 @@ async fn dispatch_sleep_continuation(
             .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
             .await;
     } else {
-        info!(next_segment, "Sleep continuation: next body scheduled");
+        info!("Sleep continuation: next body scheduled");
     }
 }
 
@@ -835,7 +825,7 @@ mod tests {
             }),
         );
 
-        dispatch_coordinator(scheduler, task, child_ids, 3).await;
+        dispatch_coordinator(scheduler, task, child_ids).await;
 
         let log = calls.lock().unwrap();
         let cas: Vec<_> = log
@@ -883,7 +873,7 @@ mod tests {
             }),
         );
 
-        dispatch_coordinator(scheduler, task, child_ids, 2).await;
+        dispatch_coordinator(scheduler, task, child_ids).await;
 
         let log = calls.lock().unwrap();
         let cas: Vec<_> = log
@@ -925,7 +915,6 @@ mod tests {
         let exec_mode = ExecutionMode::Step {
             target_step: "__sleep".to_string(),
             step_type: crate::execution_model::StepKind::Sleep,
-            next_body_segment: 4,
             retry_attempt: 0,
             retry_config: None,
         };

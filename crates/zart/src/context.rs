@@ -341,7 +341,7 @@ impl TaskContext {
             task_name: task_name.into(),
             lock_token: lock_token.into(),
             data,
-            execution_mode: ExecutionMode::Body { segment: 0 },
+            execution_mode: ExecutionMode::Body,
             seen_step_names: HashSet::new(),
         }
     }
@@ -396,9 +396,7 @@ impl TaskContext {
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body { .. } => {
-                self.step_body_mode(step_name, retry_config, step_fn).await
-            }
+            ExecutionMode::Body => self.step_body_mode(step_name, retry_config, step_fn).await,
             ExecutionMode::Step { target_step, .. } => {
                 let target = target_step.clone();
                 self.step_step_mode(&target, step_name, step_fn).await
@@ -489,19 +487,14 @@ impl TaskContext {
                         .with_label_values(&["scheduled", step_name])
                         .inc()
                 );
-                let current_segment = match &self.execution_mode {
-                    ExecutionMode::Body { segment } => *segment,
-                    _ => 0,
-                };
                 let task_id = format!("{}:step:{}", self.execution_id, step_name);
                 step_ops::schedule_step_task(
                     &*self.scheduler,
                     step_ops::StepTaskSpec {
                         task_id: &task_id,
                         task_name: &self.task_name,
-                        execution_id: &self.execution_id,
+                        run_id: &self.execution_id,
                         step_name,
-                        next_body_segment: current_segment + 1,
                         data: self.data.clone(),
                         retry_config: retry_config.as_ref(),
                     },
@@ -612,21 +605,15 @@ impl TaskContext {
                 reason: format!("failed to serialize result: {e}"),
             })?;
 
-            let (next_body_segment, is_wait_all_child) = match &self.execution_mode {
-                ExecutionMode::Step {
-                    next_body_segment, ..
-                } => {
-                    // sequential step: never a wait_all child
-                    (*next_body_segment, false)
-                }
-                _ => (1, false),
-            };
+            // Sequential step mode: never a wait_all child.
+            let is_wait_all_child = false;
 
             let step_task_id = self.task_id.clone();
 
             if is_wait_all_child {
                 step_ops::complete_step_no_resume(
                     &*self.scheduler,
+                    &step_task_id,
                     &step_task_id,
                     serialized,
                     &self.lock_token,
@@ -637,17 +624,17 @@ impl TaskContext {
                     reason: e.to_string(),
                 })?;
             } else {
-                let next_body_task_id = format!("{}-b{}", self.execution_id, next_body_segment);
+                let next_body_task_id = uuid::Uuid::new_v4().to_string();
                 step_ops::complete_step_and_schedule_body(
                     &*self.scheduler,
                     step_ops::ResumeBodySpec {
                         step_task_id: &step_task_id,
+                        step_id: &step_task_id,
                         result: serialized,
                         lock_token: &self.lock_token,
                         next_body_task_id: &next_body_task_id,
                         task_name: &self.task_name,
-                        execution_id: &self.execution_id,
-                        next_segment: next_body_segment,
+                        run_id: &self.execution_id,
                         data: self.data.clone(),
                     },
                 )
@@ -825,7 +812,7 @@ impl TaskContext {
         T: Serialize + for<'de> Deserialize<'de>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body { segment } => self.wait_all_body_mode(handles, *segment).await,
+            ExecutionMode::Body => self.wait_all_body_mode(handles).await,
             ExecutionMode::Step { target_step, .. } => {
                 let target = target_step.clone();
                 self.wait_all_step_mode(handles, &target).await
@@ -846,13 +833,15 @@ impl TaskContext {
     async fn wait_all_body_mode<T>(
         &mut self,
         handles: Vec<StepHandle<T>>,
-        segment: usize,
     ) -> Result<Vec<Result<T, StepError>>, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
     {
-        let next_segment = segment + 1;
-        let coordinator_id = format!("{}:coord:wait_all:{}", self.execution_id, next_segment);
+        let coordinator_id = format!(
+            "{}:coord:wait_all:{}",
+            self.execution_id,
+            uuid::Uuid::new_v4()
+        );
 
         // Extract step names upfront so we don't hold &StepHandle<T> across await points
         // (PendingFn is Send but not Sync, so &StepHandle<T> is not Send).
@@ -941,7 +930,6 @@ impl TaskContext {
             &coordinator_id,
             &self.task_name,
             &self.execution_id,
-            next_segment,
             child_ids,
             self.data.clone(),
         )
@@ -978,6 +966,7 @@ impl TaskContext {
                             let step_task_id = self.task_id.clone();
                             step_ops::complete_step_no_resume(
                                 &*self.scheduler,
+                                &step_task_id,
                                 &step_task_id,
                                 json_val,
                                 &self.lock_token,
@@ -1022,15 +1011,13 @@ impl TaskContext {
         wake_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), StepError> {
         match &self.execution_mode {
-            ExecutionMode::Body { segment } => {
-                let next_segment = segment + 1;
-                let sleep_task_id = format!("{}:sleep:{}", self.execution_id, next_segment);
+            ExecutionMode::Body => {
+                let sleep_task_id = uuid::Uuid::new_v4().to_string();
                 step_ops::schedule_sleep_task(
                     &*self.scheduler,
                     &sleep_task_id,
                     &self.task_name,
                     &self.execution_id,
-                    next_segment,
                     wake_time,
                     self.data.clone(),
                 )
@@ -1075,7 +1062,7 @@ impl TaskContext {
         T: for<'de> Deserialize<'de>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body { .. } => self.wait_for_event_body_mode(event_name, timeout).await,
+            ExecutionMode::Body => self.wait_for_event_body_mode(event_name, timeout).await,
             ExecutionMode::Step { .. } => self.wait_for_event_step_mode(event_name).await,
             ExecutionMode::Coordinator { .. } => Err(StepError::Failed {
                 step: event_name.to_string(),
@@ -1137,10 +1124,6 @@ impl TaskContext {
                         .with_label_values(&["waiting_for_event", event_name])
                         .inc()
                 );
-                let current_segment = match &self.execution_mode {
-                    ExecutionMode::Body { segment } => *segment,
-                    _ => 0,
-                };
                 let deadline = timeout.and_then(|d| {
                     chrono::Duration::from_std(d)
                         .ok()
@@ -1152,9 +1135,8 @@ impl TaskContext {
                     step_ops::EventStepSpec {
                         task_id: &task_id,
                         task_name: &self.task_name,
-                        execution_id: &self.execution_id,
+                        run_id: &self.execution_id,
                         event_name,
-                        next_body_segment: current_segment + 1,
                         data: self.data.clone(),
                         deadline,
                     },
@@ -1350,7 +1332,7 @@ mod tests {
     #[tokio::test]
     async fn body_mode_wait_for_event_first_call_schedules_step_task() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
         let result: Result<serde_json::Value, _> = ctx
             .wait_for_event("approval", Some(Duration::from_secs(3600)))
             .await;
@@ -1374,7 +1356,7 @@ mod tests {
             assert_eq!(task_id, "exec-1:step:approval");
             assert_eq!(metadata["step_type"], "wait_for_event");
             assert_eq!(metadata["step_name"], "approval");
-            assert_eq!(metadata["segment"], 1);
+            assert_eq!(metadata["run_id"], "exec-1");
             assert!(
                 *execution_time > chrono::Utc::now(),
                 "deadline must be in the future"
@@ -1386,7 +1368,7 @@ mod tests {
     #[tokio::test]
     async fn body_mode_wait_for_event_no_timeout_uses_max_execution_time() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
         let result: Result<serde_json::Value, _> = ctx.wait_for_event("no-deadline", None).await;
 
         assert!(matches!(result, Err(StepError::Scheduled { .. })));
@@ -1416,7 +1398,7 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder()
             .step_completed("exec-1", "approved", serde_json::json!({"ok": true}))
             .build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
         let result: Result<serde_json::Value, _> = ctx.wait_for_event("approved", None).await;
 
         assert!(result.is_ok(), "should return Ok for completed event step");
@@ -1434,7 +1416,7 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder()
             .step_completed("exec-1", "signed", serde_json::json!(42i32))
             .build();
-        let mut ctx = make_step_ctx(scheduler, "other-step", 2);
+        let mut ctx = make_step_ctx(scheduler, "other-step");
         let result: Result<i32, _> = ctx.wait_for_event("signed", None).await;
 
         assert_eq!(result.unwrap(), 42);
@@ -1444,7 +1426,7 @@ mod tests {
 
     // ── New execution model: call-counting tests ──────────────────────────────
 
-    fn make_body_ctx(scheduler: std::sync::Arc<dyn StorageBackend>, segment: usize) -> TaskContext {
+    fn make_body_ctx(scheduler: std::sync::Arc<dyn StorageBackend>) -> TaskContext {
         TaskContext::new(
             scheduler,
             "exec-1",
@@ -1452,14 +1434,10 @@ mod tests {
             "lock-tok",
             serde_json::json!({"input": "data"}),
         )
-        .with_execution_mode(ExecutionMode::Body { segment })
+        .with_execution_mode(ExecutionMode::Body)
     }
 
-    fn make_step_ctx(
-        scheduler: std::sync::Arc<dyn StorageBackend>,
-        target: &str,
-        next_body_segment: usize,
-    ) -> TaskContext {
+    fn make_step_ctx(scheduler: std::sync::Arc<dyn StorageBackend>, target: &str) -> TaskContext {
         let task_id = format!("exec-1:step:{target}");
         TaskContext::new(
             scheduler,
@@ -1472,7 +1450,6 @@ mod tests {
         .with_execution_mode(ExecutionMode::Step {
             target_step: target.to_string(),
             step_type: crate::execution_model::StepKind::Step,
-            next_body_segment,
             retry_attempt: 0,
             retry_config: None,
         })
@@ -1577,7 +1554,7 @@ mod tests {
     #[tokio::test]
     async fn body_mode_first_step_inserts_exactly_one_task_row() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
 
         let result = ctx.execute_step(ChargeCardStep).await;
 
@@ -1598,11 +1575,7 @@ mod tests {
             assert_eq!(metadata["mode"], "step");
             assert_eq!(metadata["step_type"], "step");
             assert_eq!(metadata["step_name"], "charge-card");
-            assert_eq!(
-                metadata["segment"], 1,
-                "next_body_segment = current segment + 1"
-            );
-            assert_eq!(metadata["execution_id"], "exec-1");
+            assert_eq!(metadata["run_id"], "exec-1");
         } else {
             panic!("unexpected call variant");
         }
@@ -1613,7 +1586,7 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder()
             .step_completed("exec-1", "charge-card", serde_json::json!(42))
             .build();
-        let mut ctx = make_body_ctx(scheduler, 1);
+        let mut ctx = make_body_ctx(scheduler);
 
         let result: Result<u32, _> = ctx
             .execute_step(ChargeCardStepWithResult { result: 0 })
@@ -1634,7 +1607,7 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder()
             .step_in_flight("exec-1", "charge-card")
             .build();
-        let mut ctx = make_body_ctx(scheduler, 1);
+        let mut ctx = make_body_ctx(scheduler);
 
         let result = ctx.execute_step(ChargeCardStep).await;
 
@@ -1652,7 +1625,7 @@ mod tests {
     #[tokio::test]
     async fn step_mode_target_step_executes_lambda_and_atomically_completes() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_step_ctx(scheduler, "charge-card", 1);
+        let mut ctx = make_step_ctx(scheduler, "charge-card");
 
         let result: Result<u32, _> = ctx.execute_step(ChargeCardStep).await;
 
@@ -1682,10 +1655,10 @@ mod tests {
         } = &cas[0]
         {
             assert_eq!(completed_task_id, "exec-1:step:charge-card");
-            assert_eq!(new_task_id, "exec-1-b1");
+            // Body task ID is now a UUID, not a deterministic segment-based ID.
+            assert!(!new_task_id.is_empty(), "body task ID must be set");
             assert_eq!(new_metadata["mode"], "body");
-            assert_eq!(new_metadata["segment"], 1);
-            assert_eq!(new_metadata["execution_id"], "exec-1");
+            assert_eq!(new_metadata["run_id"], "exec-1");
         } else {
             panic!("unexpected call variant");
         }
@@ -1696,7 +1669,7 @@ mod tests {
         let (scheduler, calls) = RecordingScheduler::builder()
             .step_completed("exec-1", "step-one", serde_json::json!(21))
             .build();
-        let mut ctx = make_step_ctx(scheduler, "step-two", 2);
+        let mut ctx = make_step_ctx(scheduler, "step-two");
 
         let result: Result<i32, _> = ctx.execute_step(StepOne).await;
 
@@ -1715,7 +1688,7 @@ mod tests {
     #[tokio::test]
     async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children_plus_one_coordinator() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
 
         let h1 = ctx.schedule_step(StepA);
         let h2 = ctx.schedule_step(StepB);
@@ -1762,8 +1735,8 @@ mod tests {
             .collect();
         assert_eq!(coordinators.len(), 1, "exactly one coordinator task");
         assert_eq!(
-            coordinators[0]["segment"], 1,
-            "coordinator targets the next body segment"
+            coordinators[0]["run_id"], "exec-1",
+            "coordinator must carry run_id in metadata"
         );
         assert_eq!(coordinators[0]["mode"], "step");
     }
@@ -1774,7 +1747,7 @@ mod tests {
             .step_completed("exec-1", "step-a", serde_json::json!(10))
             .step_completed("exec-1", "step-b", serde_json::json!(20))
             .build();
-        let mut ctx = make_body_ctx(scheduler, 1);
+        let mut ctx = make_body_ctx(scheduler);
 
         struct CachedStepA;
         #[async_trait::async_trait]
@@ -1836,7 +1809,6 @@ mod tests {
         .with_execution_mode(ExecutionMode::Step {
             target_step: "step-b".to_string(),
             step_type: crate::execution_model::StepKind::Step,
-            next_body_segment: 1,
             retry_attempt: 0,
             retry_config: None,
         });
@@ -1917,7 +1889,7 @@ mod tests {
     #[tokio::test]
     async fn sleep_body_mode_inserts_one_sleep_task_with_exact_wake_time() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
 
         let wake_time = chrono::Utc::now() + chrono::Duration::hours(1);
         let result = ctx.sleep_until(wake_time).await;
@@ -1944,11 +1916,11 @@ mod tests {
 
         assert_eq!(inserts.len(), 1, "sleep inserts exactly one task row");
         let (task_id, exec_time, meta) = inserts[0];
-        assert_eq!(task_id, "exec-1:sleep:1");
+        // Sleep task ID is now a UUID, not a deterministic segment-based ID.
+        assert!(!task_id.is_empty(), "sleep task ID must be set");
         assert_eq!(meta["mode"], "step");
         assert_eq!(meta["step_type"], "sleep");
-        assert_eq!(meta["segment"], 1);
-        assert_eq!(meta["execution_id"], "exec-1");
+        assert_eq!(meta["run_id"], "exec-1");
         let diff = (*exec_time - wake_time).num_seconds().abs();
         assert!(
             diff < 1,
@@ -1962,7 +1934,6 @@ mod tests {
     fn make_step_ctx_with_retry(
         scheduler: std::sync::Arc<dyn StorageBackend>,
         target: &str,
-        next_body_segment: usize,
         retry_attempt: usize,
         retry_config: RetryConfig,
     ) -> TaskContext {
@@ -1978,7 +1949,6 @@ mod tests {
         .with_execution_mode(ExecutionMode::Step {
             target_step: target.to_string(),
             step_type: crate::execution_model::StepKind::Step,
-            next_body_segment,
             retry_attempt,
             retry_config: Some(retry_config),
         })
@@ -1989,7 +1959,7 @@ mod tests {
     #[tokio::test]
     async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
-        let mut ctx = make_body_ctx(scheduler, 0);
+        let mut ctx = make_body_ctx(scheduler);
 
         struct RetryStep;
         #[async_trait::async_trait]
@@ -2036,7 +2006,6 @@ mod tests {
         let mut ctx = make_step_ctx_with_retry(
             scheduler,
             "charge-card",
-            1,
             0,
             RetryConfig::fixed(3, Duration::from_secs(10)),
         );
@@ -2081,7 +2050,6 @@ mod tests {
         let mut ctx = make_step_ctx_with_retry(
             scheduler,
             "charge-card",
-            1,
             3,
             RetryConfig::fixed(3, Duration::from_secs(10)),
         );
@@ -2108,7 +2076,6 @@ mod tests {
         let mut ctx = make_step_ctx_with_retry(
             scheduler,
             "charge-card",
-            1,
             0,
             RetryConfig::fixed(3, Duration::from_secs(10)),
         );
@@ -2143,7 +2110,7 @@ mod tests {
             .step_completed("exec-1", "loop-item-0", serde_json::json!(10u32))
             .step_completed("exec-1", "loop-item-1", serde_json::json!(20u32))
             .build();
-        let mut ctx = make_body_ctx(scheduler, 1);
+        let mut ctx = make_body_ctx(scheduler);
 
         struct LoopItemStep {
             index: usize,
@@ -2173,7 +2140,7 @@ mod tests {
             .step_completed("exec-1", "process-item-0", serde_json::json!(100u32))
             .step_completed("exec-1", "process-item-1", serde_json::json!(200u32))
             .build();
-        let mut ctx = make_body_ctx(scheduler, 1);
+        let mut ctx = make_body_ctx(scheduler);
 
         let r0 = ctx
             .execute_step(ChargeCardStep.with_id("process-item-0"))
@@ -2197,7 +2164,7 @@ mod tests {
         let (scheduler, _calls) = RecordingScheduler::builder()
             .step_completed("exec-1", "charge-card", serde_json::json!(99u32))
             .build();
-        let mut ctx = make_body_ctx(scheduler, 1);
+        let mut ctx = make_body_ctx(scheduler);
 
         // First call: returns the cached value correctly.
         let first = ctx.execute_step(ChargeCardStep).await;

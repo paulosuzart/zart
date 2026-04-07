@@ -194,3 +194,62 @@ pub struct ExecutionRecord {
     pub completed_at: Option<DateTime<Utc>>,
     pub version: i32,
 }
+
+/// A single run of a durable execution.
+///
+/// Each run represents one invocation of an execution, starting from run_index = 0.
+/// Runs are append-only: restarts create new rows, they don't mutate existing ones.
+#[derive(Debug, Clone)]
+pub struct ExecutionRunRecord {
+    /// Unique run identifier.
+    pub run_id: String,
+    /// The execution this run belongs to.
+    pub execution_id: String,
+    /// Run index: 0 = first, 1 = first restart, …
+    pub run_index: i32,
+    /// Input payload for this run.
+    pub payload: serde_json::Value,
+    /// Current status of this run.
+    pub status: ExecutionStatus,
+    /// Result payload (set when completed).
+    pub result: Option<serde_json::Value>,
+    /// When this run started.
+    pub started_at: DateTime<Utc>,
+    /// When this run finished (None if still running).
+    pub completed_at: Option<DateTime<Utc>>,
+    /// What triggered this run: 'initial', 'restart', or 'selective_rerun'.
+    pub trigger: String,
+}
+
+/// A step record from the `zart_steps` table.
+///
+/// Represents the authoritative state of a single step within a specific run.
+#[derive(Debug, Clone)]
+pub struct StepRow {
+    /// Step ID (same as the step task_id).
+    pub step_id: String,
+    /// The run this step belongs to.
+    pub run_id: String,
+    /// The step name (unique within a run).
+    pub step_name: String,
+    /// What kind of step this is: 'step', 'sleep', 'wait_all', 'wait_for_event'.
+    pub step_kind: String,
+    /// The task currently responsible for this step (None if completed or not yet scheduled).
+    pub task_id: Option<String>,
+    /// Current status: 'scheduled', 'running', 'completed', 'dead'.
+    pub status: String,
+    /// How many retries have been attempted (0 = no retries yet).
+    pub retry_attempt: i32,
+    /// Retry policy serialized as JSON.
+    pub retry_config: Option<serde_json::Value>,
+    /// Result payload (set when completed).
+    pub result: Option<serde_json::Value>,
+    /// Error message (set when failed).
+    pub last_error: Option<String>,
+    /// When this step was scheduled.
+    pub scheduled_at: DateTime<Utc>,
+    /// When this step completed (None if still in progress).
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Per-attempt history as JSON array.
+    pub attempts: serde_json::Value,
+}

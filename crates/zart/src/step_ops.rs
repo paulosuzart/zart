@@ -8,17 +8,14 @@
 //! generic storage backend with no execution-model knowledge.
 
 use chrono::Utc;
-use scheduler::{
-    CompleteAndScheduleParams, ScheduleAtParams, ScheduleResult, Scheduler, StorageError,
-};
+use scheduler::{ScheduleAtParams, ScheduleResult, StorageBackend, StorageError};
 
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {
     pub task_id: &'a str,
     pub task_name: &'a str,
-    pub execution_id: &'a str,
+    pub run_id: &'a str,
     pub step_name: &'a str,
-    pub next_body_segment: usize,
     pub data: serde_json::Value,
     pub retry_config: Option<&'a crate::retry::RetryConfig>,
 }
@@ -26,12 +23,12 @@ pub struct StepTaskSpec<'a> {
 /// Parameters for [`complete_step_and_schedule_body`].
 pub struct ResumeBodySpec<'a> {
     pub step_task_id: &'a str,
+    pub step_id: &'a str,
     pub result: serde_json::Value,
     pub lock_token: &'a str,
     pub next_body_task_id: &'a str,
     pub task_name: &'a str,
-    pub execution_id: &'a str,
-    pub next_segment: usize,
+    pub run_id: &'a str,
     pub data: serde_json::Value,
 }
 
@@ -39,40 +36,66 @@ pub struct ResumeBodySpec<'a> {
 pub struct EventStepSpec<'a> {
     pub task_id: &'a str,
     pub task_name: &'a str,
-    pub execution_id: &'a str,
+    pub run_id: &'a str,
     pub event_name: &'a str,
-    pub next_body_segment: usize,
     pub data: serde_json::Value,
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Insert a new step task row for a sequential (non-wait_all) step.
-pub async fn schedule_step_task<S: Scheduler + ?Sized>(
-    scheduler: &S,
+///
+/// This function is transactional: it inserts both the task row and the step row
+/// atomically via the scheduler's transaction API.
+pub async fn schedule_step_task(
+    scheduler: &dyn StorageBackend,
     spec: StepTaskSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
     let mut metadata = serde_json::json!({
         "mode": "step",
         "step_type": "step",
-        "execution_id": spec.execution_id,
+        "run_id": spec.run_id,
         "step_name": spec.step_name,
-        "segment": spec.next_body_segment,
         "retry_attempt": 0,
     });
     if let Some(rc) = spec.retry_config {
         metadata["retry_config"] = serde_json::to_value(rc).unwrap_or(serde_json::Value::Null);
     }
-    scheduler
-        .schedule_at(ScheduleAtParams {
-            task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
-            execution_time: Utc::now(),
-            data: spec.data,
-            recurrence: None,
-            execution_id: Some(spec.execution_id.to_string()),
-            metadata,
-        })
-        .await
+
+    let mut tx = scheduler.begin().await?;
+    tx.insert_task(ScheduleAtParams {
+        task_id: spec.task_id.to_string(),
+        task_name: spec.task_name.to_string(),
+        execution_time: Utc::now(),
+        data: spec.data,
+        recurrence: None,
+        execution_id: None,
+        metadata,
+    })
+    .await?;
+
+    let step_kind = "step";
+    let retry_config_json = spec
+        .retry_config
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+    tx.insert_step(
+        spec.task_id,
+        spec.run_id,
+        spec.step_name,
+        step_kind,
+        spec.task_id,
+        retry_config_json.as_ref(),
+    )
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(ScheduleResult {
+        task_id: spec.task_id.to_string(),
+        execution_time: Utc::now(),
+    })
 }
 
 /// Reschedule a failed step task for retry after a delay.
@@ -81,8 +104,8 @@ pub async fn schedule_step_task<S: Scheduler + ?Sized>(
 /// will pick it up again after the retry delay. The scheduler's built-in
 /// `task.attempt` counter increments on each pickup and is used to track
 /// the retry attempt number.
-pub async fn reschedule_step_for_retry<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn reschedule_step_for_retry(
+    scheduler: &dyn StorageBackend,
     step_task_id: &str,
     error: &str,
     retry_time: chrono::DateTime<chrono::Utc>,
@@ -95,11 +118,11 @@ pub async fn reschedule_step_for_retry<S: Scheduler + ?Sized>(
 }
 
 /// Insert a wait_all child step task.
-pub async fn schedule_wait_all_child<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn schedule_wait_all_child(
+    scheduler: &dyn StorageBackend,
     task_id: &str,
     task_name: &str,
-    execution_id: &str,
+    run_id: &str,
     step_name: &str,
     coordinator_id: &str,
     data: serde_json::Value,
@@ -107,91 +130,115 @@ pub async fn schedule_wait_all_child<S: Scheduler + ?Sized>(
     let metadata = serde_json::json!({
         "mode": "step",
         "step_type": "step",
-        "execution_id": execution_id,
+        "run_id": run_id,
         "step_name": step_name,
         "is_wait_all_child": true,
         "coordinator_id": coordinator_id,
     });
-    scheduler
-        .schedule_at(ScheduleAtParams {
-            task_id: task_id.to_string(),
-            task_name: task_name.to_string(),
-            execution_time: Utc::now(),
-            data,
-            recurrence: None,
-            execution_id: Some(execution_id.to_string()),
-            metadata,
-        })
-        .await
+
+    let mut tx = scheduler.begin().await?;
+    tx.insert_task(ScheduleAtParams {
+        task_id: task_id.to_string(),
+        task_name: task_name.to_string(),
+        execution_time: Utc::now(),
+        data,
+        recurrence: None,
+        execution_id: None,
+        metadata,
+    })
+    .await?;
+
+    tx.insert_step(task_id, run_id, step_name, "step", task_id, None)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(ScheduleResult {
+        task_id: task_id.to_string(),
+        execution_time: Utc::now(),
+    })
 }
 
 /// Atomically complete a step task and schedule the next body segment.
-pub async fn complete_step_and_schedule_body<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn complete_step_and_schedule_body(
+    scheduler: &dyn StorageBackend,
     spec: ResumeBodySpec<'_>,
 ) -> Result<(), StorageError> {
     let body_metadata = serde_json::json!({
         "mode": "body",
-        "execution_id": spec.execution_id,
-        "segment": spec.next_segment,
+        "run_id": spec.run_id,
     });
-    scheduler
-        .complete_and_schedule(CompleteAndScheduleParams {
-            completed_task_id: spec.step_task_id.to_string(),
-            result: Some(spec.result),
-            lock_token: spec.lock_token.to_string(),
-            new_task_id: spec.next_body_task_id.to_string(),
-            new_task_name: spec.task_name.to_string(),
-            new_execution_time: Utc::now(),
-            new_data: spec.data,
-            new_execution_id: Some(spec.execution_id.to_string()),
-            new_metadata: body_metadata,
-        })
-        .await
+
+    let mut tx = scheduler.begin().await?;
+    tx.complete_step(spec.step_id, spec.result.clone(), Utc::now())
+        .await?;
+    tx.mark_task_completed(spec.step_task_id, Some(spec.result), spec.lock_token)
+        .await?;
+    tx.insert_body_task(
+        spec.next_body_task_id,
+        spec.task_name,
+        spec.run_id,
+        Utc::now(),
+        spec.data,
+        body_metadata,
+    )
+    .await?;
+    tx.commit().await
 }
 
 /// Complete a wait_all child step without scheduling a body continuation.
 ///
 /// The coordinator task polls children and schedules the body when all are done.
-pub async fn complete_step_no_resume<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn complete_step_no_resume(
+    scheduler: &dyn StorageBackend,
     step_task_id: &str,
+    step_id: &str,
     result: serde_json::Value,
     lock_token: &str,
 ) -> Result<(), StorageError> {
-    scheduler
-        .mark_completed(step_task_id, Some(result), lock_token)
-        .await
+    let mut tx = scheduler.begin().await?;
+    tx.complete_step(step_id, result.clone(), Utc::now())
+        .await?;
+    tx.mark_task_completed(step_task_id, Some(result), lock_token)
+        .await?;
+    tx.commit().await
 }
 
 /// Schedule a coordinator task that polls wait_all children.
-pub async fn schedule_coordinator<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn schedule_coordinator(
+    scheduler: &dyn StorageBackend,
     coordinator_task_id: &str,
     task_name: &str,
-    execution_id: &str,
-    next_segment: usize,
+    run_id: &str,
     wait_for: Vec<String>,
     data: serde_json::Value,
 ) -> Result<ScheduleResult, StorageError> {
     let metadata = serde_json::json!({
         "mode": "step",
         "step_type": "wait_all",
-        "execution_id": execution_id,
-        "segment": next_segment,
+        "run_id": run_id,
         "wait_for": wait_for,
     });
-    scheduler
-        .schedule_at(ScheduleAtParams {
-            task_id: coordinator_task_id.to_string(),
-            task_name: task_name.to_string(),
-            execution_time: Utc::now(),
-            data,
-            recurrence: None,
-            execution_id: Some(execution_id.to_string()),
-            metadata,
-        })
-        .await
+
+    let mut tx = scheduler.begin().await?;
+    tx.insert_task(ScheduleAtParams {
+        task_id: coordinator_task_id.to_string(),
+        task_name: task_name.to_string(),
+        execution_time: Utc::now(),
+        data,
+        recurrence: None,
+        execution_id: None,
+        metadata,
+    })
+    .await?;
+
+    // Coordinator is not a step, so no insert_step call needed.
+    tx.commit().await?;
+
+    Ok(ScheduleResult {
+        task_id: coordinator_task_id.to_string(),
+        execution_time: Utc::now(),
+    })
 }
 
 /// Insert a wait_for_event step task row.
@@ -205,8 +252,8 @@ pub async fn schedule_coordinator<S: Scheduler + ?Sized>(
 /// only completed via `complete_event_step_and_schedule_body`, which bypasses the
 /// `execution_time` check entirely. Operators querying for "scheduled" tasks with
 /// far-future times can identify these as pending event waits.
-pub async fn schedule_wait_for_event_task<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn schedule_wait_for_event_task(
+    scheduler: &dyn StorageBackend,
     spec: EventStepSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
     let execution_time = spec
@@ -215,48 +262,81 @@ pub async fn schedule_wait_for_event_task<S: Scheduler + ?Sized>(
     let metadata = serde_json::json!({
         "mode":         "step",
         "step_type":    "wait_for_event",
-        "execution_id": spec.execution_id,
+        "run_id":       spec.run_id,
         "step_name":    spec.event_name,
-        "segment":      spec.next_body_segment,
     });
-    scheduler
-        .schedule_at(ScheduleAtParams {
-            task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
-            execution_time,
-            data: spec.data,
-            recurrence: None,
-            execution_id: Some(spec.execution_id.to_string()),
-            metadata,
-        })
-        .await
+
+    let mut tx = scheduler.begin().await?;
+    tx.insert_task(ScheduleAtParams {
+        task_id: spec.task_id.to_string(),
+        task_name: spec.task_name.to_string(),
+        execution_time,
+        data: spec.data,
+        recurrence: None,
+        execution_id: None,
+        metadata,
+    })
+    .await?;
+
+    tx.insert_step(
+        spec.task_id,
+        spec.run_id,
+        spec.event_name,
+        "wait_for_event",
+        spec.task_id,
+        None,
+    )
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(ScheduleResult {
+        task_id: spec.task_id.to_string(),
+        execution_time,
+    })
 }
 
 /// Schedule a sleep continuation task.
-pub async fn schedule_sleep_task<S: Scheduler + ?Sized>(
-    scheduler: &S,
+pub async fn schedule_sleep_task(
+    scheduler: &dyn StorageBackend,
     sleep_task_id: &str,
     task_name: &str,
-    execution_id: &str,
-    next_segment: usize,
+    run_id: &str,
     wake_time: chrono::DateTime<chrono::Utc>,
     data: serde_json::Value,
 ) -> Result<ScheduleResult, StorageError> {
     let metadata = serde_json::json!({
         "mode": "step",
         "step_type": "sleep",
-        "execution_id": execution_id,
-        "segment": next_segment,
+        "run_id": run_id,
     });
-    scheduler
-        .schedule_at(ScheduleAtParams {
-            task_id: sleep_task_id.to_string(),
-            task_name: task_name.to_string(),
-            execution_time: wake_time,
-            data,
-            recurrence: None,
-            execution_id: Some(execution_id.to_string()),
-            metadata,
-        })
-        .await
+
+    let mut tx = scheduler.begin().await?;
+    tx.insert_task(ScheduleAtParams {
+        task_id: sleep_task_id.to_string(),
+        task_name: task_name.to_string(),
+        execution_time: wake_time,
+        data,
+        recurrence: None,
+        execution_id: None,
+        metadata,
+    })
+    .await?;
+
+    tx.insert_step(
+        sleep_task_id,
+        run_id,
+        "__sleep",
+        "sleep",
+        sleep_task_id,
+        None,
+    )
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(ScheduleResult {
+        task_id: sleep_task_id.to_string(),
+        execution_time: wake_time,
+    })
 }

@@ -17,22 +17,16 @@ pub enum ExecutionMode {
     /// The main handler body is executing. Steps are scheduled as child task rows.
     /// When the body encounters an unscheduled step it inserts a child row and exits
     /// via `Err(StepError::Scheduled)`. The body task itself is then marked completed.
-    Body {
-        /// Monotonically increasing counter. `0` = first run, `1` = resumed after first step, …
-        segment: usize,
-    },
+    Body,
 
     /// A specific step task is executing. The handler body replays from the top;
     /// when it reaches the step matching `target_step`, the lambda is executed.
-    /// On success the step is atomically completed and the next body segment scheduled.
+    /// On success the step is atomically completed and a new body task scheduled.
     Step {
         /// The `step_name` this task represents — matched against `ctx.execute_step(...)` calls.
         target_step: String,
         /// What kind of step this is (controls completion behaviour).
         step_type: StepKind,
-        /// Body segment number to schedule on successful completion.
-        /// Not meaningful for `wait_all` children (coordinator handles that).
-        next_body_segment: usize,
         /// How many times this step task has been retried (0 = first attempt).
         retry_attempt: usize,
         /// Retry policy for this step (None means no retries).
@@ -40,12 +34,10 @@ pub enum ExecutionMode {
     },
 
     /// A coordinator task for `wait_all`. Polls child step tasks; when all complete
-    /// it schedules the next body segment. No handler replay is needed.
+    /// it schedules a new body task. No handler replay is needed.
     Coordinator {
         /// IDs of the child step tasks to wait for.
         wait_for: Vec<String>,
-        /// Body segment to schedule when all children are done.
-        next_segment: usize,
     },
 }
 
@@ -67,19 +59,13 @@ pub enum StepKind {
 impl ExecutionMode {
     /// Parse an `ExecutionMode` from the task's `metadata` JSON.
     ///
-    /// Returns `ExecutionMode::Body { segment: 0 }` if the metadata is empty
+    /// Returns `ExecutionMode::Body` if the metadata is empty
     /// or the `mode` key is absent.
     pub fn from_metadata(metadata: &serde_json::Value) -> Self {
         let mode = metadata.get("mode").and_then(|v| v.as_str()).unwrap_or("");
 
         match mode {
-            "body" => {
-                let segment = metadata
-                    .get("segment")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
-                ExecutionMode::Body { segment }
-            }
+            "body" => ExecutionMode::Body,
 
             "step" => {
                 let step_type_str = metadata
@@ -89,10 +75,6 @@ impl ExecutionMode {
 
                 match step_type_str {
                     "wait_all" => {
-                        let next_segment = metadata
-                            .get("segment")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize;
                         let wait_for = metadata
                             .get("wait_for")
                             .and_then(|v| v.as_array())
@@ -102,10 +84,7 @@ impl ExecutionMode {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        ExecutionMode::Coordinator {
-                            wait_for,
-                            next_segment,
-                        }
+                        ExecutionMode::Coordinator { wait_for }
                     }
 
                     _ => {
@@ -114,10 +93,6 @@ impl ExecutionMode {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let next_body_segment = metadata
-                            .get("segment")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(1) as usize;
                         let retry_attempt = metadata
                             .get("retry_attempt")
                             .and_then(|v| v.as_u64())
@@ -146,7 +121,6 @@ impl ExecutionMode {
                         ExecutionMode::Step {
                             target_step,
                             step_type,
-                            next_body_segment,
                             retry_attempt,
                             retry_config,
                         }
@@ -154,7 +128,7 @@ impl ExecutionMode {
                 }
             }
 
-            _ => ExecutionMode::Body { segment: 0 },
+            _ => ExecutionMode::Body,
         }
     }
 }
@@ -181,30 +155,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn from_metadata_body_parses_segment() {
-        let meta = json!({ "mode": "body", "segment": 3 });
-        assert_eq!(
-            ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Body { segment: 3 }
-        );
-    }
-
-    #[test]
-    fn from_metadata_body_defaults_segment_to_zero_when_absent() {
+    fn from_metadata_body() {
         let meta = json!({ "mode": "body" });
-        assert_eq!(
-            ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Body { segment: 0 }
-        );
+        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body);
     }
 
     #[test]
-    fn from_metadata_step_parses_name_segment_and_retry_attempt() {
+    fn from_metadata_body_empty() {
+        let meta = json!({});
+        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body);
+    }
+
+    #[test]
+    fn from_metadata_step_parses_name_and_retry_attempt() {
         let meta = json!({
             "mode": "step",
             "step_type": "step",
             "step_name": "charge-card",
-            "segment": 2,
             "retry_attempt": 1,
         });
         let mode = ExecutionMode::from_metadata(&meta);
@@ -213,7 +180,6 @@ mod tests {
             ExecutionMode::Step {
                 ref target_step,
                 step_type: StepKind::Step,
-                next_body_segment: 2,
                 retry_attempt: 1,
                 retry_config: None,
             } if target_step == "charge-card"
@@ -221,13 +187,12 @@ mod tests {
     }
 
     #[test]
-    fn from_metadata_step_defaults_segment_and_retry_to_sensible_values() {
+    fn from_metadata_step_defaults_retry_to_zero() {
         let meta = json!({ "mode": "step", "step_name": "send-email" });
         let mode = ExecutionMode::from_metadata(&meta);
         assert!(matches!(
             mode,
             ExecutionMode::Step {
-                next_body_segment: 1,
                 retry_attempt: 0,
                 ..
             }
@@ -240,7 +205,6 @@ mod tests {
             "mode": "step",
             "step_type": "sleep",
             "step_name": "__sleep",
-            "segment": 1,
         });
         assert!(matches!(
             ExecutionMode::from_metadata(&meta),
@@ -256,13 +220,11 @@ mod tests {
         let meta = json!({
             "mode": "step",
             "step_type": "wait_all",
-            "segment": 4,
             "wait_for": ["exec-1:step:a", "exec-1:step:b"],
         });
         assert_eq!(
             ExecutionMode::from_metadata(&meta),
             ExecutionMode::Coordinator {
-                next_segment: 4,
                 wait_for: vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()],
             }
         );
@@ -270,13 +232,10 @@ mod tests {
 
     #[test]
     fn from_metadata_coordinator_with_empty_wait_for() {
-        let meta = json!({ "mode": "step", "step_type": "wait_all", "segment": 1 });
+        let meta = json!({ "mode": "step", "step_type": "wait_all" });
         assert_eq!(
             ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Coordinator {
-                next_segment: 1,
-                wait_for: vec![]
-            }
+            ExecutionMode::Coordinator { wait_for: vec![] }
         );
     }
 

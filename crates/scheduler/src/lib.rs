@@ -25,12 +25,12 @@ pub mod postgres;
 pub use error::StorageError;
 pub use recurrence::Recurrence;
 pub use types::{
-    CompleteAndScheduleParams, ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleAtParams,
-    ScheduleResult, StepLookup, TaskStatus,
+    CompleteAndScheduleParams, ExecutionRecord, ExecutionRunRecord, ExecutionStatus, FetchedTask,
+    ScheduleAtParams, ScheduleResult, StepLookup, StepRow, TaskStatus,
 };
 
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresScheduler;
+pub use postgres::{PgTransaction, PostgresScheduler};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -257,6 +257,79 @@ pub trait DurableStorage: Send + Sync {
         let _ = wait_for_task_ids;
         Err(StorageError::NotImplemented("check_wait_all_children"))
     }
+
+    /// Look up a step by run_id + step_name.
+    async fn get_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+    ) -> Result<Option<StepRow>, StorageError> {
+        let _ = (run_id, step_name);
+        Err(StorageError::NotImplemented("get_step"))
+    }
+
+    /// List all steps for a run.
+    async fn list_steps(&self, run_id: &str) -> Result<Vec<StepRow>, StorageError> {
+        let _ = run_id;
+        Err(StorageError::NotImplemented("list_steps"))
+    }
+
+    /// Begin a transaction for atomic step+task operations.
+    ///
+    /// Returns `NotImplemented` for backends that don't support transactions.
+    /// The returned transaction must be committed explicitly.
+    async fn begin(&self) -> Result<Box<dyn StepTransaction + Send>, StorageError> {
+        Err(StorageError::NotImplemented("begin"))
+    }
+}
+
+/// Trait for step table transactions.
+///
+/// Implemented by backend-specific transaction types (e.g. `PgTransaction`).
+#[async_trait]
+pub trait StepTransaction: Send + Sync {
+    async fn insert_task(&mut self, params: ScheduleAtParams) -> Result<(), StorageError>;
+    async fn insert_step(
+        &mut self,
+        step_id: &str,
+        run_id: &str,
+        step_name: &str,
+        step_kind: &str,
+        task_id: &str,
+        retry_config: Option<&serde_json::Value>,
+    ) -> Result<(), StorageError>;
+    async fn complete_step(
+        &mut self,
+        step_id: &str,
+        result: serde_json::Value,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), StorageError>;
+    async fn mark_task_completed(
+        &mut self,
+        task_id: &str,
+        result: Option<serde_json::Value>,
+        lock_token: &str,
+    ) -> Result<(), StorageError>;
+    async fn insert_body_task(
+        &mut self,
+        task_id: &str,
+        task_name: &str,
+        run_id: &str,
+        execution_time: chrono::DateTime<chrono::Utc>,
+        data: serde_json::Value,
+        metadata: serde_json::Value,
+    ) -> Result<(), StorageError>;
+    async fn fail_step_attempt(
+        &mut self,
+        step_id: &str,
+        new_task_id: &str,
+        error: &str,
+        retry_attempt: usize,
+        attempt_record: serde_json::Value,
+    ) -> Result<(), StorageError>;
+    async fn dead_step(&mut self, step_id: &str, error: &str) -> Result<(), StorageError>;
+    async fn commit(self: Box<Self>) -> Result<(), StorageError>;
+    async fn rollback(self: Box<Self>) -> Result<(), StorageError>;
 }
 
 /// Combined backend trait for schedulers that support both task-queue and
