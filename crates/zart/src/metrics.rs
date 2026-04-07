@@ -14,6 +14,19 @@ use lazy_static::lazy_static;
 #[cfg(feature = "metrics")]
 use prometheus::{CounterVec, Gauge, HistogramOpts, HistogramVec, Registry};
 
+/// Evaluate a metrics expression when the `metrics` feature is enabled;
+/// compile to nothing otherwise.
+#[cfg(feature = "metrics")]
+#[macro_export]
+macro_rules! emit_metric {
+    ($($tt:tt)*) => { $($tt)* };
+}
+#[cfg(not(feature = "metrics"))]
+#[macro_export]
+macro_rules! emit_metric {
+    ($($tt:tt)*) => {};
+}
+
 #[cfg(feature = "metrics")]
 lazy_static! {
     /// Global Prometheus registry for Zart metrics.
@@ -179,6 +192,45 @@ mod tests {
         // timer observes on drop
         let output = gather_metrics();
         assert!(output.contains("zart_task_duration_seconds"));
+    }
+
+    #[test]
+    fn steps_total_counter_increments_are_reflected_in_output() {
+        STEPS_TOTAL
+            .with_label_values(&["completed", "test-step"])
+            .inc();
+        let output = gather_metrics();
+        assert!(output.contains("zart_steps_total"));
+        assert!(output.contains("test-step"));
+    }
+
+    #[test]
+    fn step_duration_histogram_observations_are_reflected_in_output() {
+        let _timer = STEP_DURATION_SECONDS
+            .with_label_values(&["test-step", "completed"])
+            .start_timer();
+        let output = gather_metrics();
+        assert!(output.contains("zart_step_duration_seconds"));
+    }
+
+    #[test]
+    fn executions_total_counter_increments_are_reflected_in_output() {
+        EXECUTIONS_TOTAL
+            .with_label_values(&["started", "test-task"])
+            .inc();
+        let output = gather_metrics();
+        assert!(output.contains("zart_executions_total"));
+        assert!(output.contains("test-task"));
+    }
+
+    #[test]
+    fn events_delivered_total_counter_increments_are_reflected_in_output() {
+        EVENTS_DELIVERED_TOTAL
+            .with_label_values(&["my-event", "delivered"])
+            .inc();
+        let output = gather_metrics();
+        assert!(output.contains("zart_events_delivered_total"));
+        assert!(output.contains("my-event"));
     }
 }
 

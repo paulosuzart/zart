@@ -1,7 +1,10 @@
 //! Task execution context — the interface through which durable step execution is managed.
 
+use crate::emit_metric;
 use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
+#[cfg(feature = "metrics")]
+use crate::metrics::{STEP_DURATION_SECONDS, STEPS_TOTAL};
 
 use crate::retry::RetryConfig;
 use crate::step_ops;
@@ -469,6 +472,11 @@ impl TaskContext {
             }),
             Some(_) => {
                 // Scheduled or PickedUp — step task exists, body should exit and wait.
+                emit_metric!(
+                    STEPS_TOTAL
+                        .with_label_values(&["scheduled", step_name])
+                        .inc()
+                );
                 Err(StepError::Scheduled {
                     step: step_name.to_string(),
                     next_execution: None,
@@ -476,6 +484,11 @@ impl TaskContext {
             }
             None => {
                 // First time: insert step task row and exit.
+                emit_metric!(
+                    STEPS_TOTAL
+                        .with_label_values(&["scheduled", step_name])
+                        .inc()
+                );
                 let current_segment = match &self.execution_mode {
                     ExecutionMode::Body { segment } => *segment,
                     _ => 0,
@@ -523,6 +536,11 @@ impl TaskContext {
     {
         if step_name == target {
             // Execute the lambda for this step.
+            #[cfg(feature = "metrics")]
+            let step_timer = STEP_DURATION_SECONDS
+                .with_label_values(&[step_name, "completed"])
+                .start_timer();
+
             let lambda_result = step_fn(self.step_context()).await;
             let result = match lambda_result {
                 Ok(v) => v,
@@ -558,14 +576,37 @@ impl TaskContext {
                             });
                         }
                         // Signal the worker that this step task managed its own transition.
+                        emit_metric!({
+                            step_timer.observe_duration();
+                            STEPS_TOTAL
+                                .with_label_values(&["completed", step_name])
+                                .inc();
+                        });
                         return Err(StepError::StepExecuted {
                             step: step_name.to_string(),
                         });
                     }
 
+                    // Step failed with no retry.
+                    emit_metric!({
+                        step_timer.stop_and_discard();
+                        let fail_timer = STEP_DURATION_SECONDS
+                            .with_label_values(&[step_name, "failed"])
+                            .start_timer();
+                        fail_timer.observe_duration();
+                        STEPS_TOTAL.with_label_values(&["failed", step_name]).inc();
+                    });
                     return Err(e);
                 }
             };
+
+            // Step completed successfully.
+            emit_metric!({
+                step_timer.observe_duration();
+                STEPS_TOTAL
+                    .with_label_values(&["completed", step_name])
+                    .inc();
+            });
             let serialized = serde_json::to_value(&result).map_err(|e| StepError::Failed {
                 step: step_name.to_string(),
                 reason: format!("failed to serialize result: {e}"),
@@ -1079,6 +1120,11 @@ impl TaskContext {
             }),
             Some(_) => {
                 // Step task exists but not yet completed (scheduled or picked_up).
+                emit_metric!(
+                    STEPS_TOTAL
+                        .with_label_values(&["waiting_for_event", event_name])
+                        .inc()
+                );
                 Err(StepError::Scheduled {
                     step: event_name.to_string(),
                     next_execution: None,
@@ -1086,6 +1132,11 @@ impl TaskContext {
             }
             None => {
                 // First call: insert a wait_for_event step task row.
+                emit_metric!(
+                    STEPS_TOTAL
+                        .with_label_values(&["waiting_for_event", event_name])
+                        .inc()
+                );
                 let current_segment = match &self.execution_mode {
                     ExecutionMode::Body { segment } => *segment,
                     _ => 0,

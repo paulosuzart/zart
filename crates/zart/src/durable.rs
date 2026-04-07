@@ -4,7 +4,10 @@
 //! execution-aware operations: starting executions with idempotency keys,
 //! querying status, and waiting for completion.
 
+use crate::emit_metric;
 use crate::error::SchedulerError;
+#[cfg(feature = "metrics")]
+use crate::metrics::EVENTS_DELIVERED_TOTAL;
 use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult, StorageBackend};
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,14 +180,36 @@ impl DurableScheduler {
         event_name: &str,
         payload: serde_json::Value,
     ) -> Result<(), SchedulerError> {
-        let found = self
+        let result = self
             .scheduler
             .complete_event_step_and_schedule_body(execution_id, event_name, payload)
-            .await?;
-        if !found {
-            return Err(SchedulerError::ExecutionNotFound(execution_id.to_string()));
+            .await;
+        match result {
+            Ok(true) => {
+                emit_metric!(
+                    EVENTS_DELIVERED_TOTAL
+                        .with_label_values(&[event_name, "delivered"])
+                        .inc()
+                );
+                Ok(())
+            }
+            Ok(false) => {
+                emit_metric!(
+                    EVENTS_DELIVERED_TOTAL
+                        .with_label_values(&[event_name, "failed"])
+                        .inc()
+                );
+                Err(SchedulerError::ExecutionNotFound(execution_id.to_string()))
+            }
+            Err(e) => {
+                emit_metric!(
+                    EVENTS_DELIVERED_TOTAL
+                        .with_label_values(&[event_name, "failed"])
+                        .inc()
+                );
+                Err(e.into())
+            }
         }
-        Ok(())
     }
 
     /// List durable execution records with optional filters.

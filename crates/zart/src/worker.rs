@@ -1,24 +1,17 @@
 //! Worker — polls the scheduler and dispatches tasks to registered handlers.
 
 use crate::context::TaskContext;
+use crate::emit_metric;
 use crate::error::{StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 #[cfg(feature = "metrics")]
 use crate::metrics::{
-    HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASK_DURATION_SECONDS,
-    TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
+    EVENTS_DELIVERED_TOTAL, EXECUTIONS_TOTAL, HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH,
+    TASK_DURATION_SECONDS, TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
 
 /// Evaluate a metrics expression when the `metrics` feature is enabled;
 /// compile to nothing otherwise.
-#[cfg(feature = "metrics")]
-macro_rules! emit_metric {
-    ($($tt:tt)*) => { $($tt)* };
-}
-#[cfg(not(feature = "metrics"))]
-macro_rules! emit_metric {
-    ($($tt:tt)*) => {};
-}
 use crate::registry::TaskRegistry;
 use scheduler::StorageBackend;
 use std::sync::Arc;
@@ -413,6 +406,15 @@ async fn dispatch_task(
     .with_task_id(task.task_id.clone())
     .with_execution_mode(exec_mode.clone());
 
+    // Record execution start for durable executions (tasks with an execution_id).
+    if has_execution {
+        emit_metric!(
+            EXECUTIONS_TOTAL
+                .with_label_values(&["started", &task.task_name])
+                .inc()
+        );
+    }
+
     // ── Heartbeat setup ──────────────────────────────────────────────────────
     let heartbeat_cancellation = CancellationToken::new();
     let effective_interval = heartbeat_interval
@@ -473,6 +475,13 @@ async fn dispatch_task(
             });
             info!("Task completed successfully");
             emit_metric!(TASKS_TOTAL.with_label_values(&["completed"]).inc());
+            if has_execution {
+                emit_metric!(
+                    EXECUTIONS_TOTAL
+                        .with_label_values(&["completed", &task.task_name])
+                        .inc()
+                );
+            }
             if let Err(e) = ctx
                 .scheduler
                 .mark_completed(&task.task_id, Some(result.clone()), &ctx.lock_token)
@@ -573,6 +582,13 @@ async fn dispatch_task(
             });
             error!(error = %err, "Task failed");
             emit_metric!(TASKS_TOTAL.with_label_values(&["failed"]).inc());
+            if has_execution {
+                emit_metric!(
+                    EXECUTIONS_TOTAL
+                        .with_label_values(&["failed", &task.task_name])
+                        .inc()
+                );
+            }
             if let Err(e) = ctx
                 .scheduler
                 .mark_failed(&task.task_id, &err.to_string(), None, &ctx.lock_token)
@@ -758,6 +774,11 @@ async fn dispatch_wait_for_event(scheduler: Arc<dyn StorageBackend>, task: sched
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
     info!(step = %step_name, "wait_for_event deadline exceeded — failing execution");
+    emit_metric!(
+        EVENTS_DELIVERED_TOTAL
+            .with_label_values(&[step_name, "timeout"])
+            .inc()
+    );
     let _ = scheduler
         .mark_failed(
             &task.task_id,
