@@ -1110,168 +1110,27 @@ impl DurableStorage for PostgresScheduler {
             .collect()
     }
 
-    async fn begin(&self) -> Result<Box<dyn crate::StepTransaction + Send>, StorageError> {
-        // sqlx 0.8: Pool::begin() returns Transaction<'static, _> because PgPool is Arc-backed.
-        // No unsafe transmute needed.
-        let tx: sqlx::Transaction<'static, sqlx::Postgres> = self
+    async fn schedule_step(
+        &self,
+        task_id: &str,
+        task_name: &str,
+        run_id: &str,
+        step_name: &str,
+        step_kind: &str,
+        execution_time: chrono::DateTime<chrono::Utc>,
+        data: serde_json::Value,
+        metadata: serde_json::Value,
+        retry_config: Option<&serde_json::Value>,
+    ) -> Result<crate::ScheduleResult, StorageError> {
+        let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(Box::new(PgTransaction::new(tx)))
-    }
-}
-
-// ── Transactional API for step table operations ───────────────────────────────
-
-/// A transactional wrapper for atomic step+task operations.
-///
-/// Obtained via [`DurableStorage::begin`]. All writes to `zart_steps` and
-/// `zart_tasks` should go through this to ensure atomicity.
-pub struct PgTransaction {
-    tx: sqlx::Transaction<'static, sqlx::Postgres>,
-}
-
-impl PgTransaction {
-    fn new(tx: sqlx::Transaction<'static, sqlx::Postgres>) -> Self {
-        Self { tx }
-    }
-
-    /// Insert a task row within this transaction.
-    pub async fn insert_task(&mut self, params: ScheduleAtParams) -> Result<(), StorageError> {
-        let recurrence_json = params
-            .recurrence
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         sqlx::query(
             r#"
-            INSERT INTO zart_tasks
-                (task_id, task_name, execution_time, data, recurrence, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-        )
-        .bind(&params.task_id)
-        .bind(&params.task_name)
-        .bind(params.execution_time)
-        .bind(&params.data)
-        .bind(&recurrence_json)
-        .bind(&params.metadata)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        Ok(())
-    }
-
-    /// Insert a step row within this transaction.
-    pub async fn insert_step(
-        &mut self,
-        step_id: &str,
-        run_id: &str,
-        step_name: &str,
-        step_kind: &str,
-        task_id: &str,
-        retry_config: Option<&serde_json::Value>,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
-            r#"
-            INSERT INTO zart_steps
-                (step_id, run_id, step_name, step_kind, task_id, retry_config)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (step_id) DO NOTHING
-            "#,
-        )
-        .bind(step_id)
-        .bind(run_id)
-        .bind(step_name)
-        .bind(step_kind)
-        .bind(task_id)
-        .bind(retry_config)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        Ok(())
-    }
-
-    /// Mark a step completed within this transaction.
-    pub async fn complete_step(
-        &mut self,
-        step_id: &str,
-        result: serde_json::Value,
-        completed_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
-            r#"
-            UPDATE zart_steps
-            SET status       = 'completed',
-                result       = $1,
-                completed_at = $2
-            WHERE step_id = $3
-            "#,
-        )
-        .bind(&result)
-        .bind(completed_at)
-        .bind(step_id)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        Ok(())
-    }
-
-    /// Mark a task completed within this transaction.
-    pub async fn mark_task_completed(
-        &mut self,
-        task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-    ) -> Result<(), StorageError> {
-        let rows_affected = sqlx::query(
-            r#"
-            UPDATE zart_tasks
-            SET status       = 'completed',
-                result       = $1,
-                completed_at = NOW(),
-                updated_at   = NOW(),
-                locked_at    = NULL,
-                worker_id    = NULL
-            WHERE task_id   = $2
-              AND worker_id = $3
-            "#,
-        )
-        .bind(&result)
-        .bind(task_id)
-        .bind(lock_token)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?
-        .rows_affected();
-
-        if rows_affected == 0 {
-            return Err(StorageError::LockMismatch(task_id.to_string()));
-        }
-        Ok(())
-    }
-
-    /// Insert a body task row within this transaction.
-    pub async fn insert_body_task(
-        &mut self,
-        task_id: &str,
-        task_name: &str,
-        _run_id: &str,
-        execution_time: chrono::DateTime<chrono::Utc>,
-        data: serde_json::Value,
-        metadata: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
-            r#"
-            INSERT INTO zart_tasks
-                (task_id, task_name, execution_time, data, metadata)
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (task_id) DO NOTHING
             "#,
@@ -1279,244 +1138,269 @@ impl PgTransaction {
         .bind(task_id)
         .bind(task_name)
         .bind(execution_time)
-        .bind(data)
-        .bind(metadata)
-        .execute(&mut *self.tx)
+        .bind(&data)
+        .bind(&metadata)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        Ok(())
-    }
-
-    /// Record a step attempt (completed or failed) in `zart_step_attempts`.
-    pub async fn record_step_attempt(
-        &mut self,
-        attempt_id: &str,
-        step_id: &str,
-        attempt_number: usize,
-        status: &str,
-        result: Option<&serde_json::Value>,
-        error: Option<&str>,
-    ) -> Result<(), StorageError> {
+        let step_id = format!("{run_id}:step:{step_name}");
         sqlx::query(
             r#"
-            INSERT INTO zart_step_attempts
-                (attempt_id, step_id, attempt_number, status, completed_at, result, error)
-            VALUES ($1, $2, $3, $4, NOW(), $5, $6)
+            INSERT INTO zart_steps (step_id, run_id, step_name, step_kind, task_id, retry_config)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (step_id) DO NOTHING
+            "#,
+        )
+        .bind(&step_id)
+        .bind(run_id)
+        .bind(step_name)
+        .bind(step_kind)
+        .bind(task_id)
+        .bind(retry_config)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(crate::ScheduleResult {
+            task_id: task_id.to_string(),
+            execution_time,
+        })
+    }
+
+    async fn complete_step_and_schedule_body(
+        &self,
+        step_task_id: &str,
+        step_id: &str,
+        result: serde_json::Value,
+        lock_token: &str,
+        attempt_number: usize,
+        next_body_task_id: &str,
+        task_name: &str,
+        run_id: &str,
+        data: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let attempt_id = format!("{step_id}:attempt:{attempt_number}");
+        sqlx::query(
+            r#"
+            INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
+            VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
             ON CONFLICT (attempt_id) DO NOTHING
             "#,
         )
-        .bind(attempt_id)
+        .bind(&attempt_id)
         .bind(step_id)
         .bind(attempt_number as i32)
-        .bind(status)
-        .bind(result)
-        .bind(error)
-        .execute(&mut *self.tx)
+        .bind(&result)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(
+            r#"
+            UPDATE zart_steps SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
+            "#,
+        )
+        .bind(&result)
+        .bind(Utc::now())
+        .bind(step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks SET status = 'completed', result = $1, completed_at = NOW(), updated_at = NOW(), locked_at = NULL, worker_id = NULL
+            WHERE task_id = $2 AND worker_id = $3
+            "#,
+        )
+        .bind(&result)
+        .bind(step_task_id)
+        .bind(lock_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Err(StorageError::LockMismatch(step_task_id.to_string()));
+        }
+
+        let body_metadata = serde_json::json!({
+            "mode": "body",
+            "run_id": run_id,
+        });
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
+            VALUES ($1, $2, NOW(), $3, $4)
+            ON CONFLICT (task_id) DO NOTHING
+            "#,
+        )
+        .bind(next_body_task_id)
+        .bind(task_name)
+        .bind(&data)
+        .bind(&body_metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
     }
 
-    /// Reschedule a step task for retry within this transaction.
-    pub async fn mark_task_failed_for_retry(
-        &mut self,
-        task_id: &str,
+    async fn complete_step_no_resume(
+        &self,
+        step_task_id: &str,
+        step_id: &str,
+        result: serde_json::Value,
+        lock_token: &str,
+        attempt_number: usize,
+    ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let attempt_id = format!("{step_id}:attempt:{attempt_number}");
+        sqlx::query(
+            r#"
+            INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
+            VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
+            ON CONFLICT (attempt_id) DO NOTHING
+            "#,
+        )
+        .bind(&attempt_id)
+        .bind(step_id)
+        .bind(attempt_number as i32)
+        .bind(&result)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(
+            r#"
+            UPDATE zart_steps SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
+            "#,
+        )
+        .bind(&result)
+        .bind(Utc::now())
+        .bind(step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks SET status = 'completed', result = $1, completed_at = NOW(), updated_at = NOW(), locked_at = NULL, worker_id = NULL
+            WHERE task_id = $2 AND worker_id = $3
+            "#,
+        )
+        .bind(&result)
+        .bind(step_task_id)
+        .bind(lock_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Err(StorageError::LockMismatch(step_task_id.to_string()));
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    async fn reschedule_step_for_retry(
+        &self,
+        step_task_id: &str,
+        attempt_number: usize,
         error: &str,
         retry_time: chrono::DateTime<chrono::Utc>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let attempt_id = format!("{step_task_id}:attempt:{attempt_number}");
+        sqlx::query(
+            r#"
+            INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
+            VALUES ($1, $2, $3, 'failed', NOW(), NULL, $4)
+            ON CONFLICT (attempt_id) DO NOTHING
+            "#,
+        )
+        .bind(&attempt_id)
+        .bind(step_task_id)
+        .bind(attempt_number as i32)
+        .bind(error)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(
+            r#"
+            UPDATE zart_steps SET retry_attempt = $1, last_error = NULL WHERE step_id = $2
+            "#,
+        )
+        .bind(attempt_number as i32 + 1)
+        .bind(step_task_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
         let rows_affected = sqlx::query(
             r#"
-            UPDATE zart_tasks
-            SET status         = 'scheduled',
-                last_error     = $1,
-                execution_time = $2,
-                locked_at      = NULL,
-                worker_id      = NULL,
-                updated_at     = NOW()
-            WHERE task_id  = $3
-              AND worker_id = $4
+            UPDATE zart_tasks SET status = 'scheduled', last_error = $1, execution_time = $2, locked_at = NULL, worker_id = NULL, updated_at = NOW()
+            WHERE task_id = $3 AND worker_id = $4
             "#,
         )
         .bind(error)
         .bind(retry_time)
-        .bind(task_id)
+        .bind(step_task_id)
         .bind(lock_token)
-        .execute(&mut *self.tx)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
+
         if rows_affected == 0 {
-            return Err(StorageError::LockMismatch(task_id.to_string()));
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Err(StorageError::LockMismatch(step_task_id.to_string()));
         }
-        Ok(())
-    }
 
-    /// Update the retry count on a step row.
-    pub async fn update_step_retry_count(
-        &mut self,
-        step_id: &str,
-        new_retry_attempt: usize,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
-            r#"
-            UPDATE zart_steps
-            SET retry_attempt = $1,
-                last_error    = NULL
-            WHERE step_id = $2
-            "#,
-        )
-        .bind(new_retry_attempt as i32)
-        .bind(step_id)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(())
-    }
-
-    /// Mark a step as dead (retries exhausted) within this transaction.
-    pub async fn dead_step(&mut self, step_id: &str, error: &str) -> Result<(), StorageError> {
-        sqlx::query(
-            r#"
-            UPDATE zart_steps
-            SET status   = 'dead',
-                last_error = $1
-            WHERE step_id = $2
-            "#,
-        )
-        .bind(error)
-        .bind(step_id)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        Ok(())
-    }
-
-    /// Commit this transaction.
-    pub async fn commit(self) -> Result<(), StorageError> {
-        self.tx
-            .commit()
+        tx.commit()
             .await
-            .map_err(|e| StorageError::Database(Box::new(e)))
-    }
-
-    /// Roll back this transaction.
-    pub async fn rollback(self) -> Result<(), StorageError> {
-        self.tx
-            .rollback()
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
     }
 }
 
-#[async_trait::async_trait]
-impl crate::StepTransaction for PgTransaction {
-    async fn insert_task(&mut self, params: ScheduleAtParams) -> Result<(), StorageError> {
-        PgTransaction::insert_task(self, params).await
-    }
-
-    async fn insert_step(
-        &mut self,
-        step_id: &str,
-        run_id: &str,
-        step_name: &str,
-        step_kind: &str,
-        task_id: &str,
-        retry_config: Option<&serde_json::Value>,
-    ) -> Result<(), StorageError> {
-        PgTransaction::insert_step(
-            self,
-            step_id,
-            run_id,
-            step_name,
-            step_kind,
-            task_id,
-            retry_config,
-        )
-        .await
-    }
-
-    async fn complete_step(
-        &mut self,
-        step_id: &str,
-        result: serde_json::Value,
-        completed_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), StorageError> {
-        PgTransaction::complete_step(self, step_id, result, completed_at).await
-    }
-
-    async fn mark_task_completed(
-        &mut self,
-        task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-    ) -> Result<(), StorageError> {
-        PgTransaction::mark_task_completed(self, task_id, result, lock_token).await
-    }
-
-    async fn insert_body_task(
-        &mut self,
-        task_id: &str,
-        task_name: &str,
-        run_id: &str,
-        execution_time: chrono::DateTime<chrono::Utc>,
-        data: serde_json::Value,
-        metadata: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        PgTransaction::insert_body_task(
-            self,
-            task_id,
-            task_name,
-            run_id,
-            execution_time,
-            data,
-            metadata,
-        )
-        .await
-    }
-
-    async fn record_step_attempt(
-        &mut self,
-        attempt_id: &str,
-        step_id: &str,
-        attempt_number: usize,
-        status: &str,
-        result: Option<&serde_json::Value>,
-        error: Option<&str>,
-    ) -> Result<(), StorageError> {
-        PgTransaction::record_step_attempt(self, attempt_id, step_id, attempt_number, status, result, error).await
-    }
-
-    async fn mark_task_failed_for_retry(
-        &mut self,
-        task_id: &str,
-        error: &str,
-        retry_time: chrono::DateTime<chrono::Utc>,
-        lock_token: &str,
-    ) -> Result<(), StorageError> {
-        PgTransaction::mark_task_failed_for_retry(self, task_id, error, retry_time, lock_token).await
-    }
-
-    async fn update_step_retry_count(
-        &mut self,
-        step_id: &str,
-        new_retry_attempt: usize,
-    ) -> Result<(), StorageError> {
-        PgTransaction::update_step_retry_count(self, step_id, new_retry_attempt).await
-    }
-
-    async fn dead_step(&mut self, step_id: &str, error: &str) -> Result<(), StorageError> {
-        PgTransaction::dead_step(self, step_id, error).await
-    }
-
-    async fn commit(self: Box<Self>) -> Result<(), StorageError> {
-        PgTransaction::commit(*self).await
-    }
-
-    async fn rollback(self: Box<Self>) -> Result<(), StorageError> {
-        PgTransaction::rollback(*self).await
-    }
-}
 

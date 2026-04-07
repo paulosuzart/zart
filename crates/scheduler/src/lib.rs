@@ -30,7 +30,7 @@ pub use types::{
 };
 
 #[cfg(feature = "postgres")]
-pub use postgres::{PgTransaction, PostgresScheduler};
+pub use postgres::PostgresScheduler;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -277,75 +277,67 @@ pub trait DurableStorage: Send + Sync {
         Err(StorageError::NotImplemented("list_steps"))
     }
 
-    /// Begin a transaction for atomic step+task operations.
-    ///
-    /// Returns `NotImplemented` for backends that don't support transactions.
-    /// The returned transaction must be committed explicitly.
-    async fn begin(&self) -> Result<Box<dyn StepTransaction + Send>, StorageError> {
-        Err(StorageError::NotImplemented("begin"))
-    }
-}
-
-/// Trait for step table transactions.
-///
-/// Implemented by backend-specific transaction types (e.g. `PgTransaction`).
-#[async_trait]
-pub trait StepTransaction: Send + Sync {
-    async fn insert_task(&mut self, params: ScheduleAtParams) -> Result<(), StorageError>;
-    async fn insert_step(
-        &mut self,
-        step_id: &str,
-        run_id: &str,
-        step_name: &str,
-        step_kind: &str,
-        task_id: &str,
-        retry_config: Option<&serde_json::Value>,
-    ) -> Result<(), StorageError>;
-    async fn complete_step(
-        &mut self,
-        step_id: &str,
-        result: serde_json::Value,
-        completed_at: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), StorageError>;
-    async fn mark_task_completed(
-        &mut self,
-        task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-    async fn insert_body_task(
-        &mut self,
+    /// Insert a task row and a step row atomically.
+    async fn schedule_step(
+        &self,
         task_id: &str,
         task_name: &str,
         run_id: &str,
-        execution_time: chrono::DateTime<chrono::Utc>,
+        step_name: &str,
+        step_kind: &str,
+        execution_time: DateTime<Utc>,
         data: serde_json::Value,
         metadata: serde_json::Value,
-    ) -> Result<(), StorageError>;
-    async fn record_step_attempt(
-        &mut self,
-        attempt_id: &str,
+        retry_config: Option<&serde_json::Value>,
+    ) -> Result<ScheduleResult, StorageError> {
+        let _ = (task_id, task_name, run_id, step_name, step_kind, execution_time, data, metadata, retry_config);
+        Err(StorageError::NotImplemented("schedule_step"))
+    }
+
+    /// Atomically complete a step+task, record the attempt, and schedule the next body task.
+    async fn complete_step_and_schedule_body(
+        &self,
+        step_task_id: &str,
         step_id: &str,
-        attempt_number: usize,
-        status: &str,
-        result: Option<&serde_json::Value>,
-        error: Option<&str>,
-    ) -> Result<(), StorageError>;
-    async fn mark_task_failed_for_retry(
-        &mut self,
-        task_id: &str,
-        error: &str,
-        retry_time: chrono::DateTime<chrono::Utc>,
+        result: serde_json::Value,
         lock_token: &str,
-    ) -> Result<(), StorageError>;
-    async fn update_step_retry_count(
-        &mut self,
+        attempt_number: usize,
+        next_body_task_id: &str,
+        task_name: &str,
+        run_id: &str,
+        data: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (step_task_id, step_id, result, lock_token, attempt_number, next_body_task_id, task_name, run_id, data);
+        Err(StorageError::NotImplemented("complete_step_and_schedule_body"))
+    }
+
+    /// Atomically complete a step+task and record the attempt (no body continuation).
+    ///
+    /// Used for wait_all children — the coordinator polls and schedules the body when all are done.
+    async fn complete_step_no_resume(
+        &self,
+        step_task_id: &str,
         step_id: &str,
-        new_retry_attempt: usize,
-    ) -> Result<(), StorageError>;
-    async fn dead_step(&mut self, step_id: &str, error: &str) -> Result<(), StorageError>;
-    async fn commit(self: Box<Self>) -> Result<(), StorageError>;
-    async fn rollback(self: Box<Self>) -> Result<(), StorageError>;
+        result: serde_json::Value,
+        lock_token: &str,
+        attempt_number: usize,
+    ) -> Result<(), StorageError> {
+        let _ = (step_task_id, step_id, result, lock_token, attempt_number);
+        Err(StorageError::NotImplemented("complete_step_no_resume"))
+    }
+
+    /// Atomically record a failed step attempt, update the retry count, and reschedule the task.
+    async fn reschedule_step_for_retry(
+        &self,
+        step_task_id: &str,
+        attempt_number: usize,
+        error: &str,
+        retry_time: DateTime<Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let _ = (step_task_id, attempt_number, error, retry_time, lock_token);
+        Err(StorageError::NotImplemented("reschedule_step_for_retry"))
+    }
 }
 
 /// Combined backend trait for schedulers that support both task-queue and
