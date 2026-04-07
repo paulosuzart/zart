@@ -1,0 +1,201 @@
+---
+title: Observability
+description: Structured logging and Prometheus metrics for Zart workers.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Zart emits structured logs via [`tracing`](https://docs.rs/tracing) and exposes Prometheus metrics through a single function. Both work whether you run Zart embedded inside your own server or as a standalone worker.
+
+---
+
+## Logging
+
+### Quick start
+
+Call `init_tracing()` once at the top of `main`. It reads `RUST_LOG` and writes human-readable output to stderr.
+
+```rust
+use zart::logging::init_tracing;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    init_tracing().expect("failed to initialise tracing");
+    // …
+}
+```
+
+### JSON output for production
+
+Use `init_tracing_with_config` when you need structured JSON logs for log aggregation (Datadog, Loki, CloudWatch, etc.).
+
+```rust
+use zart::logging::{init_tracing_with_config, TracingConfig};
+
+init_tracing_with_config(TracingConfig {
+    env_filter: Some("zart=info,warn".to_string()),
+    json_format: true,
+}).expect("failed to initialise tracing");
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `env_filter` | `RUST_LOG` env var, then `"info"` | Standard [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) directive |
+| `json_format` | `false` | `true` emits newline-delimited JSON; `false` emits human-readable text |
+
+### Filtering Zart internals
+
+To see Zart's internal debug logs without drowning in your own application's output:
+
+```bash
+RUST_LOG=zart=debug,info cargo run
+```
+
+---
+
+## Metrics
+
+Prometheus instrumentation is opt-in. Enable the `metrics` Cargo feature to activate it:
+
+```toml
+# Cargo.toml
+zart = { version = "0.1", features = ["metrics"] }
+
+# If you also use zart-api, enable its matching feature:
+zart-api = { version = "0.1", features = ["metrics"] }
+```
+
+Without this feature neither `prometheus` nor `lazy_static` are compiled into your binary. All metric call sites become no-ops and `gather_metrics()` returns an empty string.
+
+Zart maintains a private Prometheus registry. All metrics are registered at startup; you expose them by calling `gather_metrics()` at whatever path suits your application.
+
+### Metrics reference
+
+| Metric | Type | Labels | What it measures |
+|---|---|---|---|
+| `zart_tasks_total` | Counter | `status` | Tasks completed, failed, cancelled, or scheduled |
+| `zart_task_duration_seconds` | Histogram | `task_name`, `status` | End-to-end task execution time |
+| `zart_executions_total` | Counter | `status`, `task_name` | Durable execution lifecycle events |
+| `zart_steps_total` | Counter | `status`, `step_name` | Steps completed, failed, scheduled, or waiting for event |
+| `zart_step_duration_seconds` | Histogram | `step_name`, `status` | Per-step execution time |
+| `zart_queue_depth` | Gauge | — | Tasks waiting to be picked up |
+| `zart_worker_concurrent_tasks` | Gauge | — | Tasks currently executing |
+| `zart_poll_interval_seconds` | Histogram | — | Actual time between poll cycles |
+| `zart_events_delivered_total` | Counter | `event_name`, `status` | Events delivered to waiting tasks |
+| `zart_task_heartbeat_renewals_total` | Counter | `task_name`, `status` (`success`, `failed`, `not_found`) | Lease renewals — `not_found` means the task was already claimed or cancelled |
+| `zart_heartbeat_active` | Gauge | — | Active heartbeat loops (one per running task) |
+
+Duration histograms use buckets: `1ms → 5ms → 10ms → 50ms → 100ms → 500ms → 1s → 5s → 10s → 30s → 60s → 5m`.
+
+### Exposing metrics — embedded mode
+
+When Zart runs inside your own Axum (or any other) server, wire `gather_metrics()` into a handler at whatever path you want:
+
+```rust
+use axum::{Router, routing::get, http::StatusCode, response::IntoResponse};
+use zart::metrics::gather_metrics;
+
+async fn metrics_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")],
+        gather_metrics(),
+    )
+}
+
+// Mount anywhere you like — /metrics is the Prometheus convention
+let app = Router::new()
+    .route("/metrics", get(metrics_handler))
+    // … your other routes
+```
+
+<Aside type="tip">
+Keep the `/metrics` endpoint internal — bind it on a separate port (e.g. `:9090`) or protect it with middleware if your application faces the public internet.
+</Aside>
+
+### Exposing metrics — using `zart-api`
+
+If you use the `zart-api` crate, the `GET /metrics` endpoint is included automatically. No extra code needed.
+
+```rust
+use zart_api::ApiServer;
+
+let server = ApiServer::new(scheduler, registry);
+server.run("0.0.0.0:8080").await?;
+// Prometheus can now scrape http://<host>:8080/metrics
+```
+
+### Prometheus scrape config
+
+```yaml
+scrape_configs:
+  - job_name: zart
+    static_configs:
+      - targets: ["your-app:8080"]
+    metrics_path: /metrics   # adjust if you chose a different path
+    scrape_interval: 15s
+```
+
+## Health Checks
+
+Expose the worker's liveness via an HTTP handler in your own server:
+
+```rust
+use axum::{Router, routing::get, http::StatusCode, response::IntoResponse, extract::State};
+use std::sync::Arc;
+use zart::Worker;
+
+async fn health(State(worker): State<Arc<Worker>>) -> impl IntoResponse {
+    if worker.is_healthy() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+let app = Router::new()
+    .route("/health", get(health))
+    .with_state(worker.clone());
+```
+
+If you use `zart-api`, `/healthz` (liveness) and `/readyz` (readiness) are built in.
+
+Kubernetes probe example:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 15
+```
+
+---
+
+### Useful alert rules
+
+```yaml
+groups:
+  - name: zart
+    rules:
+      - alert: ZartTaskFailureRateHigh
+        expr: |
+          rate(zart_tasks_total{status="failed"}[5m])
+          / rate(zart_tasks_total[5m]) > 0.05
+        for: 2m
+        annotations:
+          summary: "More than 5% of tasks are failing"
+
+      - alert: ZartQueueDepthHigh
+        expr: zart_queue_depth > 500
+        for: 5m
+        annotations:
+          summary: "Task queue depth exceeds 500 for 5 minutes"
+
+      - alert: ZartHeartbeatRenewalsFailing
+        expr: rate(zart_task_heartbeat_renewals_total{status="failed"}[5m]) > 0
+        for: 1m
+        annotations:
+          summary: "Heartbeat renewals are failing — possible database connectivity issue"
+```

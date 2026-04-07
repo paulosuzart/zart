@@ -10,6 +10,7 @@ use axum::{
 use scheduler::ExecutionStatus;
 use std::time::Duration;
 use zart::error::SchedulerError;
+#[cfg(feature = "metrics")]
 use zart::metrics::gather_metrics;
 
 use crate::{
@@ -25,7 +26,7 @@ const MAX_WAIT_SECS: u64 = 30;
 
 /// Construct the versioned API router with the given application state.
 pub fn api_router(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         // Execution management
         .route("/api/v1/executions", get(list_executions))
         .route("/api/v1/executions", post(start_execution))
@@ -45,10 +46,12 @@ pub fn api_router(state: AppState) -> Router {
         )
         // Health checks
         .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        // Observability
-        .route("/metrics", get(metrics))
-        .with_state(state)
+        .route("/readyz", get(readyz));
+
+    #[cfg(feature = "metrics")]
+    let router = router.route("/metrics", get(metrics_handler));
+
+    router.with_state(state)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -69,12 +72,12 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// `GET /metrics` — Prometheus metrics endpoint.
-async fn metrics() -> impl IntoResponse {
-    let metrics = gather_metrics();
+#[cfg(feature = "metrics")]
+async fn metrics_handler() -> impl IntoResponse {
     (
         StatusCode::OK,
         [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")],
-        metrics,
+        gather_metrics(),
     )
 }
 
@@ -306,6 +309,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[cfg(feature = "metrics")]
     #[tokio::test]
     async fn metrics_returns_200() {
         let app = test_app();

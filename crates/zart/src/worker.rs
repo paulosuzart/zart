@@ -3,10 +3,22 @@
 use crate::context::TaskContext;
 use crate::error::{StepError, TaskError};
 use crate::execution_model::ExecutionMode;
+#[cfg(feature = "metrics")]
 use crate::metrics::{
     HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASK_DURATION_SECONDS,
     TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
+
+/// Evaluate a metrics expression when the `metrics` feature is enabled;
+/// compile to nothing otherwise.
+#[cfg(feature = "metrics")]
+macro_rules! emit_metric {
+    ($($tt:tt)*) => { $($tt)* };
+}
+#[cfg(not(feature = "metrics"))]
+macro_rules! emit_metric {
+    ($($tt:tt)*) => {};
+}
 use crate::registry::TaskRegistry;
 use scheduler::StorageBackend;
 use std::sync::Arc;
@@ -125,6 +137,7 @@ impl Worker {
 
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_tasks));
         let mut poll_count: u32 = 0;
+        #[cfg(feature = "metrics")]
         let mut last_poll_time = std::time::Instant::now();
 
         loop {
@@ -148,11 +161,16 @@ impl Worker {
             }
 
             // Record poll interval timing
-            let poll_interval = last_poll_time.elapsed().as_secs_f64();
-            POLL_INTERVAL_SECONDS
-                .with_label_values(&[])
-                .observe(poll_interval);
-            last_poll_time = std::time::Instant::now();
+            emit_metric!({
+                let poll_interval = last_poll_time.elapsed().as_secs_f64();
+                POLL_INTERVAL_SECONDS
+                    .with_label_values(&[])
+                    .observe(poll_interval);
+            });
+            #[cfg(feature = "metrics")]
+            {
+                last_poll_time = std::time::Instant::now();
+            }
 
             poll_count += 1;
 
@@ -182,7 +200,7 @@ impl Worker {
             };
 
             // Update queue depth metric (approximate - tasks we just fetched)
-            QUEUE_DEPTH.set(tasks.len() as f64);
+            emit_metric!(QUEUE_DEPTH.set(tasks.len() as f64));
 
             if tasks.is_empty() {
                 continue;
@@ -204,7 +222,7 @@ impl Worker {
                 tokio::spawn(
                     async move {
                         let _permit = permit; // released when this task finishes
-                        WORKER_CONCURRENT_TASKS.inc();
+                        emit_metric!(WORKER_CONCURRENT_TASKS.inc());
                         dispatch_task(
                             scheduler,
                             registry,
@@ -213,7 +231,7 @@ impl Worker {
                             orphan_timeout,
                         )
                         .await;
-                        WORKER_CONCURRENT_TASKS.dec();
+                        emit_metric!(WORKER_CONCURRENT_TASKS.dec());
                     }
                     .in_current_span(),
                 );
@@ -240,6 +258,7 @@ impl Worker {
 ///
 /// Runs in its own tokio task. Cancels automatically when the
 /// `CancellationToken` is cancelled (i.e., the handler has returned).
+#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
 async fn heartbeat_loop(
     scheduler: Arc<dyn StorageBackend>,
     task_id: String,
@@ -248,7 +267,7 @@ async fn heartbeat_loop(
     interval: Duration,
     cancellation: CancellationToken,
 ) {
-    HEARTBEAT_ACTIVE.inc();
+    emit_metric!(HEARTBEAT_ACTIVE.inc());
     loop {
         tokio::select! {
             _ = cancellation.cancelled() => {
@@ -259,32 +278,32 @@ async fn heartbeat_loop(
                 match scheduler.renew_lease(&task_id, &lock_token).await {
                     Ok(true) => {
                         // Lease renewed successfully.
-                        TASK_HEARTBEAT_RENEWALS_TOTAL
+                        emit_metric!(TASK_HEARTBEAT_RENEWALS_TOTAL
                             .with_label_values(&[&task_name, "success"])
-                            .inc();
+                            .inc());
                     }
                     Ok(false) => {
                         // Lease not found or token mismatch — another worker
                         // has taken over. Stop heartbeating.
                         warn!(%task_id, "Heartbeat: lease no longer exists, stopping");
-                        TASK_HEARTBEAT_RENEWALS_TOTAL
+                        emit_metric!(TASK_HEARTBEAT_RENEWALS_TOTAL
                             .with_label_values(&[&task_name, "not_found"])
-                            .inc();
+                            .inc());
                         break;
                     }
                     Err(e) => {
                         // Database error — log but continue retrying.
                         // The next interval may succeed if the DB recovers.
                         error!(%task_id, error = %e, "Heartbeat: failed to renew lease");
-                        TASK_HEARTBEAT_RENEWALS_TOTAL
+                        emit_metric!(TASK_HEARTBEAT_RENEWALS_TOTAL
                             .with_label_values(&[&task_name, "failed"])
-                            .inc();
+                            .inc());
                     }
                 }
             }
         }
     }
-    HEARTBEAT_ACTIVE.dec();
+    emit_metric!(HEARTBEAT_ACTIVE.dec());
 }
 
 /// Dispatch a single fetched task to its registered handler and persist the result.
@@ -360,6 +379,7 @@ async fn dispatch_task(
         return;
     }
 
+    #[cfg(feature = "metrics")]
     let start_time = std::time::Instant::now();
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
@@ -445,12 +465,14 @@ async fn dispatch_task(
 
     match result {
         Ok(result) => {
-            let duration = start_time.elapsed().as_secs_f64();
-            TASK_DURATION_SECONDS
-                .with_label_values(&[&task.task_name, "completed"])
-                .observe(duration);
+            emit_metric!({
+                let duration = start_time.elapsed().as_secs_f64();
+                TASK_DURATION_SECONDS
+                    .with_label_values(&[&task.task_name, "completed"])
+                    .observe(duration);
+            });
             info!("Task completed successfully");
-            TASKS_TOTAL.with_label_values(&["completed"]).inc();
+            emit_metric!(TASKS_TOTAL.with_label_values(&["completed"]).inc());
             if let Err(e) = ctx
                 .scheduler
                 .mark_completed(&task.task_id, Some(result.clone()), &ctx.lock_token)
@@ -515,7 +537,7 @@ async fn dispatch_task(
             ..
         }) => {
             info!(step = %step, "Step executed in step mode — completion was transactional");
-            TASKS_TOTAL.with_label_values(&["completed"]).inc();
+            emit_metric!(TASKS_TOTAL.with_label_values(&["completed"]).inc());
             // The step task is already completed in DB. No further action.
         }
 
@@ -531,7 +553,7 @@ async fn dispatch_task(
             ..
         }) => {
             info!(step = %step, "Body step scheduled — marking body task complete");
-            TASKS_TOTAL.with_label_values(&["completed"]).inc();
+            emit_metric!(TASKS_TOTAL.with_label_values(&["completed"]).inc());
             if let Err(e) = ctx
                 .scheduler
                 .mark_completed(&task.task_id, None, &ctx.lock_token)
@@ -543,12 +565,14 @@ async fn dispatch_task(
         }
 
         Err(err) => {
-            let duration = start_time.elapsed().as_secs_f64();
-            TASK_DURATION_SECONDS
-                .with_label_values(&[&task.task_name, "failed"])
-                .observe(duration);
+            emit_metric!({
+                let duration = start_time.elapsed().as_secs_f64();
+                TASK_DURATION_SECONDS
+                    .with_label_values(&[&task.task_name, "failed"])
+                    .observe(duration);
+            });
             error!(error = %err, "Task failed");
-            TASKS_TOTAL.with_label_values(&["failed"]).inc();
+            emit_metric!(TASKS_TOTAL.with_label_values(&["failed"]).inc());
             if let Err(e) = ctx
                 .scheduler
                 .mark_failed(&task.task_id, &err.to_string(), None, &ctx.lock_token)

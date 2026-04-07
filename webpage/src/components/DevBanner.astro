@@ -1,0 +1,96 @@
+---
+// Site-wide development status banner.
+// Dismissed state is persisted in localStorage so it survives navigation.
+---
+<div id="zart-dev-banner" role="status">
+  <p>
+    Zart is in active development — breaking API changes may occur despite our
+    best efforts to keep contracts stable.
+  </p>
+  <button id="zart-dev-banner-close" aria-label="Dismiss this notice" title="Dismiss">
+    &#x2715;
+  </button>
+</div>
+
+<style>
+  #zart-dev-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 0.55rem 1.25rem;
+    background: oklch(20% 0.09 285);
+    color: oklch(82% 0.14 285);
+    font-size: 0.82rem;
+    border-bottom: 1px solid oklch(32% 0.12 285 / 0.8);
+  }
+
+  [data-theme="light"] #zart-dev-banner {
+    background: oklch(93% 0.04 285);
+    color: oklch(28% 0.12 285);
+    border-bottom-color: oklch(70% 0.15 285 / 0.3);
+  }
+
+  #zart-dev-banner[hidden] {
+    display: none;
+  }
+
+  #zart-dev-banner p {
+    margin: 0;
+    max-width: none;
+    line-height: 1.4;
+  }
+
+  #zart-dev-banner-close {
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.72rem;
+    line-height: 1;
+    opacity: 0.6;
+    padding: 0.25rem 0.45rem;
+    transition: opacity 0.15s ease, background 0.15s ease;
+  }
+
+  #zart-dev-banner-close:hover {
+    opacity: 1;
+    background: oklch(100% 0 0 / 0.08);
+  }
+</style>
+
+<script>
+  const STORAGE_KEY = "zart-dev-banner-v1";
+  const EXPIRY_MS = 10 * 24 * 60 * 60 * 1000; // 10 days
+
+  function isDismissed(): boolean {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const dismissedAt = parseInt(raw, 10);
+    return !isNaN(dismissedAt) && Date.now() - dismissedAt < EXPIRY_MS;
+  }
+
+  function applyBannerState() {
+    const banner = document.getElementById("zart-dev-banner");
+    if (!banner) return;
+
+    if (isDismissed()) {
+      banner.hidden = true;
+      return;
+    }
+
+    banner.hidden = false;
+    document
+      .getElementById("zart-dev-banner-close")
+      ?.addEventListener("click", () => {
+        banner.hidden = true;
+        localStorage.setItem(STORAGE_KEY, String(Date.now()));
+      });
+  }
+
+  // Run on initial load and after Astro view-transition navigations.
+  applyBannerState();
+  document.addEventListener("astro:page-load", applyBannerState);
+</script>

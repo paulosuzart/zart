@@ -3930,7 +3930,6 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "prometheus",
  "scheduler",
  "serde",
  "serde_json",

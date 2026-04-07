@@ -1,11 +1,20 @@
 //! Prometheus metrics for Zart observability.
 //!
-//! Provides global metric collectors that track task execution,
-//! step performance, worker activity, and queue depth.
+//! Activate instrumentation by enabling the `metrics` Cargo feature:
+//!
+//! ```toml
+//! zart = { version = "0.1", features = ["metrics"] }
+//! ```
+//!
+//! When the feature is disabled every function in this module is a no-op and
+//! neither `prometheus` nor `lazy_static` are compiled into your binary.
 
+#[cfg(feature = "metrics")]
 use lazy_static::lazy_static;
+#[cfg(feature = "metrics")]
 use prometheus::{CounterVec, Gauge, HistogramOpts, HistogramVec, Registry};
 
+#[cfg(feature = "metrics")]
 lazy_static! {
     /// Global Prometheus registry for Zart metrics.
     ///
@@ -32,9 +41,9 @@ lazy_static! {
     pub static ref TASKS_TOTAL: CounterVec = CounterVec::new(
         prometheus::opts!("zart_tasks_total", "Total number of tasks by status"),
         &["status"]
-    ).expect("Failed to create tasks_total metric");
+    ).expect("create tasks_total");
 
-    /// Task execution duration in seconds (histogram).
+    /// Task execution duration in seconds.
     pub static ref TASK_DURATION_SECONDS: HistogramVec = HistogramVec::new(
         HistogramOpts::new(
             "zart_task_duration_seconds",
@@ -42,15 +51,15 @@ lazy_static! {
         )
         .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0]),
         &["task_name", "status"]
-    ).expect("Failed to create task_duration_seconds metric");
+    ).expect("create task_duration_seconds");
 
     /// Total number of steps by status (completed, failed, scheduled, waiting_for_event).
     pub static ref STEPS_TOTAL: CounterVec = CounterVec::new(
         prometheus::opts!("zart_steps_total", "Total number of steps by status"),
         &["status", "step_name"]
-    ).expect("Failed to create steps_total metric");
+    ).expect("create steps_total");
 
-    /// Step execution duration in seconds (histogram).
+    /// Step execution duration in seconds.
     pub static ref STEP_DURATION_SECONDS: HistogramVec = HistogramVec::new(
         HistogramOpts::new(
             "zart_step_duration_seconds",
@@ -58,19 +67,19 @@ lazy_static! {
         )
         .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0]),
         &["step_name", "status"]
-    ).expect("Failed to create step_duration_seconds metric");
+    ).expect("create step_duration_seconds");
 
     /// Number of tasks currently waiting to be picked up (queue depth).
     pub static ref QUEUE_DEPTH: Gauge = Gauge::new(
         "zart_queue_depth",
         "Number of tasks waiting to be picked up"
-    ).expect("Failed to create queue_depth metric");
+    ).expect("create queue_depth");
 
     /// Number of tasks currently executing concurrently.
     pub static ref WORKER_CONCURRENT_TASKS: Gauge = Gauge::new(
         "zart_worker_concurrent_tasks",
         "Number of tasks currently executing"
-    ).expect("Failed to create worker_concurrent_tasks metric");
+    ).expect("create worker_concurrent_tasks");
 
     /// Time between poll cycles in seconds.
     pub static ref POLL_INTERVAL_SECONDS: HistogramVec = HistogramVec::new(
@@ -80,52 +89,66 @@ lazy_static! {
         )
         .buckets(vec![0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]),
         &[]
-    ).expect("Failed to create poll_interval_seconds metric");
+    ).expect("create poll_interval_seconds");
 
     /// Total number of durable executions by status.
     pub static ref EXECUTIONS_TOTAL: CounterVec = CounterVec::new(
         prometheus::opts!("zart_executions_total", "Total number of durable executions by status"),
         &["status", "task_name"]
-    ).expect("Failed to create executions_total metric");
+    ).expect("create executions_total");
 
     /// Total number of events delivered.
     pub static ref EVENTS_DELIVERED_TOTAL: CounterVec = CounterVec::new(
         prometheus::opts!("zart_events_delivered_total", "Total number of events delivered"),
         &["event_name", "status"]
-    ).expect("Failed to create events_delivered_total metric");
+    ).expect("create events_delivered_total");
 
     /// Total number of task lease renewals via heartbeat.
     pub static ref TASK_HEARTBEAT_RENEWALS_TOTAL: CounterVec = CounterVec::new(
         prometheus::opts!("zart_task_heartbeat_renewals_total", "Total number of task lease renewals via heartbeat"),
         &["task_name", "status"]
-    ).expect("Failed to create task_heartbeat_renewals_total metric");
+    ).expect("create task_heartbeat_renewals_total");
 
     /// Number of currently active heartbeat loops.
     pub static ref HEARTBEAT_ACTIVE: prometheus::IntGauge = prometheus::IntGauge::new(
         "zart_heartbeat_active",
         "Number of currently active heartbeat loops"
-    ).expect("Failed to create heartbeat_active metric");
+    ).expect("create heartbeat_active");
 }
 
-/// Register all Zart metrics with the global registry.
+/// Encode all registered metrics in Prometheus text format.
 ///
-/// Safe to call multiple times — returns `Ok(())` if metrics are
-/// already registered (idempotent).
-pub fn register_metrics() -> Result<(), prometheus::Error> {
-    // Metrics are already registered during `METRICS_REGISTRY` init.
-    // This function is kept for backwards compatibility and is a no-op.
-    Ok(())
-}
-
-/// Get the encoded metrics as a string for Prometheus scraping.
+/// Returns an empty string when the `metrics` feature is disabled.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use zart::metrics::gather_metrics;
+///
+/// let output = gather_metrics();
+/// // When the `metrics` feature is enabled, `output` contains
+/// // Prometheus text-format lines such as:
+/// //   # HELP zart_tasks_total Total number of tasks by status
+/// //   # TYPE zart_tasks_total counter
+/// //   zart_tasks_total{status="completed"} 42
+/// ```
+#[cfg(feature = "metrics")]
 pub fn gather_metrics() -> String {
     let metric_families = METRICS_REGISTRY.gather();
     prometheus::TextEncoder::new()
         .encode_to_string(&metric_families)
-        .unwrap_or_else(|e| format!("Failed to encode metrics: {}", e))
+        .unwrap_or_else(|e| format!("Failed to encode metrics: {e}"))
 }
 
-#[cfg(test)]
+/// No-op stub — returns an empty string.
+///
+/// Enable the `metrics` Cargo feature to get real Prometheus output.
+#[cfg(not(feature = "metrics"))]
+pub fn gather_metrics() -> String {
+    String::new()
+}
+
+#[cfg(all(test, feature = "metrics"))]
 mod tests {
     use super::*;
 
@@ -135,37 +158,36 @@ mod tests {
     }
 
     #[test]
-    fn can_register_metrics() {
-        // Registration should succeed even if called multiple times
-        let result = register_metrics();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn gather_metrics_returns_output() {
-        let _ = register_metrics();
+    fn gather_metrics_returns_prometheus_output() {
         let output = gather_metrics();
-        // Just check that we get some output - the exact metric names may vary
-        assert!(!output.is_empty() || output.contains("Failed to encode"));
-    }
-
-    #[test]
-    fn counter_increments() {
-        // Register metrics first
-        let _ = register_metrics();
-        TASKS_TOTAL.with_label_values(&["completed"]).inc();
-        let output = gather_metrics();
-        // Check that the counter is present - exact format may vary
+        assert!(!output.is_empty());
         assert!(output.contains("zart_tasks_total"));
     }
 
     #[test]
-    fn histogram_records_values() {
-        let timer = TASK_DURATION_SECONDS
+    fn counter_increments_are_reflected_in_output() {
+        TASKS_TOTAL.with_label_values(&["completed"]).inc();
+        let output = gather_metrics();
+        assert!(output.contains("zart_tasks_total"));
+    }
+
+    #[test]
+    fn histogram_observations_are_reflected_in_output() {
+        let _timer = TASK_DURATION_SECONDS
             .with_label_values(&["test_task", "completed"])
             .start_timer();
-        drop(timer); // observe on drop
+        // timer observes on drop
         let output = gather_metrics();
         assert!(output.contains("zart_task_duration_seconds"));
+    }
+}
+
+#[cfg(all(test, not(feature = "metrics")))]
+mod stub_tests {
+    use super::*;
+
+    #[test]
+    fn gather_metrics_returns_empty_string_without_feature() {
+        assert_eq!(gather_metrics(), String::new());
     }
 }

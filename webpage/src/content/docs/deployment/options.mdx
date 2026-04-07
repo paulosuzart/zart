@@ -1,13 +1,11 @@
 ---
 title: Deployment Options
-description: Two ways to deploy Zart workers — embedded and sidecar.
+description: How to run Zart workers — embedded setup, database requirements, and graceful shutdown.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Zart workers are flexible: they can run inside your application process or as a separate container. Choose the strategy that fits your infrastructure.
-
-## 1. Rust Embedded
+## Rust Embedded
 
 The simplest deployment: run the worker inside your application binary using a background `tokio` task.
 
@@ -68,82 +66,6 @@ The worker's `tokio` tasks run on the same runtime as your application. `max_con
 
 ---
 
-## 2. Sidecar Container
-
-Run a dedicated `zart-worker` container alongside your application container. The application schedules tasks via the shared database; the sidecar executes them.
-
-**Docker Compose example:**
-
-```yaml
-services:
-  app:
-    image: your-app:latest
-    environment:
-      DATABASE_URL: postgres://zart:secret@db:5432/myapp
-    depends_on: [db]
-
-  zart-worker:
-    image: your-app:latest         # same image, different entrypoint
-    command: ["zart-worker"]       # separate binary that only runs the worker
-    environment:
-      DATABASE_URL: postgres://zart:secret@db:5432/myapp
-    depends_on: [db]
-    deploy:
-      replicas: 3                  # scale workers independently
-
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB:       myapp
-      POSTGRES_USER:     zart
-      POSTGRES_PASSWORD: secret
-```
-
-**Kubernetes Deployment:**
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: zart-worker
-spec:
-  replicas: 5          # horizontal scale — SKIP LOCKED handles contention
-  selector:
-    matchLabels:
-      app: zart-worker
-  template:
-    metadata:
-      labels:
-        app: zart-worker
-    spec:
-      containers:
-        - name: worker
-          image: your-app:latest
-          command: ["zart-worker"]
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: db-secret
-                  key: url
-          resources:
-            requests:
-              memory: "128Mi"
-              cpu: "100m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-```
-
-**Best for:**
-
-- Kubernetes and Docker Compose deployments
-- When you want to scale workers independently from the application
-- Microservices architectures
-- When workers need different resource profiles from the web tier
-
----
-
 ## Database Requirements
 
 | Database | Crate | Notes |
@@ -183,31 +105,3 @@ WorkerConfig {
 ```
 
 In Docker / Kubernetes, set `terminationGracePeriodSeconds` to at least `shutdown_timeout + 10` to give the pod time to drain cleanly.
-
----
-
-## Health Checks
-
-Expose the worker's health via a simple HTTP endpoint:
-
-```rust
-// Axum example
-async fn worker_health(State(worker): State<Arc<Worker>>) -> impl IntoResponse {
-    if worker.is_healthy() {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    }
-}
-```
-
-Kubernetes liveness probe:
-
-```yaml
-livenessProbe:
-  httpGet:
-    path: /health
-    port: 8080
-  initialDelaySeconds: 10
-  periodSeconds: 15
-```

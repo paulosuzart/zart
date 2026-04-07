@@ -6,6 +6,9 @@ export default defineConfig({
   integrations: [
     mermaid(),
     starlight({
+      components: {
+        Banner: "./src/components/DevBanner.astro",
+      },
       title: "Zart",
       description:
         "Durable Execution for Rust — workflows that survive failure",
@@ -61,8 +64,17 @@ export default defineConfig({
           ],
         },
 
-        // ── Deploy & Integrate and Coming Soon sections hidden for now ──
-        // Content preserved in: /deployment/, /java-sdk/, /http-api/
+        // ── Deployment ─────────────────────────────────────────
+        {
+          label: "Deployment",
+          items: [
+            { label: "Options", link: "/deployment/options" },
+            { label: "Observability", link: "/deployment/observability" },
+          ],
+        },
+
+        // ── Coming Soon sections hidden for now ──
+        // Content preserved in: /java-sdk/, /http-api/
       ],
     }),
   ],
