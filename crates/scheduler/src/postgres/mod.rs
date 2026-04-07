@@ -42,7 +42,6 @@ impl Scheduler for PostgresScheduler {
         task_id: &str,
         task_name: &str,
         data: serde_json::Value,
-        execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError> {
         self.schedule_at(ScheduleAtParams {
             task_id: task_id.to_string(),
@@ -50,7 +49,6 @@ impl Scheduler for PostgresScheduler {
             execution_time: Utc::now(),
             data,
             recurrence: None,
-            execution_id: execution_id.map(String::from),
             metadata: serde_json::Value::Null,
         })
         .await
@@ -67,8 +65,8 @@ impl Scheduler for PostgresScheduler {
         sqlx::query(
             r#"
             INSERT INTO zart_tasks
-                (task_id, task_name, execution_time, data, recurrence, execution_id, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (task_id, task_name, execution_time, data, recurrence, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (task_id) DO NOTHING
             "#,
         )
@@ -77,7 +75,6 @@ impl Scheduler for PostgresScheduler {
         .bind(params.execution_time)
         .bind(&params.data)
         .bind(&recurrence_json)
-        .bind(params.execution_id.as_deref())
         .bind(&params.metadata)
         .execute(&self.pool)
         .await
@@ -107,12 +104,11 @@ impl Scheduler for PostgresScheduler {
             serde_json::Value,
             serde_json::Value,
             i32,
-            Option<String>,
             Option<serde_json::Value>,
             serde_json::Value,
         )> = sqlx::query_as(
             r#"
-                SELECT task_id, task_name, data, state, attempt, execution_id, recurrence, metadata
+                SELECT task_id, task_name, data, state, attempt, recurrence, metadata
                 FROM zart_tasks
                 WHERE status = 'scheduled'
                   AND execution_time <= $1
@@ -136,7 +132,7 @@ impl Scheduler for PostgresScheduler {
 
         let mut fetched = Vec::with_capacity(rows.len());
 
-        for (task_id, task_name, data, state, attempt, execution_id, recurrence_json, metadata) in
+        for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in
             rows
         {
             // Each task gets a unique lock token stored as `worker_id`.
@@ -169,7 +165,6 @@ impl Scheduler for PostgresScheduler {
                 // Return the post-increment attempt count.
                 attempt: attempt as usize + 1,
                 lock_token,
-                execution_id,
                 recurrence,
                 metadata,
             });
@@ -435,8 +430,8 @@ impl Scheduler for PostgresScheduler {
         sqlx::query(
             r#"
             INSERT INTO zart_tasks
-                (task_id, task_name, execution_time, data, execution_id, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (task_id, task_name, execution_time, data, metadata)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (task_id) DO NOTHING
             "#,
         )
@@ -444,7 +439,6 @@ impl Scheduler for PostgresScheduler {
         .bind(&params.new_task_name)
         .bind(params.new_execution_time)
         .bind(&params.new_data)
-        .bind(params.new_execution_id.as_deref())
         .bind(&params.new_metadata)
         .execute(&mut *tx)
         .await
@@ -677,11 +671,12 @@ impl DurableStorage for PostgresScheduler {
         .rows_affected();
 
         // Also cancel any not-yet-running task for this execution.
+        // execution_id lives in metadata JSONB, so we query via metadata extraction.
         sqlx::query(
             r#"
             UPDATE zart_tasks
             SET status = 'cancelled', updated_at = NOW()
-            WHERE execution_id = $1 AND status = 'scheduled'
+            WHERE metadata->>'execution_id' = $1 AND status = 'scheduled'
             "#,
         )
         .bind(execution_id)
@@ -822,6 +817,7 @@ impl DurableStorage for PostgresScheduler {
         let body_metadata = serde_json::json!({
             "mode": "body",
             "run_id": run_id,
+            "execution_id": execution_id,
         });
 
         sqlx::query(
@@ -1242,6 +1238,7 @@ impl DurableStorage for PostgresScheduler {
         let body_metadata = serde_json::json!({
             "mode": "body",
             "run_id": run_id,
+            "execution_id": run_id.split(":run:").next().unwrap_or(run_id),
         });
         sqlx::query(
             r#"

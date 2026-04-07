@@ -92,7 +92,11 @@ impl DurableScheduler {
         // Schedule the root task that drives the execution.
         // The task_id is "{run_id}:body:start" — deterministic and debuggable.
         let task_id = format!("{run_id}:body:start");
-        let metadata = serde_json::json!({ "mode": "body", "run_id": run_id });
+        let metadata = serde_json::json!({
+            "mode": "body",
+            "run_id": run_id,
+            "execution_id": execution_id.to_string(),
+        });
         let result = self
             .scheduler
             .schedule_at(ScheduleAtParams {
@@ -101,7 +105,6 @@ impl DurableScheduler {
                 execution_time: chrono::Utc::now(),
                 data: payload,
                 recurrence: None,
-                execution_id: Some(execution_id.to_string()),
                 metadata,
             })
             .await

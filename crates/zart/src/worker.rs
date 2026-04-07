@@ -306,7 +306,7 @@ async fn heartbeat_loop(
     fields(
         task_id = %task.task_id,
         task_name = %task.task_name,
-        execution_id = task.execution_id.as_deref().unwrap_or("-"),
+        execution_id = task.metadata.get("execution_id").and_then(|v| v.as_str()).unwrap_or("-"),
         attempt = task.attempt,
     ),
 )]
@@ -384,10 +384,12 @@ async fn dispatch_task(
         }
     };
 
-    let has_execution = task.execution_id.is_some();
+    let has_execution = task.metadata.get("execution_id").is_some();
     let execution_id = task
-        .execution_id
-        .clone()
+        .metadata
+        .get("execution_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
         .unwrap_or_else(|| task.task_id.clone());
 
     // run_id is the FK into zart_execution_runs; carried in metadata["run_id"] by body/step tasks.
@@ -509,8 +511,9 @@ async fn dispatch_task(
                             execution_time: next_time,
                             data: task_data,
                             recurrence: Some(recurrence.clone()),
-                            execution_id: task.execution_id.clone(),
-                            metadata: serde_json::Value::Null,
+                            metadata: serde_json::json!({
+                                "execution_id": task.metadata.get("execution_id"),
+                            }),
                         })
                         .await
                     {
@@ -628,7 +631,7 @@ async fn dispatch_coordinator(
         .metadata
         .get("run_id")
         .and_then(|v| v.as_str())
-        .or_else(|| task.execution_id.as_deref())
+        .or_else(|| task.metadata.get("execution_id").and_then(|v| v.as_str()))
         .unwrap_or(&task.task_id)
         .to_string();
 
@@ -725,7 +728,7 @@ async fn dispatch_sleep_continuation(
         .metadata
         .get("run_id")
         .and_then(|v| v.as_str())
-        .or_else(|| task.execution_id.as_deref())
+        .or_else(|| task.metadata.get("execution_id").and_then(|v| v.as_str()))
         .unwrap_or(&task.task_id)
         .to_string();
 
@@ -770,8 +773,9 @@ async fn dispatch_sleep_continuation(
 /// can detect this via the failed step row and manually cancel or reset.
 async fn dispatch_wait_for_event(scheduler: Arc<dyn StorageBackend>, task: scheduler::FetchedTask) {
     let execution_id = task
-        .execution_id
-        .as_deref()
+        .metadata
+        .get("execution_id")
+        .and_then(|v| v.as_str())
         .unwrap_or(&task.task_id)
         .to_string();
     let step_name = task
@@ -810,7 +814,6 @@ mod tests {
             state: serde_json::Value::Null,
             attempt: 1,
             lock_token: "tok".to_string(),
-            execution_id: Some("exec-1".to_string()),
             recurrence: None,
             metadata,
         }
@@ -1044,6 +1047,7 @@ mod tests {
                 "step_type": "wait_for_event",
                 "step_name": "approval",
                 "segment": 2,
+                "execution_id": "exec-1",
             }),
         );
 

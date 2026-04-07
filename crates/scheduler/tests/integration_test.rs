@@ -51,7 +51,6 @@ mod postgres_tests {
                 &task_id,
                 "test-task",
                 serde_json::json!({"key": "value"}),
-                None,
             )
             .await
             .expect("schedule_now failed");
@@ -91,7 +90,7 @@ mod postgres_tests {
         let task_id = format!("test-skip-lock-{}", Uuid::new_v4());
 
         scheduler
-            .schedule_now(&task_id, "test-task", serde_json::json!({}), None)
+            .schedule_now(&task_id, "test-task", serde_json::json!({}))
             .await
             .expect("schedule_now failed");
 
@@ -124,7 +123,7 @@ mod postgres_tests {
         let task_id = format!("test-mark-failed-{}", Uuid::new_v4());
 
         scheduler
-            .schedule_now(&task_id, "test-task", serde_json::json!({}), None)
+            .schedule_now(&task_id, "test-task", serde_json::json!({}))
             .await
             .expect("schedule_now failed");
 
@@ -162,7 +161,7 @@ mod postgres_tests {
         let task_id = format!("test-cancel-{}", Uuid::new_v4());
 
         scheduler
-            .schedule_now(&task_id, "test-task", serde_json::json!({}), None)
+            .schedule_now(&task_id, "test-task", serde_json::json!({}))
             .await
             .expect("schedule_now failed");
 
@@ -200,7 +199,6 @@ mod postgres_tests {
                 execution_time: far_future,
                 data: serde_json::json!({}),
                 recurrence: None,
-                execution_id: None,
                 metadata: serde_json::Value::Null,
             })
             .await
@@ -238,7 +236,6 @@ mod postgres_tests {
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 recurrence: Some(recurrence),
-                execution_id: None,
                 metadata: serde_json::Value::Null,
             })
             .await

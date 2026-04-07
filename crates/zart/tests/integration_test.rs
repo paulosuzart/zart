@@ -634,7 +634,6 @@ mod integration {
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 recurrence: Some(Recurrence::FixedDelay { duration_ms: 200 }),
-                execution_id: None,
                 metadata: serde_json::Value::Null,
             })
             .await

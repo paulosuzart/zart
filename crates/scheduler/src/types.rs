@@ -23,11 +23,9 @@ pub struct FetchedTask {
     pub attempt: usize,
     /// Opaque token that identifies this particular lock acquisition.
     pub lock_token: String,
-    /// The durable execution this task belongs to, if any.
-    pub execution_id: Option<String>,
     /// Recurrence configuration, if this is a recurring task.
     pub recurrence: Option<Recurrence>,
-    /// Execution model metadata (mode, segment, step_name, step_type, etc.).
+    /// Execution model metadata (mode, run_id, step_name, step_type, etc.).
     /// Empty object `{}` for legacy tasks that predate the new execution model.
     pub metadata: serde_json::Value,
 }
@@ -45,12 +43,15 @@ pub struct StepLookup {
 
 impl std::fmt::Display for FetchedTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let exec_id = self
+            .metadata
+            .get("execution_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
         write!(
             f,
             "task={} exec={} attempt={}",
-            self.task_name,
-            self.execution_id.as_deref().unwrap_or("-"),
-            self.attempt,
+            self.task_name, exec_id, self.attempt,
         )
     }
 }
@@ -150,9 +151,7 @@ pub struct ScheduleAtParams {
     pub data: serde_json::Value,
     /// Optional recurrence rule for repeating tasks.
     pub recurrence: Option<Recurrence>,
-    /// The durable execution this task belongs to, if any.
-    pub execution_id: Option<String>,
-    /// Execution-model metadata (mode, segment, step_name, …).
+    /// Execution-model metadata (mode, run_id, step_name, …).
     pub metadata: serde_json::Value,
 }
 
@@ -176,8 +175,6 @@ pub struct CompleteAndScheduleParams {
     pub new_execution_time: DateTime<Utc>,
     /// Input payload for the new task.
     pub new_data: serde_json::Value,
-    /// Execution ID for the new task.
-    pub new_execution_id: Option<String>,
     /// Execution-model metadata for the new task.
     pub new_metadata: serde_json::Value,
 }

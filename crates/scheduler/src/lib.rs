@@ -50,7 +50,6 @@ pub trait Scheduler: Send + Sync {
         task_id: &str,
         task_name: &str,
         data: serde_json::Value,
-        execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Schedule a task for execution at a specific point in time.
@@ -366,7 +365,6 @@ mod tests {
             task_id: &str,
             _task_name: &str,
             _data: serde_json::Value,
-            _execution_id: Option<&str>,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
@@ -438,7 +436,7 @@ mod tests {
     async fn schedule_now_returns_task_id() {
         let scheduler = Arc::new(StubScheduler);
         let result = scheduler
-            .schedule_now("task-1", "my-task", serde_json::json!({}), None)
+            .schedule_now("task-1", "my-task", serde_json::json!({}))
             .await
             .unwrap();
         assert_eq!(result.task_id, "task-1");
@@ -467,7 +465,6 @@ mod tests {
             task_id: &str,
             _: &str,
             _: serde_json::Value,
-            _: Option<&str>,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),

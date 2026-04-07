@@ -42,7 +42,6 @@ impl Scheduler for MockScheduler {
         task_id: &str,
         _task_name: &str,
         _data: serde_json::Value,
-        _execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
             task_id: task_id.to_string(),

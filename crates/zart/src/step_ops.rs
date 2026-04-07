@@ -192,7 +192,6 @@ pub async fn schedule_coordinator(
         execution_time: chrono::Utc::now(),
         data,
         recurrence: None,
-        execution_id: None,
         metadata,
     }).await
 }
