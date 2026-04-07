@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
     CompleteAndScheduleParams, DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult,
-    Scheduler, StepLookup, StorageError, TaskStatus,
+    Scheduler, StepLookup, StepTransaction, StorageError, TaskStatus,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -275,6 +275,109 @@ impl DurableStorage for RecordingScheduler {
         self.calls.lock().unwrap().push(Call::FailExecution {
             execution_id: execution_id.to_string(),
         });
+        Ok(())
+    }
+
+    async fn begin(&self) -> Result<Box<dyn StepTransaction + Send>, StorageError> {
+        Ok(Box::new(MockTransaction {
+            calls: self.calls.clone(),
+        }))
+    }
+}
+
+// ── Mock Transaction ────────────────────────────────────────────────────────────
+
+struct MockTransaction {
+    calls: Arc<Mutex<Vec<Call>>>,
+}
+
+#[async_trait]
+impl StepTransaction for MockTransaction {
+    async fn insert_task(&mut self, params: ScheduleAtParams) -> Result<(), StorageError> {
+        let execution_time = params.execution_time;
+        self.calls.lock().unwrap().push(Call::ScheduleAt {
+            task_id: params.task_id.clone(),
+            execution_time,
+            metadata: params.metadata,
+        });
+        Ok(())
+    }
+
+    async fn insert_step(
+        &mut self,
+        _step_id: &str,
+        _run_id: &str,
+        _step_name: &str,
+        _step_kind: &str,
+        _task_id: &str,
+        _retry_config: Option<&serde_json::Value>,
+    ) -> Result<(), StorageError> {
+        // Step insertion is recorded via insert_task, no separate call needed
+        Ok(())
+    }
+
+    async fn complete_step(
+        &mut self,
+        _step_id: &str,
+        _result: serde_json::Value,
+        _completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn mark_task_completed(
+        &mut self,
+        task_id: &str,
+        _result: Option<serde_json::Value>,
+        _lock_token: &str,
+    ) -> Result<(), StorageError> {
+        self.calls.lock().unwrap().push(Call::MarkCompleted {
+            task_id: task_id.to_string(),
+        });
+        Ok(())
+    }
+
+    async fn insert_body_task(
+        &mut self,
+        task_id: &str,
+        _task_name: &str,
+        _run_id: &str,
+        execution_time: chrono::DateTime<chrono::Utc>,
+        _data: serde_json::Value,
+        metadata: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.calls.lock().unwrap().push(Call::ScheduleAt {
+            task_id: task_id.to_string(),
+            execution_time,
+            metadata,
+        });
+        Ok(())
+    }
+
+    async fn fail_step_attempt(
+        &mut self,
+        task_id: &str,
+        _new_task_id: &str,
+        _error: &str,
+        _retry_attempt: usize,
+        _attempt_record: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.calls.lock().unwrap().push(Call::MarkFailed {
+            task_id: task_id.to_string(),
+            next_execution_time: None,
+        });
+        Ok(())
+    }
+
+    async fn dead_step(&mut self, _step_id: &str, _error: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn commit(self: Box<Self>) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn rollback(self: Box<Self>) -> Result<(), StorageError> {
         Ok(())
     }
 }
