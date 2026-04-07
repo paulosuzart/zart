@@ -28,8 +28,11 @@ pub enum Call {
         metadata: serde_json::Value,
     },
     CompleteAndSchedule {
+        #[allow(dead_code)]
         completed_task_id: String,
+        #[allow(dead_code)]
         new_task_id: String,
+        #[allow(dead_code)]
         new_metadata: serde_json::Value,
     },
     MarkCompleted {
@@ -52,6 +55,9 @@ impl Call {
     }
     pub fn is_complete_and_schedule(&self) -> bool {
         matches!(self, Self::CompleteAndSchedule { .. })
+    }
+    pub fn is_mark_completed(&self) -> bool {
+        matches!(self, Self::MarkCompleted { .. })
     }
     pub fn is_mark_failed(&self) -> bool {
         matches!(self, Self::MarkFailed { .. })
@@ -90,12 +96,12 @@ pub struct RecordingSchedulerBuilder {
 }
 
 impl RecordingSchedulerBuilder {
-    /// `get_step_status(exec_id, step)` → `Ok(Some(Completed { result }))`.
-    pub fn step_completed(mut self, exec_id: &str, step: &str, result: serde_json::Value) -> Self {
+    /// `get_step_status(run_id, step)` → `Ok(Some(Completed { result }))`.
+    pub fn step_completed(mut self, run_id: &str, step: &str, result: serde_json::Value) -> Self {
         self.step_responses.insert(
-            (exec_id.into(), step.into()),
+            (run_id.into(), step.into()),
             Some(StepLookup {
-                task_id: format!("{exec_id}:step:{step}"),
+                task_id: format!("{run_id}:step:{step}"),
                 status: TaskStatus::Completed,
                 result: Some(result),
             }),
@@ -103,12 +109,12 @@ impl RecordingSchedulerBuilder {
         self
     }
 
-    /// `get_step_status(exec_id, step)` → `Ok(Some(Scheduled))` (in-flight).
-    pub fn step_in_flight(mut self, exec_id: &str, step: &str) -> Self {
+    /// `get_step_status(run_id, step)` → `Ok(Some(Scheduled))` (in-flight).
+    pub fn step_in_flight(mut self, run_id: &str, step: &str) -> Self {
         self.step_responses.insert(
-            (exec_id.into(), step.into()),
+            (run_id.into(), step.into()),
             Some(StepLookup {
-                task_id: format!("{exec_id}:step:{step}"),
+                task_id: format!("{run_id}:step:{step}"),
                 status: TaskStatus::Scheduled,
                 result: None,
             }),
@@ -242,10 +248,10 @@ impl Scheduler for RecordingScheduler {
 impl DurableStorage for RecordingScheduler {
     async fn get_step_status(
         &self,
-        execution_id: &str,
+        run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
-        let key = (execution_id.to_string(), step_name.to_string());
+        let key = (run_id.to_string(), step_name.to_string());
         // Not configured → Ok(None) = step row not yet inserted.
         Ok(self.step_responses.get(&key).and_then(|v| v.clone()))
     }
@@ -354,18 +360,37 @@ impl StepTransaction for MockTransaction {
         Ok(())
     }
 
-    async fn fail_step_attempt(
+    async fn record_step_attempt(
+        &mut self,
+        _attempt_id: &str,
+        _step_id: &str,
+        _attempt_number: usize,
+        _status: &str,
+        _result: Option<&serde_json::Value>,
+        _error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn mark_task_failed_for_retry(
         &mut self,
         task_id: &str,
-        _new_task_id: &str,
         _error: &str,
-        _retry_attempt: usize,
-        _attempt_record: serde_json::Value,
+        next_execution_time: chrono::DateTime<chrono::Utc>,
+        _lock_token: &str,
     ) -> Result<(), StorageError> {
         self.calls.lock().unwrap().push(Call::MarkFailed {
             task_id: task_id.to_string(),
-            next_execution_time: None,
+            next_execution_time: Some(next_execution_time),
         });
+        Ok(())
+    }
+
+    async fn update_step_retry_count(
+        &mut self,
+        _step_id: &str,
+        _new_retry_attempt: usize,
+    ) -> Result<(), StorageError> {
         Ok(())
     }
 

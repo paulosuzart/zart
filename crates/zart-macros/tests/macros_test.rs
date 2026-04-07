@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
     DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler, StepLookup,
-    StorageError,
+    StepTransaction, StorageError,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -128,6 +128,94 @@ impl DurableStorage for MockScheduler {
         _payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
         Ok(true)
+    }
+
+    async fn begin(&self) -> Result<Box<dyn StepTransaction + Send>, StorageError> {
+        Ok(Box::new(MockTransaction))
+    }
+}
+
+/// No-op mock transaction for macro tests.
+struct MockTransaction;
+
+#[async_trait]
+impl StepTransaction for MockTransaction {
+    async fn insert_task(&mut self, _params: ScheduleAtParams) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn insert_step(
+        &mut self,
+        _step_id: &str,
+        _run_id: &str,
+        _step_name: &str,
+        _step_kind: &str,
+        _task_id: &str,
+        _retry_config: Option<&serde_json::Value>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn complete_step(
+        &mut self,
+        _step_id: &str,
+        _result: serde_json::Value,
+        _completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn mark_task_completed(
+        &mut self,
+        _task_id: &str,
+        _result: Option<serde_json::Value>,
+        _lock_token: &str,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn insert_body_task(
+        &mut self,
+        _task_id: &str,
+        _task_name: &str,
+        _run_id: &str,
+        _execution_time: chrono::DateTime<chrono::Utc>,
+        _data: serde_json::Value,
+        _metadata: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn record_step_attempt(
+        &mut self,
+        _attempt_id: &str,
+        _step_id: &str,
+        _attempt_number: usize,
+        _status: &str,
+        _result: Option<&serde_json::Value>,
+        _error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn mark_task_failed_for_retry(
+        &mut self,
+        _task_id: &str,
+        _error: &str,
+        _retry_time: chrono::DateTime<chrono::Utc>,
+        _lock_token: &str,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn update_step_retry_count(
+        &mut self,
+        _step_id: &str,
+        _new_retry_attempt: usize,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn dead_step(&mut self, _step_id: &str, _error: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn commit(self: Box<Self>) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn rollback(self: Box<Self>) -> Result<(), StorageError> {
+        Ok(())
     }
 }
 

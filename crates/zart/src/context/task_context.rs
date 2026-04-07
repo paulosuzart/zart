@@ -31,6 +31,10 @@ pub struct TaskContext {
     pub(crate) scheduler: Arc<dyn StorageBackend>,
     /// Unique identifier of the enclosing durable execution.
     execution_id: String,
+    /// The `run_id` of the current execution run (`zart_execution_runs.run_id`).
+    /// Extracted from `task.metadata["run_id"]` by the worker.
+    /// Used as the FK for step rows and as the prefix of step task IDs.
+    run_id: String,
     /// The `task_id` of the task currently being executed.
     /// Differs from `execution_id` for step/body-segment tasks in the new model.
     pub(crate) task_id: String,
@@ -46,7 +50,7 @@ pub struct TaskContext {
     /// Step names whose cached result has been returned during the current body re-run.
     ///
     /// The database enforces `task_id PRIMARY KEY` which prevents duplicate step task rows
-    /// (each step ID is `{execution_id}:step:{step_name}`). However, that constraint only
+    /// (each step ID is `{run_id}:step:{step_name}`). However, that constraint only
     /// applies at INSERT time. On body re-run, the framework returns cached Completed results
     /// without re-inserting — so two calls with the same step name in a loop would silently
     /// return the same cached value for both iterations.
@@ -70,10 +74,12 @@ impl TaskContext {
     ) -> Self {
         let execution_id = execution_id.into();
         let task_id = execution_id.clone();
+        let run_id = execution_id.clone();
         Self {
             scheduler,
             task_id,
             execution_id,
+            run_id,
             task_name: task_name.into(),
             lock_token: lock_token.into(),
             data,
@@ -91,6 +97,15 @@ impl TaskContext {
     /// Set the underlying task_id (differs from execution_id in the new model).
     pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
         self.task_id = task_id.into();
+        self
+    }
+
+    /// Set the run_id for the current execution run.
+    ///
+    /// This must be called by the worker with the `run_id` from `task.metadata["run_id"]`
+    /// so that step rows are inserted with the correct FK into `zart_execution_runs`.
+    pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
+        self.run_id = run_id.into();
         self
     }
 
@@ -162,7 +177,7 @@ impl TaskContext {
     {
         let lookup = self
             .scheduler
-            .get_step_status(&self.execution_id, step_name)
+            .get_step_status(&self.run_id, step_name)
             .await
             .map_err(|e| StepError::Failed {
                 step: step_name.to_string(),
@@ -218,18 +233,19 @@ impl TaskContext {
             }
             None => {
                 // First time: insert step task row and exit.
+                // step_id = "{run_id}:step:{step_name}" — unique per run per step.
                 emit_metric!(
                     STEPS_TOTAL
                         .with_label_values(&["scheduled", step_name])
                         .inc()
                 );
-                let task_id = format!("{}:step:{}", self.execution_id, step_name);
+                let task_id = format!("{}:step:{}", self.run_id, step_name);
                 step_ops::schedule_step_task(
                     &*self.scheduler,
                     step_ops::StepTaskSpec {
                         task_id: &task_id,
                         task_name: &self.task_name,
-                        run_id: &self.execution_id,
+                        run_id: &self.run_id,
                         step_name,
                         data: self.data.clone(),
                         retry_config: retry_config.as_ref(),
@@ -293,6 +309,7 @@ impl TaskContext {
                         if let Err(sched_err) = step_ops::reschedule_step_for_retry(
                             &*self.scheduler,
                             &self.task_id,
+                            retry_attempt + 1,
                             &e.to_string(),
                             retry_time,
                             &self.lock_token,
@@ -347,12 +364,17 @@ impl TaskContext {
             let step_task_id = self.task_id.clone();
 
             if is_wait_all_child {
+                let attempt_number = match &self.execution_mode {
+                    ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
+                    _ => 1,
+                };
                 step_ops::complete_step_no_resume(
                     &*self.scheduler,
                     &step_task_id,
                     &step_task_id,
                     serialized,
                     &self.lock_token,
+                    attempt_number,
                 )
                 .await
                 .map_err(|e| StepError::Failed {
@@ -360,7 +382,7 @@ impl TaskContext {
                     reason: e.to_string(),
                 })?;
             } else {
-                let next_body_task_id = uuid::Uuid::new_v4().to_string();
+                let next_body_task_id = format!("{}:body:after:{}", self.run_id, step_name);
                 step_ops::complete_step_and_schedule_body(
                     &*self.scheduler,
                     step_ops::ResumeBodySpec {
@@ -370,8 +392,14 @@ impl TaskContext {
                         lock_token: &self.lock_token,
                         next_body_task_id: &next_body_task_id,
                         task_name: &self.task_name,
-                        run_id: &self.execution_id,
+                        run_id: &self.run_id,
                         data: self.data.clone(),
+                        attempt_number: {
+                            match &self.execution_mode {
+                                ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
+                                _ => 1,
+                            }
+                        },
                     },
                 )
                 .await
@@ -388,7 +416,7 @@ impl TaskContext {
             // Non-target: must be a previously completed step; return cached result.
             let lookup = self
                 .scheduler
-                .get_step_status(&self.execution_id, step_name)
+                .get_step_status(&self.run_id, step_name)
                 .await
                 .map_err(|e| StepError::Failed {
                     step: step_name.to_string(),
@@ -575,7 +603,7 @@ impl TaskContext {
     {
         let coordinator_id = format!(
             "{}:coord:wait_all:{}",
-            self.execution_id,
+            self.run_id,
             uuid::Uuid::new_v4()
         );
 
@@ -587,12 +615,12 @@ impl TaskContext {
         let mut child_ids: Vec<String> = Vec::with_capacity(step_names.len());
 
         for step_name in &step_names {
-            let child_task_id = format!("{}:step:{}", self.execution_id, step_name);
+            let child_task_id = format!("{}:step:{}", self.run_id, step_name);
             child_ids.push(child_task_id.clone());
 
             let lookup = self
                 .scheduler
-                .get_step_status(&self.execution_id, step_name)
+                .get_step_status(&self.run_id, step_name)
                 .await
                 .map_err(|e| StepError::Failed {
                     step: step_name.clone(),
@@ -613,7 +641,7 @@ impl TaskContext {
                         &*self.scheduler,
                         &child_task_id,
                         &self.task_name,
-                        &self.execution_id,
+                        &self.run_id,
                         step_name,
                         &coordinator_id,
                         self.data.clone(),
@@ -632,7 +660,7 @@ impl TaskContext {
             for step_name in &step_names {
                 let lookup = self
                     .scheduler
-                    .get_step_status(&self.execution_id, step_name)
+                    .get_step_status(&self.run_id, step_name)
                     .await
                     .map_err(|e| StepError::Failed {
                         step: step_name.clone(),
@@ -665,7 +693,7 @@ impl TaskContext {
             &*self.scheduler,
             &coordinator_id,
             &self.task_name,
-            &self.execution_id,
+            &self.run_id,
             child_ids,
             self.data.clone(),
         )
@@ -700,12 +728,17 @@ impl TaskContext {
                     match json_result {
                         Ok(json_val) => {
                             let step_task_id = self.task_id.clone();
+                            let attempt_number = match &self.execution_mode {
+                                ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
+                                _ => 1,
+                            };
                             step_ops::complete_step_no_resume(
                                 &*self.scheduler,
                                 &step_task_id,
                                 &step_task_id,
                                 json_val,
                                 &self.lock_token,
+                                attempt_number,
                             )
                             .await
                             .map_err(|e| StepError::Failed {
@@ -748,12 +781,12 @@ impl TaskContext {
     ) -> Result<(), StepError> {
         match &self.execution_mode {
             ExecutionMode::Body => {
-                let sleep_task_id = uuid::Uuid::new_v4().to_string();
+                let sleep_task_id = format!("{}:step:__sleep", self.run_id);
                 step_ops::schedule_sleep_task(
                     &*self.scheduler,
                     &sleep_task_id,
                     &self.task_name,
-                    &self.execution_id,
+                    &self.run_id,
                     wake_time,
                     self.data.clone(),
                 )
@@ -817,7 +850,7 @@ impl TaskContext {
     {
         let lookup = self
             .scheduler
-            .get_step_status(&self.execution_id, event_name)
+            .get_step_status(&self.run_id, event_name)
             .await
             .map_err(|e| StepError::Failed {
                 step: event_name.to_string(),
@@ -865,13 +898,13 @@ impl TaskContext {
                         .ok()
                         .map(|cd| chrono::Utc::now() + cd)
                 });
-                let task_id = format!("{}:step:{}", self.execution_id, event_name);
+                let task_id = format!("{}:step:{}", self.run_id, event_name);
                 step_ops::schedule_wait_for_event_task(
                     &*self.scheduler,
                     step_ops::EventStepSpec {
                         task_id: &task_id,
                         task_name: &self.task_name,
-                        run_id: &self.execution_id,
+                        run_id: &self.run_id,
                         event_name,
                         data: self.data.clone(),
                         deadline,
@@ -896,7 +929,7 @@ impl TaskContext {
     {
         let lookup = self
             .scheduler
-            .get_step_status(&self.execution_id, event_name)
+            .get_step_status(&self.run_id, event_name)
             .await
             .map_err(|e| StepError::Failed {
                 step: event_name.to_string(),
@@ -1002,4 +1035,3 @@ impl TaskContext {
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
-

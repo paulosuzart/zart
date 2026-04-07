@@ -390,6 +390,15 @@ async fn dispatch_task(
         .clone()
         .unwrap_or_else(|| task.task_id.clone());
 
+    // run_id is the FK into zart_execution_runs; carried in metadata["run_id"] by body/step tasks.
+    // Falls back to execution_id for non-durable tasks (which don't use zart_steps).
+    let run_id = task
+        .metadata
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&execution_id)
+        .to_string();
+
     let mut ctx = TaskContext::new(
         scheduler.clone(),
         execution_id.clone(),
@@ -398,6 +407,7 @@ async fn dispatch_task(
         task.data.clone(),
     )
     .with_task_id(task.task_id.clone())
+    .with_run_id(run_id)
     .with_execution_mode(exec_mode.clone());
 
     // Record execution start for durable executions (tasks with an execution_id).
@@ -615,8 +625,10 @@ async fn dispatch_coordinator(
     wait_for: Vec<String>,
 ) {
     let run_id = task
-        .execution_id
-        .as_deref()
+        .metadata
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| task.execution_id.as_deref())
         .unwrap_or(&task.task_id)
         .to_string();
 
@@ -633,7 +645,7 @@ async fn dispatch_coordinator(
 
     if completed.len() == wait_for.len() {
         // All done — atomically mark coordinator completed + schedule next body segment.
-        let next_body_task_id = uuid::Uuid::new_v4().to_string();
+        let next_body_task_id = format!("{}:body", &task.task_id);
         if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
             &*scheduler,
             crate::step_ops::ResumeBodySpec {
@@ -645,6 +657,7 @@ async fn dispatch_coordinator(
                 task_name: &task.task_name,
                 run_id: &run_id,
                 data: task.data.clone(),
+                attempt_number: 1,
             },
         )
         .await
@@ -709,12 +722,14 @@ async fn dispatch_sleep_continuation(
     }
 
     let run_id = task
-        .execution_id
-        .as_deref()
+        .metadata
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| task.execution_id.as_deref())
         .unwrap_or(&task.task_id)
         .to_string();
 
-    let next_body_task_id = uuid::Uuid::new_v4().to_string();
+    let next_body_task_id = format!("{}:body:after:__sleep", &run_id);
 
     if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
         &*scheduler,
@@ -727,6 +742,7 @@ async fn dispatch_sleep_continuation(
             task_name: &task.task_name,
             run_id: &run_id,
             data: task.data.clone(),
+            attempt_number: 1,
         },
     )
     .await
@@ -828,27 +844,28 @@ mod tests {
         dispatch_coordinator(scheduler, task, child_ids).await;
 
         let log = calls.lock().unwrap();
-        let cas: Vec<_> = log
-            .iter()
-            .filter(|c| c.is_complete_and_schedule())
-            .collect();
+        // The new transactional implementation calls mark_task_completed + insert_body_task
+        let completed: Vec<_> = log.iter().filter(|c| c.is_mark_completed()).collect();
+        let scheduled: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
         let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
 
-        assert_eq!(cas.len(), 1, "expected exactly one complete_and_schedule");
+        assert_eq!(completed.len(), 1, "expected exactly one mark_completed");
+        assert_eq!(
+            scheduled.len(),
+            1,
+            "expected exactly one body task scheduled"
+        );
         assert!(
             failures.is_empty(),
             "no mark_failed expected when all children done"
         );
 
-        if let Call::CompleteAndSchedule {
-            new_task_id,
-            new_metadata,
-            ..
-        } = &cas[0]
-        {
-            assert_eq!(new_task_id, "exec-1-b3");
-            assert_eq!(new_metadata["mode"], "body");
-            assert_eq!(new_metadata["segment"], 3);
+        if let Call::ScheduleAt { metadata, .. } = &scheduled[0] {
+            assert_eq!(metadata["mode"], "body");
+            assert!(
+                metadata.get("run_id").is_some(),
+                "body task must carry run_id"
+            );
         }
     }
 
@@ -906,9 +923,8 @@ mod tests {
 
     // ── dispatch_sleep_continuation ───────────────────────────────────────────
 
-    /// When a sleep task fires, `dispatch_sleep_continuation` must call
-    /// `complete_and_schedule` exactly once, inserting the next body segment
-    /// with `mode=body` metadata. No failures should occur.
+    /// When a sleep task fires, `dispatch_sleep_continuation` must complete the step
+    /// and schedule a body task via the transactional API.
     #[tokio::test]
     async fn sleep_continuation_calls_complete_and_schedule_with_body_metadata() {
         let (scheduler, calls) = RecordingScheduler::builder().build();
@@ -925,38 +941,29 @@ mod tests {
                 "mode": "step",
                 "step_type": "sleep",
                 "step_name": "__sleep",
-                "segment": 4,
             }),
         );
 
         dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
 
         let log = calls.lock().unwrap();
-        let cas: Vec<_> = log
-            .iter()
-            .filter(|c| c.is_complete_and_schedule())
-            .collect();
+        let completed: Vec<_> = log.iter().filter(|c| c.is_mark_completed()).collect();
+        let scheduled: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
         let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
 
-        assert_eq!(
-            cas.len(),
-            1,
-            "sleep fires exactly one complete_and_schedule"
-        );
+        assert_eq!(completed.len(), 1, "sleep fires exactly one mark_completed");
+        assert_eq!(scheduled.len(), 1, "sleep schedules exactly one body task");
         assert!(
             failures.is_empty(),
             "no failures for a normal sleep completion"
         );
 
-        if let Call::CompleteAndSchedule {
-            new_task_id,
-            new_metadata,
-            ..
-        } = &cas[0]
-        {
-            assert_eq!(new_task_id, "exec-1-b4");
-            assert_eq!(new_metadata["mode"], "body");
-            assert_eq!(new_metadata["segment"], 4);
+        if let Call::ScheduleAt { metadata, .. } = &scheduled[0] {
+            assert_eq!(metadata["mode"], "body");
+            assert!(
+                metadata.get("run_id").is_some(),
+                "body task must carry run_id"
+            );
         }
     }
 

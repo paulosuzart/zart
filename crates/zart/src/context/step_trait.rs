@@ -1,8 +1,8 @@
 //! ZartStep trait (raw step definition without macros) and StepWithId wrapper.
 
-use crate::retry::RetryConfig;
-use crate::error::StepError;
 use super::step_context::StepContext;
+use crate::error::StepError;
+use crate::retry::RetryConfig;
 use std::borrow::Cow;
 
 // ── ZartStep trait (raw step definition without macros) ────────────────────────

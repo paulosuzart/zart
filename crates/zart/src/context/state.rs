@@ -1,8 +1,8 @@
 //! Internal state types: StepHandle, attempt history, step records, and ExecutionState.
 
-use crate::retry::RetryConfig;
-use crate::error::StepError;
 use super::step_context::StepContext;
+use crate::error::StepError;
+use crate::retry::RetryConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;

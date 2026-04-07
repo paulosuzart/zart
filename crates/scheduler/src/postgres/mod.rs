@@ -549,7 +549,8 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        // Update the current run row
+        // Update the current run row (zart_executions is a stable identity record with no
+        // status/result columns — all run-level state lives in zart_execution_runs).
         sqlx::query(
             r#"
             UPDATE zart_execution_runs
@@ -558,23 +559,6 @@ impl DurableStorage for PostgresScheduler {
                 completed_at = NOW()
             WHERE execution_id = $2
               AND run_id = (SELECT current_run_id FROM zart_executions WHERE execution_id = $2)
-            "#,
-        )
-        .bind(&result)
-        .bind(execution_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        // Update the execution record
-        sqlx::query(
-            r#"
-            UPDATE zart_executions
-            SET status       = 'completed',
-                result       = $1,
-                completed_at = NOW(),
-                updated_at   = NOW()
-            WHERE execution_id = $2
             "#,
         )
         .bind(&result)
@@ -596,27 +580,13 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        // Update the current run row
+        // Update the current run row only (zart_executions has no status column).
         sqlx::query(
             r#"
             UPDATE zart_execution_runs
             SET status = 'failed'
             WHERE execution_id = $1
               AND run_id = (SELECT current_run_id FROM zart_executions WHERE execution_id = $1)
-            "#,
-        )
-        .bind(execution_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        // Update the execution record
-        sqlx::query(
-            r#"
-            UPDATE zart_executions
-            SET status     = 'failed',
-                updated_at = NOW()
-            WHERE execution_id = $1
             "#,
         )
         .bind(execution_id)
@@ -879,34 +849,73 @@ impl DurableStorage for PostgresScheduler {
         &self,
         execution_id: &str,
         payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
+    ) -> Result<String, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // Find the max run_index for this execution.
+        let max_index: i32 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(MAX(run_index), -1)
+            FROM zart_execution_runs
+            WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let next_index = max_index + 1;
+        let new_run_id = format!("{execution_id}:run:{next_index}");
+
+        // Insert a new run row for the restart.
+        sqlx::query(
+            r#"
+            INSERT INTO zart_execution_runs
+                (run_id, execution_id, run_index, payload, trigger)
+            VALUES ($1, $2, $3, $4, 'restart')
+            "#,
+        )
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .bind(next_index)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // Update the execution record to point to the new run.
         sqlx::query(
             r#"
             UPDATE zart_executions
-            SET status       = 'scheduled',
-                payload      = $1,
-                result       = NULL,
-                completed_at = NULL,
-                updated_at   = NOW()
+            SET current_run_id = $1
             WHERE execution_id = $2
             "#,
         )
-        .bind(&payload)
+        .bind(&new_run_id)
         .bind(execution_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(())
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(new_run_id)
     }
 
     async fn get_step_status(
         &self,
-        execution_id: &str,
+        run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
-        // Query zart_steps first using the execution_id to derive run_id
-        // This is the new authoritative source
-        let task_id = format!("{execution_id}:step:{step_name}");
+        // Query zart_steps by run_id + step_name — the authoritative source.
+        // step_id = "{run_id}:step:{step_name}" matches the ID format used at scheduling time.
+        let task_id = format!("{run_id}:step:{step_name}");
 
         let row: Option<(String, String, Option<serde_json::Value>)> = sqlx::query_as(
             r#"
@@ -988,12 +997,11 @@ impl DurableStorage for PostgresScheduler {
             Option<String>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
-            serde_json::Value,
         )> = sqlx::query_as(
             r#"
             SELECT step_id, run_id, step_name, step_kind, task_id,
                    status, retry_attempt, retry_config, result, last_error,
-                   scheduled_at, completed_at, attempts
+                   scheduled_at, completed_at
             FROM zart_steps
             WHERE run_id = $1 AND step_name = $2
             "#,
@@ -1019,7 +1027,6 @@ impl DurableStorage for PostgresScheduler {
                 last_error,
                 scheduled_at,
                 completed_at,
-                attempts,
             )) => Ok(Some(StepRow {
                 step_id,
                 run_id,
@@ -1033,7 +1040,6 @@ impl DurableStorage for PostgresScheduler {
                 last_error,
                 scheduled_at,
                 completed_at,
-                attempts,
             })),
         }
     }
@@ -1054,12 +1060,11 @@ impl DurableStorage for PostgresScheduler {
             Option<String>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
-            serde_json::Value,
         )> = sqlx::query_as(
             r#"
             SELECT step_id, run_id, step_name, step_kind, task_id,
                    status, retry_attempt, retry_config, result, last_error,
-                   scheduled_at, completed_at, attempts
+                   scheduled_at, completed_at
             FROM zart_steps
             WHERE run_id = $1
             ORDER BY scheduled_at ASC
@@ -1085,7 +1090,6 @@ impl DurableStorage for PostgresScheduler {
                     last_error,
                     scheduled_at,
                     completed_at,
-                    attempts,
                 )| {
                     Ok(StepRow {
                         step_id,
@@ -1100,7 +1104,6 @@ impl DurableStorage for PostgresScheduler {
                         last_error,
                         scheduled_at,
                         completed_at,
-                        attempts,
                     })
                 },
             )
@@ -1108,14 +1111,14 @@ impl DurableStorage for PostgresScheduler {
     }
 
     async fn begin(&self) -> Result<Box<dyn crate::StepTransaction + Send>, StorageError> {
-        let tx = self
+        // sqlx 0.8: Pool::begin() returns Transaction<'static, _> because PgPool is Arc-backed.
+        // No unsafe transmute needed.
+        let tx: sqlx::Transaction<'static, sqlx::Postgres> = self
             .pool
             .begin()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
-        let tx_static: sqlx::Transaction<'static, sqlx::Postgres> =
-            unsafe { std::mem::transmute(tx) };
-        Ok(Box::new(PgTransaction::new(tx_static)))
+        Ok(Box::new(PgTransaction::new(tx)))
     }
 }
 
@@ -1123,19 +1126,15 @@ impl DurableStorage for PostgresScheduler {
 
 /// A transactional wrapper for atomic step+task operations.
 ///
-/// Obtained via [`PostgresScheduler::begin`]. All writes to `zart_steps` and
+/// Obtained via [`DurableStorage::begin`]. All writes to `zart_steps` and
 /// `zart_tasks` should go through this to ensure atomicity.
-pub struct PgTransaction<'a> {
+pub struct PgTransaction {
     tx: sqlx::Transaction<'static, sqlx::Postgres>,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> PgTransaction<'a> {
+impl PgTransaction {
     fn new(tx: sqlx::Transaction<'static, sqlx::Postgres>) -> Self {
-        Self {
-            tx,
-            _marker: std::marker::PhantomData,
-        }
+        Self { tx }
     }
 
     /// Insert a task row within this transaction.
@@ -1289,34 +1288,90 @@ impl<'a> PgTransaction<'a> {
         Ok(())
     }
 
-    /// Mark a step attempt as failed within this transaction.
-    pub async fn fail_step_attempt(
+    /// Record a step attempt (completed or failed) in `zart_step_attempts`.
+    pub async fn record_step_attempt(
+        &mut self,
+        attempt_id: &str,
+        step_id: &str,
+        attempt_number: usize,
+        status: &str,
+        result: Option<&serde_json::Value>,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            INSERT INTO zart_step_attempts
+                (attempt_id, step_id, attempt_number, status, completed_at, result, error)
+            VALUES ($1, $2, $3, $4, NOW(), $5, $6)
+            ON CONFLICT (attempt_id) DO NOTHING
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(step_id)
+        .bind(attempt_number as i32)
+        .bind(status)
+        .bind(result)
+        .bind(error)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    /// Reschedule a step task for retry within this transaction.
+    pub async fn mark_task_failed_for_retry(
+        &mut self,
+        task_id: &str,
+        error: &str,
+        retry_time: chrono::DateTime<chrono::Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status         = 'scheduled',
+                last_error     = $1,
+                execution_time = $2,
+                locked_at      = NULL,
+                worker_id      = NULL,
+                updated_at     = NOW()
+            WHERE task_id  = $3
+              AND worker_id = $4
+            "#,
+        )
+        .bind(error)
+        .bind(retry_time)
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+        if rows_affected == 0 {
+            return Err(StorageError::LockMismatch(task_id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Update the retry count on a step row.
+    pub async fn update_step_retry_count(
         &mut self,
         step_id: &str,
-        new_task_id: &str,
-        error: &str,
-        retry_attempt: usize,
-        attempt_record: serde_json::Value,
+        new_retry_attempt: usize,
     ) -> Result<(), StorageError> {
         sqlx::query(
             r#"
             UPDATE zart_steps
-            SET task_id    = $1,
-                last_error = $2,
-                retry_attempt = $3,
-                attempts   = COALESCE(attempts, '[]'::jsonb) || $4
-            WHERE step_id = $5
+            SET retry_attempt = $1,
+                last_error    = NULL
+            WHERE step_id = $2
             "#,
         )
-        .bind(new_task_id)
-        .bind(error)
-        .bind(retry_attempt as i32)
-        .bind(attempt_record)
+        .bind(new_retry_attempt as i32)
         .bind(step_id)
         .execute(&mut *self.tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
-
         Ok(())
     }
 
@@ -1357,7 +1412,7 @@ impl<'a> PgTransaction<'a> {
 }
 
 #[async_trait::async_trait]
-impl crate::StepTransaction for PgTransaction<'_> {
+impl crate::StepTransaction for PgTransaction {
     async fn insert_task(&mut self, params: ScheduleAtParams) -> Result<(), StorageError> {
         PgTransaction::insert_task(self, params).await
     }
@@ -1371,7 +1426,16 @@ impl crate::StepTransaction for PgTransaction<'_> {
         task_id: &str,
         retry_config: Option<&serde_json::Value>,
     ) -> Result<(), StorageError> {
-        PgTransaction::insert_step(self, step_id, run_id, step_name, step_kind, task_id, retry_config).await
+        PgTransaction::insert_step(
+            self,
+            step_id,
+            run_id,
+            step_name,
+            step_kind,
+            task_id,
+            retry_config,
+        )
+        .await
     }
 
     async fn complete_step(
@@ -1401,18 +1465,46 @@ impl crate::StepTransaction for PgTransaction<'_> {
         data: serde_json::Value,
         metadata: serde_json::Value,
     ) -> Result<(), StorageError> {
-        PgTransaction::insert_body_task(self, task_id, task_name, run_id, execution_time, data, metadata).await
+        PgTransaction::insert_body_task(
+            self,
+            task_id,
+            task_name,
+            run_id,
+            execution_time,
+            data,
+            metadata,
+        )
+        .await
     }
 
-    async fn fail_step_attempt(
+    async fn record_step_attempt(
+        &mut self,
+        attempt_id: &str,
+        step_id: &str,
+        attempt_number: usize,
+        status: &str,
+        result: Option<&serde_json::Value>,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        PgTransaction::record_step_attempt(self, attempt_id, step_id, attempt_number, status, result, error).await
+    }
+
+    async fn mark_task_failed_for_retry(
+        &mut self,
+        task_id: &str,
+        error: &str,
+        retry_time: chrono::DateTime<chrono::Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        PgTransaction::mark_task_failed_for_retry(self, task_id, error, retry_time, lock_token).await
+    }
+
+    async fn update_step_retry_count(
         &mut self,
         step_id: &str,
-        new_task_id: &str,
-        error: &str,
-        retry_attempt: usize,
-        attempt_record: serde_json::Value,
+        new_retry_attempt: usize,
     ) -> Result<(), StorageError> {
-        PgTransaction::fail_step_attempt(self, step_id, new_task_id, error, retry_attempt, attempt_record).await
+        PgTransaction::update_step_retry_count(self, step_id, new_retry_attempt).await
     }
 
     async fn dead_step(&mut self, step_id: &str, error: &str) -> Result<(), StorageError> {
@@ -1428,19 +1520,3 @@ impl crate::StepTransaction for PgTransaction<'_> {
     }
 }
 
-impl PostgresScheduler {
-    /// Begin a new transaction for atomic step+task operations.
-    pub async fn begin(&self) -> Result<PgTransaction<'_>, StorageError> {
-        let tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
-        // Safety: we hold a reference to self.pool, but PgTransaction only needs
-        // the transaction. The lifetime magic ensures we can't use the scheduler
-        // while a transaction is open.
-        let tx_static: sqlx::Transaction<'static, sqlx::Postgres> =
-            unsafe { std::mem::transmute(tx) };
-        Ok(PgTransaction::new(tx_static))
-    }
-}

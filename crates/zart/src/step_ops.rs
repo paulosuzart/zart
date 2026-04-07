@@ -30,6 +30,8 @@ pub struct ResumeBodySpec<'a> {
     pub task_name: &'a str,
     pub run_id: &'a str,
     pub data: serde_json::Value,
+    /// 1-indexed attempt number for recording in `zart_step_attempts`.
+    pub attempt_number: usize,
 }
 
 /// Parameters for [`schedule_wait_for_event_task`].
@@ -100,21 +102,25 @@ pub async fn schedule_step_task(
 
 /// Reschedule a failed step task for retry after a delay.
 ///
-/// Marks the step task as failed with a future execution time so the worker
-/// will pick it up again after the retry delay. The scheduler's built-in
-/// `task.attempt` counter increments on each pickup and is used to track
-/// the retry attempt number.
+/// Records the failed attempt, updates the retry count on the step row, and
+/// reschedules the task to be picked up after `retry_time`.
 pub async fn reschedule_step_for_retry(
     scheduler: &dyn StorageBackend,
     step_task_id: &str,
+    attempt_number: usize,
     error: &str,
     retry_time: chrono::DateTime<chrono::Utc>,
     lock_token: &str,
 ) -> Result<(), StorageError> {
-    scheduler
-        .mark_failed(step_task_id, error, Some(retry_time), lock_token)
+    let attempt_id = format!("{step_task_id}:attempt:{attempt_number}");
+    let mut tx = scheduler.begin().await?;
+    tx.record_step_attempt(&attempt_id, step_task_id, attempt_number, "failed", None, Some(error))
         .await?;
-    Ok(())
+    tx.update_step_retry_count(step_task_id, attempt_number + 1)
+        .await?;
+    tx.mark_task_failed_for_retry(step_task_id, error, retry_time, lock_token)
+        .await?;
+    tx.commit().await
 }
 
 /// Insert a wait_all child step task.
@@ -164,12 +170,22 @@ pub async fn complete_step_and_schedule_body(
     scheduler: &dyn StorageBackend,
     spec: ResumeBodySpec<'_>,
 ) -> Result<(), StorageError> {
+    let attempt_id = format!("{}:attempt:{}", spec.step_id, spec.attempt_number);
     let body_metadata = serde_json::json!({
         "mode": "body",
         "run_id": spec.run_id,
     });
 
     let mut tx = scheduler.begin().await?;
+    tx.record_step_attempt(
+        &attempt_id,
+        spec.step_id,
+        spec.attempt_number,
+        "completed",
+        Some(&spec.result),
+        None,
+    )
+    .await?;
     tx.complete_step(spec.step_id, spec.result.clone(), Utc::now())
         .await?;
     tx.mark_task_completed(spec.step_task_id, Some(spec.result), spec.lock_token)
@@ -195,8 +211,19 @@ pub async fn complete_step_no_resume(
     step_id: &str,
     result: serde_json::Value,
     lock_token: &str,
+    attempt_number: usize,
 ) -> Result<(), StorageError> {
+    let attempt_id = format!("{step_id}:attempt:{attempt_number}");
     let mut tx = scheduler.begin().await?;
+    tx.record_step_attempt(
+        &attempt_id,
+        step_id,
+        attempt_number,
+        "completed",
+        Some(&result),
+        None,
+    )
+    .await?;
     tx.complete_step(step_id, result.clone(), Utc::now())
         .await?;
     tx.mark_task_completed(step_task_id, Some(result), lock_token)

@@ -250,6 +250,4 @@ pub struct StepRow {
     pub scheduled_at: DateTime<Utc>,
     /// When this step completed (None if still in progress).
     pub completed_at: Option<DateTime<Utc>>,
-    /// Per-attempt history as JSON array.
-    pub attempts: serde_json::Value,
 }

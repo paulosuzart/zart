@@ -75,10 +75,24 @@ CREATE TABLE IF NOT EXISTS zart_steps (
     scheduled_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
 
-    attempts        JSONB NOT NULL DEFAULT '[]',
-
     UNIQUE (run_id, step_name)
 );
+
+-- Append-only attempt history for step retries (symmetric with zart_execution_runs)
+CREATE TABLE IF NOT EXISTS zart_step_attempts (
+    attempt_id      TEXT PRIMARY KEY,   -- "{step_id}:attempt:{n}"
+    step_id         TEXT NOT NULL REFERENCES zart_steps(step_id),
+    attempt_number  INTEGER NOT NULL,   -- 1-indexed
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ,
+    status          TEXT NOT NULL,      -- 'completed' | 'failed'
+    result          JSONB,
+    error           TEXT,
+    UNIQUE (step_id, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_zart_step_attempts_step
+    ON zart_step_attempts (step_id);
 
 -- Poll index: only scheduled tasks ordered by due time
 CREATE INDEX IF NOT EXISTS idx_zart_tasks_poll
@@ -90,9 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_zart_tasks_recurrence
     ON zart_tasks (task_name)
     WHERE recurrence IS NOT NULL;
 
--- Lookup executions by status (for listing / observability)
-CREATE INDEX IF NOT EXISTS idx_zart_executions_status
-    ON zart_executions (status, created_at);
+-- Lookup executions by creation time (for listing / observability)
+CREATE INDEX IF NOT EXISTS idx_zart_executions_created
+    ON zart_executions (created_at);
 
 -- Run lookup by execution_id
 CREATE INDEX IF NOT EXISTS idx_zart_execution_runs_execution

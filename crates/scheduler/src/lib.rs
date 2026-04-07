@@ -230,22 +230,25 @@ pub trait DurableStorage: Send + Sync {
     }
 
     /// Reset a terminal execution so it can be retried.
+    ///
+    /// Creates a new run at run_index+1, updates `current_run_id`, and returns
+    /// the new `run_id` (e.g. `"{execution_id}:run:1"`).
     async fn reset_execution(
         &self,
         execution_id: &str,
         payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
+    ) -> Result<String, StorageError> {
         let _ = (execution_id, payload);
         Err(StorageError::NotImplemented("reset_execution"))
     }
 
-    /// Look up a step task by `execution_id` + `step_name`.
+    /// Look up a step by `run_id` + `step_name` in `zart_steps`.
     async fn get_step_status(
         &self,
-        execution_id: &str,
+        run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
-        let _ = (execution_id, step_name);
+        let _ = (run_id, step_name);
         Err(StorageError::NotImplemented("get_step_status"))
     }
 
@@ -319,13 +322,26 @@ pub trait StepTransaction: Send + Sync {
         data: serde_json::Value,
         metadata: serde_json::Value,
     ) -> Result<(), StorageError>;
-    async fn fail_step_attempt(
+    async fn record_step_attempt(
+        &mut self,
+        attempt_id: &str,
+        step_id: &str,
+        attempt_number: usize,
+        status: &str,
+        result: Option<&serde_json::Value>,
+        error: Option<&str>,
+    ) -> Result<(), StorageError>;
+    async fn mark_task_failed_for_retry(
+        &mut self,
+        task_id: &str,
+        error: &str,
+        retry_time: chrono::DateTime<chrono::Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError>;
+    async fn update_step_retry_count(
         &mut self,
         step_id: &str,
-        new_task_id: &str,
-        error: &str,
-        retry_attempt: usize,
-        attempt_record: serde_json::Value,
+        new_retry_attempt: usize,
     ) -> Result<(), StorageError>;
     async fn dead_step(&mut self, step_id: &str, error: &str) -> Result<(), StorageError>;
     async fn commit(self: Box<Self>) -> Result<(), StorageError>;
