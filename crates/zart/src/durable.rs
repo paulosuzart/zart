@@ -8,7 +8,9 @@ use crate::emit_metric;
 use crate::error::SchedulerError;
 #[cfg(feature = "metrics")]
 use crate::metrics::EVENTS_DELIVERED_TOTAL;
-use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleAtParams, ScheduleResult, StorageBackend};
+use scheduler::{
+    ExecutionRecord, ExecutionStatus, ScheduleAtParams, ScheduleResult, StorageBackend,
+};
 use std::sync::Arc;
 use std::time::Duration;
 

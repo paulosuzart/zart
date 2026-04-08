@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS zart_steps (
     result          JSONB,
     last_error      TEXT,
 
+    -- Wait-group inline state (NULL for non-wait-group steps)
+    wg_total        INTEGER,
+    wg_remaining    INTEGER,
+    wg_threshold    INTEGER,
+    wg_first_failed BOOLEAN,
+
     scheduled_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
 

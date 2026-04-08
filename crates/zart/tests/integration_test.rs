@@ -5,7 +5,10 @@
 
 #[cfg(test)]
 mod integration {
-    use scheduler::{ExecutionStatus, PostgresScheduler, Scheduler as _};
+    use scheduler::{
+        CompleteWaitGroupChildParams, DurableStorage as _, EventDeliveryResult, ExecutionStatus,
+        FailWaitGroupChildParams, PostgresScheduler, Scheduler as _,
+    };
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
     use std::sync::{
@@ -19,6 +22,9 @@ mod integration {
         context::{TaskContext, ZartStep},
         error::{StepError, TaskError},
         registry::DurableExecution,
+        step_types::{
+            CompletionBehavior, CompletionOutcome, CompletionSpec, StepDefId, StepResult,
+        },
     };
 
     // ── Shared helpers ────────────────────────────────────────────────────────
@@ -566,6 +572,306 @@ mod integration {
         assert_eq!(record.status, ExecutionStatus::Completed);
         let result = record.result.expect("expected a result");
         assert_eq!(result["sum"], 6);
+    }
+
+    // ── Phase 3: Declarative v3 dispatch / step_internal integration ─────────
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn phase3_stepdefid_from_metadata_backward_compatible() {
+        let wg_new = serde_json::json!({
+            "mode": "step",
+            "step_name": "child-a",
+            "wg_step_name": "__wg__all__abc"
+        });
+        let wg_old = serde_json::json!({
+            "mode": "step",
+            "step_name": "child-b",
+            "is_wait_all_child": true
+        });
+        let sleep = serde_json::json!({
+            "mode": "step",
+            "step_name": "__sleep",
+            "step_type": "sleep"
+        });
+        let event = serde_json::json!({
+            "mode": "step",
+            "step_name": "approval",
+            "step_type": "wait_for_event"
+        });
+        let regular = serde_json::json!({
+            "mode": "step",
+            "step_name": "step-one",
+            "step_type": "step"
+        });
+
+        assert_eq!(StepDefId::from_metadata(&wg_new), StepDefId::WaitGroupChild);
+        assert_eq!(StepDefId::from_metadata(&wg_old), StepDefId::WaitGroupChild);
+        assert_eq!(StepDefId::from_metadata(&sleep), StepDefId::Sleep);
+        assert_eq!(StepDefId::from_metadata(&event), StepDefId::WaitForEvent);
+        assert_eq!(StepDefId::from_metadata(&regular), StepDefId::Step);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn phase3_wait_group_complete_concurrent_schedules_body_once() {
+        let scheduler = setup().await;
+
+        let execution_id = format!("test-phase3-wg-concurrent-{}", Uuid::new_v4());
+        let run_id = format!("{execution_id}:run:0");
+        let task_name = "phase3-wg-task";
+
+        scheduler
+            .start_execution(&execution_id, task_name, serde_json::json!({}))
+            .await
+            .expect("start_execution failed");
+
+        scheduler
+            .upsert_wait_group_step(scheduler::UpsertWaitGroupStepParams {
+                run_id: run_id.clone(),
+                group_step_name: "__wg__all__concurrent".to_string(),
+                total: 2,
+                threshold: 0,
+            })
+            .await
+            .expect("upsert_wait_group_step failed");
+
+        let s1 = scheduler.clone();
+        let run_id_1 = run_id.clone();
+        let child1 = tokio::spawn(async move {
+            s1.complete_wait_group_child(CompleteWaitGroupChildParams {
+                run_id: run_id_1,
+                group_step_name: "__wg__all__concurrent".to_string(),
+                child_step_task_id: "c1".to_string(),
+                child_step_id: "c1".to_string(),
+                child_result: serde_json::json!(1),
+                lock_token: "tok1".to_string(),
+                attempt_number: 1,
+                next_body_task_id: "body-after-wg".to_string(),
+                task_name: task_name.to_string(),
+                data: serde_json::json!({}),
+            })
+            .await
+        });
+
+        let s2 = scheduler.clone();
+        let run_id_2 = run_id.clone();
+        let child2 = tokio::spawn(async move {
+            s2.complete_wait_group_child(CompleteWaitGroupChildParams {
+                run_id: run_id_2,
+                group_step_name: "__wg__all__concurrent".to_string(),
+                child_step_task_id: "c2".to_string(),
+                child_step_id: "c2".to_string(),
+                child_result: serde_json::json!(2),
+                lock_token: "tok2".to_string(),
+                attempt_number: 1,
+                next_body_task_id: "body-after-wg".to_string(),
+                task_name: task_name.to_string(),
+                data: serde_json::json!({}),
+            })
+            .await
+        });
+
+        let r1: Result<bool, scheduler::StorageError> = child1.await.expect("join child1 failed");
+        let r2: Result<bool, scheduler::StorageError> = child2.await.expect("join child2 failed");
+        let t1 = r1.expect("complete_wait_group_child #1 failed");
+        let t2 = r2.expect("complete_wait_group_child #2 failed");
+
+        assert!(t1 ^ t2, "exactly one child should trigger body scheduling");
+
+        let fetched = scheduler
+            .poll_due(chrono::Utc::now(), 200)
+            .await
+            .expect("poll_due failed");
+        let body_count = fetched
+            .iter()
+            .filter(|t| t.task_id == "body-after-wg")
+            .count();
+        assert_eq!(body_count, 1, "body must be scheduled exactly once");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn phase3_wait_group_failure_first_only_fails_execution_once() {
+        let scheduler = setup().await;
+
+        let execution_id = format!("test-phase3-wg-fail-{}", Uuid::new_v4());
+        let run_id = format!("{execution_id}:run:0");
+        let task_name = "phase3-wg-fail-task";
+
+        scheduler
+            .start_execution(&execution_id, task_name, serde_json::json!({}))
+            .await
+            .expect("start_execution failed");
+
+        scheduler
+            .upsert_wait_group_step(scheduler::UpsertWaitGroupStepParams {
+                run_id: run_id.clone(),
+                group_step_name: "__wg__all__fail".to_string(),
+                total: 3,
+                threshold: 0,
+            })
+            .await
+            .expect("upsert_wait_group_step failed");
+
+        let first = scheduler
+            .fail_wait_group_child(FailWaitGroupChildParams {
+                run_id: run_id.clone(),
+                group_step_name: "__wg__all__fail".to_string(),
+                child_step_task_id: "f1".to_string(),
+                child_step_id: "f1".to_string(),
+                error: "boom-1".to_string(),
+                lock_token: "tok-f1".to_string(),
+                attempt_number: 1,
+            })
+            .await
+            .expect("fail_wait_group_child first failed");
+
+        let second = scheduler
+            .fail_wait_group_child(FailWaitGroupChildParams {
+                run_id: run_id.clone(),
+                group_step_name: "__wg__all__fail".to_string(),
+                child_step_task_id: "f2".to_string(),
+                child_step_id: "f2".to_string(),
+                error: "boom-2".to_string(),
+                lock_token: "tok-f2".to_string(),
+                attempt_number: 1,
+            })
+            .await
+            .expect("fail_wait_group_child second failed");
+
+        assert!(first, "first failure must win CAS");
+        assert!(!second, "second failure must not win CAS");
+
+        if first {
+            scheduler
+                .fail_execution(&execution_id)
+                .await
+                .expect("fail_execution failed");
+        }
+        let exec = scheduler
+            .get_execution(&execution_id)
+            .await
+            .expect("get_execution failed")
+            .expect("execution not found");
+        assert_eq!(exec.status, ExecutionStatus::Failed);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn phase3_deliver_event_happy_path_and_idempotency() {
+        let scheduler = setup().await;
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("test-phase3-deliver-event-{}", Uuid::new_v4());
+        durable
+            .start(&execution_id, "wait-event-task", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let mut registry = TaskRegistry::new();
+        registry.register("wait-event-task", WaitEventTask);
+        let registry = Arc::new(registry);
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        let r1 = scheduler
+            .deliver_event(
+                &execution_id,
+                "approve",
+                serde_json::json!({ "approved": true }),
+            )
+            .await
+            .expect("deliver_event #1 failed");
+        let r2 = scheduler
+            .deliver_event(
+                &execution_id,
+                "approve",
+                serde_json::json!({ "approved": true }),
+            )
+            .await
+            .expect("deliver_event #2 failed");
+
+        assert_eq!(r1, EventDeliveryResult::Delivered);
+        assert_eq!(r2, EventDeliveryResult::AlreadyDelivered);
+
+        let record = durable
+            .wait(&execution_id, Duration::from_secs(10), None)
+            .await
+            .expect("wait failed");
+
+        worker.stop();
+
+        assert_eq!(record.status, ExecutionStatus::Completed);
+        assert_eq!(record.result.expect("result missing")["approved"], true);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn phase3_completion_behaviors_execute_with_real_backend() {
+        let scheduler = setup().await;
+
+        let execution_id = format!("test-phase3-completion-{}", Uuid::new_v4());
+        let run_id = format!("{execution_id}:run:0");
+        let task_name = "phase3-completion-task";
+
+        scheduler
+            .start_execution(&execution_id, task_name, serde_json::json!({}))
+            .await
+            .expect("start_execution failed");
+
+        let schedule = scheduler
+            .schedule_step(scheduler::ScheduleStepParams {
+                task_id: "phase3-step-complete-1".to_string(),
+                task_name: task_name.to_string(),
+                run_id: run_id.clone(),
+                step_name: "phase3-step".to_string(),
+                step_kind: "step".to_string(),
+                execution_time: chrono::Utc::now(),
+                data: serde_json::json!({}),
+                metadata: serde_json::json!({
+                    "mode": "step",
+                    "step_type": "step",
+                    "run_id": run_id,
+                    "step_name": "phase3-step"
+                }),
+                retry_config: None,
+            })
+            .await
+            .expect("schedule_step failed");
+
+        let spec = CompletionSpec {
+            step_task_id: schedule.task_id.clone(),
+            step_id: schedule.task_id.clone(),
+            step_name: "phase3-step".to_string(),
+            worker_id: "phase3-lock".to_string(),
+            task_name: task_name.to_string(),
+            run_id: format!("{execution_id}:run:0"),
+            execution_id: execution_id.clone(),
+            data: serde_json::json!({}),
+            attempt_number: 1,
+            result: StepResult::Executed(serde_json::json!({"ok": true})),
+            wait_group_step_name: None,
+            outcome: CompletionOutcome::Success,
+        };
+
+        let behavior = zart::step_types::completion::ScheduleNextBody;
+        behavior
+            .complete(&*scheduler, spec)
+            .await
+            .expect("ScheduleNextBody::complete failed");
+
+        let due = scheduler
+            .poll_due(chrono::Utc::now(), 200)
+            .await
+            .expect("poll_due failed");
+
+        let body_scheduled = due.iter().any(|t| {
+            t.metadata.get("mode").and_then(|v| v.as_str()) == Some("body")
+                && t.task_id.contains(":body:after:phase3-step")
+        });
+        assert!(body_scheduled, "expected body continuation task");
     }
 
     #[tokio::test]

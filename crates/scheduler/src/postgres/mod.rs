@@ -15,8 +15,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::{
-    CompleteAndScheduleParams, DurableStorage, ExecutionRecord, ExecutionStatus, FetchedTask,
-    ScheduleAtParams, ScheduleResult, Scheduler, StepLookup, StorageError,
+    CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
+    CompleteWaitGroupChildParams, DurableStorage, EventDeliveryResult, ExecutionRecord,
+    ExecutionStatus, FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams,
+    ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler, StepLookup, StorageError,
+    UpsertWaitGroupStepParams,
 };
 
 /// A [`Scheduler`] backed by a PostgreSQL database.
@@ -132,9 +135,7 @@ impl Scheduler for PostgresScheduler {
 
         let mut fetched = Vec::with_capacity(rows.len());
 
-        for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in
-            rows
-        {
+        for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in rows {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
@@ -753,22 +754,24 @@ impl DurableStorage for PostgresScheduler {
             .collect()
     }
 
-    async fn complete_event_step_and_schedule_body(
+    async fn deliver_event(
         &self,
         execution_id: &str,
         event_name: &str,
         payload: serde_json::Value,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<EventDeliveryResult, StorageError> {
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        // Get the current run_id
-        let run_id: Option<String> = sqlx::query_scalar(
+        let exec_row: Option<(String, String, serde_json::Value)> = sqlx::query_as(
             r#"
-            SELECT current_run_id FROM zart_executions WHERE execution_id = $1
+            SELECT e.current_run_id, e.task_name, r.payload
+            FROM zart_executions e
+            JOIN zart_execution_runs r ON r.run_id = e.current_run_id
+            WHERE e.execution_id = $1
             "#,
         )
         .bind(execution_id)
@@ -776,48 +779,89 @@ impl DurableStorage for PostgresScheduler {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let run_id = match run_id {
+        let (run_id, task_name, run_payload) = match exec_row {
             None => {
                 tx.rollback()
                     .await
                     .map_err(|e| StorageError::Database(Box::new(e)))?;
-                return Ok(false);
+                return Ok(EventDeliveryResult::NotRegistered);
             }
-            Some(id) => id,
+            Some(row) => row,
         };
 
-        // Mark the wait_for_event step completed (only if still 'scheduled')
-        let row: Option<(String, serde_json::Value)> = sqlx::query_as(
+        let completed_row: Option<(String,)> = sqlx::query_as(
             r#"
-            UPDATE zart_steps
-            SET status       = 'completed',
-                result       = $2,
-                completed_at = NOW()
+            SELECT step_id
+            FROM zart_steps
             WHERE run_id = $1
-              AND step_name = $3
+              AND step_name = $2
               AND step_kind = 'wait_for_event'
-              AND status    = 'scheduled'
-            RETURNING task_name, result
+              AND status = 'completed'
             "#,
         )
         .bind(&run_id)
-        .bind(&payload)
         .bind(event_name)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let (task_name, _result) = match row {
+        if completed_row.is_some() {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Ok(EventDeliveryResult::AlreadyDelivered);
+        }
+
+        let step_row: Option<(String,)> = sqlx::query_as(
+            r#"
+            SELECT step_id
+            FROM zart_steps
+            WHERE run_id = $1
+              AND step_name = $2
+              AND step_kind = 'wait_for_event'
+              AND status = 'scheduled'
+            "#,
+        )
+        .bind(&run_id)
+        .bind(event_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let step_id = match step_row {
             None => {
                 tx.rollback()
                     .await
                     .map_err(|e| StorageError::Database(Box::new(e)))?;
-                return Ok(false);
+                return Ok(EventDeliveryResult::NotRegistered);
             }
-            Some((t, d)) => (t, d),
+            Some((sid,)) => sid,
         };
 
-        // Insert next body task
+        let updated = sqlx::query(
+            r#"
+            UPDATE zart_steps
+            SET status = 'completed',
+                result = $1,
+                completed_at = NOW()
+            WHERE step_id = $2
+              AND status = 'scheduled'
+            "#,
+        )
+        .bind(&payload)
+        .bind(&step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if updated == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Ok(EventDeliveryResult::NotRegistered);
+        }
+
         let next_body_task_id = format!("{execution_id}:body:after:{event_name}");
         let body_metadata = serde_json::json!({
             "mode": "body",
@@ -834,7 +878,7 @@ impl DurableStorage for PostgresScheduler {
         )
         .bind(&next_body_task_id)
         .bind(&task_name)
-        .bind(&payload)
+        .bind(&run_payload)
         .bind(&body_metadata)
         .execute(&mut *tx)
         .await
@@ -843,7 +887,306 @@ impl DurableStorage for PostgresScheduler {
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(true)
+
+        Ok(EventDeliveryResult::Delivered)
+    }
+
+    async fn complete_event_step_and_schedule_body(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        match self
+            .deliver_event(execution_id, event_name, payload)
+            .await?
+        {
+            EventDeliveryResult::Delivered => Ok(true),
+            EventDeliveryResult::AlreadyDelivered | EventDeliveryResult::NotRegistered => Ok(false),
+        }
+    }
+
+    async fn upsert_wait_group_step(
+        &self,
+        params: UpsertWaitGroupStepParams,
+    ) -> Result<(), StorageError> {
+        let step_id = format!("{}:step:{}", params.run_id, params.group_step_name);
+        sqlx::query(
+            r#"
+            INSERT INTO zart_steps
+                (step_id, run_id, step_name, step_kind, status,
+                 wg_total, wg_remaining, wg_threshold, wg_first_failed)
+            VALUES
+                ($1, $2, $3, 'wait_group', 'scheduled',
+                 $4, $4, $5, FALSE)
+            ON CONFLICT (step_id) DO NOTHING
+            "#,
+        )
+        .bind(&step_id)
+        .bind(&params.run_id)
+        .bind(&params.group_step_name)
+        .bind(params.total)
+        .bind(params.threshold)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    async fn complete_wait_group_child(
+        &self,
+        params: CompleteWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let attempt_id = format!("{}:attempt:{}", params.child_step_id, params.attempt_number);
+        sqlx::query(
+            r#"
+            INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
+            VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
+            ON CONFLICT (attempt_id) DO NOTHING
+            "#,
+        )
+        .bind(&attempt_id)
+        .bind(&params.child_step_id)
+        .bind(params.attempt_number as i32)
+        .bind(&params.child_result)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(
+            r#"
+            UPDATE zart_steps
+            SET status = 'completed', result = $1, completed_at = NOW()
+            WHERE step_id = $2
+            "#,
+        )
+        .bind(&params.child_result)
+        .bind(&params.child_step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status = 'completed', result = $1, completed_at = NOW(), updated_at = NOW(), locked_at = NULL, worker_id = NULL
+            WHERE task_id = $2 AND worker_id = $3
+            "#,
+        )
+        .bind(&params.child_result)
+        .bind(&params.child_step_task_id)
+        .bind(&params.lock_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Err(StorageError::LockMismatch(
+                params.child_step_task_id.clone(),
+            ));
+        }
+
+        let wg_row: Option<(i32, i32)> = sqlx::query_as(
+            r#"
+            UPDATE zart_steps
+            SET wg_remaining = wg_remaining - 1
+            WHERE run_id = $1
+              AND step_name = $2
+              AND step_kind = 'wait_group'
+              AND wg_remaining IS NOT NULL
+              AND wg_threshold IS NOT NULL
+            RETURNING wg_remaining, wg_threshold
+            "#,
+        )
+        .bind(&params.run_id)
+        .bind(&params.group_step_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let triggered = match wg_row {
+            Some((remaining, threshold)) => remaining == threshold,
+            None => false,
+        };
+
+        if triggered {
+            let body_metadata = serde_json::json!({
+                "mode": "body",
+                "run_id": params.run_id,
+                "execution_id": params.run_id.split(":run:").next().unwrap_or(&params.run_id),
+            });
+            sqlx::query(
+                r#"
+                INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
+                VALUES ($1, $2, NOW(), $3, $4)
+                ON CONFLICT (task_id) DO NOTHING
+                "#,
+            )
+            .bind(&params.next_body_task_id)
+            .bind(&params.task_name)
+            .bind(&params.data)
+            .bind(&body_metadata)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(triggered)
+    }
+
+    async fn fail_wait_group_child(
+        &self,
+        params: FailWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let attempt_id = format!("{}:attempt:{}", params.child_step_id, params.attempt_number);
+        sqlx::query(
+            r#"
+            INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
+            VALUES ($1, $2, $3, 'failed', NOW(), NULL, $4)
+            ON CONFLICT (attempt_id) DO NOTHING
+            "#,
+        )
+        .bind(&attempt_id)
+        .bind(&params.child_step_id)
+        .bind(params.attempt_number as i32)
+        .bind(&params.error)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(
+            r#"
+            UPDATE zart_steps
+            SET status = 'dead', last_error = $1, completed_at = NOW()
+            WHERE step_id = $2
+            "#,
+        )
+        .bind(&params.error)
+        .bind(&params.child_step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status = 'failed', last_error = $1, updated_at = NOW(), locked_at = NULL, worker_id = NULL
+            WHERE task_id = $2 AND worker_id = $3
+            "#,
+        )
+        .bind(&params.error)
+        .bind(&params.child_step_task_id)
+        .bind(&params.lock_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Err(StorageError::LockMismatch(
+                params.child_step_task_id.clone(),
+            ));
+        }
+
+        let cas_row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            UPDATE zart_steps
+            SET wg_first_failed = TRUE
+            WHERE run_id = $1
+              AND step_name = $2
+              AND step_kind = 'wait_group'
+              AND COALESCE(wg_first_failed, FALSE) = FALSE
+            RETURNING wg_first_failed
+            "#,
+        )
+        .bind(&params.run_id)
+        .bind(&params.group_step_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(cas_row.is_some())
+    }
+
+    async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            r#"
+            SELECT
+                s.run_id,
+                s.step_name,
+                e.task_name
+            FROM zart_steps s
+            JOIN zart_execution_runs r ON r.run_id = s.run_id
+            JOIN zart_executions e ON e.execution_id = r.execution_id
+            WHERE s.step_kind = 'wait_group'
+              AND s.wg_remaining IS NOT NULL
+              AND s.wg_threshold IS NOT NULL
+              AND s.wg_remaining = s.wg_threshold
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let mut recovered = 0usize;
+        for (run_id, step_name, task_name) in rows {
+            let next_body_task_id = format!("{run_id}:body:after:{step_name}");
+            let body_metadata = serde_json::json!({
+                "mode": "body",
+                "run_id": run_id,
+                "execution_id": run_id.split(":run:").next().unwrap_or(&run_id),
+            });
+
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
+                SELECT $1, $2, NOW(), r.payload, $3
+                FROM zart_execution_runs r
+                WHERE r.run_id = $4
+                ON CONFLICT (task_id) DO NOTHING
+                "#,
+            )
+            .bind(&next_body_task_id)
+            .bind(&task_name)
+            .bind(&body_metadata)
+            .bind(&run_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?
+            .rows_affected();
+
+            if inserted > 0 {
+                recovered += 1;
+            }
+        }
+
+        Ok(recovered)
     }
 
     async fn reset_execution(
@@ -996,12 +1339,17 @@ impl DurableStorage for PostgresScheduler {
             Option<serde_json::Value>,
             Option<serde_json::Value>,
             Option<String>,
+            Option<i32>,
+            Option<i32>,
+            Option<i32>,
+            Option<bool>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
         )> = sqlx::query_as(
             r#"
             SELECT step_id, run_id, step_name, step_kind, task_id,
                    status, retry_attempt, retry_config, result, last_error,
+                   wg_total, wg_remaining, wg_threshold, wg_first_failed,
                    scheduled_at, completed_at
             FROM zart_steps
             WHERE run_id = $1 AND step_name = $2
@@ -1026,6 +1374,10 @@ impl DurableStorage for PostgresScheduler {
                 retry_config,
                 result,
                 last_error,
+                wg_total,
+                wg_remaining,
+                wg_threshold,
+                wg_first_failed,
                 scheduled_at,
                 completed_at,
             )) => Ok(Some(StepRow {
@@ -1039,6 +1391,10 @@ impl DurableStorage for PostgresScheduler {
                 retry_config,
                 result,
                 last_error,
+                wg_total,
+                wg_remaining,
+                wg_threshold,
+                wg_first_failed,
                 scheduled_at,
                 completed_at,
             })),
@@ -1059,12 +1415,17 @@ impl DurableStorage for PostgresScheduler {
             Option<serde_json::Value>,
             Option<serde_json::Value>,
             Option<String>,
+            Option<i32>,
+            Option<i32>,
+            Option<i32>,
+            Option<bool>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
         )> = sqlx::query_as(
             r#"
             SELECT step_id, run_id, step_name, step_kind, task_id,
                    status, retry_attempt, retry_config, result, last_error,
+                   wg_total, wg_remaining, wg_threshold, wg_first_failed,
                    scheduled_at, completed_at
             FROM zart_steps
             WHERE run_id = $1
@@ -1089,6 +1450,10 @@ impl DurableStorage for PostgresScheduler {
                     retry_config,
                     result,
                     last_error,
+                    wg_total,
+                    wg_remaining,
+                    wg_threshold,
+                    wg_first_failed,
                     scheduled_at,
                     completed_at,
                 )| {
@@ -1103,6 +1468,10 @@ impl DurableStorage for PostgresScheduler {
                         retry_config,
                         result,
                         last_error,
+                        wg_total,
+                        wg_remaining,
+                        wg_threshold,
+                        wg_first_failed,
                         scheduled_at,
                         completed_at,
                     })
@@ -1113,15 +1482,7 @@ impl DurableStorage for PostgresScheduler {
 
     async fn schedule_step(
         &self,
-        task_id: &str,
-        task_name: &str,
-        run_id: &str,
-        step_name: &str,
-        step_kind: &str,
-        execution_time: chrono::DateTime<chrono::Utc>,
-        data: serde_json::Value,
-        metadata: serde_json::Value,
-        retry_config: Option<&serde_json::Value>,
+        params: ScheduleStepParams,
     ) -> Result<crate::ScheduleResult, StorageError> {
         let mut tx = self
             .pool
@@ -1136,16 +1497,16 @@ impl DurableStorage for PostgresScheduler {
             ON CONFLICT (task_id) DO NOTHING
             "#,
         )
-        .bind(task_id)
-        .bind(task_name)
-        .bind(execution_time)
-        .bind(&data)
-        .bind(&metadata)
+        .bind(&params.task_id)
+        .bind(&params.task_name)
+        .bind(params.execution_time)
+        .bind(&params.data)
+        .bind(&params.metadata)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let step_id = format!("{run_id}:step:{step_name}");
+        let step_id = format!("{}:step:{}", params.run_id, params.step_name);
         sqlx::query(
             r#"
             INSERT INTO zart_steps (step_id, run_id, step_name, step_kind, task_id, retry_config)
@@ -1154,11 +1515,11 @@ impl DurableStorage for PostgresScheduler {
             "#,
         )
         .bind(&step_id)
-        .bind(run_id)
-        .bind(step_name)
-        .bind(step_kind)
-        .bind(task_id)
-        .bind(retry_config)
+        .bind(&params.run_id)
+        .bind(&params.step_name)
+        .bind(&params.step_kind)
+        .bind(&params.task_id)
+        .bind(&params.retry_config)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1168,22 +1529,14 @@ impl DurableStorage for PostgresScheduler {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         Ok(crate::ScheduleResult {
-            task_id: task_id.to_string(),
-            execution_time,
+            task_id: params.task_id,
+            execution_time: params.execution_time,
         })
     }
 
     async fn complete_step_and_schedule_body(
         &self,
-        step_task_id: &str,
-        step_id: &str,
-        result: serde_json::Value,
-        lock_token: &str,
-        attempt_number: usize,
-        next_body_task_id: &str,
-        task_name: &str,
-        run_id: &str,
-        data: serde_json::Value,
+        params: CompleteStepAndScheduleBodyParams,
     ) -> Result<(), StorageError> {
         let mut tx = self
             .pool
@@ -1191,7 +1544,7 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let attempt_id = format!("{step_id}:attempt:{attempt_number}");
+        let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
         sqlx::query(
             r#"
             INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
@@ -1200,9 +1553,9 @@ impl DurableStorage for PostgresScheduler {
             "#,
         )
         .bind(&attempt_id)
-        .bind(step_id)
-        .bind(attempt_number as i32)
-        .bind(&result)
+        .bind(&params.step_id)
+        .bind(params.attempt_number as i32)
+        .bind(&params.result)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1212,9 +1565,9 @@ impl DurableStorage for PostgresScheduler {
             UPDATE zart_steps SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
             "#,
         )
-        .bind(&result)
+        .bind(&params.result)
         .bind(Utc::now())
-        .bind(step_id)
+        .bind(&params.step_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1225,9 +1578,9 @@ impl DurableStorage for PostgresScheduler {
             WHERE task_id = $2 AND worker_id = $3
             "#,
         )
-        .bind(&result)
-        .bind(step_task_id)
-        .bind(lock_token)
+        .bind(&params.result)
+        .bind(&params.step_task_id)
+        .bind(&params.lock_token)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
@@ -1237,13 +1590,13 @@ impl DurableStorage for PostgresScheduler {
             tx.rollback()
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
-            return Err(StorageError::LockMismatch(step_task_id.to_string()));
+            return Err(StorageError::LockMismatch(params.step_task_id.clone()));
         }
 
         let body_metadata = serde_json::json!({
             "mode": "body",
-            "run_id": run_id,
-            "execution_id": run_id.split(":run:").next().unwrap_or(run_id),
+            "run_id": params.run_id,
+            "execution_id": params.run_id.split(":run:").next().unwrap_or(&params.run_id),
         });
         sqlx::query(
             r#"
@@ -1252,9 +1605,9 @@ impl DurableStorage for PostgresScheduler {
             ON CONFLICT (task_id) DO NOTHING
             "#,
         )
-        .bind(next_body_task_id)
-        .bind(task_name)
-        .bind(&data)
+        .bind(&params.next_body_task_id)
+        .bind(&params.task_name)
+        .bind(&params.data)
         .bind(&body_metadata)
         .execute(&mut *tx)
         .await
@@ -1268,11 +1621,7 @@ impl DurableStorage for PostgresScheduler {
 
     async fn complete_step_no_resume(
         &self,
-        step_task_id: &str,
-        step_id: &str,
-        result: serde_json::Value,
-        lock_token: &str,
-        attempt_number: usize,
+        params: CompleteStepNoResumeParams,
     ) -> Result<(), StorageError> {
         let mut tx = self
             .pool
@@ -1280,7 +1629,7 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let attempt_id = format!("{step_id}:attempt:{attempt_number}");
+        let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
         sqlx::query(
             r#"
             INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
@@ -1289,9 +1638,9 @@ impl DurableStorage for PostgresScheduler {
             "#,
         )
         .bind(&attempt_id)
-        .bind(step_id)
-        .bind(attempt_number as i32)
-        .bind(&result)
+        .bind(&params.step_id)
+        .bind(params.attempt_number as i32)
+        .bind(&params.result)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1301,9 +1650,9 @@ impl DurableStorage for PostgresScheduler {
             UPDATE zart_steps SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
             "#,
         )
-        .bind(&result)
+        .bind(&params.result)
         .bind(Utc::now())
-        .bind(step_id)
+        .bind(&params.step_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1314,9 +1663,9 @@ impl DurableStorage for PostgresScheduler {
             WHERE task_id = $2 AND worker_id = $3
             "#,
         )
-        .bind(&result)
-        .bind(step_task_id)
-        .bind(lock_token)
+        .bind(&params.result)
+        .bind(&params.step_task_id)
+        .bind(&params.lock_token)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
@@ -1326,7 +1675,7 @@ impl DurableStorage for PostgresScheduler {
             tx.rollback()
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
-            return Err(StorageError::LockMismatch(step_task_id.to_string()));
+            return Err(StorageError::LockMismatch(params.step_task_id.clone()));
         }
 
         tx.commit()
@@ -1337,11 +1686,7 @@ impl DurableStorage for PostgresScheduler {
 
     async fn reschedule_step_for_retry(
         &self,
-        step_task_id: &str,
-        attempt_number: usize,
-        error: &str,
-        retry_time: chrono::DateTime<chrono::Utc>,
-        lock_token: &str,
+        params: RescheduleStepForRetryParams,
     ) -> Result<(), StorageError> {
         let mut tx = self
             .pool
@@ -1349,7 +1694,7 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let attempt_id = format!("{step_task_id}:attempt:{attempt_number}");
+        let attempt_id = format!("{}:attempt:{}", params.step_task_id, params.attempt_number);
         sqlx::query(
             r#"
             INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
@@ -1358,9 +1703,9 @@ impl DurableStorage for PostgresScheduler {
             "#,
         )
         .bind(&attempt_id)
-        .bind(step_task_id)
-        .bind(attempt_number as i32)
-        .bind(error)
+        .bind(&params.step_task_id)
+        .bind(params.attempt_number as i32)
+        .bind(&params.error)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1370,8 +1715,8 @@ impl DurableStorage for PostgresScheduler {
             UPDATE zart_steps SET retry_attempt = $1, last_error = NULL WHERE step_id = $2
             "#,
         )
-        .bind(attempt_number as i32 + 1)
-        .bind(step_task_id)
+        .bind(params.attempt_number as i32 + 1)
+        .bind(&params.step_task_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -1382,10 +1727,10 @@ impl DurableStorage for PostgresScheduler {
             WHERE task_id = $3 AND worker_id = $4
             "#,
         )
-        .bind(error)
-        .bind(retry_time)
-        .bind(step_task_id)
-        .bind(lock_token)
+        .bind(&params.error)
+        .bind(params.retry_time)
+        .bind(&params.step_task_id)
+        .bind(&params.lock_token)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
@@ -1395,7 +1740,7 @@ impl DurableStorage for PostgresScheduler {
             tx.rollback()
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
-            return Err(StorageError::LockMismatch(step_task_id.to_string()));
+            return Err(StorageError::LockMismatch(params.step_task_id.clone()));
         }
 
         tx.commit()
@@ -1404,5 +1749,3 @@ impl DurableStorage for PostgresScheduler {
         Ok(())
     }
 }
-
-

@@ -11,8 +11,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
-    CompleteAndScheduleParams, DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult,
-    Scheduler, StepLookup, StorageError, TaskStatus,
+    CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
+    DurableStorage, FetchedTask, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
+    ScheduleStepParams, Scheduler, StepLookup, StorageError, TaskStatus,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -285,82 +286,60 @@ impl DurableStorage for RecordingScheduler {
 
     async fn schedule_step(
         &self,
-        task_id: &str,
-        _task_name: &str,
-        _run_id: &str,
-        _step_name: &str,
-        _step_kind: &str,
-        execution_time: DateTime<Utc>,
-        _data: serde_json::Value,
-        metadata: serde_json::Value,
-        _retry_config: Option<&serde_json::Value>,
+        params: ScheduleStepParams,
     ) -> Result<ScheduleResult, StorageError> {
+        let execution_time = params.execution_time;
+        let task_id = params.task_id.clone();
         self.calls.lock().unwrap().push(Call::ScheduleAt {
-            task_id: task_id.to_string(),
+            task_id: task_id.clone(),
             execution_time,
-            metadata,
+            metadata: params.metadata,
         });
         Ok(ScheduleResult {
-            task_id: task_id.to_string(),
+            task_id,
             execution_time,
         })
     }
 
     async fn complete_step_and_schedule_body(
         &self,
-        step_task_id: &str,
-        _step_id: &str,
-        result: serde_json::Value,
-        lock_token: &str,
-        _attempt_number: usize,
-        next_body_task_id: &str,
-        _task_name: &str,
-        run_id: &str,
-        _data: serde_json::Value,
+        params: CompleteStepAndScheduleBodyParams,
     ) -> Result<(), StorageError> {
         let mut calls = self.calls.lock().unwrap();
         calls.push(Call::MarkCompleted {
-            task_id: step_task_id.to_string(),
+            task_id: params.step_task_id,
         });
         let body_metadata = serde_json::json!({
             "mode": "body",
-            "run_id": run_id,
+            "run_id": params.run_id,
         });
         calls.push(Call::ScheduleAt {
-            task_id: next_body_task_id.to_string(),
+            task_id: params.next_body_task_id,
             execution_time: Utc::now(),
             metadata: body_metadata,
         });
-        let _ = (result, lock_token);
+        let _ = (params.result, params.lock_token);
         Ok(())
     }
 
     async fn complete_step_no_resume(
         &self,
-        step_task_id: &str,
-        _step_id: &str,
-        result: serde_json::Value,
-        lock_token: &str,
-        _attempt_number: usize,
+        params: CompleteStepNoResumeParams,
     ) -> Result<(), StorageError> {
         self.calls.lock().unwrap().push(Call::MarkCompleted {
-            task_id: step_task_id.to_string(),
+            task_id: params.step_task_id,
         });
-        let _ = (result, lock_token);
+        let _ = (params.result, params.lock_token);
         Ok(())
     }
 
     async fn reschedule_step_for_retry(
         &self,
-        task_id: &str,
-        _attempt_number: usize,
-        _error: &str,
-        next_execution_time: DateTime<Utc>,
-        _lock_token: &str,
+        params: RescheduleStepForRetryParams,
     ) -> Result<(), StorageError> {
         self.calls.lock().unwrap().push(Call::MarkFailed {
-            task_id: task_id.to_string(),
-            next_execution_time: Some(next_execution_time),
+            task_id: params.step_task_id,
+            next_execution_time: Some(params.retry_time),
         });
         Ok(())
     }

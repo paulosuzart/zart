@@ -48,6 +48,7 @@ pub mod metrics;
 pub mod registry;
 pub mod retry;
 pub mod step_ops;
+pub mod step_types;
 pub mod worker;
 
 #[cfg(test)]

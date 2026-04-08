@@ -47,11 +47,7 @@ mod postgres_tests {
         let task_id = format!("test-schedule-now-{}", Uuid::new_v4());
 
         let result = scheduler
-            .schedule_now(
-                &task_id,
-                "test-task",
-                serde_json::json!({"key": "value"}),
-            )
+            .schedule_now(&task_id, "test-task", serde_json::json!({"key": "value"}))
             .await
             .expect("schedule_now failed");
 

@@ -7,7 +7,10 @@
 //! Keeping this logic here means [`PostgresScheduler`] remains a clean,
 //! generic storage backend with no execution-model knowledge.
 
-use scheduler::{ScheduleResult, StorageBackend, StorageError};
+use scheduler::{
+    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
+    ScheduleResult, ScheduleStepParams, StorageBackend, StorageError,
+};
 
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {
@@ -68,17 +71,17 @@ pub async fn schedule_step_task(
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
     scheduler
-        .schedule_step(
-            spec.task_id,
-            spec.task_name,
-            spec.run_id,
-            spec.step_name,
-            "step",
-            chrono::Utc::now(),
-            spec.data,
+        .schedule_step(ScheduleStepParams {
+            task_id: spec.task_id.to_string(),
+            task_name: spec.task_name.to_string(),
+            run_id: spec.run_id.to_string(),
+            step_name: spec.step_name.to_string(),
+            step_kind: "step".to_string(),
+            execution_time: chrono::Utc::now(),
+            data: spec.data,
             metadata,
-            retry_config_json.as_ref(),
-        )
+            retry_config: retry_config_json,
+        })
         .await
 }
 
@@ -95,7 +98,13 @@ pub async fn reschedule_step_for_retry(
     lock_token: &str,
 ) -> Result<(), StorageError> {
     scheduler
-        .reschedule_step_for_retry(step_task_id, attempt_number, error, retry_time, lock_token)
+        .reschedule_step_for_retry(RescheduleStepForRetryParams {
+            step_task_id: step_task_id.to_string(),
+            attempt_number,
+            error: error.to_string(),
+            retry_time,
+            lock_token: lock_token.to_string(),
+        })
         .await
 }
 
@@ -119,17 +128,17 @@ pub async fn schedule_wait_all_child(
     });
 
     scheduler
-        .schedule_step(
-            task_id,
-            task_name,
-            run_id,
-            step_name,
-            "step",
-            chrono::Utc::now(),
+        .schedule_step(ScheduleStepParams {
+            task_id: task_id.to_string(),
+            task_name: task_name.to_string(),
+            run_id: run_id.to_string(),
+            step_name: step_name.to_string(),
+            step_kind: "step".to_string(),
+            execution_time: chrono::Utc::now(),
             data,
             metadata,
-            None,
-        )
+            retry_config: None,
+        })
         .await
 }
 
@@ -139,17 +148,17 @@ pub async fn complete_step_and_schedule_body(
     spec: ResumeBodySpec<'_>,
 ) -> Result<(), StorageError> {
     scheduler
-        .complete_step_and_schedule_body(
-            spec.step_task_id,
-            spec.step_id,
-            spec.result,
-            spec.lock_token,
-            spec.attempt_number,
-            spec.next_body_task_id,
-            spec.task_name,
-            spec.run_id,
-            spec.data,
-        )
+        .complete_step_and_schedule_body(CompleteStepAndScheduleBodyParams {
+            step_task_id: spec.step_task_id.to_string(),
+            step_id: spec.step_id.to_string(),
+            result: spec.result,
+            lock_token: spec.lock_token.to_string(),
+            attempt_number: spec.attempt_number,
+            next_body_task_id: spec.next_body_task_id.to_string(),
+            task_name: spec.task_name.to_string(),
+            run_id: spec.run_id.to_string(),
+            data: spec.data,
+        })
         .await
 }
 
@@ -165,7 +174,13 @@ pub async fn complete_step_no_resume(
     attempt_number: usize,
 ) -> Result<(), StorageError> {
     scheduler
-        .complete_step_no_resume(step_task_id, step_id, result, lock_token, attempt_number)
+        .complete_step_no_resume(CompleteStepNoResumeParams {
+            step_task_id: step_task_id.to_string(),
+            step_id: step_id.to_string(),
+            result,
+            lock_token: lock_token.to_string(),
+            attempt_number,
+        })
         .await
 }
 
@@ -186,14 +201,16 @@ pub async fn schedule_coordinator(
     });
 
     // Coordinator is not a step row — just a task insert
-    scheduler.schedule_at(scheduler::ScheduleAtParams {
-        task_id: coordinator_task_id.to_string(),
-        task_name: task_name.to_string(),
-        execution_time: chrono::Utc::now(),
-        data,
-        recurrence: None,
-        metadata,
-    }).await
+    scheduler
+        .schedule_at(scheduler::ScheduleAtParams {
+            task_id: coordinator_task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: chrono::Utc::now(),
+            data,
+            recurrence: None,
+            metadata,
+        })
+        .await
 }
 
 /// Insert a wait_for_event step task row.
@@ -222,17 +239,17 @@ pub async fn schedule_wait_for_event_task(
     });
 
     scheduler
-        .schedule_step(
-            spec.task_id,
-            spec.task_name,
-            spec.run_id,
-            spec.event_name,
-            "wait_for_event",
+        .schedule_step(ScheduleStepParams {
+            task_id: spec.task_id.to_string(),
+            task_name: spec.task_name.to_string(),
+            run_id: spec.run_id.to_string(),
+            step_name: spec.event_name.to_string(),
+            step_kind: "wait_for_event".to_string(),
             execution_time,
-            spec.data,
+            data: spec.data,
             metadata,
-            None,
-        )
+            retry_config: None,
+        })
         .await
 }
 
@@ -252,16 +269,16 @@ pub async fn schedule_sleep_task(
     });
 
     scheduler
-        .schedule_step(
-            sleep_task_id,
-            task_name,
-            run_id,
-            "__sleep",
-            "sleep",
-            wake_time,
+        .schedule_step(ScheduleStepParams {
+            task_id: sleep_task_id.to_string(),
+            task_name: task_name.to_string(),
+            run_id: run_id.to_string(),
+            step_name: "__sleep".to_string(),
+            step_kind: "sleep".to_string(),
+            execution_time: wake_time,
             data,
             metadata,
-            None,
-        )
+            retry_config: None,
+        })
         .await
 }

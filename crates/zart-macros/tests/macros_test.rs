@@ -7,8 +7,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
-    DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler, StepLookup,
-    StorageError,
+    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, DurableStorage, FetchedTask,
+    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler,
+    StepLookup, StorageError,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -131,55 +132,31 @@ impl DurableStorage for MockScheduler {
 
     async fn schedule_step(
         &self,
-        task_id: &str,
-        _task_name: &str,
-        _run_id: &str,
-        _step_name: &str,
-        _step_kind: &str,
-        execution_time: DateTime<Utc>,
-        _data: serde_json::Value,
-        _metadata: serde_json::Value,
-        _retry_config: Option<&serde_json::Value>,
+        params: ScheduleStepParams,
     ) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
-            task_id: task_id.to_string(),
-            execution_time,
+            task_id: params.task_id,
+            execution_time: params.execution_time,
         })
     }
 
     async fn complete_step_and_schedule_body(
         &self,
-        _step_task_id: &str,
-        _step_id: &str,
-        _result: serde_json::Value,
-        _lock_token: &str,
-        _attempt_number: usize,
-        _next_body_task_id: &str,
-        _task_name: &str,
-        _run_id: &str,
-        _data: serde_json::Value,
+        _params: CompleteStepAndScheduleBodyParams,
     ) -> Result<(), StorageError> {
         Ok(())
     }
 
     async fn complete_step_no_resume(
         &self,
-        _step_task_id: &str,
-        _step_id: &str,
-        _result: serde_json::Value,
-        _lock_token: &str,
-        _attempt_number: usize,
+        _params: CompleteStepNoResumeParams,
     ) -> Result<(), StorageError> {
         Ok(())
     }
 
     async fn reschedule_step_for_retry(
         &self,
-        _step_task_id: &str,
-        _attempt_number: usize,
-        _error: &str,
-        _retry_time: DateTime<Utc>,
-        _lock_token: &str,
+        _params: RescheduleStepForRetryParams,
     ) -> Result<(), StorageError> {
         Ok(())
     }

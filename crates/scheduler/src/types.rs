@@ -5,6 +5,101 @@ use serde::{Deserialize, Serialize};
 
 use crate::Recurrence;
 
+/// Parameters for durable storage step scheduling.
+#[derive(Debug, Clone)]
+pub struct ScheduleStepParams {
+    pub task_id: String,
+    pub task_name: String,
+    pub run_id: String,
+    pub step_name: String,
+    pub step_kind: String,
+    pub execution_time: DateTime<Utc>,
+    pub data: serde_json::Value,
+    pub metadata: serde_json::Value,
+    pub retry_config: Option<serde_json::Value>,
+}
+
+/// Parameters for step completion + body resume.
+#[derive(Debug, Clone)]
+pub struct CompleteStepAndScheduleBodyParams {
+    pub step_task_id: String,
+    pub step_id: String,
+    pub result: serde_json::Value,
+    pub lock_token: String,
+    pub attempt_number: usize,
+    pub next_body_task_id: String,
+    pub task_name: String,
+    pub run_id: String,
+    pub data: serde_json::Value,
+}
+
+/// Parameters for step completion without body resume.
+#[derive(Debug, Clone)]
+pub struct CompleteStepNoResumeParams {
+    pub step_task_id: String,
+    pub step_id: String,
+    pub result: serde_json::Value,
+    pub lock_token: String,
+    pub attempt_number: usize,
+}
+
+/// Parameters for retry rescheduling of a step task.
+#[derive(Debug, Clone)]
+pub struct RescheduleStepForRetryParams {
+    pub step_task_id: String,
+    pub attempt_number: usize,
+    pub error: String,
+    pub retry_time: DateTime<Utc>,
+    pub lock_token: String,
+}
+
+/// Parameters for creating/upserting a wait-group step row.
+#[derive(Debug, Clone)]
+pub struct UpsertWaitGroupStepParams {
+    pub run_id: String,
+    pub group_step_name: String,
+    pub total: i32,
+    pub threshold: i32,
+}
+
+/// Parameters for completing a wait-group child.
+#[derive(Debug, Clone)]
+pub struct CompleteWaitGroupChildParams {
+    pub run_id: String,
+    pub group_step_name: String,
+    pub child_step_task_id: String,
+    pub child_step_id: String,
+    pub child_result: serde_json::Value,
+    pub lock_token: String,
+    pub attempt_number: usize,
+    pub next_body_task_id: String,
+    pub task_name: String,
+    pub data: serde_json::Value,
+}
+
+/// Parameters for failing a wait-group child.
+#[derive(Debug, Clone)]
+pub struct FailWaitGroupChildParams {
+    pub run_id: String,
+    pub group_step_name: String,
+    pub child_step_task_id: String,
+    pub child_step_id: String,
+    pub error: String,
+    pub lock_token: String,
+    pub attempt_number: usize,
+}
+
+/// Result of attempting to deliver an external event to a waiting execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventDeliveryResult {
+    /// Event matched a scheduled wait_for_event step and resumed the body.
+    Delivered,
+    /// Event targeted a step that had already been completed by a previous delivery.
+    AlreadyDelivered,
+    /// No matching wait_for_event step was registered for this execution/event.
+    NotRegistered,
+}
+
 /// A task that has been fetched from the database and is ready for execution.
 ///
 /// The `lock_token` must be passed back when completing or failing the task
@@ -229,7 +324,7 @@ pub struct StepRow {
     pub run_id: String,
     /// The step name (unique within a run).
     pub step_name: String,
-    /// What kind of step this is: 'step', 'sleep', 'wait_all', 'wait_for_event'.
+    /// What kind of step this is: 'step', 'sleep', 'wait_all', 'wait_for_event', 'wait_group'.
     pub step_kind: String,
     /// The task currently responsible for this step (None if completed or not yet scheduled).
     pub task_id: Option<String>,
@@ -243,6 +338,14 @@ pub struct StepRow {
     pub result: Option<serde_json::Value>,
     /// Error message (set when failed).
     pub last_error: Option<String>,
+    /// Wait-group total children count (NULL for non-wait-group steps).
+    pub wg_total: Option<i32>,
+    /// Wait-group remaining children count (NULL for non-wait-group steps).
+    pub wg_remaining: Option<i32>,
+    /// Wait-group trigger threshold (NULL for non-wait-group steps).
+    pub wg_threshold: Option<i32>,
+    /// Compare-and-set guard for first failing child in wait-groups (NULL for non-wait-group steps).
+    pub wg_first_failed: Option<bool>,
     /// When this step was scheduled.
     pub scheduled_at: DateTime<Utc>,
     /// When this step completed (None if still in progress).

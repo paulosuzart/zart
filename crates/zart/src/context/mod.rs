@@ -16,6 +16,7 @@ mod task_context;
 mod tests;
 
 // Re-export all public types to maintain the `context::*` namespace.
+pub(crate) use state::PendingFn;
 pub use state::{AttemptStatus, ExecutionState, StepAttempt, StepHandle, StepRecord, StepStatus};
 pub use step_context::StepContext;
 pub use step_trait::{StepWithId, ZartStep};

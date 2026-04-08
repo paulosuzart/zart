@@ -112,7 +112,7 @@ impl TaskContext {
     /// Construct a [`StepContext`] with the current execution metadata.
     ///
     /// This is used internally to pass read-only metadata to step closures.
-    fn step_context(&self) -> StepContext {
+    pub(crate) fn step_context(&self) -> StepContext {
         let (current_attempt, max_retries) = match &self.execution_mode {
             ExecutionMode::Step {
                 retry_attempt,
@@ -601,11 +601,7 @@ impl TaskContext {
     where
         T: Serialize + for<'de> Deserialize<'de>,
     {
-        let coordinator_id = format!(
-            "{}:coord:wait_all:{}",
-            self.run_id,
-            uuid::Uuid::new_v4()
-        );
+        let coordinator_id = format!("{}:coord:wait_all:{}", self.run_id, uuid::Uuid::new_v4());
 
         // Extract step names upfront so we don't hold &StepHandle<T> across await points
         // (PendingFn is Send but not Sync, so &StepHandle<T> is not Send).
@@ -978,8 +974,18 @@ impl TaskContext {
         &self.execution_id
     }
 
+    /// Returns the current run identifier.
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
     /// Returns the registered name of this task handler.
     pub fn task_name(&self) -> &str {
+        &self.task_name
+    }
+
+    /// Returns the registered name of this task handler (crate-visible accessor).
+    pub(crate) fn task_name_internal(&self) -> &str {
         &self.task_name
     }
 
