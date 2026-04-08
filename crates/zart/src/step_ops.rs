@@ -184,35 +184,6 @@ pub async fn complete_step_no_resume(
         .await
 }
 
-/// Schedule a coordinator task that polls wait_all children.
-pub async fn schedule_coordinator(
-    scheduler: &dyn StorageBackend,
-    coordinator_task_id: &str,
-    task_name: &str,
-    run_id: &str,
-    wait_for: Vec<String>,
-    data: serde_json::Value,
-) -> Result<ScheduleResult, StorageError> {
-    let metadata = serde_json::json!({
-        "mode": "step",
-        "step_type": "wait_all",
-        "run_id": run_id,
-        "wait_for": wait_for,
-    });
-
-    // Coordinator is not a step row — just a task insert
-    scheduler
-        .schedule_at(scheduler::ScheduleAtParams {
-            task_id: coordinator_task_id.to_string(),
-            task_name: task_name.to_string(),
-            execution_time: chrono::Utc::now(),
-            data,
-            recurrence: None,
-            metadata,
-        })
-        .await
-}
-
 /// Insert a wait_for_event step task row.
 ///
 /// If `spec.deadline` is `None`, the task is scheduled for `DateTime::MAX_UTC`

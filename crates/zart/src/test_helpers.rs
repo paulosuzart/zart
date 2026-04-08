@@ -51,9 +51,7 @@ impl Call {
     pub fn is_schedule_at(&self) -> bool {
         matches!(self, Self::ScheduleAt { .. })
     }
-    pub fn is_complete_and_schedule(&self) -> bool {
-        matches!(self, Self::CompleteAndSchedule { .. })
-    }
+
     pub fn is_mark_completed(&self) -> bool {
         matches!(self, Self::MarkCompleted { .. })
     }
@@ -114,12 +112,6 @@ impl RecordingSchedulerBuilder {
                 result: None,
             }),
         );
-        self
-    }
-
-    /// `check_wait_all_children(...)` → returns these completed `(task_id, result)` pairs.
-    pub fn wait_all_returns(mut self, results: Vec<(String, serde_json::Value)>) -> Self {
-        self.wait_all_response = results;
         self
     }
 

@@ -75,16 +75,25 @@ impl ExecutionMode {
 
                 match step_type_str {
                     "wait_all" => {
-                        let wait_for = metadata
-                            .get("wait_for")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        ExecutionMode::Coordinator { wait_for }
+                        let target_step = metadata
+                            .get("step_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let retry_attempt = metadata
+                            .get("retry_attempt")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let retry_config = metadata
+                            .get("retry_config")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+                        ExecutionMode::Step {
+                            target_step,
+                            step_type: StepKind::Step,
+                            retry_attempt,
+                            retry_config,
+                        }
                     }
 
                     _ => {
@@ -222,21 +231,29 @@ mod tests {
             "step_type": "wait_all",
             "wait_for": ["exec-1:step:a", "exec-1:step:b"],
         });
-        assert_eq!(
+        assert!(matches!(
             ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Coordinator {
-                wait_for: vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()],
-            }
-        );
+            ExecutionMode::Step {
+                target_step,
+                step_type: StepKind::Step,
+                retry_attempt: 0,
+                retry_config: None,
+            } if target_step.is_empty()
+        ));
     }
 
     #[test]
     fn from_metadata_coordinator_with_empty_wait_for() {
         let meta = json!({ "mode": "step", "step_type": "wait_all" });
-        assert_eq!(
+        assert!(matches!(
             ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Coordinator { wait_for: vec![] }
-        );
+            ExecutionMode::Step {
+                target_step,
+                step_type: StepKind::Step,
+                retry_attempt: 0,
+                retry_config: None,
+            } if target_step.is_empty()
+        ));
     }
 
     #[test]
