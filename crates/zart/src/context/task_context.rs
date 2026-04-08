@@ -420,18 +420,43 @@ impl TaskContext {
     // ── Sleep ────────────────────────────────────────────────────────────────
 
     /// Suspend execution for `duration`, resuming at `now + duration`.
-    pub async fn sleep(&mut self, duration: std::time::Duration) -> Result<(), StepError> {
+    ///
+    /// The `step_name` must be a stable, unique string within this execution body.
+    /// It is used as the database key for durably persisting the sleep checkpoint.
+    /// Treat it like a migration name — do not change it after the execution has started.
+    ///
+    /// # Duplicate name detection
+    ///
+    /// If the same `step_name` is used twice in one execution body, returns an error.
+    /// Each sleep call must have a unique name so the framework can skip it on replay.
+    pub async fn sleep(
+        &mut self,
+        step_name: &str,
+        duration: std::time::Duration,
+    ) -> Result<(), StepError> {
         let wake_time = chrono::Utc::now()
             + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::zero());
-        self.sleep_until(wake_time).await
+        self.sleep_until(step_name, wake_time).await
     }
 
     /// Suspend execution until `wake_time`.
+    ///
+    /// The `step_name` must be a stable, unique string within this execution body.
+    /// See [`sleep`](Self::sleep) for details.
     pub async fn sleep_until(
         &mut self,
+        step_name: &str,
         wake_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), StepError> {
-        let req = StepRequest::new_sleep("__sleep", wake_time);
+        if !self.seen_step_names.insert(step_name.to_string()) {
+            return Err(StepError::Failed {
+                step: step_name.to_string(),
+                reason: format!(
+                    "duplicate sleep name '{step_name}' — each sleep must have a unique stable ID"
+                ),
+            });
+        }
+        let req = StepRequest::new_sleep(step_name, wake_time);
         crate::step_types::dispatch::step_internal::<serde_json::Value>(
             StepDefId::Sleep,
             self,

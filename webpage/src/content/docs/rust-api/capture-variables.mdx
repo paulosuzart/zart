@@ -55,7 +55,7 @@ For the common case of capturing the current UTC timestamp, use the built-in `no
 ```rust
 let started_at = ctx.now("started-at").await?;
 
-ctx.sleep(Duration::from_secs(5)).await?;
+ctx.sleep("initial-wait", Duration::from_secs(5)).await?;
 
 let resumed_at = ctx.now("resumed-at").await?;
 ```
@@ -96,7 +96,7 @@ impl DurableExecution for SleepTask {
     ) -> Result<Self::Output, TaskError> {
         let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
 
-        ctx.sleep(Duration::from_secs(5)).await?;
+        ctx.sleep("initial-wait", Duration::from_secs(5)).await?;
 
         let resumed_at = zart_capture!(ctx, "resumed-at", chrono::Utc::now());
 

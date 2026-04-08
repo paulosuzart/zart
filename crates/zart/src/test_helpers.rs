@@ -29,14 +29,7 @@ pub enum Call {
         execution_time: DateTime<Utc>,
         metadata: serde_json::Value,
     },
-    CompleteAndSchedule {
-        #[allow(dead_code)]
-        completed_task_id: String,
-        #[allow(dead_code)]
-        new_task_id: String,
-        #[allow(dead_code)]
-        new_metadata: serde_json::Value,
-    },
+    CompleteAndSchedule,
     MarkCompleted {
         task_id: String,
     },
@@ -218,13 +211,9 @@ impl Scheduler for RecordingScheduler {
 
     async fn complete_and_schedule(
         &self,
-        params: CompleteAndScheduleParams,
+        _params: CompleteAndScheduleParams,
     ) -> Result<(), StorageError> {
-        self.calls.lock().unwrap().push(Call::CompleteAndSchedule {
-            completed_task_id: params.completed_task_id,
-            new_task_id: params.new_task_id,
-            new_metadata: params.new_metadata,
-        });
+        self.calls.lock().unwrap().push(Call::CompleteAndSchedule);
         Ok(())
     }
 }

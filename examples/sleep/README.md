@@ -4,13 +4,13 @@ Demonstrates **durable sleep** using `ctx.sleep()` — the execution pauses for 
 
 ## Features Used
 
-- **`ctx.sleep(duration)`** — suspends the durable execution for the given duration
+- **`ctx.sleep(name, duration)`** — suspends the durable execution for the given duration
 - **Steps before and after sleep** — proves the body replays correctly across the sleep boundary
 
 ## Flow
 
 1. **Log start time** — records when execution begins
-2. **Sleep 5 seconds** — `ctx.sleep()` parks the execution; a step task is scheduled with `wake_time = now + 5s`
+2. **Sleep 5 seconds** — `ctx.sleep("initial-sleep", ...)` parks the execution; a step task is scheduled with `wake_time = now + 5s`
 3. **Log resume time** — after the sleep fires, the worker replays the body and continues
 
 ## Running
@@ -44,7 +44,9 @@ Starting execution 'sleep-demo-3045af58-464f-481b-88b7-f43e4d7529cb'...
 
 `ctx.sleep()` is not `tokio::time::sleep()`. It is a **durable pause** — the execution state is persisted in the database. If the worker process crashes during the sleep, another worker picks up the sleep step task when `wake_time` arrives and resumes the execution exactly where it left off.
 
+Each sleep call requires a **unique, stable name** — the database key used to skip the sleep on replay.
+
 Under the hood:
-- `ctx.sleep()` inserts a step row with `step_kind = 'sleep'` and `execution_time = wake_time`
+- `ctx.sleep("name", duration)` inserts a step row with `step_kind = 'sleep'` and `execution_time = wake_time`
 - The body task completes (the body walk encountered an unresolved node and parked)
 - When `wake_time` arrives, the worker picks up the sleep step task, replays the body, and the walk continues past the sleep

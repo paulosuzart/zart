@@ -103,21 +103,21 @@ See [Parallel Steps](/rust-api/parallel-steps/) for full documentation.
 
 Pause a workflow without occupying a thread or blocking a worker.
 
-### `ctx.sleep(duration)`
+### `ctx.sleep(name, duration)`
 
-The execution is suspended and re-queued after the duration expires. Zero threads blocked.
+The execution is suspended and re-queued after the duration expires. Zero threads blocked. Each sleep requires a unique, stable name for replay.
 
 ```rust
-ctx.sleep(Duration::from_secs(3600)).await?; // wait 1 hour
+ctx.sleep("approval-wait", Duration::from_secs(3600)).await?; // wait 1 hour
 ```
 
-### `ctx.sleep_until(timestamp)`
+### `ctx.sleep_until(name, timestamp)`
 
 Sleep until an absolute point in time.
 
 ```rust
 let next_monday = compute_next_monday();
-ctx.sleep_until(next_monday).await?;
+ctx.sleep_until("wait-for-monday", next_monday).await?;
 ```
 
 ### `ctx.wait_for_event(name, timeout)`

@@ -90,18 +90,20 @@ See [ZartStep](/rust-api/zart-step/) for all available configuration options.
 
 Use these methods to pause a workflow for a fixed duration or until a specific time. The worker releases the task during the wait — it does not hold a database connection or thread.
 
+Each sleep call requires a **unique, stable name** — the database key used to skip the sleep on replay.
+
 ### `ctx.sleep()`
 
 ```rust
 // Pause for 30 minutes, then continue
-ctx.sleep(Duration::from_secs(1800)).await?;
+ctx.sleep("post-email-wait", Duration::from_secs(1800)).await?;
 ```
 
 ### `ctx.sleep_until()`
 
 ```rust
 // Resume at a specific timestamp
-ctx.sleep_until(next_billing_date).await?;
+ctx.sleep_until("wait-for-billing", next_billing_date).await?;
 ```
 
 <Aside type="note">

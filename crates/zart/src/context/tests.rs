@@ -608,7 +608,7 @@ async fn sleep_body_mode_inserts_one_sleep_task_with_exact_wake_time() {
     let mut ctx = make_body_ctx(scheduler);
 
     let wake_time = chrono::Utc::now() + chrono::Duration::hours(1);
-    let result = ctx.sleep_until(wake_time).await;
+    let result = ctx.sleep_until("wait-until-deadline", wake_time).await;
 
     assert!(matches!(result, Err(StepError::Scheduled { .. })));
 
@@ -823,10 +823,10 @@ async fn sleep_body_mode_with_duration_schedules_sleep_step_in_future() {
 
     let duration = Duration::from_secs(2);
     let before = chrono::Utc::now();
-    let result = ctx.sleep(duration).await;
+    let result = ctx.sleep("my-sleep", duration).await;
     let after = chrono::Utc::now();
 
-    assert!(matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "__sleep"));
+    assert!(matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "my-sleep"));
 
     let log = calls.lock().unwrap();
     let schedules: Vec<_> = log
@@ -853,7 +853,7 @@ async fn sleep_body_mode_with_duration_schedules_sleep_step_in_future() {
     );
 
     let (task_id, execution_time, metadata) = schedules[0];
-    assert_eq!(task_id, "exec-1:step:__sleep");
+    assert_eq!(task_id, "exec-1:step:my-sleep");
     assert_eq!(metadata["mode"], "step");
     assert_eq!(metadata["step_type"], "sleep");
     assert_eq!(metadata["run_id"], "exec-1");

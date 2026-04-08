@@ -32,7 +32,7 @@ impl DurableExecution for SleepTask {
     ) -> Result<Self::Output, TaskError> {
         let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
 
-        ctx.sleep(Duration::from_secs(5)).await?;
+        ctx.sleep("initial-sleep", Duration::from_secs(5)).await?;
 
         let resumed_at = zart_capture!(ctx, "resumed-at", chrono::Utc::now());
 
