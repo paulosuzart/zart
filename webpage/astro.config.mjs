@@ -45,8 +45,9 @@ export default defineConfig({
             { label: "ZartStep Trait", link: "/rust-api/zart-step" },
             { label: "Macros", link: "/rust-api/macros" },
             { label: "Durable Loops", link: "/rust-api/loops" },
+            { label: "Capture Variables", link: "/rust-api/capture-variables" },
             {
-              label: "Parallel Steps (wait_all)",
+              label: "Parallel Steps",
               link: "/rust-api/parallel-steps",
             },
             { label: "Wait for Event", link: "/rust-api/wait-for-event" },

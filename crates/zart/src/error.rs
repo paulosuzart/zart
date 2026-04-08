@@ -100,6 +100,10 @@ pub enum StepError {
         duration: std::time::Duration,
     },
 
+    /// The wait_for_event deadline was exceeded before the event arrived.
+    #[error("Step '{step}' deadline exceeded")]
+    DeadlineExceeded { step: String },
+
     /// Any other error from user code.
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -125,6 +129,7 @@ impl From<StepError> for TaskError {
             StepError::Failed { step, .. } => step.clone(),
             StepError::RetryExhausted { step, .. } => step.clone(),
             StepError::Timeout { step, .. } => step.clone(),
+            StepError::DeadlineExceeded { step } => step.clone(),
             StepError::StepExecuted { step } => step.clone(),
             StepError::Other(_) => "unknown".to_string(),
         };

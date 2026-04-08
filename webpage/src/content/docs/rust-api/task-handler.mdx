@@ -131,6 +131,25 @@ POST /api/v1/events/{execution_id}/manager-approval
 
 Returns `Err(TaskError::EventTimeout)` if the timeout elapses before the event arrives. See [Wait for Event](/rust-api/wait-for-event/) for full patterns.
 
+## Capture Values
+
+Capture variables let you durably persist a synchronous, pure value without defining a full step. Ideal for timestamps, environment reads, or generated IDs:
+
+```rust
+use zart::zart_capture;
+
+let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
+let user_tz = zart_capture!(ctx, "user-tz", env::var("TZ").unwrap_or_default());
+```
+
+Or use the built-in `now()` helper for timestamps:
+
+```rust
+let started_at = ctx.now("started-at").await?;
+```
+
+On first run the expression is evaluated and persisted. On replay the cached value is returned — the expression is never re-evaluated. See [Capture Variables](/rust-api/capture-variables/) for full details and when to use captures vs regular steps.
+
 ## Parallel Execution
 
 Fan out independent work across multiple concurrent sub-tasks. Each `schedule_step` call creates a separate row in the scheduler — sub-tasks can run on different workers simultaneously.

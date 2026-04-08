@@ -6,12 +6,9 @@ use crate::error::{StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 #[cfg(feature = "metrics")]
 use crate::metrics::{
-    EVENTS_DELIVERED_TOTAL, EXECUTIONS_TOTAL, HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH,
-    TASK_DURATION_SECONDS, TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
+    EXECUTIONS_TOTAL, HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH, TASK_DURATION_SECONDS,
+    TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
-
-/// Evaluate a metrics expression when the `metrics` feature is enabled;
-/// compile to nothing otherwise.
 use crate::registry::TaskRegistry;
 use scheduler::StorageBackend;
 use std::sync::Arc;
@@ -306,7 +303,7 @@ async fn heartbeat_loop(
     fields(
         task_id = %task.task_id,
         task_name = %task.task_name,
-        execution_id = task.execution_id.as_deref().unwrap_or("-"),
+        execution_id = task.metadata.get("execution_id").and_then(|v| v.as_str()).unwrap_or("-"),
         attempt = task.attempt,
     ),
 )]
@@ -325,52 +322,16 @@ async fn dispatch_task(
         ExecutionMode::Step {
             target_step,
             step_type,
-            next_body_segment,
             retry_config,
             ..
         } => ExecutionMode::Step {
             target_step,
             step_type,
-            next_body_segment,
             retry_attempt: task.attempt.saturating_sub(1),
             retry_config,
         },
         other => other,
     };
-
-    // ── Coordinator tasks (wait_all) ─────────────────────────────────────────
-    // These don't dispatch to a handler. They poll children and schedule the
-    // next body segment when all children are done.
-    if let ExecutionMode::Coordinator {
-        ref wait_for,
-        next_segment,
-    } = exec_mode
-    {
-        dispatch_coordinator(scheduler, task, wait_for.clone(), next_segment).await;
-        return;
-    }
-
-    // ── Sleep continuation tasks ─────────────────────────────────────────────
-    // Step tasks with step_type=sleep just wake the next body segment.
-    if matches!(
-        exec_mode,
-        ExecutionMode::Step { ref step_type, .. }
-        if *step_type == crate::execution_model::StepKind::Sleep
-    ) {
-        dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
-        return;
-    }
-
-    // ── WaitForEvent deadline tasks ───────────────────────────────────────────
-    // When the deadline fires before offer_event arrives, fail the execution.
-    if matches!(
-        exec_mode,
-        ExecutionMode::Step { ref step_type, .. }
-        if *step_type == crate::execution_model::StepKind::WaitForEvent
-    ) {
-        dispatch_wait_for_event(scheduler, task).await;
-        return;
-    }
 
     #[cfg(feature = "metrics")]
     let start_time = std::time::Instant::now();
@@ -390,11 +351,22 @@ async fn dispatch_task(
         }
     };
 
-    let has_execution = task.execution_id.is_some();
+    let has_execution = task.metadata.get("execution_id").is_some();
     let execution_id = task
-        .execution_id
-        .clone()
+        .metadata
+        .get("execution_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
         .unwrap_or_else(|| task.task_id.clone());
+
+    // run_id is the FK into zart_execution_runs; carried in metadata["run_id"] by body/step tasks.
+    // Falls back to execution_id for non-durable tasks (which don't use zart_steps).
+    let run_id = task
+        .metadata
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&execution_id)
+        .to_string();
 
     let mut ctx = TaskContext::new(
         scheduler.clone(),
@@ -404,6 +376,7 @@ async fn dispatch_task(
         task.data.clone(),
     )
     .with_task_id(task.task_id.clone())
+    .with_run_id(run_id)
     .with_execution_mode(exec_mode.clone());
 
     // Record execution start for durable executions (tasks with an execution_id).
@@ -505,8 +478,9 @@ async fn dispatch_task(
                             execution_time: next_time,
                             data: task_data,
                             recurrence: Some(recurrence.clone()),
-                            execution_id: task.execution_id.clone(),
-                            metadata: serde_json::Value::Null,
+                            metadata: serde_json::json!({
+                                "execution_id": task.metadata.get("execution_id"),
+                            }),
                         })
                         .await
                     {
@@ -608,368 +582,9 @@ async fn dispatch_task(
     }
 }
 
-// ── Coordinator dispatch ────────────────────────────────────────────────────
-
-/// Handle a coordinator task (`step_type = wait_all`).
-///
-/// Polls all child step tasks. If all are completed, schedules the next body
-/// segment and marks the coordinator completed. Otherwise re-queues itself
-/// with a short backoff so it can check again after the next poll cycle.
-async fn dispatch_coordinator(
-    scheduler: Arc<dyn StorageBackend>,
-    task: scheduler::FetchedTask,
-    wait_for: Vec<String>,
-    next_segment: usize,
-) {
-    let execution_id = task
-        .execution_id
-        .as_deref()
-        .unwrap_or(&task.task_id)
-        .to_string();
-
-    let completed = match scheduler.check_wait_all_children(&wait_for).await {
-        Ok(v) => v,
-        Err(e) => {
-            error!(error = %e, "Coordinator: failed to check children");
-            let _ = scheduler
-                .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
-                .await;
-            return;
-        }
-    };
-
-    if completed.len() == wait_for.len() {
-        // All done — atomically mark coordinator completed + schedule next body segment.
-        // complete_step_and_schedule_body inserts the body task with correct metadata
-        // ({mode:body, execution_id, segment}) in a single transaction.
-        let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
-        if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
-            &*scheduler,
-            crate::step_ops::ResumeBodySpec {
-                step_task_id: &task.task_id,
-                result: serde_json::Value::Null,
-                lock_token: &task.lock_token,
-                next_body_task_id: &next_body_task_id,
-                task_name: &task.task_name,
-                execution_id: &execution_id,
-                next_segment,
-                data: task.data.clone(),
-            },
-        )
-        .await
-        {
-            error!(error = %e, "Coordinator: failed to complete and schedule next body");
-            let _ = scheduler
-                .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
-                .await;
-            return;
-        }
-        info!(
-            next_segment,
-            "Coordinator: all children done, next body scheduled"
-        );
-    } else {
-        // Not all done — re-queue with a short backoff.
-        let retry_at = chrono::Utc::now() + chrono::Duration::seconds(5);
-        if let Err(e) = scheduler
-            .mark_failed(
-                &task.task_id,
-                "children not yet complete",
-                Some(retry_at),
-                &task.lock_token,
-            )
-            .await
-        {
-            error!(error = %e, "Coordinator: failed to re-queue self");
-        }
-        info!(
-            done = completed.len(),
-            total = wait_for.len(),
-            "Coordinator: waiting for children"
-        );
-    }
-}
-
-// ── Sleep continuation dispatch ─────────────────────────────────────────────
-
-/// Handle a sleep continuation task (`step_type = sleep`).
-///
-/// When the sleep timer fires, schedule the next body segment.
-async fn dispatch_sleep_continuation(
-    scheduler: Arc<dyn StorageBackend>,
-    task: scheduler::FetchedTask,
-    exec_mode: &ExecutionMode,
-) {
-    let next_segment = match exec_mode {
-        ExecutionMode::Step {
-            next_body_segment, ..
-        } => *next_body_segment,
-        _ => {
-            error!("Sleep task has unexpected execution mode");
-            let _ = scheduler
-                .mark_failed(
-                    &task.task_id,
-                    "unexpected mode for sleep task",
-                    None,
-                    &task.lock_token,
-                )
-                .await;
-            return;
-        }
-    };
-
-    let execution_id = task
-        .execution_id
-        .as_deref()
-        .unwrap_or(&task.task_id)
-        .to_string();
-
-    let next_body_task_id = format!("{}-b{}", execution_id, next_segment);
-
-    if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
-        &*scheduler,
-        crate::step_ops::ResumeBodySpec {
-            step_task_id: &task.task_id,
-            result: serde_json::Value::Null,
-            lock_token: &task.lock_token,
-            next_body_task_id: &next_body_task_id,
-            task_name: &task.task_name,
-            execution_id: &execution_id,
-            next_segment,
-            data: task.data.clone(),
-        },
-    )
-    .await
-    {
-        error!(error = %e, "Sleep continuation: failed to schedule next body");
-        let _ = scheduler
-            .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
-            .await;
-    } else {
-        info!(next_segment, "Sleep continuation: next body scheduled");
-    }
-}
-
-// ── WaitForEvent deadline dispatch ───────────────────────────────────────────
-
-/// Handle a wait_for_event step task whose deadline has fired.
-///
-/// The event never arrived before the deadline, so we mark the step task
-/// failed and fail the entire execution.
-///
-/// The two DB calls are sequential, not atomic — consistent with the general
-/// failure path in `dispatch_task`. A crash between the two leaves the
-/// execution in `running` with a failed step task, but the execution is
-/// functionally dead (no active tasks, no pending body segment). Operators
-/// can detect this via the failed step row and manually cancel or reset.
-async fn dispatch_wait_for_event(scheduler: Arc<dyn StorageBackend>, task: scheduler::FetchedTask) {
-    let execution_id = task
-        .execution_id
-        .as_deref()
-        .unwrap_or(&task.task_id)
-        .to_string();
-    let step_name = task
-        .metadata
-        .get("step_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    info!(step = %step_name, "wait_for_event deadline exceeded — failing execution");
-    emit_metric!(
-        EVENTS_DELIVERED_TOTAL
-            .with_label_values(&[step_name, "timeout"])
-            .inc()
-    );
-    let _ = scheduler
-        .mark_failed(
-            &task.task_id,
-            "event deadline exceeded",
-            None,
-            &task.lock_token,
-        )
-        .await;
-    let _ = scheduler.fail_execution(&execution_id).await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{Call, RecordingScheduler};
-    use scheduler::FetchedTask;
-
-    fn make_fetched_task(task_id: &str, metadata: serde_json::Value) -> FetchedTask {
-        FetchedTask {
-            task_id: task_id.to_string(),
-            task_name: "my-handler".to_string(),
-            data: serde_json::Value::Null,
-            state: serde_json::Value::Null,
-            attempt: 1,
-            lock_token: "tok".to_string(),
-            execution_id: Some("exec-1".to_string()),
-            recurrence: None,
-            metadata,
-        }
-    }
-
-    // ── dispatch_coordinator ──────────────────────────────────────────────────
-
-    /// When all children are completed, `dispatch_coordinator` must call
-    /// `complete_and_schedule` exactly once (marks coordinator done + inserts
-    /// next body task atomically). No separate `mark_failed` should appear.
-    #[tokio::test]
-    async fn coordinator_all_children_done_calls_complete_and_schedule_once() {
-        let child_ids = vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()];
-        let (scheduler, calls) = RecordingScheduler::builder()
-            .wait_all_returns(vec![
-                ("exec-1:step:a".to_string(), serde_json::json!(1)),
-                ("exec-1:step:b".to_string(), serde_json::json!(2)),
-            ])
-            .build();
-
-        let task = make_fetched_task(
-            "exec-1:coord:wait_all:2",
-            serde_json::json!({
-                "mode": "step",
-                "step_type": "wait_all",
-                "segment": 3,
-                "wait_for": child_ids.clone(),
-            }),
-        );
-
-        dispatch_coordinator(scheduler, task, child_ids, 3).await;
-
-        let log = calls.lock().unwrap();
-        let cas: Vec<_> = log
-            .iter()
-            .filter(|c| c.is_complete_and_schedule())
-            .collect();
-        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-
-        assert_eq!(cas.len(), 1, "expected exactly one complete_and_schedule");
-        assert!(
-            failures.is_empty(),
-            "no mark_failed expected when all children done"
-        );
-
-        if let Call::CompleteAndSchedule {
-            new_task_id,
-            new_metadata,
-            ..
-        } = &cas[0]
-        {
-            assert_eq!(new_task_id, "exec-1-b3");
-            assert_eq!(new_metadata["mode"], "body");
-            assert_eq!(new_metadata["segment"], 3);
-        }
-    }
-
-    /// When some children are still pending, `dispatch_coordinator` must call
-    /// `mark_failed` with a non-None `next_execution_time` (the backoff re-queue)
-    /// and must NOT call `complete_and_schedule`.
-    #[tokio::test]
-    async fn coordinator_pending_children_requeues_with_backoff_no_body_scheduled() {
-        let child_ids = vec!["exec-1:step:a".to_string(), "exec-1:step:b".to_string()];
-        // Only one child is done — the other is still in-flight.
-        let (scheduler, calls) = RecordingScheduler::builder()
-            .wait_all_returns(vec![("exec-1:step:a".to_string(), serde_json::json!(1))])
-            .build();
-
-        let task = make_fetched_task(
-            "exec-1:coord:wait_all:2",
-            serde_json::json!({
-                "mode": "step",
-                "step_type": "wait_all",
-                "segment": 2,
-                "wait_for": child_ids.clone(),
-            }),
-        );
-
-        dispatch_coordinator(scheduler, task, child_ids, 2).await;
-
-        let log = calls.lock().unwrap();
-        let cas: Vec<_> = log
-            .iter()
-            .filter(|c| c.is_complete_and_schedule())
-            .collect();
-        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-
-        assert!(
-            cas.is_empty(),
-            "no body scheduled when children still pending"
-        );
-        assert_eq!(
-            failures.len(),
-            1,
-            "coordinator re-queues itself via mark_failed"
-        );
-
-        if let Call::MarkFailed {
-            next_execution_time,
-            ..
-        } = &failures[0]
-        {
-            assert!(
-                next_execution_time.is_some(),
-                "re-queue must carry a backoff execution_time"
-            );
-        }
-    }
-
-    // ── dispatch_sleep_continuation ───────────────────────────────────────────
-
-    /// When a sleep task fires, `dispatch_sleep_continuation` must call
-    /// `complete_and_schedule` exactly once, inserting the next body segment
-    /// with `mode=body` metadata. No failures should occur.
-    #[tokio::test]
-    async fn sleep_continuation_calls_complete_and_schedule_with_body_metadata() {
-        let (scheduler, calls) = RecordingScheduler::builder().build();
-        let exec_mode = ExecutionMode::Step {
-            target_step: "__sleep".to_string(),
-            step_type: crate::execution_model::StepKind::Sleep,
-            next_body_segment: 4,
-            retry_attempt: 0,
-            retry_config: None,
-        };
-
-        let task = make_fetched_task(
-            "exec-1:step:__sleep",
-            serde_json::json!({
-                "mode": "step",
-                "step_type": "sleep",
-                "step_name": "__sleep",
-                "segment": 4,
-            }),
-        );
-
-        dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
-
-        let log = calls.lock().unwrap();
-        let cas: Vec<_> = log
-            .iter()
-            .filter(|c| c.is_complete_and_schedule())
-            .collect();
-        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-
-        assert_eq!(
-            cas.len(),
-            1,
-            "sleep fires exactly one complete_and_schedule"
-        );
-        assert!(
-            failures.is_empty(),
-            "no failures for a normal sleep completion"
-        );
-
-        if let Call::CompleteAndSchedule {
-            new_task_id,
-            new_metadata,
-            ..
-        } = &cas[0]
-        {
-            assert_eq!(new_task_id, "exec-1-b4");
-            assert_eq!(new_metadata["mode"], "body");
-            assert_eq!(new_metadata["segment"], 4);
-        }
-    }
 
     #[test]
     fn worker_config_defaults_are_sane() {
@@ -1031,40 +646,5 @@ mod tests {
         let heartbeat_interval = Some(Duration::ZERO);
         let effective = heartbeat_interval.filter(|d| !d.is_zero());
         assert!(effective.is_none());
-    }
-
-    // ── dispatch_wait_for_event ───────────────────────────────────────────────
-
-    /// When a wait_for_event deadline fires, `dispatch_wait_for_event` must call
-    /// `mark_failed` on the step task and `fail_execution` on the execution.
-    #[tokio::test]
-    async fn dispatch_wait_for_event_marks_failed_and_fails_execution() {
-        let (scheduler, calls) = RecordingScheduler::builder().build();
-
-        let task = make_fetched_task(
-            "exec-1:step:approval",
-            serde_json::json!({
-                "mode": "step",
-                "step_type": "wait_for_event",
-                "step_name": "approval",
-                "segment": 2,
-            }),
-        );
-
-        dispatch_wait_for_event(scheduler, task).await;
-
-        let log = calls.lock().unwrap();
-        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-        let fail_execs: Vec<_> = log.iter().filter(|c| c.is_fail_execution()).collect();
-
-        assert_eq!(failures.len(), 1, "step task must be marked failed");
-        assert_eq!(fail_execs.len(), 1, "execution must be failed");
-
-        if let crate::test_helpers::Call::MarkFailed { task_id, .. } = &failures[0] {
-            assert_eq!(task_id, "exec-1:step:approval");
-        }
-        if let crate::test_helpers::Call::FailExecution { execution_id } = &fail_execs[0] {
-            assert_eq!(execution_id, "exec-1");
-        }
     }
 }

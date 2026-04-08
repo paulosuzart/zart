@@ -7,8 +7,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scheduler::{
-    DurableStorage, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler, StepLookup,
-    StorageError,
+    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, DurableStorage, FetchedTask,
+    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler,
+    StepLookup, StorageError,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -42,7 +43,6 @@ impl Scheduler for MockScheduler {
         task_id: &str,
         _task_name: &str,
         _data: serde_json::Value,
-        _execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError> {
         Ok(ScheduleResult {
             task_id: task_id.to_string(),
@@ -128,6 +128,37 @@ impl DurableStorage for MockScheduler {
         _payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
         Ok(true)
+    }
+
+    async fn schedule_step(
+        &self,
+        params: ScheduleStepParams,
+    ) -> Result<ScheduleResult, StorageError> {
+        Ok(ScheduleResult {
+            task_id: params.task_id,
+            execution_time: params.execution_time,
+        })
+    }
+
+    async fn complete_step_and_schedule_body(
+        &self,
+        _params: CompleteStepAndScheduleBodyParams,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn complete_step_no_resume(
+        &self,
+        _params: CompleteStepNoResumeParams,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn reschedule_step_for_retry(
+        &self,
+        _params: RescheduleStepForRetryParams,
+    ) -> Result<(), StorageError> {
+        Ok(())
     }
 }
 

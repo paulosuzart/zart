@@ -8,10 +8,11 @@ use crate::emit_metric;
 use crate::error::SchedulerError;
 #[cfg(feature = "metrics")]
 use crate::metrics::EVENTS_DELIVERED_TOTAL;
-use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult, StorageBackend};
+use scheduler::{
+    ExecutionRecord, ExecutionStatus, ScheduleAtParams, ScheduleResult, StorageBackend,
+};
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 // Maximum duration for `wait_with_timeout` as per the spec.
 const MAX_WAIT_SECS: u64 = 30;
@@ -60,6 +61,8 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
         // Check if execution already exists.
+        let run_id: String;
+
         if let Some(existing) = self.scheduler.get_execution(execution_id).await? {
             match existing.status {
                 // Still running — don't create a duplicate.
@@ -73,7 +76,9 @@ impl DurableScheduler {
                 ExecutionStatus::Completed
                 | ExecutionStatus::Failed
                 | ExecutionStatus::Cancelled => {
-                    self.scheduler
+                    // reset_execution returns the new run_id directly.
+                    run_id = self
+                        .scheduler
                         .reset_execution(execution_id, payload.clone())
                         .await?;
                 }
@@ -83,14 +88,29 @@ impl DurableScheduler {
             self.scheduler
                 .start_execution(execution_id, task_name, payload.clone())
                 .await?;
+            run_id = format!("{execution_id}:run:0");
         }
 
         // Schedule the root task that drives the execution.
-        let task_id = Uuid::new_v4().to_string();
+        // The task_id is "{run_id}:body:start" — deterministic and debuggable.
+        let task_id = format!("{run_id}:body:start");
+        let metadata = serde_json::json!({
+            "mode": "body",
+            "run_id": run_id,
+            "execution_id": execution_id.to_string(),
+        });
         let result = self
             .scheduler
-            .schedule_now(&task_id, task_name, payload, Some(execution_id))
-            .await?;
+            .schedule_at(ScheduleAtParams {
+                task_id: task_id.clone(),
+                task_name: task_name.to_string(),
+                execution_time: chrono::Utc::now(),
+                data: payload,
+                recurrence: None,
+                metadata,
+            })
+            .await
+            .map_err(SchedulerError::Database)?;
 
         Ok(result)
     }

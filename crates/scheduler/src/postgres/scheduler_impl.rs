@@ -1,0 +1,425 @@
+//! Implementation of the [`Scheduler`] trait for [`PostgresScheduler`].
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+use super::PostgresScheduler;
+use crate::{
+    CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler,
+    StorageError,
+};
+
+#[async_trait]
+impl Scheduler for PostgresScheduler {
+    async fn schedule_now(
+        &self,
+        task_id: &str,
+        task_name: &str,
+        data: serde_json::Value,
+    ) -> Result<ScheduleResult, StorageError> {
+        self.schedule_at(ScheduleAtParams {
+            task_id: task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: Utc::now(),
+            data,
+            recurrence: None,
+            metadata: serde_json::Value::Null,
+        })
+        .await
+    }
+
+    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError> {
+        let recurrence_json = params
+            .recurrence
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks
+                (task_id, task_name, execution_time, data, recurrence, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (task_id) DO NOTHING
+            "#,
+        )
+        .bind(&params.task_id)
+        .bind(&params.task_name)
+        .bind(params.execution_time)
+        .bind(&params.data)
+        .bind(&recurrence_json)
+        .bind(&params.metadata)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(ScheduleResult {
+            task_id: params.task_id,
+            execution_time: params.execution_time,
+        })
+    }
+
+    async fn poll_due(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<FetchedTask>, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // SELECT with SKIP LOCKED to avoid contention between concurrent workers.
+        let rows: Vec<(
+            String,
+            String,
+            serde_json::Value,
+            serde_json::Value,
+            i32,
+            Option<serde_json::Value>,
+            serde_json::Value,
+        )> = sqlx::query_as(
+            r#"
+                SELECT task_id, task_name, data, state, attempt, recurrence, metadata
+                FROM zart_tasks
+                WHERE status = 'scheduled'
+                  AND execution_time <= $1
+                ORDER BY execution_time ASC
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+                "#,
+        )
+        .bind(now)
+        .bind(limit as i64)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        if rows.is_empty() {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Ok(vec![]);
+        }
+
+        let mut fetched = Vec::with_capacity(rows.len());
+
+        for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in rows {
+            // Each task gets a unique lock token stored as `worker_id`.
+            let lock_token = Uuid::new_v4().to_string();
+
+            sqlx::query(
+                r#"
+                UPDATE zart_tasks
+                SET status     = 'picked_up',
+                    locked_at  = NOW(),
+                    worker_id  = $1,
+                    attempt    = attempt + 1,
+                    updated_at = NOW()
+                WHERE task_id = $2
+                "#,
+            )
+            .bind(&lock_token)
+            .bind(&task_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+            let recurrence = recurrence_json.and_then(|v| serde_json::from_value(v).ok());
+
+            fetched.push(FetchedTask {
+                task_id,
+                task_name,
+                data,
+                state,
+                // Return the post-increment attempt count.
+                attempt: attempt as usize + 1,
+                lock_token,
+                recurrence,
+                metadata,
+            });
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(fetched)
+    }
+
+    async fn update_task_state(
+        &self,
+        task_id: &str,
+        state: serde_json::Value,
+        next_execution_time: DateTime<Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET state          = $1,
+                execution_time = $2,
+                status         = 'scheduled',
+                locked_at      = NULL,
+                worker_id      = NULL,
+                updated_at     = NOW()
+            WHERE task_id  = $3
+              AND worker_id = $4
+            "#,
+        )
+        .bind(&state)
+        .bind(next_execution_time)
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(StorageError::LockMismatch(task_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn mark_completed(
+        &self,
+        task_id: &str,
+        result: Option<serde_json::Value>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status       = 'completed',
+                result       = $1,
+                completed_at = NOW(),
+                updated_at   = NOW(),
+                locked_at    = NULL,
+                worker_id    = NULL
+            WHERE task_id  = $2
+              AND worker_id = $3
+            "#,
+        )
+        .bind(&result)
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(StorageError::LockMismatch(task_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn mark_failed(
+        &self,
+        task_id: &str,
+        error: &str,
+        next_execution_time: Option<DateTime<Utc>>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let (new_status, exec_time) = match next_execution_time {
+            Some(t) => ("scheduled", Some(t)),
+            None => ("failed", None),
+        };
+
+        let rows_affected = if let Some(t) = exec_time {
+            sqlx::query(
+                r#"
+                UPDATE zart_tasks
+                SET status         = $1,
+                    last_error     = $2,
+                    execution_time = $3,
+                    locked_at      = NULL,
+                    worker_id      = NULL,
+                    updated_at     = NOW()
+                WHERE task_id  = $4
+                  AND worker_id = $5
+                "#,
+            )
+            .bind(new_status)
+            .bind(error)
+            .bind(t)
+            .bind(task_id)
+            .bind(lock_token)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?
+            .rows_affected()
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE zart_tasks
+                SET status     = $1,
+                    last_error = $2,
+                    locked_at  = NULL,
+                    worker_id  = NULL,
+                    updated_at = NOW()
+                WHERE task_id  = $3
+                  AND worker_id = $4
+                "#,
+            )
+            .bind(new_status)
+            .bind(error)
+            .bind(task_id)
+            .bind(lock_token)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?
+            .rows_affected()
+        };
+
+        if rows_affected == 0 {
+            return Err(StorageError::LockMismatch(task_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn cancel_task(&self, task_id: &str) -> Result<bool, StorageError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE task_id = $1 AND status = 'scheduled'
+            "#,
+        )
+        .bind(task_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        Ok(rows_affected > 0)
+    }
+
+    async fn delete_task(&self, task_id: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM zart_tasks WHERE task_id = $1")
+            .bind(task_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    async fn run_migrations(&self) -> Result<(), StorageError> {
+        sqlx::migrate!("./migrations")
+            .run(&self.pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))
+    }
+
+    async fn recover_orphans(
+        &self,
+        stale_timeout: std::time::Duration,
+    ) -> Result<usize, StorageError> {
+        let threshold = Utc::now()
+            - chrono::Duration::from_std(stale_timeout).unwrap_or(chrono::Duration::seconds(300));
+
+        let result = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status     = 'scheduled',
+                locked_at  = NULL,
+                worker_id  = NULL,
+                updated_at = NOW()
+            WHERE status    = 'picked_up'
+              AND locked_at < $1
+            "#,
+        )
+        .bind(threshold)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn renew_lease(&self, task_id: &str, lock_token: &str) -> Result<bool, StorageError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET locked_at  = NOW(),
+                updated_at = NOW()
+            WHERE task_id   = $1
+              AND worker_id = $2
+              AND status    = 'picked_up'
+            "#,
+        )
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        Ok(rows_affected > 0)
+    }
+
+    async fn complete_and_schedule(
+        &self,
+        params: CompleteAndScheduleParams,
+    ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let rows = sqlx::query(
+            r#"
+            UPDATE zart_tasks
+            SET status       = 'completed',
+                result       = $1,
+                completed_at = NOW(),
+                updated_at   = NOW(),
+                locked_at    = NULL,
+                worker_id    = NULL
+            WHERE task_id   = $2
+              AND worker_id = $3
+            "#,
+        )
+        .bind(&params.result)
+        .bind(&params.completed_task_id)
+        .bind(&params.lock_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if rows == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            return Err(StorageError::LockMismatch(params.completed_task_id));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks
+                (task_id, task_name, execution_time, data, metadata)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (task_id) DO NOTHING
+            "#,
+        )
+        .bind(&params.new_task_id)
+        .bind(&params.new_task_name)
+        .bind(params.new_execution_time)
+        .bind(&params.new_data)
+        .bind(&params.new_metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+}

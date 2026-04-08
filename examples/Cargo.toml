@@ -28,6 +28,10 @@ path = "retry-simulation/src/main.rs"
 name = "example-durable-loops"
 path = "durable-loops/src/main.rs"
 
+[[bin]]
+name = "example-sleep"
+path = "sleep/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }

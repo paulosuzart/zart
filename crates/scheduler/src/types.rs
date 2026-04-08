@@ -5,6 +5,101 @@ use serde::{Deserialize, Serialize};
 
 use crate::Recurrence;
 
+/// Parameters for durable storage step scheduling.
+#[derive(Debug, Clone)]
+pub struct ScheduleStepParams {
+    pub task_id: String,
+    pub task_name: String,
+    pub run_id: String,
+    pub step_name: String,
+    pub step_kind: String,
+    pub execution_time: DateTime<Utc>,
+    pub data: serde_json::Value,
+    pub metadata: serde_json::Value,
+    pub retry_config: Option<serde_json::Value>,
+}
+
+/// Parameters for step completion + body resume.
+#[derive(Debug, Clone)]
+pub struct CompleteStepAndScheduleBodyParams {
+    pub step_task_id: String,
+    pub step_id: String,
+    pub result: serde_json::Value,
+    pub lock_token: String,
+    pub attempt_number: usize,
+    pub next_body_task_id: String,
+    pub task_name: String,
+    pub run_id: String,
+    pub data: serde_json::Value,
+}
+
+/// Parameters for step completion without body resume.
+#[derive(Debug, Clone)]
+pub struct CompleteStepNoResumeParams {
+    pub step_task_id: String,
+    pub step_id: String,
+    pub result: serde_json::Value,
+    pub lock_token: String,
+    pub attempt_number: usize,
+}
+
+/// Parameters for retry rescheduling of a step task.
+#[derive(Debug, Clone)]
+pub struct RescheduleStepForRetryParams {
+    pub step_task_id: String,
+    pub attempt_number: usize,
+    pub error: String,
+    pub retry_time: DateTime<Utc>,
+    pub lock_token: String,
+}
+
+/// Parameters for creating/upserting a wait-group step row.
+#[derive(Debug, Clone)]
+pub struct UpsertWaitGroupStepParams {
+    pub run_id: String,
+    pub group_step_name: String,
+    pub total: i32,
+    pub threshold: i32,
+}
+
+/// Parameters for completing a wait-group child.
+#[derive(Debug, Clone)]
+pub struct CompleteWaitGroupChildParams {
+    pub run_id: String,
+    pub group_step_name: String,
+    pub child_step_task_id: String,
+    pub child_step_id: String,
+    pub child_result: serde_json::Value,
+    pub lock_token: String,
+    pub attempt_number: usize,
+    pub next_body_task_id: String,
+    pub task_name: String,
+    pub data: serde_json::Value,
+}
+
+/// Parameters for failing a wait-group child.
+#[derive(Debug, Clone)]
+pub struct FailWaitGroupChildParams {
+    pub run_id: String,
+    pub group_step_name: String,
+    pub child_step_task_id: String,
+    pub child_step_id: String,
+    pub error: String,
+    pub lock_token: String,
+    pub attempt_number: usize,
+}
+
+/// Result of attempting to deliver an external event to a waiting execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventDeliveryResult {
+    /// Event matched a scheduled wait_for_event step and resumed the body.
+    Delivered,
+    /// Event targeted a step that had already been completed by a previous delivery.
+    AlreadyDelivered,
+    /// No matching wait_for_event step was registered for this execution/event.
+    NotRegistered,
+}
+
 /// A task that has been fetched from the database and is ready for execution.
 ///
 /// The `lock_token` must be passed back when completing or failing the task
@@ -23,11 +118,9 @@ pub struct FetchedTask {
     pub attempt: usize,
     /// Opaque token that identifies this particular lock acquisition.
     pub lock_token: String,
-    /// The durable execution this task belongs to, if any.
-    pub execution_id: Option<String>,
     /// Recurrence configuration, if this is a recurring task.
     pub recurrence: Option<Recurrence>,
-    /// Execution model metadata (mode, segment, step_name, step_type, etc.).
+    /// Execution model metadata (mode, run_id, step_name, step_type, etc.).
     /// Empty object `{}` for legacy tasks that predate the new execution model.
     pub metadata: serde_json::Value,
 }
@@ -45,12 +138,15 @@ pub struct StepLookup {
 
 impl std::fmt::Display for FetchedTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let exec_id = self
+            .metadata
+            .get("execution_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
         write!(
             f,
             "task={} exec={} attempt={}",
-            self.task_name,
-            self.execution_id.as_deref().unwrap_or("-"),
-            self.attempt,
+            self.task_name, exec_id, self.attempt,
         )
     }
 }
@@ -150,9 +246,7 @@ pub struct ScheduleAtParams {
     pub data: serde_json::Value,
     /// Optional recurrence rule for repeating tasks.
     pub recurrence: Option<Recurrence>,
-    /// The durable execution this task belongs to, if any.
-    pub execution_id: Option<String>,
-    /// Execution-model metadata (mode, segment, step_name, …).
+    /// Execution-model metadata (mode, run_id, step_name, …).
     pub metadata: serde_json::Value,
 }
 
@@ -176,8 +270,6 @@ pub struct CompleteAndScheduleParams {
     pub new_execution_time: DateTime<Utc>,
     /// Input payload for the new task.
     pub new_data: serde_json::Value,
-    /// Execution ID for the new task.
-    pub new_execution_id: Option<String>,
     /// Execution-model metadata for the new task.
     pub new_metadata: serde_json::Value,
 }
@@ -193,4 +285,69 @@ pub struct ExecutionRecord {
     pub scheduled_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub version: i32,
+}
+
+/// A single run of a durable execution.
+///
+/// Each run represents one invocation of an execution, starting from run_index = 0.
+/// Runs are append-only: restarts create new rows, they don't mutate existing ones.
+#[derive(Debug, Clone)]
+pub struct ExecutionRunRecord {
+    /// Unique run identifier.
+    pub run_id: String,
+    /// The execution this run belongs to.
+    pub execution_id: String,
+    /// Run index: 0 = first, 1 = first restart, …
+    pub run_index: i32,
+    /// Input payload for this run.
+    pub payload: serde_json::Value,
+    /// Current status of this run.
+    pub status: ExecutionStatus,
+    /// Result payload (set when completed).
+    pub result: Option<serde_json::Value>,
+    /// When this run started.
+    pub started_at: DateTime<Utc>,
+    /// When this run finished (None if still running).
+    pub completed_at: Option<DateTime<Utc>>,
+    /// What triggered this run: 'initial', 'restart', or 'selective_rerun'.
+    pub trigger: String,
+}
+
+/// A step record from the `zart_steps` table.
+///
+/// Represents the authoritative state of a single step within a specific run.
+#[derive(Debug, Clone)]
+pub struct StepRow {
+    /// Step ID (same as the step task_id).
+    pub step_id: String,
+    /// The run this step belongs to.
+    pub run_id: String,
+    /// The step name (unique within a run).
+    pub step_name: String,
+    /// What kind of step this is: 'step', 'sleep', 'wait_all', 'wait_for_event', 'wait_group'.
+    pub step_kind: String,
+    /// The task currently responsible for this step (None if completed or not yet scheduled).
+    pub task_id: Option<String>,
+    /// Current status: 'scheduled', 'running', 'completed', 'dead'.
+    pub status: String,
+    /// How many retries have been attempted (0 = no retries yet).
+    pub retry_attempt: i32,
+    /// Retry policy serialized as JSON.
+    pub retry_config: Option<serde_json::Value>,
+    /// Result payload (set when completed).
+    pub result: Option<serde_json::Value>,
+    /// Error message (set when failed).
+    pub last_error: Option<String>,
+    /// Wait-group total children count (NULL for non-wait-group steps).
+    pub wg_total: Option<i32>,
+    /// Wait-group remaining children count (NULL for non-wait-group steps).
+    pub wg_remaining: Option<i32>,
+    /// Wait-group trigger threshold (NULL for non-wait-group steps).
+    pub wg_threshold: Option<i32>,
+    /// Compare-and-set guard for first failing child in wait-groups (NULL for non-wait-group steps).
+    pub wg_first_failed: Option<bool>,
+    /// When this step was scheduled.
+    pub scheduled_at: DateTime<Utc>,
+    /// When this step completed (None if still in progress).
+    pub completed_at: Option<DateTime<Utc>>,
 }

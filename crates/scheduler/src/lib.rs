@@ -25,8 +25,11 @@ pub mod postgres;
 pub use error::StorageError;
 pub use recurrence::Recurrence;
 pub use types::{
-    CompleteAndScheduleParams, ExecutionRecord, ExecutionStatus, FetchedTask, ScheduleAtParams,
-    ScheduleResult, StepLookup, TaskStatus,
+    CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
+    CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
+    ExecutionStatus, FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams,
+    ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepLookup, StepRow, TaskStatus,
+    UpsertWaitGroupStepParams,
 };
 
 #[cfg(feature = "postgres")]
@@ -50,7 +53,6 @@ pub trait Scheduler: Send + Sync {
         task_id: &str,
         task_name: &str,
         data: serde_json::Value,
-        execution_id: Option<&str>,
     ) -> Result<ScheduleResult, StorageError>;
 
     /// Schedule a task for execution at a specific point in time.
@@ -209,43 +211,62 @@ pub trait DurableStorage: Send + Sync {
         Err(StorageError::NotImplemented("list_executions"))
     }
 
-    /// Atomically complete a wait_for_event step task and schedule the next body segment.
+    /// Deliver an external event to a waiting execution.
     ///
-    /// Finds the step task matching `execution_id` + `event_name` that is still
-    /// `scheduled` (i.e. the deadline has not yet fired), marks it completed with
-    /// `payload`, and inserts the next body task (derived from the step task's metadata).
+    /// Backends should atomically attempt to complete the matching
+    /// `wait_for_event` step and schedule the next body task.
+    /// The return value distinguishes successful delivery, duplicate delivery,
+    /// and missing registration.
+    async fn deliver_event(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<EventDeliveryResult, StorageError> {
+        let _ = (execution_id, event_name, payload);
+        Err(StorageError::NotImplemented("deliver_event"))
+    }
+
+    /// Back-compat shim: completes a wait_for_event step and schedules body.
     ///
-    /// Returns `true` if the step was found and completed, `false` if not found
-    /// (event delivered too late — deadline fired and worker already holds the task).
+    /// New callers should use [`deliver_event`]. This helper maps:
+    /// - `Delivered` -> `true`
+    /// - `AlreadyDelivered`/`NotRegistered` -> `false`
     async fn complete_event_step_and_schedule_body(
         &self,
         execution_id: &str,
         event_name: &str,
         payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
-        let _ = (execution_id, event_name, payload);
-        Err(StorageError::NotImplemented(
-            "complete_event_step_and_schedule_body",
-        ))
+        match self
+            .deliver_event(execution_id, event_name, payload)
+            .await?
+        {
+            EventDeliveryResult::Delivered => Ok(true),
+            EventDeliveryResult::AlreadyDelivered | EventDeliveryResult::NotRegistered => Ok(false),
+        }
     }
 
     /// Reset a terminal execution so it can be retried.
+    ///
+    /// Creates a new run at run_index+1, updates `current_run_id`, and returns
+    /// the new `run_id` (e.g. `"{execution_id}:run:1"`).
     async fn reset_execution(
         &self,
         execution_id: &str,
         payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
+    ) -> Result<String, StorageError> {
         let _ = (execution_id, payload);
         Err(StorageError::NotImplemented("reset_execution"))
     }
 
-    /// Look up a step task by `execution_id` + `step_name`.
+    /// Look up a step by `run_id` + `step_name` in `zart_steps`.
     async fn get_step_status(
         &self,
-        execution_id: &str,
+        run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
-        let _ = (execution_id, step_name);
+        let _ = (run_id, step_name);
         Err(StorageError::NotImplemented("get_step_status"))
     }
 
@@ -256,6 +277,120 @@ pub trait DurableStorage: Send + Sync {
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
         let _ = wait_for_task_ids;
         Err(StorageError::NotImplemented("check_wait_all_children"))
+    }
+
+    /// Look up a step by run_id + step_name.
+    async fn get_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+    ) -> Result<Option<StepRow>, StorageError> {
+        let _ = (run_id, step_name);
+        Err(StorageError::NotImplemented("get_step"))
+    }
+
+    /// List all steps for a run.
+    async fn list_steps(&self, run_id: &str) -> Result<Vec<StepRow>, StorageError> {
+        let _ = run_id;
+        Err(StorageError::NotImplemented("list_steps"))
+    }
+
+    /// Upsert (insert-if-absent) a wait-group step row.
+    ///
+    /// This is idempotent and safe on body replay.
+    async fn upsert_wait_group_step(
+        &self,
+        params: UpsertWaitGroupStepParams,
+    ) -> Result<(), StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented("upsert_wait_group_step"))
+    }
+
+    /// Complete a wait-group child and atomically decrement the parent group's
+    /// `wg_remaining`. If this child reaches `wg_threshold`, the backend should
+    /// also insert the next body task in the same transaction.
+    async fn complete_wait_group_child(
+        &self,
+        params: CompleteWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented("complete_wait_group_child"))
+    }
+
+    /// Record a wait-group child failure with compare-and-set semantics.
+    ///
+    /// Returns `true` only for the first failing child that flips
+    /// `wg_first_failed` from false to true.
+    async fn fail_wait_group_child(
+        &self,
+        params: FailWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented("fail_wait_group_child"))
+    }
+
+    /// Recover wait-group orphans where the group has already triggered but the
+    /// corresponding body task was never inserted.
+    ///
+    /// Returns the number of recovered body tasks inserted.
+    async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
+        Err(StorageError::NotImplemented("recover_wait_group_orphans"))
+    }
+
+    /// Insert a task row and a step row atomically.
+    async fn schedule_step(
+        &self,
+        params: ScheduleStepParams,
+    ) -> Result<ScheduleResult, StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented("schedule_step"))
+    }
+
+    /// Atomically complete a step+task, record the attempt, and schedule the next body task.
+    async fn complete_step_and_schedule_body(
+        &self,
+        params: CompleteStepAndScheduleBodyParams,
+    ) -> Result<(), StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented(
+            "complete_step_and_schedule_body",
+        ))
+    }
+
+    /// Atomically complete a step+task and record the attempt (no body continuation).
+    ///
+    /// Used for wait_all children — the coordinator polls and schedules the body when all are done.
+    async fn complete_step_no_resume(
+        &self,
+        params: CompleteStepNoResumeParams,
+    ) -> Result<(), StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented("complete_step_no_resume"))
+    }
+
+    /// Atomically record a failed step attempt, update the retry count, and reschedule the task.
+    async fn reschedule_step_for_retry(
+        &self,
+        params: RescheduleStepForRetryParams,
+    ) -> Result<(), StorageError> {
+        let _ = params;
+        Err(StorageError::NotImplemented("reschedule_step_for_retry"))
+    }
+
+    /// Write a step row as immediately completed. No task row is created.
+    ///
+    /// Used for capture steps — synchronous, non-parking values that are
+    /// persisted on first encounter and returned from DB on replay.
+    /// No-op on conflict — replay safety via idempotent upsert.
+    async fn insert_completed_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+        step_kind: &str,
+        result: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        let _ = (run_id, step_name, step_kind, result);
+        Err(StorageError::NotImplemented("insert_completed_step"))
     }
 }
 
@@ -285,7 +420,6 @@ mod tests {
             task_id: &str,
             _task_name: &str,
             _data: serde_json::Value,
-            _execution_id: Option<&str>,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
@@ -357,7 +491,7 @@ mod tests {
     async fn schedule_now_returns_task_id() {
         let scheduler = Arc::new(StubScheduler);
         let result = scheduler
-            .schedule_now("task-1", "my-task", serde_json::json!({}), None)
+            .schedule_now("task-1", "my-task", serde_json::json!({}))
             .await
             .unwrap();
         assert_eq!(result.task_id, "task-1");
@@ -386,7 +520,6 @@ mod tests {
             task_id: &str,
             _: &str,
             _: serde_json::Value,
-            _: Option<&str>,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
