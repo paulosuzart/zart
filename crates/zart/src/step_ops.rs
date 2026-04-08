@@ -253,3 +253,232 @@ pub async fn schedule_sleep_task(
         })
         .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use scheduler::{
+        CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
+        CompleteWaitGroupChildParams, DurableStorage, EventDeliveryResult,
+        FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams, ScheduleAtParams,
+        Scheduler, StepLookup, StepRow, UpsertWaitGroupStepParams,
+    };
+    use std::sync::{Arc, Mutex};
+
+    struct CapturingStorage {
+        last_metadata: Arc<Mutex<Option<serde_json::Value>>>,
+    }
+
+    impl CapturingStorage {
+        fn new() -> Self {
+            Self {
+                last_metadata: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn captured_metadata(&self) -> Option<serde_json::Value> {
+            self.last_metadata.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Scheduler for CapturingStorage {
+        async fn schedule_now(
+            &self,
+            task_id: &str,
+            _task_name: &str,
+            _data: serde_json::Value,
+        ) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult {
+                task_id: task_id.to_string(),
+                execution_time: Utc::now(),
+            })
+        }
+
+        async fn schedule_at(
+            &self,
+            params: ScheduleAtParams,
+        ) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult {
+                task_id: params.task_id,
+                execution_time: params.execution_time,
+            })
+        }
+
+        async fn poll_due(
+            &self,
+            _now: chrono::DateTime<chrono::Utc>,
+            _limit: usize,
+        ) -> Result<Vec<FetchedTask>, StorageError> {
+            Ok(vec![])
+        }
+
+        async fn update_task_state(
+            &self,
+            _task_id: &str,
+            _state: serde_json::Value,
+            _next_execution_time: chrono::DateTime<chrono::Utc>,
+            _lock_token: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn mark_completed(
+            &self,
+            _task_id: &str,
+            _result: Option<serde_json::Value>,
+            _lock_token: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn mark_failed(
+            &self,
+            _task_id: &str,
+            _error: &str,
+            _next_execution_time: Option<chrono::DateTime<chrono::Utc>>,
+            _lock_token: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn cancel_task(&self, _task_id: &str) -> Result<bool, StorageError> {
+            Ok(false)
+        }
+
+        async fn delete_task(&self, _task_id: &str) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn run_migrations(&self) -> Result<(), StorageError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl DurableStorage for CapturingStorage {
+        async fn deliver_event(
+            &self,
+            _execution_id: &str,
+            _event_name: &str,
+            _payload: serde_json::Value,
+        ) -> Result<EventDeliveryResult, StorageError> {
+            Ok(EventDeliveryResult::NotRegistered)
+        }
+
+        async fn get_step_status(
+            &self,
+            _run_id: &str,
+            _step_name: &str,
+        ) -> Result<Option<StepLookup>, StorageError> {
+            Ok(None)
+        }
+
+        async fn check_wait_all_children(
+            &self,
+            _wait_for_task_ids: &[String],
+        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+            Ok(vec![])
+        }
+
+        async fn get_step(
+            &self,
+            _run_id: &str,
+            _step_name: &str,
+        ) -> Result<Option<StepRow>, StorageError> {
+            Ok(None)
+        }
+
+        async fn list_steps(&self, _run_id: &str) -> Result<Vec<StepRow>, StorageError> {
+            Ok(vec![])
+        }
+
+        async fn upsert_wait_group_step(
+            &self,
+            _params: UpsertWaitGroupStepParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn complete_wait_group_child(
+            &self,
+            _params: CompleteWaitGroupChildParams,
+        ) -> Result<bool, StorageError> {
+            Ok(false)
+        }
+
+        async fn fail_wait_group_child(
+            &self,
+            _params: FailWaitGroupChildParams,
+        ) -> Result<bool, StorageError> {
+            Ok(false)
+        }
+
+        async fn schedule_step(
+            &self,
+            params: ScheduleStepParams,
+        ) -> Result<ScheduleResult, StorageError> {
+            *self.last_metadata.lock().unwrap() = Some(params.metadata.clone());
+            Ok(ScheduleResult {
+                task_id: params.task_id,
+                execution_time: params.execution_time,
+            })
+        }
+
+        async fn complete_step_and_schedule_body(
+            &self,
+            _params: CompleteStepAndScheduleBodyParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn complete_step_no_resume(
+            &self,
+            _params: CompleteStepNoResumeParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn reschedule_step_for_retry(
+            &self,
+            _params: RescheduleStepForRetryParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_wait_all_child_writes_wg_step_name_metadata_key() {
+        let storage = CapturingStorage::new();
+
+        let result = schedule_wait_all_child(
+            &storage,
+            "exec-1:step:child-a",
+            "test-task",
+            "exec-1",
+            "child-a",
+            "__wg__all__group-1",
+            serde_json::json!({"x": 1}),
+        )
+        .await;
+
+        assert!(result.is_ok());
+
+        let metadata = storage
+            .captured_metadata()
+            .expect("expected schedule_step metadata to be captured");
+
+        assert_eq!(metadata["mode"], "step");
+        assert_eq!(metadata["step_type"], "step");
+        assert_eq!(metadata["run_id"], "exec-1");
+        assert_eq!(metadata["step_name"], "child-a");
+        assert_eq!(metadata["is_wait_all_child"], true);
+        assert_eq!(metadata["wg_step_name"], "__wg__all__group-1");
+        assert!(
+            metadata.get("coordinator_id").is_none(),
+            "legacy coordinator_id metadata should not be written"
+        );
+    }
+}

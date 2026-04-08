@@ -338,10 +338,10 @@ async fn dispatch_task(
     };
 
     // ── Sleep / WaitForEvent specialized step tasks ──────────────────────────
-    // Route directly through declarative v3 dispatch.
+    // Route directly through declarative dispatch.
     let step_def_id = StepDefId::from_metadata(&task.metadata);
     if matches!(step_def_id, StepDefId::Sleep | StepDefId::WaitForEvent) {
-        crate::step_types::dispatch::dispatch_task_v3(
+        crate::step_types::dispatch::dispatch_task(
             step_def_id,
             scheduler,
             registry,

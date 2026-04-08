@@ -25,7 +25,7 @@ use crate::step_types::{CompletionOutcome, CompletionSpec, StepDefId, StepResult
 ///
 /// Regular body/step task handler execution remains in the existing worker path
 /// during phased migration.
-pub async fn dispatch_task_v3(
+pub async fn dispatch_task(
     step_def_id: StepDefId,
     scheduler: Arc<dyn StorageBackend>,
     _registry: Arc<TaskRegistry>,
@@ -146,7 +146,7 @@ pub async fn dispatch_task_v3(
 /// - step lambda execution or cache lookup
 /// - completion routing
 /// - retry scheduling for failures in step mode
-pub async fn step_internal_v3<T>(
+pub async fn step_internal<T>(
     step_def_id: StepDefId,
     ctx: &mut TaskContext,
     step_name: &str,

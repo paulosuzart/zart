@@ -149,7 +149,7 @@ impl TaskContext {
     {
         match &self.execution_mode {
             ExecutionMode::Body => {
-                let result = crate::step_types::dispatch::step_internal_v3(
+                let result = crate::step_types::dispatch::step_internal(
                     StepDefId::Step,
                     self,
                     step_name,
@@ -190,13 +190,8 @@ impl TaskContext {
                 if step_name == target {
                     self.step_step_mode(&target, step_name, step_fn).await
                 } else {
-                    crate::step_types::dispatch::step_internal_v3(
-                        step_def_id,
-                        self,
-                        step_name,
-                        None,
-                    )
-                    .await
+                    crate::step_types::dispatch::step_internal(step_def_id, self, step_name, None)
+                        .await
                 }
             }
         }
@@ -204,7 +199,7 @@ impl TaskContext {
 
     /// Step execution in step mode for the target step only.
     ///
-    /// - Non-target steps are routed by `step_internal` through declarative v3 dispatch.
+    /// - Non-target steps are routed by `step_internal` through declarative dispatch.
     /// - Target step executes lambda and performs legacy transactional completion.
     async fn step_step_mode<T, F, Fut>(
         &mut self,
@@ -331,7 +326,7 @@ impl TaskContext {
         } else {
             Err(StepError::Failed {
                 step: step_name.to_string(),
-                reason: "step_step_mode called for non-target step; this path should be handled by v3 dispatch".to_string(),
+                reason: "step_step_mode called for non-target step; this path should be handled by declarative dispatch".to_string(),
             })
         }
     }

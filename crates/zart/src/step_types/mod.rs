@@ -229,3 +229,66 @@ pub mod body;
 pub mod completion;
 pub mod dispatch;
 pub mod step;
+
+#[cfg(test)]
+mod tests {
+    use super::StepDefId;
+    use serde_json::json;
+
+    #[test]
+    fn stepdefid_from_metadata_recognizes_wait_group_child_new_field() {
+        let meta = json!({
+            "mode": "step",
+            "step_name": "child-a",
+            "wg_step_name": "__wg__all__abc"
+        });
+
+        assert_eq!(StepDefId::from_metadata(&meta), StepDefId::WaitGroupChild);
+    }
+
+    #[test]
+    fn stepdefid_from_metadata_recognizes_wait_group_child_legacy_flag() {
+        let meta = json!({
+            "mode": "step",
+            "step_name": "child-b",
+            "is_wait_all_child": true
+        });
+
+        assert_eq!(StepDefId::from_metadata(&meta), StepDefId::WaitGroupChild);
+    }
+
+    #[test]
+    fn stepdefid_from_metadata_parses_specialized_and_regular_step_types() {
+        let sleep = json!({
+            "mode": "step",
+            "step_name": "__sleep",
+            "step_type": "sleep"
+        });
+        let event = json!({
+            "mode": "step",
+            "step_name": "approval",
+            "step_type": "wait_for_event"
+        });
+        let regular = json!({
+            "mode": "step",
+            "step_name": "step-one",
+            "step_type": "step"
+        });
+
+        assert_eq!(StepDefId::from_metadata(&sleep), StepDefId::Sleep);
+        assert_eq!(StepDefId::from_metadata(&event), StepDefId::WaitForEvent);
+        assert_eq!(StepDefId::from_metadata(&regular), StepDefId::Step);
+    }
+
+    #[test]
+    fn stepdefid_from_metadata_prefers_wait_group_child_over_step_type() {
+        let meta = json!({
+            "mode": "step",
+            "step_name": "child-c",
+            "step_type": "wait_for_event",
+            "wg_step_name": "__wg__all__xyz"
+        });
+
+        assert_eq!(StepDefId::from_metadata(&meta), StepDefId::WaitGroupChild);
+    }
+}
