@@ -322,7 +322,7 @@ impl TaskContext {
             };
 
             crate::step_types::StepDefId::Step
-                .completion_behavior()
+                .completion_behavior(&crate::step_types::CompletionOutcome::Success)
                 .complete(&*self.scheduler, completion_spec)
                 .await
                 .map_err(|e| StepError::Failed {
@@ -334,38 +334,10 @@ impl TaskContext {
                 step: step_name.to_string(),
             })
         } else {
-            // Non-target: must be a previously completed step; return cached result.
-            let lookup = self
-                .scheduler
-                .get_step_status(&self.run_id, step_name)
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: e.to_string(),
-                })?;
-
-            match lookup {
-                Some(StepLookup {
-                    status: TaskStatus::Completed,
-                    result: Some(json),
-                    ..
-                }) => serde_json::from_value(json).map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: format!("failed to deserialize cached result: {e}"),
-                }),
-                Some(StepLookup {
-                    status: TaskStatus::Completed,
-                    result: None,
-                    ..
-                }) => Err(StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: "step completed but result is missing".to_string(),
-                }),
-                _ => Err(StepError::Scheduled {
-                    step: step_name.to_string(),
-                    next_execution: None,
-                }),
-            }
+            Err(StepError::Failed {
+                step: step_name.to_string(),
+                reason: "step_step_mode called for non-target step; this path should be handled by v3 dispatch".to_string(),
+            })
         }
     }
 
@@ -513,8 +485,9 @@ impl TaskContext {
 
     /// `wait_all` in body mode:
     /// 1. Ensure all child step task rows exist (insert if not).
-    /// 2. If all are completed → return cached results.
-    /// 3. Otherwise → schedule coordinator (if not already scheduled), return Err(Scheduled).
+    /// 2. Upsert a wait-group parent row using storage wait-group primitives.
+    /// 3. If all children are completed → return cached results.
+    /// 4. Otherwise return `Err(Scheduled)` (children completion will resume body atomically).
     async fn wait_all_body_mode<T>(
         &mut self,
         handles: Vec<StepHandle<T>>,
@@ -522,18 +495,16 @@ impl TaskContext {
     where
         T: Serialize + for<'de> Deserialize<'de>,
     {
-        let coordinator_id = format!("{}:coord:wait_all:{}", self.run_id, uuid::Uuid::new_v4());
+        let group_step_name = format!("__wg__all__{}", uuid::Uuid::new_v4());
 
         // Extract step names upfront so we don't hold &StepHandle<T> across await points
         // (PendingFn is Send but not Sync, so &StepHandle<T> is not Send).
         let step_names: Vec<String> = handles.iter().map(|h| h.step_name.clone()).collect();
 
         let mut all_completed = true;
-        let mut child_ids: Vec<String> = Vec::with_capacity(step_names.len());
 
         for step_name in &step_names {
             let child_task_id = format!("{}:step:{}", self.run_id, step_name);
-            child_ids.push(child_task_id.clone());
 
             let lookup = self
                 .scheduler
@@ -554,14 +525,16 @@ impl TaskContext {
                 }
                 None => {
                     all_completed = false;
-                    step_ops::schedule_wait_all_child(
+                    step_ops::schedule_step_task(
                         &*self.scheduler,
-                        &child_task_id,
-                        &self.task_name,
-                        &self.run_id,
-                        step_name,
-                        &coordinator_id,
-                        self.data.clone(),
+                        step_ops::StepTaskSpec {
+                            task_id: &child_task_id,
+                            task_name: &self.task_name,
+                            run_id: &self.run_id,
+                            step_name,
+                            data: self.data.clone(),
+                            retry_config: None,
+                        },
                     )
                     .await
                     .map_err(|e| StepError::Failed {
@@ -571,6 +544,22 @@ impl TaskContext {
                 }
             }
         }
+
+        self.scheduler
+            .upsert_wait_group_step(scheduler::UpsertWaitGroupStepParams {
+                run_id: self.run_id.clone(),
+                group_step_name: group_step_name.clone(),
+                total: i32::try_from(step_names.len()).map_err(|_| StepError::Failed {
+                    step: "__wait_all".to_string(),
+                    reason: "too many wait_all handles".to_string(),
+                })?,
+                threshold: 0,
+            })
+            .await
+            .map_err(|e| StepError::Failed {
+                step: "__wait_all".to_string(),
+                reason: e.to_string(),
+            })?;
 
         if all_completed {
             let mut results = Vec::with_capacity(step_names.len());
@@ -606,20 +595,6 @@ impl TaskContext {
             return Ok(results);
         }
 
-        step_ops::schedule_coordinator(
-            &*self.scheduler,
-            &coordinator_id,
-            &self.task_name,
-            &self.run_id,
-            child_ids,
-            self.data.clone(),
-        )
-        .await
-        .map_err(|e| StepError::Failed {
-            step: "__wait_all".to_string(),
-            reason: e.to_string(),
-        })?;
-
         Err(StepError::Scheduled {
             step: "__wait_all".to_string(),
             next_execution: None,
@@ -629,7 +604,8 @@ impl TaskContext {
     // ── New execution model — wait_all step mode ──────────────────────────────
 
     /// `wait_all` in step mode (executing a specific wait_all child):
-    /// Find the target handle, execute its lambda, complete via `complete_step_no_resume`.
+    /// Find the target handle, execute its lambda, then complete via declarative
+    /// wait-group child completion behavior.
     async fn wait_all_step_mode<T>(
         &mut self,
         handles: Vec<StepHandle<T>>,
@@ -644,29 +620,100 @@ impl TaskContext {
                     let json_result = pending_fn(self.step_context()).await;
                     match json_result {
                         Ok(json_val) => {
-                            let step_task_id = self.task_id.clone();
                             let attempt_number = match &self.execution_mode {
                                 ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
                                 _ => 1,
                             };
-                            step_ops::complete_step_no_resume(
-                                &*self.scheduler,
-                                &step_task_id,
-                                &step_task_id,
-                                json_val,
-                                &self.lock_token,
+
+                            let group_step_name = self
+                                .data
+                                .get("wg_step_name")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| StepError::Failed {
+                                    step: target.to_string(),
+                                    reason: "missing wg_step_name for wait_all child".to_string(),
+                                })?
+                                .to_string();
+
+                            let completion_spec = crate::step_types::CompletionSpec {
+                                step_task_id: self.task_id.clone(),
+                                step_id: self.task_id.clone(),
+                                step_name: target.to_string(),
+                                worker_id: self.lock_token.clone(),
+                                task_name: self.task_name.clone(),
+                                run_id: self.run_id.clone(),
+                                execution_id: self.execution_id.clone(),
+                                data: self.data.clone(),
                                 attempt_number,
-                            )
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: target.to_string(),
-                                reason: e.to_string(),
-                            })?;
+                                result: crate::step_types::StepResult::Executed(json_val),
+                                wait_group_step_name: Some(group_step_name),
+                                outcome: crate::step_types::CompletionOutcome::Success,
+                            };
+
+                            crate::step_types::StepDefId::WaitGroupChild
+                                .completion_behavior(&crate::step_types::CompletionOutcome::Success)
+                                .complete(&*self.scheduler, completion_spec)
+                                .await
+                                .map_err(|e| StepError::Failed {
+                                    step: target.to_string(),
+                                    reason: e.to_string(),
+                                })?;
+
                             return Err(StepError::StepExecuted {
                                 step: target.to_string(),
                             });
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            let attempt_number = match &self.execution_mode {
+                                ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
+                                _ => 1,
+                            };
+
+                            let group_step_name = self
+                                .data
+                                .get("wg_step_name")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| StepError::Failed {
+                                    step: target.to_string(),
+                                    reason: "missing wg_step_name for wait_all child failure"
+                                        .to_string(),
+                                })?
+                                .to_string();
+
+                            let completion_spec = crate::step_types::CompletionSpec {
+                                step_task_id: self.task_id.clone(),
+                                step_id: self.task_id.clone(),
+                                step_name: target.to_string(),
+                                worker_id: self.lock_token.clone(),
+                                task_name: self.task_name.clone(),
+                                run_id: self.run_id.clone(),
+                                execution_id: self.execution_id.clone(),
+                                data: self.data.clone(),
+                                attempt_number,
+                                result: crate::step_types::StepResult::Transition,
+                                wait_group_step_name: Some(group_step_name),
+                                outcome: crate::step_types::CompletionOutcome::Failure {
+                                    error: e.to_string(),
+                                },
+                            };
+
+                            crate::step_types::StepDefId::WaitGroupChild
+                                .completion_behavior(
+                                    &crate::step_types::CompletionOutcome::Failure {
+                                        error: e.to_string(),
+                                    },
+                                )
+                                .complete(&*self.scheduler, completion_spec)
+                                .await
+                                .map_err(|se| StepError::Failed {
+                                    step: target.to_string(),
+                                    reason: se.to_string(),
+                                })?;
+
+                            return Err(StepError::StepExecuted {
+                                step: target.to_string(),
+                            });
+                        }
                     }
                 }
                 // No pending fn (step already completed): nothing to do.

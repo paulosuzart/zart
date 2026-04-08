@@ -209,12 +209,18 @@ impl StepDefId {
         }
     }
 
-    pub fn completion_behavior(self) -> &'static dyn CompletionBehavior {
+    pub fn completion_behavior(
+        self,
+        outcome: &CompletionOutcome,
+    ) -> &'static dyn CompletionBehavior {
         match self {
             Self::Step => &completion::ScheduleNextBody,
             Self::Sleep => &completion::ScheduleNextBody,
             Self::WaitForEvent => &completion::FailExecutionOnDeadline,
-            Self::WaitGroupChild => &completion::DecrementAndMaybeResume,
+            Self::WaitGroupChild => match outcome {
+                CompletionOutcome::Success => &completion::DecrementAndMaybeResume,
+                CompletionOutcome::Failure { .. } => &completion::FailWaitGroup,
+            },
         }
     }
 }

@@ -75,7 +75,7 @@ pub async fn dispatch_task_v3(
             };
 
             if let Err(e) = step_def_id
-                .completion_behavior()
+                .completion_behavior(&spec.outcome)
                 .complete(&*scheduler, spec)
                 .await
             {
@@ -124,7 +124,7 @@ pub async fn dispatch_task_v3(
             };
 
             if let Err(e) = step_def_id
-                .completion_behavior()
+                .completion_behavior(&spec.outcome)
                 .complete(&*scheduler, spec)
                 .await
             {
@@ -255,7 +255,7 @@ where
                             };
 
                             step_def_id
-                                .completion_behavior()
+                                .completion_behavior(&spec.outcome)
                                 .complete(&*ctx.scheduler, spec)
                                 .await
                                 .map_err(|e| StepError::Failed {
@@ -298,7 +298,7 @@ where
             };
 
             step_def_id
-                .completion_behavior()
+                .completion_behavior(&spec.outcome)
                 .complete(&*ctx.scheduler, spec)
                 .await
                 .map_err(|e| StepError::Failed {
