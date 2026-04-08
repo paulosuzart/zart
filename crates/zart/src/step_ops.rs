@@ -7,7 +7,7 @@
 //! Keeping this logic here means [`PostgresScheduler`] remains a clean,
 //! generic storage backend with no execution-model knowledge.
 
-use scheduler::{ScheduleAtParams, ScheduleResult, StorageBackend, StorageError};
+use scheduler::{ScheduleResult, StorageBackend, StorageError};
 
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {

@@ -655,12 +655,12 @@ impl DurableStorage for PostgresScheduler {
     }
 
     async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
-        // Mark the execution record as cancelled.
+        // Mark the current run as cancelled (status lives in zart_execution_runs).
         let exec_rows = sqlx::query(
             r#"
-            UPDATE zart_executions
-            SET status = 'cancelled', updated_at = NOW()
-            WHERE execution_id = $1
+            UPDATE zart_execution_runs
+            SET status = 'cancelled', completed_at = NOW()
+            WHERE run_id = (SELECT current_run_id FROM zart_executions WHERE execution_id = $1)
               AND status IN ('scheduled', 'running')
             "#,
         )
@@ -670,13 +670,17 @@ impl DurableStorage for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
 
-        // Also cancel any not-yet-running task for this execution.
-        // execution_id lives in metadata JSONB, so we query via metadata extraction.
+        // Also cancel any not-yet-running tasks for this execution.
+        // Body tasks have execution_id in metadata; step tasks have run_id like "{execution_id}:run:N".
         sqlx::query(
             r#"
             UPDATE zart_tasks
             SET status = 'cancelled', updated_at = NOW()
-            WHERE metadata->>'execution_id' = $1 AND status = 'scheduled'
+            WHERE status = 'scheduled'
+              AND (
+                metadata->>'execution_id' = $1
+                OR metadata->>'run_id' LIKE $1 || ':run:%'
+              )
             "#,
         )
         .bind(execution_id)
@@ -707,12 +711,13 @@ impl DurableStorage for PostgresScheduler {
             i32,
         )> = sqlx::query_as(
             r#"
-            SELECT execution_id, task_name, payload, result, status,
-                   scheduled_at, completed_at, version
-            FROM zart_executions
-            WHERE ($1::TEXT IS NULL OR status    = $1)
-              AND ($2::TEXT IS NULL OR task_name = $2)
-            ORDER BY scheduled_at DESC
+            SELECT e.execution_id, e.task_name, r.payload, r.result, r.status,
+                   r.started_at, r.completed_at, 1
+            FROM zart_executions e
+            JOIN zart_execution_runs r ON e.current_run_id = r.run_id
+            WHERE ($1::TEXT IS NULL OR r.status    = $1)
+              AND ($2::TEXT IS NULL OR e.task_name = $2)
+            ORDER BY r.started_at DESC
             LIMIT $3 OFFSET $4
             "#,
         )
