@@ -185,7 +185,6 @@ impl TaskContext {
                     crate::execution_model::StepKind::Sleep => StepDefId::Sleep,
                     crate::execution_model::StepKind::WaitForEvent => StepDefId::WaitForEvent,
                     crate::execution_model::StepKind::Step => StepDefId::Step,
-                    crate::execution_model::StepKind::WaitAll => StepDefId::Step,
                 };
 
                 if step_name == target {
@@ -200,10 +199,6 @@ impl TaskContext {
                     .await
                 }
             }
-            ExecutionMode::Coordinator { .. } => Err(StepError::Failed {
-                step: step_name.to_string(),
-                reason: "step() called in coordinator mode — not supported".to_string(),
-            }),
         }
     }
 
@@ -474,10 +469,6 @@ impl TaskContext {
                 let target = target_step.clone();
                 self.wait_all_step_mode(handles, &target).await
             }
-            _ => Err(StepError::Failed {
-                step: "wait_all".to_string(),
-                reason: "unexpected execution mode".to_string(),
-            }),
         }
     }
 
@@ -797,10 +788,6 @@ impl TaskContext {
         match &self.execution_mode {
             ExecutionMode::Body => self.wait_for_event_body_mode(event_name, timeout).await,
             ExecutionMode::Step { .. } => self.wait_for_event_step_mode(event_name).await,
-            ExecutionMode::Coordinator { .. } => Err(StepError::Failed {
-                step: event_name.to_string(),
-                reason: "wait_for_event() called in coordinator mode — not supported".to_string(),
-            }),
         }
     }
 

@@ -32,26 +32,16 @@ pub enum ExecutionMode {
         /// Retry policy for this step (None means no retries).
         retry_config: Option<RetryConfig>,
     },
-
-    /// A coordinator task for `wait_all`. Polls child step tasks; when all complete
-    /// it schedules a new body task. No handler replay is needed.
-    Coordinator {
-        /// IDs of the child step tasks to wait for.
-        wait_for: Vec<String>,
-    },
 }
 
 /// Distinguishes the behaviour of a step task at completion time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
-    /// A user-defined step with a lambda. On completion, schedules the next body segment
-    /// (unless `is_wait_all_child` is set, in which case the coordinator does it).
+    /// A user-defined step with a lambda.
     Step,
     /// A timed pause. No lambda — the task fires when `execution_time` arrives.
     Sleep,
-    /// A coordinator that polls wait_all children.
-    WaitAll,
     /// An event wait. Parked until `reschedule_with_event` fires.
     WaitForEvent,
 }
@@ -73,67 +63,30 @@ impl ExecutionMode {
                     .and_then(|v| v.as_str())
                     .unwrap_or("step");
 
-                match step_type_str {
-                    "wait_all" => {
-                        let target_step = metadata
-                            .get("step_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let retry_attempt = metadata
-                            .get("retry_attempt")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize;
-                        let retry_config = metadata
-                            .get("retry_config")
-                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let target_step = metadata
+                    .get("step_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let retry_attempt = metadata
+                    .get("retry_attempt")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let step_type = match step_type_str {
+                    "sleep" => StepKind::Sleep,
+                    "wait_for_event" => StepKind::WaitForEvent,
+                    _ => StepKind::Step,
+                };
 
-                        ExecutionMode::Step {
-                            target_step,
-                            step_type: StepKind::Step,
-                            retry_attempt,
-                            retry_config,
-                        }
-                    }
+                let retry_config = metadata
+                    .get("retry_config")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-                    _ => {
-                        let target_step = metadata
-                            .get("step_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let retry_attempt = metadata
-                            .get("retry_attempt")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize;
-                        let is_wait_all_child = metadata
-                            .get("is_wait_all_child")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let step_type = if is_wait_all_child {
-                            // Reuse Step kind — `is_wait_all_child` flag distinguishes
-                            // completion behaviour in the context.
-                            StepKind::Step
-                        } else {
-                            match step_type_str {
-                                "sleep" => StepKind::Sleep,
-                                "wait_for_event" => StepKind::WaitForEvent,
-                                _ => StepKind::Step,
-                            }
-                        };
-
-                        let retry_config = metadata
-                            .get("retry_config")
-                            .and_then(|v| serde_json::from_value(v.clone()).ok());
-
-                        ExecutionMode::Step {
-                            target_step,
-                            step_type,
-                            retry_attempt,
-                            retry_config,
-                        }
-                    }
+                ExecutionMode::Step {
+                    target_step,
+                    step_type,
+                    retry_attempt,
+                    retry_config,
                 }
             }
 
@@ -142,20 +95,11 @@ impl ExecutionMode {
     }
 }
 
-/// Returns `true` if the step task is a wait_all child (coordinator handles body scheduling).
 pub fn is_wait_all_child(metadata: &serde_json::Value) -> bool {
     metadata
         .get("is_wait_all_child")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
-}
-
-/// Extract the coordinator task ID for a wait_all child step.
-pub fn coordinator_id(metadata: &serde_json::Value) -> Option<String> {
-    metadata
-        .get("coordinator_id")
-        .and_then(|v| v.as_str())
-        .map(String::from)
 }
 
 #[cfg(test)]
@@ -225,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn from_metadata_wait_all_step_type_becomes_coordinator() {
+    fn from_metadata_wait_all_step_type_becomes_step_kind() {
         let meta = json!({
             "mode": "step",
             "step_type": "wait_all",
@@ -243,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn from_metadata_coordinator_with_empty_wait_for() {
+    fn from_metadata_wait_all_without_wait_for_is_still_step_kind() {
         let meta = json!({ "mode": "step", "step_type": "wait_all" });
         assert!(matches!(
             ExecutionMode::from_metadata(&meta),
@@ -264,19 +208,5 @@ mod tests {
     #[test]
     fn is_wait_all_child_false_when_absent() {
         assert!(!is_wait_all_child(&json!({})));
-    }
-
-    #[test]
-    fn coordinator_id_extracts_value() {
-        let meta = json!({ "coordinator_id": "exec-1:coord:wait_all:2" });
-        assert_eq!(
-            coordinator_id(&meta),
-            Some("exec-1:coord:wait_all:2".to_string())
-        );
-    }
-
-    #[test]
-    fn coordinator_id_none_when_absent() {
-        assert!(coordinator_id(&json!({})).is_none());
     }
 }

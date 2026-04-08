@@ -115,7 +115,7 @@ pub async fn schedule_wait_all_child(
     task_name: &str,
     run_id: &str,
     step_name: &str,
-    coordinator_id: &str,
+    wait_group_step_name: &str,
     data: serde_json::Value,
 ) -> Result<ScheduleResult, StorageError> {
     let metadata = serde_json::json!({
@@ -124,7 +124,7 @@ pub async fn schedule_wait_all_child(
         "run_id": run_id,
         "step_name": step_name,
         "is_wait_all_child": true,
-        "coordinator_id": coordinator_id,
+        "wg_step_name": wait_group_step_name,
     });
 
     scheduler
@@ -164,7 +164,7 @@ pub async fn complete_step_and_schedule_body(
 
 /// Complete a wait_all child step without scheduling a body continuation.
 ///
-/// The coordinator task polls children and schedules the body when all are done.
+/// Wait-group completion behavior handles parent progression.
 pub async fn complete_step_no_resume(
     scheduler: &dyn StorageBackend,
     step_task_id: &str,

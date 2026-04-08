@@ -227,14 +227,7 @@ where
                             .data()
                             .get("wg_step_name")
                             .and_then(|v| v.as_str())
-                            .map(str::to_string)
-                            .or_else(|| {
-                                // Back-compat fallback; may be absent.
-                                ctx.data()
-                                    .get("coordinator_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string)
-                            });
+                            .map(str::to_string);
 
                         if let Some(group_step_name) = wait_group_step_name {
                             let spec = CompletionSpec {
@@ -310,11 +303,6 @@ where
                 step: step_name.to_string(),
             })
         }
-
-        ExecutionMode::Coordinator { .. } => Err(StepError::Failed {
-            step: step_name.to_string(),
-            reason: "step() called in coordinator mode — not supported".to_string(),
-        }),
     }
 }
 

@@ -602,8 +602,6 @@ async fn dispatch_task(
     }
 }
 
-// ── Coordinator dispatch ────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;

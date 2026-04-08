@@ -410,7 +410,7 @@ async fn step_mode_nontarget_step_reads_cache_with_zero_writes() {
 // ── body mode: wait_all ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children_plus_one_coordinator() {
+async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
     let mut ctx = make_body_ctx(scheduler);
 
@@ -433,11 +433,7 @@ async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children_plus_one_coor
         })
         .collect();
 
-    assert_eq!(
-        inserts.len(),
-        4,
-        "3 child step rows + 1 coordinator = 4 total inserts"
-    );
+    assert_eq!(inserts.len(), 3, "3 child step rows inserted");
 
     let children: Vec<_> = inserts
         .iter()
@@ -449,20 +445,19 @@ async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children_plus_one_coor
         .collect();
     assert_eq!(
         children.len(),
-        3,
-        "three children each marked is_wait_all_child=true"
+        0,
+        "children are regular step rows; wait-group coordination is handled separately"
     );
 
-    let coordinators: Vec<_> = inserts
+    let wait_all_rows: Vec<_> = inserts
         .iter()
         .filter(|m| m["step_type"] == "wait_all")
         .collect();
-    assert_eq!(coordinators.len(), 1, "exactly one coordinator task");
     assert_eq!(
-        coordinators[0]["run_id"], "exec-1",
-        "coordinator must carry run_id in metadata"
+        wait_all_rows.len(),
+        0,
+        "no coordinator task row is inserted"
     );
-    assert_eq!(coordinators[0]["mode"], "step");
 }
 
 #[tokio::test]
@@ -597,9 +592,8 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
     );
     assert_eq!(mc[0], "exec-1:step:step-b");
 
-    // wait_all children use complete_step_no_resume which calls mark_task_completed
-    // inside a transaction. The coordinator handles body scheduling, but the child
-    // still marks itself completed.
+    // wait_all child completion marks the child step completed transactionally.
+    // Body scheduling is routed through wait-group completion behavior.
     assert_eq!(
         log.iter().filter(|c| c.is_mark_completed()).count(),
         1,
