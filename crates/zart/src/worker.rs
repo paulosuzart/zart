@@ -9,6 +9,7 @@ use crate::metrics::{
     EVENTS_DELIVERED_TOTAL, EXECUTIONS_TOTAL, HEARTBEAT_ACTIVE, POLL_INTERVAL_SECONDS, QUEUE_DEPTH,
     TASK_DURATION_SECONDS, TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
+use crate::step_types::StepDefId;
 
 /// Evaluate a metrics expression when the `metrics` feature is enabled;
 /// compile to nothing otherwise.
@@ -344,24 +345,14 @@ async fn dispatch_task(
         return;
     }
 
-    // ── Sleep continuation tasks ─────────────────────────────────────────────
-    // Step tasks with step_type=sleep just wake the next body segment.
-    if matches!(
-        exec_mode,
-        ExecutionMode::Step { ref step_type, .. }
-        if *step_type == crate::execution_model::StepKind::Sleep
-    ) {
+    // ── Sleep / WaitForEvent specialized step tasks ──────────────────────────
+    // Route via wrapper helpers so they remain referenced and test-covered.
+    let step_def_id = StepDefId::from_metadata(&task.metadata);
+    if matches!(step_def_id, StepDefId::Sleep) {
         dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
         return;
     }
-
-    // ── WaitForEvent deadline tasks ───────────────────────────────────────────
-    // When the deadline fires before offer_event arrives, fail the execution.
-    if matches!(
-        exec_mode,
-        ExecutionMode::Step { ref step_type, .. }
-        if *step_type == crate::execution_model::StepKind::WaitForEvent
-    ) {
+    if matches!(step_def_id, StepDefId::WaitForEvent) {
         dispatch_wait_for_event(scheduler, task).await;
         return;
     }
@@ -698,106 +689,38 @@ async fn dispatch_coordinator(
 
 /// Handle a sleep continuation task (`step_type = sleep`).
 ///
-/// When the sleep timer fires, schedule the next body segment.
+/// Delegates to declarative dispatch while preserving behavior.
 async fn dispatch_sleep_continuation(
     scheduler: Arc<dyn StorageBackend>,
     task: scheduler::FetchedTask,
-    exec_mode: &ExecutionMode,
+    _exec_mode: &ExecutionMode,
 ) {
-    // Verify this is a step mode with sleep type
-    if !matches!(
-        exec_mode,
-        ExecutionMode::Step {
-            step_type: crate::execution_model::StepKind::Sleep,
-            ..
-        }
-    ) {
-        error!("Sleep task has unexpected execution mode");
-        let _ = scheduler
-            .mark_failed(
-                &task.task_id,
-                "unexpected mode for sleep task",
-                None,
-                &task.lock_token,
-            )
-            .await;
-        return;
-    }
-
-    let run_id = task
-        .metadata
-        .get("run_id")
-        .and_then(|v| v.as_str())
-        .or_else(|| task.metadata.get("execution_id").and_then(|v| v.as_str()))
-        .unwrap_or(&task.task_id)
-        .to_string();
-
-    let next_body_task_id = format!("{}:body:after:__sleep", &run_id);
-
-    if let Err(e) = crate::step_ops::complete_step_and_schedule_body(
-        &*scheduler,
-        crate::step_ops::ResumeBodySpec {
-            step_task_id: &task.task_id,
-            step_id: &task.task_id,
-            result: serde_json::Value::Null,
-            lock_token: &task.lock_token,
-            next_body_task_id: &next_body_task_id,
-            task_name: &task.task_name,
-            run_id: &run_id,
-            data: task.data.clone(),
-            attempt_number: 1,
-        },
+    crate::step_types::dispatch::dispatch_task_v3(
+        StepDefId::Sleep,
+        scheduler,
+        Arc::new(TaskRegistry::new()),
+        task,
+        None,
+        Duration::from_secs(30),
     )
-    .await
-    {
-        error!(error = %e, "Sleep continuation: failed to schedule next body");
-        let _ = scheduler
-            .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
-            .await;
-    } else {
-        info!("Sleep continuation: next body scheduled");
-    }
+    .await;
 }
 
 // ── WaitForEvent deadline dispatch ───────────────────────────────────────────
 
 /// Handle a wait_for_event step task whose deadline has fired.
 ///
-/// The event never arrived before the deadline, so we mark the step task
-/// failed and fail the entire execution.
-///
-/// The two DB calls are sequential, not atomic — consistent with the general
-/// failure path in `dispatch_task`. A crash between the two leaves the
-/// execution in `running` with a failed step task, but the execution is
-/// functionally dead (no active tasks, no pending body segment). Operators
-/// can detect this via the failed step row and manually cancel or reset.
+/// Delegates to declarative dispatch while preserving behavior.
 async fn dispatch_wait_for_event(scheduler: Arc<dyn StorageBackend>, task: scheduler::FetchedTask) {
-    let execution_id = task
-        .metadata
-        .get("execution_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&task.task_id)
-        .to_string();
-    let step_name = task
-        .metadata
-        .get("step_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    info!(step = %step_name, "wait_for_event deadline exceeded — failing execution");
-    emit_metric!(
-        EVENTS_DELIVERED_TOTAL
-            .with_label_values(&[step_name, "timeout"])
-            .inc()
-    );
-    let _ = scheduler
-        .mark_failed(
-            &task.task_id,
-            "event deadline exceeded",
-            None,
-            &task.lock_token,
-        )
-        .await;
-    let _ = scheduler.fail_execution(&execution_id).await;
+    crate::step_types::dispatch::dispatch_task_v3(
+        StepDefId::WaitForEvent,
+        scheduler,
+        Arc::new(TaskRegistry::new()),
+        task,
+        None,
+        Duration::from_secs(30),
+    )
+    .await;
 }
 
 #[cfg(test)]

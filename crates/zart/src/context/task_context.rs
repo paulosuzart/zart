@@ -12,6 +12,7 @@ use crate::metrics::{STEP_DURATION_SECONDS, STEPS_TOTAL};
 
 use crate::retry::RetryConfig;
 use crate::step_ops;
+use crate::step_types::StepDefId;
 use scheduler::{StepLookup, StorageBackend, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -138,7 +139,7 @@ impl TaskContext {
     async fn step_internal<T, F, Fut>(
         &mut self,
         step_name: &str,
-        retry_config: Option<RetryConfig>,
+        _retry_config: Option<RetryConfig>,
         step_fn: F,
     ) -> Result<T, StepError>
     where
@@ -147,120 +148,51 @@ impl TaskContext {
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         match &self.execution_mode {
-            ExecutionMode::Body => self.step_body_mode(step_name, retry_config, step_fn).await,
+            ExecutionMode::Body => {
+                let result = crate::step_types::dispatch::step_internal_v3(
+                    StepDefId::Step,
+                    self,
+                    step_name,
+                    None,
+                )
+                .await;
+
+                match result {
+                    Ok(v) => {
+                        if !self.seen_step_names.insert(step_name.to_string()) {
+                            return Err(StepError::Failed {
+                                step: step_name.to_string(),
+                                reason: format!(
+                                    "duplicate step name '{step_name}' in the same execution — \
+                                     each call must produce a unique step name. \
+                                     Use a {{field}} template in #[zart_step] (e.g. \"my-step-{{index}}\") \
+                                     or call `.with_id(\"...\")` at the call site."
+                                ),
+                            });
+                        }
+                        Ok(v)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             ExecutionMode::Step { target_step, .. } => {
                 let target = target_step.clone();
-                self.step_step_mode(&target, step_name, step_fn).await
+                if step_name == target {
+                    self.step_step_mode(&target, step_name, step_fn).await
+                } else {
+                    crate::step_types::dispatch::step_internal_v3(
+                        StepDefId::Step,
+                        self,
+                        step_name,
+                        None,
+                    )
+                    .await
+                }
             }
             ExecutionMode::Coordinator { .. } => Err(StepError::Failed {
                 step: step_name.to_string(),
                 reason: "step() called in coordinator mode — not supported".to_string(),
             }),
-        }
-    }
-
-    /// Step execution in body mode: look up the step task in the DB.
-    ///
-    /// - Completed → return cached result (no lambda execution).
-    /// - Scheduled/PickedUp → step is in-flight, return `Err(Scheduled)` so body exits.
-    /// - Not found → insert a new step task row, return `Err(Scheduled)`.
-    async fn step_body_mode<T, F, Fut>(
-        &mut self,
-        step_name: &str,
-        retry_config: Option<RetryConfig>,
-        _step_fn: F,
-    ) -> Result<T, StepError>
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce(StepContext) -> Fut,
-        Fut: std::future::Future<Output = Result<T, StepError>>,
-    {
-        let lookup = self
-            .scheduler
-            .get_step_status(&self.run_id, step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
-
-        match lookup {
-            Some(StepLookup {
-                status: TaskStatus::Completed,
-                result: Some(json),
-                ..
-            }) => {
-                // Complement to the DB `task_id PRIMARY KEY` constraint: the DB prevents
-                // duplicate step task rows at INSERT time, but on re-run the framework
-                // returns cached Completed results without inserting. Two calls with the
-                // same step name in a loop would silently return the same cached value.
-                // Fast-fail here with a clear error before wrong data is returned.
-                if !self.seen_step_names.insert(step_name.to_string()) {
-                    return Err(StepError::Failed {
-                        step: step_name.to_string(),
-                        reason: format!(
-                            "duplicate step name '{step_name}' in the same execution — \
-                             each call must produce a unique step name. \
-                             Use a {{field}} template in #[zart_step] (e.g. \"my-step-{{index}}\") \
-                             or call `.with_id(\"...\")` at the call site."
-                        ),
-                    });
-                }
-                serde_json::from_value(json).map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: format!("failed to deserialize cached result: {e}"),
-                })
-            }
-            Some(StepLookup {
-                status: TaskStatus::Completed,
-                result: None,
-                ..
-            }) => Err(StepError::Failed {
-                step: step_name.to_string(),
-                reason: "step completed but result is missing".to_string(),
-            }),
-            Some(_) => {
-                // Scheduled or PickedUp — step task exists, body should exit and wait.
-                emit_metric!(
-                    STEPS_TOTAL
-                        .with_label_values(&["scheduled", step_name])
-                        .inc()
-                );
-                Err(StepError::Scheduled {
-                    step: step_name.to_string(),
-                    next_execution: None,
-                })
-            }
-            None => {
-                // First time: insert step task row and exit.
-                // step_id = "{run_id}:step:{step_name}" — unique per run per step.
-                emit_metric!(
-                    STEPS_TOTAL
-                        .with_label_values(&["scheduled", step_name])
-                        .inc()
-                );
-                let task_id = format!("{}:step:{}", self.run_id, step_name);
-                step_ops::schedule_step_task(
-                    &*self.scheduler,
-                    step_ops::StepTaskSpec {
-                        task_id: &task_id,
-                        task_name: &self.task_name,
-                        run_id: &self.run_id,
-                        step_name,
-                        data: self.data.clone(),
-                        retry_config: retry_config.as_ref(),
-                    },
-                )
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: e.to_string(),
-                })?;
-                Err(StepError::Scheduled {
-                    step: step_name.to_string(),
-                    next_execution: None,
-                })
-            }
         }
     }
 
