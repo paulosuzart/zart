@@ -818,6 +818,67 @@ async fn step_mode_success_with_retry_config_completes_normally() {
     );
 }
 
+#[tokio::test]
+async fn sleep_body_mode_with_duration_schedules_sleep_step_in_future() {
+    let (scheduler, calls) = RecordingScheduler::builder().build();
+    let mut ctx = make_body_ctx(scheduler);
+
+    let duration = Duration::from_secs(2);
+    let before = chrono::Utc::now();
+    let result = ctx.sleep(duration).await;
+    let after = chrono::Utc::now();
+
+    assert!(matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "__sleep"));
+
+    let log = calls.lock().unwrap();
+    let schedules: Vec<_> = log
+        .iter()
+        .filter_map(|c| {
+            if let Call::ScheduleAt {
+                task_id,
+                execution_time,
+                metadata,
+                ..
+            } = c
+            {
+                Some((task_id, execution_time, metadata))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        schedules.len(),
+        1,
+        "sleep(duration) must schedule exactly one sleep step"
+    );
+
+    let (task_id, execution_time, metadata) = schedules[0];
+    assert_eq!(task_id, "exec-1:step:__sleep");
+    assert_eq!(metadata["mode"], "step");
+    assert_eq!(metadata["step_type"], "sleep");
+    assert_eq!(metadata["run_id"], "exec-1");
+
+    let lower_bound =
+        before + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::zero());
+    let upper_bound =
+        after + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::zero());
+
+    assert!(
+        *execution_time >= lower_bound,
+        "sleep step must be scheduled at or after now + duration (lower bound)"
+    );
+    assert!(
+        *execution_time <= upper_bound,
+        "sleep step must be scheduled no later than now + duration sampled after call (upper bound)"
+    );
+    assert!(
+        *execution_time > after,
+        "sleep step must be in the future relative to method return"
+    );
+}
+
 // ── Step name uniqueness ──────────────────────────────────────────────────
 
 /// Two sequential `execute_step` calls with unique names on a body re-run must each
