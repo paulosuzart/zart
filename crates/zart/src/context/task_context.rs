@@ -175,13 +175,24 @@ impl TaskContext {
                     Err(e) => Err(e),
                 }
             }
-            ExecutionMode::Step { target_step, .. } => {
+            ExecutionMode::Step {
+                target_step,
+                step_type,
+                ..
+            } => {
                 let target = target_step.clone();
+                let step_def_id = match step_type {
+                    crate::execution_model::StepKind::Sleep => StepDefId::Sleep,
+                    crate::execution_model::StepKind::WaitForEvent => StepDefId::WaitForEvent,
+                    crate::execution_model::StepKind::Step => StepDefId::Step,
+                    crate::execution_model::StepKind::WaitAll => StepDefId::Step,
+                };
+
                 if step_name == target {
                     self.step_step_mode(&target, step_name, step_fn).await
                 } else {
                     crate::step_types::dispatch::step_internal_v3(
-                        StepDefId::Step,
+                        step_def_id,
                         self,
                         step_name,
                         None,
@@ -196,10 +207,10 @@ impl TaskContext {
         }
     }
 
-    /// Step execution in step mode: replay the body until the target step is reached.
+    /// Step execution in step mode for the target step only.
     ///
-    /// - Non-target steps → DB lookup, return cached result (must be completed).
-    /// - Target step → execute lambda, complete transactionally, return `Err(StepExecuted)`.
+    /// - Non-target steps are routed by `step_internal` through declarative v3 dispatch.
+    /// - Target step executes lambda and performs legacy transactional completion.
     async fn step_step_mode<T, F, Fut>(
         &mut self,
         target: &str,
@@ -290,56 +301,34 @@ impl TaskContext {
                 reason: format!("failed to serialize result: {e}"),
             })?;
 
-            // Sequential step mode: never a wait_all child.
-            let is_wait_all_child = false;
+            let attempt_number = match &self.execution_mode {
+                ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
+                _ => 1,
+            };
 
-            let step_task_id = self.task_id.clone();
+            let completion_spec = crate::step_types::CompletionSpec {
+                step_task_id: self.task_id.clone(),
+                step_id: self.task_id.clone(),
+                step_name: step_name.to_string(),
+                worker_id: self.lock_token.clone(),
+                task_name: self.task_name.clone(),
+                run_id: self.run_id.clone(),
+                execution_id: self.execution_id.clone(),
+                data: self.data.clone(),
+                attempt_number,
+                result: crate::step_types::StepResult::Executed(serialized),
+                wait_group_step_name: None,
+                outcome: crate::step_types::CompletionOutcome::Success,
+            };
 
-            if is_wait_all_child {
-                let attempt_number = match &self.execution_mode {
-                    ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
-                    _ => 1,
-                };
-                step_ops::complete_step_no_resume(
-                    &*self.scheduler,
-                    &step_task_id,
-                    &step_task_id,
-                    serialized,
-                    &self.lock_token,
-                    attempt_number,
-                )
+            crate::step_types::StepDefId::Step
+                .completion_behavior()
+                .complete(&*self.scheduler, completion_spec)
                 .await
                 .map_err(|e| StepError::Failed {
                     step: step_name.to_string(),
                     reason: e.to_string(),
                 })?;
-            } else {
-                let next_body_task_id = format!("{}:body:after:{}", self.run_id, step_name);
-                step_ops::complete_step_and_schedule_body(
-                    &*self.scheduler,
-                    step_ops::ResumeBodySpec {
-                        step_task_id: &step_task_id,
-                        step_id: &step_task_id,
-                        result: serialized,
-                        lock_token: &self.lock_token,
-                        next_body_task_id: &next_body_task_id,
-                        task_name: &self.task_name,
-                        run_id: &self.run_id,
-                        data: self.data.clone(),
-                        attempt_number: {
-                            match &self.execution_mode {
-                                ExecutionMode::Step { retry_attempt, .. } => *retry_attempt + 1,
-                                _ => 1,
-                            }
-                        },
-                    },
-                )
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: e.to_string(),
-                })?;
-            }
 
             Err(StepError::StepExecuted {
                 step: step_name.to_string(),

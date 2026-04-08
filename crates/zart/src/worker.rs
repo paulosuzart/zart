@@ -346,14 +346,18 @@ async fn dispatch_task(
     }
 
     // ── Sleep / WaitForEvent specialized step tasks ──────────────────────────
-    // Route via wrapper helpers so they remain referenced and test-covered.
+    // Route directly through declarative v3 dispatch.
     let step_def_id = StepDefId::from_metadata(&task.metadata);
-    if matches!(step_def_id, StepDefId::Sleep) {
-        dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
-        return;
-    }
-    if matches!(step_def_id, StepDefId::WaitForEvent) {
-        dispatch_wait_for_event(scheduler, task).await;
+    if matches!(step_def_id, StepDefId::Sleep | StepDefId::WaitForEvent) {
+        crate::step_types::dispatch::dispatch_task_v3(
+            step_def_id,
+            scheduler,
+            registry,
+            task,
+            heartbeat_interval,
+            orphan_timeout,
+        )
+        .await;
         return;
     }
 
@@ -685,44 +689,6 @@ async fn dispatch_coordinator(
     }
 }
 
-// ── Sleep continuation dispatch ─────────────────────────────────────────────
-
-/// Handle a sleep continuation task (`step_type = sleep`).
-///
-/// Delegates to declarative dispatch while preserving behavior.
-async fn dispatch_sleep_continuation(
-    scheduler: Arc<dyn StorageBackend>,
-    task: scheduler::FetchedTask,
-    _exec_mode: &ExecutionMode,
-) {
-    crate::step_types::dispatch::dispatch_task_v3(
-        StepDefId::Sleep,
-        scheduler,
-        Arc::new(TaskRegistry::new()),
-        task,
-        None,
-        Duration::from_secs(30),
-    )
-    .await;
-}
-
-// ── WaitForEvent deadline dispatch ───────────────────────────────────────────
-
-/// Handle a wait_for_event step task whose deadline has fired.
-///
-/// Delegates to declarative dispatch while preserving behavior.
-async fn dispatch_wait_for_event(scheduler: Arc<dyn StorageBackend>, task: scheduler::FetchedTask) {
-    crate::step_types::dispatch::dispatch_task_v3(
-        StepDefId::WaitForEvent,
-        scheduler,
-        Arc::new(TaskRegistry::new()),
-        task,
-        None,
-        Duration::from_secs(30),
-    )
-    .await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,52 +813,6 @@ mod tests {
         }
     }
 
-    // ── dispatch_sleep_continuation ───────────────────────────────────────────
-
-    /// When a sleep task fires, `dispatch_sleep_continuation` must complete the step
-    /// and schedule a body task via the transactional API.
-    #[tokio::test]
-    async fn sleep_continuation_calls_complete_and_schedule_with_body_metadata() {
-        let (scheduler, calls) = RecordingScheduler::builder().build();
-        let exec_mode = ExecutionMode::Step {
-            target_step: "__sleep".to_string(),
-            step_type: crate::execution_model::StepKind::Sleep,
-            retry_attempt: 0,
-            retry_config: None,
-        };
-
-        let task = make_fetched_task(
-            "exec-1:step:__sleep",
-            serde_json::json!({
-                "mode": "step",
-                "step_type": "sleep",
-                "step_name": "__sleep",
-            }),
-        );
-
-        dispatch_sleep_continuation(scheduler, task, &exec_mode).await;
-
-        let log = calls.lock().unwrap();
-        let completed: Vec<_> = log.iter().filter(|c| c.is_mark_completed()).collect();
-        let scheduled: Vec<_> = log.iter().filter(|c| c.is_schedule_at()).collect();
-        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-
-        assert_eq!(completed.len(), 1, "sleep fires exactly one mark_completed");
-        assert_eq!(scheduled.len(), 1, "sleep schedules exactly one body task");
-        assert!(
-            failures.is_empty(),
-            "no failures for a normal sleep completion"
-        );
-
-        if let Call::ScheduleAt { metadata, .. } = &scheduled[0] {
-            assert_eq!(metadata["mode"], "body");
-            assert!(
-                metadata.get("run_id").is_some(),
-                "body task must carry run_id"
-            );
-        }
-    }
-
     #[test]
     fn worker_config_defaults_are_sane() {
         let cfg = WorkerConfig::default();
@@ -953,41 +873,5 @@ mod tests {
         let heartbeat_interval = Some(Duration::ZERO);
         let effective = heartbeat_interval.filter(|d| !d.is_zero());
         assert!(effective.is_none());
-    }
-
-    // ── dispatch_wait_for_event ───────────────────────────────────────────────
-
-    /// When a wait_for_event deadline fires, `dispatch_wait_for_event` must call
-    /// `mark_failed` on the step task and `fail_execution` on the execution.
-    #[tokio::test]
-    async fn dispatch_wait_for_event_marks_failed_and_fails_execution() {
-        let (scheduler, calls) = RecordingScheduler::builder().build();
-
-        let task = make_fetched_task(
-            "exec-1:step:approval",
-            serde_json::json!({
-                "mode": "step",
-                "step_type": "wait_for_event",
-                "step_name": "approval",
-                "segment": 2,
-                "execution_id": "exec-1",
-            }),
-        );
-
-        dispatch_wait_for_event(scheduler, task).await;
-
-        let log = calls.lock().unwrap();
-        let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-        let fail_execs: Vec<_> = log.iter().filter(|c| c.is_fail_execution()).collect();
-
-        assert_eq!(failures.len(), 1, "step task must be marked failed");
-        assert_eq!(fail_execs.len(), 1, "execution must be failed");
-
-        if let crate::test_helpers::Call::MarkFailed { task_id, .. } = &failures[0] {
-            assert_eq!(task_id, "exec-1:step:approval");
-        }
-        if let crate::test_helpers::Call::FailExecution { execution_id } = &fail_execs[0] {
-            assert_eq!(execution_id, "exec-1");
-        }
     }
 }

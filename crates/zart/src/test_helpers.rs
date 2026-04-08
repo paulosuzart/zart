@@ -45,9 +45,6 @@ pub enum Call {
     },
     CheckWaitAllChildren,
     CompleteEventStepAndScheduleBody,
-    FailExecution {
-        execution_id: String,
-    },
 }
 
 impl Call {
@@ -62,9 +59,6 @@ impl Call {
     }
     pub fn is_mark_failed(&self) -> bool {
         matches!(self, Self::MarkFailed { .. })
-    }
-    pub fn is_fail_execution(&self) -> bool {
-        matches!(self, Self::FailExecution { .. })
     }
 }
 
@@ -277,10 +271,7 @@ impl DurableStorage for RecordingScheduler {
         Ok(true)
     }
 
-    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
-        self.calls.lock().unwrap().push(Call::FailExecution {
-            execution_id: execution_id.to_string(),
-        });
+    async fn fail_execution(&self, _execution_id: &str) -> Result<(), StorageError> {
         Ok(())
     }
 
