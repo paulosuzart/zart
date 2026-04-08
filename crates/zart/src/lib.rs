@@ -72,7 +72,7 @@ pub use zart_macros::{z_durable_loop, z_wait_event, zart_capture, zart_durable, 
 pub mod prelude {
     pub use crate::{
         api_trait::DurableApi,
-        context::{StepContext, StepHandle, TaskContext, ZartStep},
+        context::{ExecuteStep, StepContext, StepHandle, TaskContext, ZartStep},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
         registry::{DurableExecution, TaskRegistry},

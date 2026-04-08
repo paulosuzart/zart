@@ -132,6 +132,20 @@ let (city, state) = ctx.execute_step(LookupZipStep {
 }).await?;
 ```
 
+Or use the generated `_step` function for a flat call:
+
+```rust
+let (city, state) = lookup_zip_step(&mut ctx, &client, &data.zip_code).await?;
+```
+
+Or the `ExecuteStep` trait's `.execute()` method:
+
+```rust
+let (city, state) = lookup_zip(&client, &data.zip_code).execute(&mut ctx).await?;
+```
+
+See [Macros](/rust-api/macros/) for a full comparison of all three forms.
+
 ## Retry Configuration
 
 Override `retry_config()` to enable automatic retries with a specific policy:
@@ -204,9 +218,10 @@ The `#[zart_step]` macro generates the exact same code as a manual implementatio
 
 | | `#[zart_step]` macro | Manual `impl ZartStep` |
 |---|---|---|
-| **Verbosity** | One function | Struct + trait impl |
+| **Verbosity** | One function + struct generated | Struct + trait impl |
 | **Control** | Good for most cases | Full control over struct, lifetimes |
-| **Testing** | Call the function directly | Instantiate struct, call `run()` |
+| **Testing** | Call `_inner` or `struct.run()` | Instantiate struct, call `run()` |
+| **Calling styles** | Three: `execute_step()`, `.execute(ctx)`, `_step()` | One: `execute_step(struct)` |
 | **Reuse** | Import and call the function | Import and instantiate the struct |
 | **Lifetime handling** | Macro injects `'a` automatically | You manage lifetimes explicitly |
 

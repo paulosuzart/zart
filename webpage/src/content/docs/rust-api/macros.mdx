@@ -41,7 +41,7 @@ The function must take `ctx: &mut TaskContext` as the first parameter and return
 
 ## `#[zart_step]`
 
-Turn an async function into a durable step. The macro generates a step struct, implements `ZartStep`, and provides the `.execute()` method.
+Turn an async function into a durable step. The macro generates a step struct, implements `ZartStep`, and provides two execution conveniences.
 
 ```rust
 use zart_macros::zart_step;
@@ -63,13 +63,42 @@ async fn charge_card(card: &str, amount: i64, ctx: StepContext) -> Result<Charge
 
 The last parameter must be named `ctx` and typed `StepContext`. The return type must be `Result<T, StepError>`.
 
-### Using a Step
+### What the Macro generates
 
-Call the generated function to get a step builder, then pass it to `ctx.execute_step()`:
+For the `charge_card` example above, the macro produces four items:
+
+1. **`ChargeCardStep` struct** — holds the parameters (`card`, `amount`)
+2. **`impl ZartStep`** — with `step_name()`, `retry_config()`, and `run()`
+3. **Builder function** — `fn charge_card(card, amount) -> ChargeCardStep` (rewrites the original fn)
+4. **`charge_card_step` async fn** — one-call build-and-execute (see option 3 below)
+
+### Three Ways to Call a Step
+
+All three forms are fully equivalent. Choose the one that fits the surrounding code.
+
+**Option 1 — `ctx.execute_step()` (method-first):**
 
 ```rust
 let charge = ctx.execute_step(charge_card(&card, amount)).await?;
 ```
+
+The step struct is passed to `ctx`. This is the original pattern, useful when `ctx` is already the focal point of the durable body.
+
+**Option 2 — `.execute(ctx)` (step-first trait method):**
+
+```rust
+let charge = charge_card(&card, amount).execute(&mut ctx).await?;
+```
+
+The `ExecuteStep` trait is auto-implemented for all `ZartStep` types. Reads naturally when the step is the focus.
+
+**Option 3 — `_step` async function (flat call):**
+
+```rust
+let charge = charge_card_step(&mut ctx, &card, amount).await?;
+```
+
+The macro generates a `_step`-suffixed async fn that builds and executes in one call. `ctx` is the first parameter, followed by the step's own arguments. No struct or trait visible at the call site.
 
 Steps with references work seamlessly — the macro handles lifetime injection automatically:
 
@@ -81,8 +110,14 @@ async fn fetch_data(client: &reqwest::Client, url: &str, ctx: StepContext)
     client.get(url).send().await?.text().await
 }
 
-// Usage:
+// Option 1:
 let data = ctx.execute_step(fetch_data(&client, &url)).await?;
+
+// Option 2:
+let data = fetch_data(&client, &url).execute(&mut ctx).await?;
+
+// Option 3:
+let data = fetch_data_step(&mut ctx, &client, &url).await?;
 ```
 
 ## `z_wait_event!`
@@ -149,8 +184,9 @@ async fn onboarding(
     ctx: &mut TaskContext,
     data: OnboardingData,
 ) -> Result<OnboardingResult, TaskError> {
-    ctx.execute_step(send_email(&data.email)).await?;
-    let customer_id = ctx.execute_step(create_customer(&data.email)).await?;
+    // All three forms coexist in the same body:
+    send_email_step(&mut ctx, &data.email).await?;                    // flat call
+    let customer_id = ctx.execute_step(create_customer(&data.email)).await?; // execute_step
     let _: VerifyPayload = ctx.wait_for_event(
         "email-verified",
         Some(Duration::from_secs(172_800)),

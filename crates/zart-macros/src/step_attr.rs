@@ -510,6 +510,30 @@ pub(crate) fn expand_zart_step(args: StepAttr, func: syn::ItemFn) -> SynResult<T
         }
     };
 
+    // Async executor function: build + execute in one call.
+    // Usage: `validate_address_step(&mut ctx, &order_id).await?`
+    let step_fn_name = format_ident!("{}_step", fn_name);
+    let step_fn = if let (Some(lifetime_param), Some(_lifetime_a)) = (&lifetime_param, &lifetime_a)
+    {
+        quote! {
+            #vis async fn #step_fn_name<#lifetime_param>(
+                __ctx: &'a mut ::zart::context::TaskContext,
+                #(#struct_param_list),*
+            ) #output {
+                __ctx.execute_step(#struct_ident { #(#field_names),* }).await
+            }
+        }
+    } else {
+        quote! {
+            #vis async fn #step_fn_name(
+                __ctx: &mut ::zart::context::TaskContext,
+                #(#struct_param_list),*
+            ) #output {
+                __ctx.execute_step(#struct_ident { #(#field_names),* }).await
+            }
+        }
+    };
+
     Ok(quote! {
         #struct_def
 
@@ -518,5 +542,7 @@ pub(crate) fn expand_zart_step(args: StepAttr, func: syn::ItemFn) -> SynResult<T
         #rewritten_fn
 
         #inner_fn
+
+        #step_fn
     })
 }

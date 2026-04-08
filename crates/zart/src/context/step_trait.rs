@@ -77,6 +77,46 @@ pub trait ZartStep {
     async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
 }
 
+// ── ExecuteStep — ergonomic step.execute(ctx) calling convention ───────────────
+
+/// Extension trait auto-implemented for all [`ZartStep`] types.
+///
+/// Enables the `step.execute(ctx)` calling convention as an alternative to
+/// `ctx.execute_step(step)`. Both are fully equivalent.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Instead of:
+/// let addr = ctx.execute_step(validate_address(&order_id)).await?;
+///
+/// // Write:
+/// let addr = validate_address(&order_id).execute(&mut ctx).await?;
+/// ```
+#[async_trait::async_trait]
+pub trait ExecuteStep {
+    /// The output type this step produces.
+    type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
+
+    /// Execute this step against the given task context.
+    async fn execute(
+        self,
+        ctx: &mut crate::context::TaskContext,
+    ) -> Result<Self::Output, StepError>;
+}
+
+#[async_trait::async_trait]
+impl<S: ZartStep + Send> ExecuteStep for S {
+    type Output = S::Output;
+
+    async fn execute(
+        self,
+        ctx: &mut crate::context::TaskContext,
+    ) -> Result<Self::Output, StepError> {
+        ctx.execute_step(self).await
+    }
+}
+
 // ── StepWithId — call-site identity override ──────────────────────────────────
 
 /// Wraps any [`ZartStep`] and overrides its tracking identity.

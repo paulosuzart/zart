@@ -19,5 +19,5 @@ mod tests;
 pub(crate) use state::PendingFn;
 pub use state::{AttemptStatus, ExecutionState, StepAttempt, StepHandle, StepRecord, StepStatus};
 pub use step_context::StepContext;
-pub use step_trait::{StepWithId, ZartStep};
+pub use step_trait::{ExecuteStep, StepWithId, ZartStep};
 pub use task_context::TaskContext;
