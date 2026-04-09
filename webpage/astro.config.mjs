@@ -21,7 +21,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/your-org/zart",
+          href: "https://github.com/paulosuzart/zart",
         },
       ],
       customCss: ["./src/styles/custom.css"],
