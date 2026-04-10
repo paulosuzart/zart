@@ -820,21 +820,22 @@ impl DurableStorage for PostgresScheduler {
         // step_id = "{run_id}:step:{step_name}" matches the ID format used at scheduling time.
         let task_id = format!("{run_id}:step:{step_name}");
 
-        let row: Option<(String, String, Option<serde_json::Value>)> = sqlx::query_as(
-            r#"
-            SELECT step_id, status, result
+        let row: Option<(String, String, Option<serde_json::Value>, Option<String>)> =
+            sqlx::query_as(
+                r#"
+            SELECT step_id, status, result, result_kind::TEXT
             FROM zart_steps
             WHERE step_id = $1
             "#,
-        )
-        .bind(&task_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+            )
+            .bind(&task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         match row {
             None => Ok(None),
-            Some((step_id, status_str, result)) => {
+            Some((step_id, status_str, result, result_kind)) => {
                 // Map zart_steps status to TaskStatus
                 let status = match status_str.as_str() {
                     "scheduled" => crate::TaskStatus::Scheduled,
@@ -847,6 +848,7 @@ impl DurableStorage for PostgresScheduler {
                     task_id: step_id,
                     status,
                     result,
+                    result_kind,
                 }))
             }
         }
@@ -1121,10 +1123,11 @@ impl DurableStorage for PostgresScheduler {
 
         sqlx::query(
             r#"
-            UPDATE zart_steps SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
+            UPDATE zart_steps SET status = 'completed', result = $1, result_kind = $2::step_result_kind, completed_at = $3 WHERE step_id = $4
             "#,
         )
         .bind(&params.result)
+        .bind(&params.result_kind)
         .bind(Utc::now())
         .bind(&params.step_id)
         .execute(&mut *tx)

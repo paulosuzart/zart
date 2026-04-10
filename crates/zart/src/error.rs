@@ -70,9 +70,171 @@ pub enum TaskError {
     HandlerPanic(String),
 }
 
+// ── StepOutcome & ZartStepError ──────────────────────────────────────────────
+
+/// The outcome of a completed step as seen by the handler body.
+///
+/// This distinguishes between business errors (the step's own `E` type) and
+/// framework errors (retry exhausted, timeout, deadline exceeded).
+///
+/// Use with [`crate::step()`] for explicit error handling, or use
+/// [`crate::require()`] for fail-fast semantics.
+pub enum StepOutcome<T, E> {
+    /// Step logic succeeded.
+    Ok(T),
+    /// Step logic returned `Err(E)` — the user's domain error.
+    ///
+    /// This variant carries the step's own error type, which is meaningful to
+    /// the handler body. Match on its variants to handle specific failures.
+    BusinessErr(E),
+    /// The framework could not complete the step regardless of step logic.
+    ///
+    /// Covers retry budget exhausted, timeout exceeded, or deadline passed.
+    /// Not a user type — it signals framework-level failure.
+    ZartErr(ZartStepError),
+}
+
+impl<T, E> std::fmt::Debug for StepOutcome<T, E>
+where
+    T: std::fmt::Debug,
+    E: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok(v) => f.debug_tuple("Ok").field(v).finish(),
+            Self::BusinessErr(e) => f.debug_tuple("BusinessErr").field(e).finish(),
+            Self::ZartErr(e) => f.debug_tuple("ZartErr").field(e).finish(),
+        }
+    }
+}
+
+/// Framework-level step failure. Not a user type.
+///
+/// Returned via [`StepOutcome::ZartErr`] when the framework cannot complete a
+/// step regardless of the step's own logic (retry exhausted, timeout, deadline).
+#[derive(Debug)]
+pub enum ZartStepError {
+    /// The step failed on every attempt and the retry budget is exhausted.
+    ///
+    /// `last_error` carries the serialized final `S::Error` for inspection.
+    RetryExhausted {
+        step: String,
+        attempts: usize,
+        last_error: serde_json::Value,
+    },
+    /// The step exceeded its configured execution timeout.
+    TimedOut {
+        step: String,
+        duration: std::time::Duration,
+    },
+    /// A wait_for_event deadline passed before the event arrived.
+    DeadlineExceeded { step: String },
+}
+
+impl std::fmt::Display for ZartStepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ZartStepError::RetryExhausted { step, attempts, .. } => {
+                write!(
+                    f,
+                    "Step '{}' retry exhausted after {} attempts",
+                    step, attempts
+                )
+            }
+            ZartStepError::TimedOut { step, duration } => {
+                write!(f, "Step '{}' timed out after {:?}", step, duration)
+            }
+            ZartStepError::DeadlineExceeded { step } => {
+                write!(f, "Step '{}' deadline exceeded", step)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ZartStepError {}
+
+impl ZartStepError {
+    /// Attempt to deserialize the last business error from a `RetryExhausted` failure.
+    ///
+    /// Returns `None` for other variants.
+    pub fn last_error<E: serde::de::DeserializeOwned>(
+        &self,
+    ) -> Option<Result<E, serde_json::Error>> {
+        match self {
+            ZartStepError::RetryExhausted { last_error, .. } => {
+                Some(serde_json::from_value(last_error.clone()))
+            }
+            _ => None,
+        }
+    }
+}
+
+// ── ExecutionFailure ─────────────────────────────────────────────────────────
+
+/// Describes why `on_failure` was invoked on a [`DurableExecution`].
+///
+/// Returned to the centralized failure handler when a step failure propagates
+/// out of the body, or when an execution-level failure occurs.
+pub enum ExecutionFailure {
+    /// A step's failure propagated out of the body via `?`.
+    ///
+    /// Covers both business errors and `ZartStepError`s that were not handled inline.
+    StepFailed {
+        step: String,
+        /// Serialized failure envelope — inspect or ignore.
+        raw: serde_json::Value,
+    },
+    /// The execution's own deadline was exceeded before or during the body.
+    ///
+    /// **Not** fired for `wait_for_event` step-level deadlines. This variant is
+    /// only reachable when the execution's own timer fires at the worker level,
+    /// before or between body invocations.
+    ExecutionDeadlineExceeded,
+    /// The execution's own retry policy was exhausted.
+    RetriesExhausted { attempts: usize },
+}
+
+impl std::fmt::Debug for ExecutionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StepFailed { step, raw } => f
+                .debug_struct("StepFailed")
+                .field("step", step)
+                .field("raw", raw)
+                .finish(),
+            Self::ExecutionDeadlineExceeded => f.debug_struct("ExecutionDeadlineExceeded").finish(),
+            Self::RetriesExhausted { attempts } => f
+                .debug_struct("RetriesExhausted")
+                .field("attempts", attempts)
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Display for ExecutionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExecutionFailure::StepFailed { step, .. } => {
+                write!(f, "Step '{}' failed", step)
+            }
+            ExecutionFailure::ExecutionDeadlineExceeded => {
+                write!(f, "Execution deadline exceeded")
+            }
+            ExecutionFailure::RetriesExhausted { attempts } => {
+                write!(f, "Execution retries exhausted after {} attempts", attempts)
+            }
+        }
+    }
+}
+
 /// Errors from step execution. Some variants are **control-flow signals**
 /// and are not real failures.
+///
+/// This type is `#[non_exhaustive]` — users propagate it via `?` only; they
+/// never construct or match on it. For framework-level failures visible to the
+/// handler body, use [`ZartStepError`] (returned via [`StepOutcome::ZartErr`]).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StepError {
     /// **Control-flow**: the step has been scheduled (first time) or a retry is pending.
     ///

@@ -15,9 +15,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
-use zart::error::{StepError, TaskError};
+use zart::error::TaskError;
 use zart::prelude::*;
 use zart::zart_step;
+
+// ── Local serializable step error ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+pub enum StepError {
+    #[error("Step '{step}' failed: {reason}")]
+    Failed { step: String, reason: String },
+}
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 

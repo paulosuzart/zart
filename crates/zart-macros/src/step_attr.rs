@@ -8,9 +8,9 @@ use syn::{
 };
 
 use crate::utils::{
-    extract_ident_from_pattern, extract_ok_type, inject_lifetime, parse_duration_str,
-    parse_duration_to_ms, parse_step_name_template, snake_to_pascal, type_has_references,
-    validate_step_return_type,
+    extract_error_type, extract_ident_from_pattern, extract_ok_type, inject_lifetime,
+    parse_duration_str, parse_duration_to_ms, parse_step_name_template, snake_to_pascal,
+    type_has_references, validate_step_return_type,
 };
 
 // ── Attribute parsing ─────────────────────────────────────────────────────────
@@ -191,8 +191,9 @@ fn generate_zart_step_impl(
         quote! {} // Uses trait default (None)
     };
 
-    // Extract the Output type from Result<T, StepError>
+    // Extract the Output type and Error type from Result<T, E>
     let output_type = extract_ok_type(output)?;
+    let error_type = extract_error_type(output)?;
 
     // Generate impl header with or without lifetime
     let impl_header = if let Some(lifetime_a) = lifetime_a {
@@ -209,13 +210,14 @@ fn generate_zart_step_impl(
         #[::async_trait::async_trait]
         #impl_header {
             type Output = #output_type;
+            type Error = #error_type;
 
             #step_name_method
 
             #retry_config_method
             #timeout_method
 
-            async fn run(&self) -> ::std::result::Result<Self::Output, ::zart::error::StepError> {
+            async fn run(&self) -> ::std::result::Result<Self::Output, Self::Error> {
                 #run_body
             }
         }
@@ -465,26 +467,33 @@ pub(crate) fn expand_zart_step(args: StepAttr, func: syn::ItemFn) -> SynResult<T
     };
 
     // IntoFuture — makes `step_name(args).await` work
+    // Delegates to zart::require() for fail-fast semantics.
     let output_type = extract_ok_type(output)?;
     let into_future_impl = if let Some(ref lifetime_a) = lifetime_a {
         quote! {
-            impl<#lifetime_a> ::std::future::IntoFuture for #struct_ident<#lifetime_a> {
-                type Output = ::std::result::Result<#output_type, ::zart::error::StepError>;
+            impl<#lifetime_a> ::std::future::IntoFuture for #struct_ident<#lifetime_a>
+            where
+                <Self as ::zart::context::ZartStep>::Error: ::std::error::Error + Send + Sync + 'static,
+            {
+                type Output = ::std::result::Result<#output_type, ::zart::error::TaskError>;
                 type IntoFuture = ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Self::Output> + Send + #lifetime_a>>;
 
                 fn into_future(self) -> Self::IntoFuture {
-                    Box::pin(::zart::step(self))
+                    Box::pin(::zart::require(self))
                 }
             }
         }
     } else {
         quote! {
-            impl ::std::future::IntoFuture for #struct_ident {
-                type Output = ::std::result::Result<#output_type, ::zart::error::StepError>;
+            impl ::std::future::IntoFuture for #struct_ident
+            where
+                <Self as ::zart::context::ZartStep>::Error: ::std::error::Error + Send + Sync + 'static,
+            {
+                type Output = ::std::result::Result<#output_type, ::zart::error::TaskError>;
                 type IntoFuture = ::std::pin::Pin<Box<dyn ::std::future::Future<Output = Self::Output> + Send>>;
 
                 fn into_future(self) -> Self::IntoFuture {
-                    Box::pin(::zart::step(self))
+                    Box::pin(::zart::require(self))
                 }
             }
         }

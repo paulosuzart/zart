@@ -114,6 +114,52 @@ pub enum StepResult {
     Transition,
 }
 
+/// Discriminant for the kind of terminal outcome a step row holds.
+///
+/// Stored in `zart_steps.result_kind` and returned alongside the raw JSON
+/// from body-mode lookup so the caller can construct the correct
+/// [`StepOutcome`](crate::error::StepOutcome) variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultKind {
+    /// Step succeeded — `result` holds `S::Output`.
+    Ok,
+    /// Step returned a business error — `result` holds `S::Error`.
+    Err,
+    /// Retries exhausted — `result` holds `S::Error` from the last attempt.
+    RetryExhausted,
+    /// Step timed out — `result` is NULL.
+    TimedOut,
+    /// wait_for_event deadline exceeded — `result` is NULL.
+    DeadlineExceeded,
+}
+
+impl ResultKind {
+    /// Parse from a database value (or default to `'ok'`).
+    pub fn from_db(kind: Option<&str>) -> Self {
+        match kind {
+            Some("ok") => Self::Ok,
+            Some("err") => Self::Err,
+            Some("rx") => Self::RetryExhausted,
+            Some("timeout") => Self::TimedOut,
+            Some("dl") => Self::DeadlineExceeded,
+            _ => Self::Ok, // backward compat: old rows without result_kind
+        }
+    }
+}
+
+impl ResultKind {
+    /// The DB string value to store.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Err => "err",
+            Self::RetryExhausted => "rx",
+            Self::TimedOut => "timeout",
+            Self::DeadlineExceeded => "dl",
+        }
+    }
+}
+
 /// Distinguishes success/failure completion routing.
 ///
 /// Used by completion implementations that need to branch behavior.
@@ -205,13 +251,13 @@ pub struct CompletionSpec {
 pub trait BodyBehavior: Send + Sync {
     /// Called when body mode encounters this step type.
     ///
-    /// Returns cached result or `Err(StepError::Scheduled)` when step is in-flight
-    /// or newly scheduled.
+    /// Returns `(cached_result, result_kind)` or `Err(StepError::Scheduled)`
+    /// when step is in-flight or newly scheduled.
     async fn handle(
         &self,
         ctx: &TaskContext,
         req: &StepRequest<'_>,
-    ) -> Result<serde_json::Value, StepError>;
+    ) -> Result<(serde_json::Value, ResultKind), StepError>;
 }
 
 /// Step-mode behavior contract.

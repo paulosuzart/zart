@@ -120,6 +120,11 @@ impl TaskContext {
 
     /// Internal dispatcher for `execute_step`, delegating orchestration to
     /// declarative dispatch/behaviors.
+    ///
+    /// Note: This method is kept for backward compatibility with internal callers
+    /// (`capture_internal`, `wait_for_event`, etc.) that use the `step_internal<T>`
+    /// shim. New typed step execution goes through `execute_step` directly.
+    #[allow(dead_code)]
     async fn step_internal<T, F, Fut>(
         &self,
         step_name: &str,
@@ -206,40 +211,238 @@ impl TaskContext {
     /// let result = ctx.execute_step(my_step()).await?;
     /// ```
     #[instrument(name = "step.execute_typed", skip(self, step), fields(step_name = tracing::field::Empty))]
-    pub async fn execute_step<S: ZartStep + Send>(&self, step: S) -> Result<S::Output, StepError> {
+    pub async fn execute_step<S: ZartStep + Send>(
+        &self,
+        step: S,
+    ) -> Result<crate::error::StepOutcome<S::Output, S::Error>, StepError> {
+        use crate::error::{StepOutcome, ZartStepError};
+        use crate::step_ops;
+        use crate::step_types::{ResultKind as RK, StepDefId};
+
         let step_name = step.step_name();
-        let retry_config = step.retry_config();
         let timeout_duration = step.timeout();
+        let step_name_owned = step_name.to_string();
+
+        // In step mode, retry config comes from the execution mode (set by the worker).
+        // In body mode, retry config comes from the step itself (embedded in metadata).
+        let retry_config = match &self.execution_mode {
+            ExecutionMode::Step { retry_config, .. } => retry_config.clone(),
+            _ => step.retry_config(),
+        };
 
         // Set the span field
         tracing::Span::current().record("step_name", step_name.as_ref());
 
-        // Build the step logic — no StepContext arg; context lives in task-local.
-        let step_fn = move || {
+        // Build the step logic that serializes both T and E.
+        let step_name_for_closure = step_name_owned.clone();
+        let run_with_serialization = move || {
             let this = step;
-            async move { this.run().await }
-        };
-
-        // Apply timeout wrapper if needed, then delegate to step_internal
-        match timeout_duration {
-            Some(timeout_dur) => {
-                let retry_cfg = retry_config;
-                let step_name_owned = step_name.to_string();
-                let wrapped_fn = move || {
-                    let f = step_fn();
-                    async move {
-                        tokio::time::timeout(timeout_dur, f).await.map_err(|_| {
-                            StepError::Timeout {
-                                step: step_name_owned.clone(),
-                                duration: timeout_dur,
-                            }
-                        })?
+            async move {
+                let result: Result<(serde_json::Value, RK), StepError> = match this.run().await {
+                    Ok(v) => {
+                        let json = serde_json::to_value(&v).map_err(|e| StepError::Failed {
+                            step: step_name_for_closure.clone(),
+                            reason: format!("failed to serialize step output: {e}"),
+                        })?;
+                        Ok((json, RK::Ok))
+                    }
+                    Err(e) => {
+                        let json = serde_json::to_value(&e).map_err(|_| StepError::Failed {
+                            step: step_name_for_closure.clone(),
+                            reason: format!(
+                                "failed to serialize step error (does {:?} impl Serialize?)",
+                                std::any::type_name::<S::Error>()
+                            ),
+                        })?;
+                        Ok((json, RK::Err))
                     }
                 };
-                self.step_internal(&step_name, retry_cfg, wrapped_fn).await
+                result
             }
-            None => self.step_internal(&step_name, retry_config, step_fn).await,
+        };
+
+        match &self.execution_mode {
+            ExecutionMode::Body => {
+                // Body mode: look up via body behavior, deserialize based on ResultKind.
+                let req = crate::step_types::StepRequest::new_step(
+                    &step_name_owned,
+                    retry_config.as_ref(),
+                );
+                let (json, kind) = StepDefId::Step.body_behavior().handle(self, &req).await?;
+
+                match kind {
+                    RK::Ok => {
+                        let v = serde_json::from_value(json).map_err(|e| StepError::Failed {
+                            step: step_name_owned,
+                            reason: format!("failed to deserialize step output: {e}"),
+                        })?;
+                        Ok(StepOutcome::Ok(v))
+                    }
+                    RK::Err => {
+                        let e: S::Error =
+                            serde_json::from_value(json).map_err(|e| StepError::Failed {
+                                step: step_name_owned,
+                                reason: format!("failed to deserialize step error: {e}"),
+                            })?;
+                        Ok(StepOutcome::BusinessErr(e))
+                    }
+                    RK::RetryExhausted => {
+                        let _e: S::Error = serde_json::from_value(json.clone()).map_err(|e| {
+                            StepError::Failed {
+                                step: step_name_owned.clone(),
+                                reason: format!("failed to deserialize step error: {e}"),
+                            }
+                        })?;
+                        Ok(StepOutcome::ZartErr(ZartStepError::RetryExhausted {
+                            step: step_name_owned,
+                            attempts: 0,
+                            last_error: json,
+                        }))
+                    }
+                    RK::TimedOut => Ok(StepOutcome::ZartErr(ZartStepError::TimedOut {
+                        step: step_name_owned,
+                        duration: timeout_duration.unwrap_or_default(),
+                    })),
+                    RK::DeadlineExceeded => {
+                        Ok(StepOutcome::ZartErr(ZartStepError::DeadlineExceeded {
+                            step: step_name_owned,
+                        }))
+                    }
+                }
+            }
+            ExecutionMode::Step { target_step, .. } => {
+                let target = target_step.clone();
+
+                if step_name.as_ref() != target {
+                    // Non-target step: just look it up (should be completed).
+                    let req = crate::step_types::StepRequest::new_step(&step_name_owned, None);
+                    let (json, _kind) = StepDefId::Step.body_behavior().handle(self, &req).await?;
+                    // Non-target steps in step mode should always be Ok.
+                    let v = serde_json::from_value(json).map_err(|e| StepError::Failed {
+                        step: step_name_owned,
+                        reason: format!("failed to deserialize cached step output: {e}"),
+                    })?;
+                    return Ok(StepOutcome::Ok(v));
+                }
+
+                // Target step: run the lambda and handle completion.
+                let (json, kind) = if let Some(timeout_dur) = timeout_duration {
+                    match tokio::time::timeout(timeout_dur, run_with_serialization()).await {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            let dummy = serde_json::Value::String(format!(
+                                "step timed out after {:?}",
+                                timeout_dur
+                            ));
+                            (dummy, RK::TimedOut)
+                        }
+                    }
+                } else {
+                    run_with_serialization().await?
+                };
+
+                let (retry_attempt, _) = match &self.execution_mode {
+                    ExecutionMode::Step {
+                        retry_attempt,
+                        retry_config,
+                        ..
+                    } => (*retry_attempt, retry_config.clone()),
+                    _ => (0, None),
+                };
+
+                if matches!(kind, RK::Err) {
+                    // Business error — handle retry or complete with err kind.
+                    if let Some(next) =
+                        crate::step_types::dispatch::next_retry_time(&retry_config, retry_attempt)
+                    {
+                        step_ops::reschedule_step_for_retry(
+                            &*self.scheduler,
+                            &self.task_id,
+                            retry_attempt + 1,
+                            "business error",
+                            next,
+                            &self.lock_token,
+                        )
+                        .await
+                        .map_err(|e| StepError::Failed {
+                            step: step_name_owned.clone(),
+                            reason: format!("failed to schedule retry: {e}"),
+                        })?;
+                        return Err(StepError::StepExecuted {
+                            step: step_name_owned,
+                        });
+                    }
+
+                    // Retries exhausted — complete with rx kind.
+                    self.complete_step_and_schedule_body(
+                        json,
+                        RK::RetryExhausted,
+                        retry_attempt + 1,
+                    )
+                    .await?;
+                    return Err(StepError::StepExecuted {
+                        step: step_name_owned,
+                    });
+                }
+
+                if matches!(kind, RK::TimedOut) {
+                    self.complete_step_and_schedule_body(json, RK::TimedOut, retry_attempt + 1)
+                        .await?;
+                    return Err(StepError::StepExecuted {
+                        step: step_name_owned,
+                    });
+                }
+
+                // Success path.
+                self.complete_step_and_schedule_body(json, kind, retry_attempt + 1)
+                    .await?;
+                Err(StepError::StepExecuted {
+                    step: step_name_owned,
+                })
+            }
         }
+    }
+
+    /// Complete a step row and schedule the next body segment in one transaction.
+    ///
+    /// Used in step mode when the target step lambda completes (success or error).
+    async fn complete_step_and_schedule_body(
+        &self,
+        result: serde_json::Value,
+        kind: crate::step_types::ResultKind,
+        attempt_number: usize,
+    ) -> Result<(), StepError> {
+        use scheduler::CompleteStepAndScheduleBodyParams;
+
+        let step_task_id = self.task_id.clone();
+        let step_id = self.task_id.clone();
+        let step_name = self
+            .task_id
+            .strip_prefix(&format!("{}:step:", self.run_id()))
+            .unwrap_or(&self.task_id)
+            .to_string();
+        let next_body_task_id = format!("{}:body:after:{}", self.run_id(), step_name);
+
+        let spec = CompleteStepAndScheduleBodyParams {
+            run_id: self.run_id().to_string(),
+            step_task_id,
+            step_id,
+            result,
+            result_kind: kind.as_db_str().to_string(),
+            lock_token: self.lock_token.clone(),
+            attempt_number,
+            next_body_task_id,
+            task_name: self.task_name().to_string(),
+            data: self.data().clone(),
+        };
+
+        self.scheduler
+            .complete_step_and_schedule_body(spec)
+            .await
+            .map_err(|e| StepError::Failed {
+                step: self.task_id.clone(),
+                reason: e.to_string(),
+            })
     }
 
     /// Register a [`ZartStep`] for parallel execution without waiting for it to complete.
@@ -262,23 +465,41 @@ impl TaskContext {
         let is_target = matches!(&self.execution_mode,
             ExecutionMode::Step { target_step, .. } if target_step.as_str() == step_name.as_ref());
 
-        let pending: Option<PendingFn> =
-            if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
-                let name_for_err = step_name_str.clone();
-                Some(Box::new(move || {
-                    let step = step;
-                    Box::pin(async move {
-                        let result = step.run().await?;
-                        serde_json::to_value(result).map_err(|e| StepError::Failed {
-                            step: name_for_err,
+        let pending: Option<PendingFn> = if !matches!(
+            &self.execution_mode,
+            ExecutionMode::Step { .. }
+        ) || is_target
+        {
+            let name_for_err = step_name_str.clone();
+            Some(Box::new(move || {
+                let step = step;
+                Box::pin(async move {
+                    match step.run().await {
+                        Ok(result) => serde_json::to_value(result).map_err(|e| StepError::Failed {
+                            step: name_for_err.clone(),
                             reason: format!("serialize error: {e}"),
-                        })
-                    })
-                }))
-            } else {
-                // In step mode but not the target: lambda not needed.
-                None
-            };
+                        }),
+                        Err(e) => {
+                            // Serialize the business error for storage; the framework
+                            // handles retry/completion based on this outcome.
+                            let err_json = serde_json::to_value(&e).map_err(|_| StepError::Failed {
+                                    step: name_for_err.clone(),
+                                    reason: format!(
+                                        "failed to serialize step error (does {:?} impl Serialize?)",
+                                        std::any::type_name::<S::Error>()
+                                    ),
+                                })?;
+                            // Return a placeholder — the actual error kind is tracked
+                            // by the step completion path.
+                            Ok(err_json)
+                        }
+                    }
+                })
+            }))
+        } else {
+            // In step mode but not the target: lambda not needed.
+            None
+        };
 
         StepHandle {
             step_name: step_name_str,

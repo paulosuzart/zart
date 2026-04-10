@@ -1,7 +1,7 @@
 //! Task handler registration — maps task names to their concrete handlers.
 
 use crate::context::TaskContext;
-use crate::error::TaskError;
+use crate::error::{ExecutionFailure, TaskError};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,6 +53,30 @@ pub trait DurableExecution: Send + Sync + 'static {
     fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
+
+    /// Called when `run` returns `Err`, or when an execution-level failure occurs
+    /// (deadline exceeded, execution retries exhausted) before `run` is invoked.
+    ///
+    /// Return `Ok(output)` to complete the execution gracefully with a synthetic result.
+    /// Return `Err(...)` to fail the execution (default).
+    ///
+    /// The default implementation returns `Err(TaskError::Cancelled)` — i.e., no recovery.
+    ///
+    /// # Note on available data
+    ///
+    /// `on_failure` receives `&self` (handler config) and `data: Self::Data` (the original
+    /// execution input payload). It does not receive mid-execution state — local variables
+    /// computed during `run()` are gone by the time `on_failure` is called. This is deliberate:
+    /// `on_failure` is a recovery function operating on the execution's stable input, not a
+    /// continuation of an interrupted computation. If recovery requires mid-execution state,
+    /// it must be modelled as a step whose result is durable.
+    async fn on_failure(
+        &self,
+        _data: Self::Data,
+        _failure: ExecutionFailure,
+    ) -> Result<Self::Output, TaskError> {
+        Err(TaskError::Cancelled)
+    }
 }
 
 /// Type-erased internal trait used by [`TaskRegistry`] to dispatch to concrete handlers.
@@ -64,6 +88,13 @@ pub(crate) trait RegisteredTask: Send + Sync {
         &self,
         ctx: Arc<TaskContext>,
         raw_data: serde_json::Value,
+    ) -> Result<serde_json::Value, TaskError>;
+
+    /// Call the handler's `on_failure` with raw JSON data and failure info.
+    async fn on_failure(
+        &self,
+        raw_data: serde_json::Value,
+        failure: ExecutionFailure,
     ) -> Result<serde_json::Value, TaskError>;
 
     fn max_retries(&self) -> usize;
@@ -80,7 +111,7 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
         ctx: Arc<TaskContext>,
         raw_data: serde_json::Value,
     ) -> Result<serde_json::Value, TaskError> {
-        let data: T::Data = serde_json::from_value(raw_data).map_err(|e| {
+        let data: T::Data = serde_json::from_value(raw_data.clone()).map_err(|e| {
             TaskError::HandlerPanic(format!("failed to deserialize task data: {e}"))
         })?;
 
@@ -97,6 +128,21 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 
         serde_json::to_value(output)
             .map_err(|e| TaskError::HandlerPanic(format!("failed to serialize task output: {e}")))
+    }
+
+    async fn on_failure(
+        &self,
+        raw_data: serde_json::Value,
+        failure: ExecutionFailure,
+    ) -> Result<serde_json::Value, TaskError> {
+        let data: T::Data = serde_json::from_value(raw_data).map_err(|e| {
+            TaskError::HandlerPanic(format!("failed to deserialize task data: {e}"))
+        })?;
+
+        let output = self.0.on_failure(data, failure).await?;
+        serde_json::to_value(output).map_err(|e| {
+            TaskError::HandlerPanic(format!("failed to serialize on_failure output: {e}"))
+        })
     }
 
     fn max_retries(&self) -> usize {

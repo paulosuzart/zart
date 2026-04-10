@@ -27,6 +27,8 @@ pub struct ResumeBodySpec<'a> {
     pub step_task_id: &'a str,
     pub step_id: &'a str,
     pub result: serde_json::Value,
+    /// Outcome discriminant.
+    pub result_kind: crate::step_types::ResultKind,
     pub lock_token: &'a str,
     pub next_body_task_id: &'a str,
     pub task_name: &'a str,
@@ -195,6 +197,7 @@ pub async fn complete_step_and_schedule_body(
             step_task_id: spec.step_task_id.to_string(),
             step_id: spec.step_id.to_string(),
             result: spec.result,
+            result_kind: spec.result_kind.as_db_str().to_string(),
             lock_token: spec.lock_token.to_string(),
             attempt_number: spec.attempt_number,
             next_body_task_id: spec.next_body_task_id.to_string(),

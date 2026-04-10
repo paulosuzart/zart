@@ -37,6 +37,7 @@ impl CompletionBehavior for ScheduleNextBody {
                 step_task_id: &spec.step_task_id,
                 step_id: &canonical_step_id,
                 result: serialized,
+                result_kind: crate::step_types::ResultKind::Ok,
                 lock_token: &spec.worker_id,
                 next_body_task_id: &next_body_task_id,
                 task_name: &spec.task_name,

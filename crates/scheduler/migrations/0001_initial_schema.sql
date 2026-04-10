@@ -1,3 +1,6 @@
+-- Step result outcome discriminant
+CREATE TYPE step_result_kind AS ENUM ('ok', 'err', 'rx', 'timeout', 'dl');
+
 -- Individual scheduled tasks (backing each step of a durable execution)
 CREATE TABLE IF NOT EXISTS zart_tasks (
     task_id        TEXT PRIMARY KEY,
@@ -70,6 +73,9 @@ CREATE TABLE IF NOT EXISTS zart_steps (
     retry_config    JSONB,
 
     result          JSONB,
+    -- Outcome discriminant: 'ok' | 'err' | 'rx' | 'timeout' | 'dl'
+    result_kind     step_result_kind,
+
     last_error      TEXT,
 
     -- Wait-group inline state (NULL for non-wait-group steps)

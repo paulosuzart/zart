@@ -49,3 +49,4 @@ sqlx = { workspace = true }
 radkit = { version = "0.0.5", features = ["runtime"] }
 schemars = { version = "1", features = ["derive"] }
 anyhow = "1.0"
+thiserror = { workspace = true }

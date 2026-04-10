@@ -39,6 +39,14 @@ pub enum Call {
     },
     CheckWaitAllChildren,
     CompleteEventStepAndScheduleBody,
+    #[allow(dead_code)]
+    RescheduleForRetry {
+        step_task_id: String,
+    },
+    #[allow(dead_code)]
+    CompleteStep {
+        step_task_id: String,
+    },
 }
 
 impl Call {
@@ -51,6 +59,14 @@ impl Call {
     }
     pub fn is_mark_failed(&self) -> bool {
         matches!(self, Self::MarkFailed { .. })
+    }
+    #[allow(dead_code)]
+    pub fn is_reschedule_for_retry(&self) -> bool {
+        matches!(self, Self::RescheduleForRetry { .. })
+    }
+    #[allow(dead_code)]
+    pub fn is_complete_step(&self) -> bool {
+        matches!(self, Self::CompleteStep { .. })
     }
 }
 
@@ -91,6 +107,7 @@ impl RecordingSchedulerBuilder {
                 task_id: format!("{run_id}:step:{step}"),
                 status: TaskStatus::Completed,
                 result: Some(result),
+                result_kind: Some("ok".to_string()),
             }),
         );
         self
@@ -104,6 +121,7 @@ impl RecordingSchedulerBuilder {
                 task_id: format!("{run_id}:step:{step}"),
                 status: TaskStatus::Scheduled,
                 result: None,
+                result_kind: None,
             }),
         );
         self

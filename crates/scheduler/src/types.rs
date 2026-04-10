@@ -25,6 +25,8 @@ pub struct CompleteStepAndScheduleBodyParams {
     pub step_task_id: String,
     pub step_id: String,
     pub result: serde_json::Value,
+    /// Outcome discriminant: `'ok'` | `'err'` | `'rx'` | `'timeout'` | `'dl'`.
+    pub result_kind: String,
     pub lock_token: String,
     pub attempt_number: usize,
     pub next_body_task_id: String,
@@ -134,6 +136,9 @@ pub struct StepLookup {
     pub status: TaskStatus,
     /// JSON result stored when the step completed. `None` if not yet complete.
     pub result: Option<serde_json::Value>,
+    /// Outcome discriminant: `'ok'` | `'err'` | `'rx'` | `'timeout'` | `'dl'`.
+    /// `None` for rows written before this column existed (treated as `'ok'`).
+    pub result_kind: Option<String>,
 }
 
 impl std::fmt::Display for FetchedTask {
