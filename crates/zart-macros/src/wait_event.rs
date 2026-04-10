@@ -45,7 +45,7 @@ impl Parse for ZWaitEventInput {
 
 /// Typed event-waiting macro.
 ///
-/// Expands to `ctx.wait_for_event(name, timeout)`. The result type `T` is
+/// Expands to `zart::wait_for_event(name, timeout)`. The result type `T` is
 /// inferred from the surrounding context (e.g., from the `let` binding's
 /// type annotation).
 ///
@@ -72,5 +72,5 @@ pub(crate) fn expand_z_wait_event(input: TokenStream) -> TokenStream {
         None => quote! { ::std::option::Option::None },
     };
 
-    quote! { ctx.wait_for_event(#name, #timeout_expr) }.into()
+    quote! { ::zart::wait_for_event(#name, #timeout_expr) }.into()
 }

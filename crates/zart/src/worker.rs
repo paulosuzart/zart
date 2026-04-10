@@ -368,16 +368,19 @@ async fn dispatch_task(
         .unwrap_or(&execution_id)
         .to_string();
 
-    let mut ctx = TaskContext::new(
-        scheduler.clone(),
-        execution_id.clone(),
-        task.task_name.clone(),
-        task.lock_token.clone(),
-        task.data.clone(),
-    )
-    .with_task_id(task.task_id.clone())
-    .with_run_id(run_id)
-    .with_execution_mode(exec_mode.clone());
+    let ctx = Arc::new(
+        TaskContext::new(
+            scheduler.clone(),
+            execution_id.clone(),
+            task.task_name.clone(),
+            task.lock_token.clone(),
+            task.data.clone(),
+        )
+        .with_task_id(task.task_id.clone())
+        .with_run_id(run_id.clone())
+        .with_execution_mode(exec_mode.clone()),
+    );
+    let ctx_cleanup = Arc::clone(&ctx);
 
     // Record execution start for durable executions (tasks with an execution_id).
     if has_execution {
@@ -414,7 +417,7 @@ async fn dispatch_task(
     });
 
     // Execute the handler.
-    let result = handler.execute(&mut ctx, task.data).await;
+    let result = handler.execute(ctx, task.data).await;
 
     // ── Stop heartbeat — handler has returned ────────────────────────────────
     heartbeat_cancellation.cancel();
@@ -422,12 +425,17 @@ async fn dispatch_task(
 
     // ── Cancellation guard ────────────────────────────────────────────────────
     if has_execution {
-        match ctx.scheduler.get_execution(&execution_id).await {
+        match ctx_cleanup.scheduler.get_execution(&execution_id).await {
             Ok(Some(exec)) if exec.status == scheduler::ExecutionStatus::Cancelled => {
                 info!("Execution cancelled while task was running; discarding result");
-                let _ = ctx
+                let _ = ctx_cleanup
                     .scheduler
-                    .mark_failed(&task.task_id, "execution cancelled", None, &ctx.lock_token)
+                    .mark_failed(
+                        &task.task_id,
+                        "execution cancelled",
+                        None,
+                        &ctx_cleanup.lock_token,
+                    )
                     .await;
                 return;
             }
@@ -455,9 +463,9 @@ async fn dispatch_task(
                         .inc()
                 );
             }
-            if let Err(e) = ctx
+            if let Err(e) = ctx_cleanup
                 .scheduler
-                .mark_completed(&task.task_id, Some(result.clone()), &ctx.lock_token)
+                .mark_completed(&task.task_id, Some(result.clone()), &ctx_cleanup.lock_token)
                 .await
             {
                 error!(error = %e, "Failed to mark task completed");
@@ -469,8 +477,8 @@ async fn dispatch_task(
                 let now = chrono::Utc::now();
                 if let Some(next_time) = recurrence.next_after(now) {
                     let new_task_id = Uuid::new_v4().to_string();
-                    let task_data = ctx.data().clone();
-                    if let Err(e) = ctx
+                    let task_data = ctx_cleanup.data().clone();
+                    if let Err(e) = ctx_cleanup
                         .scheduler
                         .schedule_at(scheduler::ScheduleAtParams {
                             task_id: new_task_id.clone(),
@@ -501,7 +509,7 @@ async fn dispatch_task(
             }
 
             if has_execution {
-                let _ = ctx
+                let _ = ctx_cleanup
                     .scheduler
                     .complete_execution(&execution_id, result)
                     .await
@@ -537,9 +545,9 @@ async fn dispatch_task(
         }) => {
             info!(step = %step, "Body step scheduled — marking body task complete");
             emit_metric!(TASKS_TOTAL.with_label_values(&["completed"]).inc());
-            if let Err(e) = ctx
+            if let Err(e) = ctx_cleanup
                 .scheduler
-                .mark_completed(&task.task_id, None, &ctx.lock_token)
+                .mark_completed(&task.task_id, None, &ctx_cleanup.lock_token)
                 .await
             {
                 error!(error = %e, "Failed to mark body task completed after step scheduling");
@@ -563,16 +571,21 @@ async fn dispatch_task(
                         .inc()
                 );
             }
-            if let Err(e) = ctx
+            if let Err(e) = ctx_cleanup
                 .scheduler
-                .mark_failed(&task.task_id, &err.to_string(), None, &ctx.lock_token)
+                .mark_failed(
+                    &task.task_id,
+                    &err.to_string(),
+                    None,
+                    &ctx_cleanup.lock_token,
+                )
                 .await
             {
                 error!(error = %e, "Failed to mark task failed");
                 return;
             }
             if has_execution {
-                let _ = ctx
+                let _ = ctx_cleanup
                     .scheduler
                     .fail_execution(&execution_id)
                     .await

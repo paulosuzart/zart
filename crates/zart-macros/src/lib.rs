@@ -1,6 +1,6 @@
 //! Procedural macros for the Zart durable execution framework.
 //!
-//! These macros are **optional** — the raw `ctx.execute_step()` API works without them.
+//! These macros are **optional** — the `zart::*` free function API works without them.
 //! They reduce boilerplate and enable a more ergonomic step-definition style.
 //!
 //! # Macros
@@ -8,9 +8,8 @@
 //! - [`#[zart_durable]`](macro@zart_durable) — annotate an async function as a durable handler,
 //!   generating a unit struct that implements `DurableExecution`.
 //! - [`#[zart_step]`](macro@zart_step) — annotate an async function as a step builder,
-//!   generating a struct with an `.execute()` method.
-//! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `ctx.wait_for_event(name, timeout)`
-//! - [`z_durable_loop!`](macro@z_durable_loop) — durable `for` loop over an iterator
+//!   generating a struct that can be `.await`ed directly.
+//! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `zart::wait_for_event(name, timeout)`
 //! - [`zart_capture!`](macro@zart_capture) — capture a synchronous value durably
 //!
 //! # Required dependencies
@@ -25,11 +24,9 @@
 //! use zart::prelude::*;
 //!
 //! #[zart_durable("user-onboard", timeout = "5m")]
-//! async fn onboard_user(
-//!     ctx: &mut TaskContext,
-//!     data: OnboardingData,
-//! ) -> Result<OnboardingResult, TaskError> {
-//!     // Use ctx.execute_step(MyStep { ... }) for step execution
+//! async fn onboard_user(data: OnboardingData) -> Result<OnboardingResult, TaskError> {
+//!     // Use zart::step(), zart::schedule(), zart::wait(), etc.
+//!     let id = generate_report(&data).await?;
 //!     Ok(OnboardingResult { /* ... */ })
 //! }
 //!
@@ -43,7 +40,6 @@ mod utils;
 
 mod capture;
 mod durable_attr;
-mod durable_loop;
 mod step_attr;
 mod wait_event;
 
@@ -81,11 +77,6 @@ pub fn z_wait_event(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
-pub fn z_durable_loop(input: TokenStream) -> TokenStream {
-    durable_loop::expand_z_durable_loop(input)
-}
-
-#[proc_macro]
-pub fn zart_capture(input: TokenStream) -> TokenStream {
+pub fn capture(input: TokenStream) -> TokenStream {
     capture::expand_zart_capture(input)
 }

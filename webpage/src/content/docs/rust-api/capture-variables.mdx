@@ -12,61 +12,51 @@ Capture variables let you durably record a value in a single expression, without
 Sometimes you need to capture a value durably, but defining a full step just to return `Utc::now()` feels excessive:
 
 ```rust
-// Before captures — three definitions just to record timestamps
+// Before captures — a full step definition just to record a timestamp
 #[zart_step("capture-started-at")]
-async fn capture_started_at(_tag: String, ctx: StepContext) -> Result<String, StepError> {
-    Ok(chrono::Utc::now().to_rfc3339())
-}
-
-#[zart_step("capture-resumed-at")]
-async fn capture_resumed_at(_tag: String, ctx: StepContext) -> Result<String, StepError> {
+async fn capture_started_at() -> Result<String, StepError> {
     Ok(chrono::Utc::now().to_rfc3339())
 }
 
 // In the durable handler:
-let started_at: String = ctx.execute_step(capture_started_at("started".to_string())).await?;
+let started_at: String = capture_started_at().await?;
 ```
 
-With captures, this collapses to a single line:
+With `zart::capture`, this collapses to a single line:
 
 ```rust
-let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
+let started_at = zart::capture("started-at", || chrono::Utc::now()).await?;
 ```
 
 ## How Capture Works
 
-A capture evaluates an expression once, persists the result, and returns the value. On replay after a restart, the cached value is returned — the expression is never re-evaluated.
+A capture evaluates a closure once, persists the result, and returns the value. On replay after a restart, the cached value is returned — the closure is never re-evaluated.
 
 ```rust
-use zart::prelude::*;
-use zart::zart_capture;
-
-// First run: evaluates the expression, writes to database, returns the value
+// First run: evaluates the closure, writes to database, returns the value
 // Replay: returns the cached value from the database
-let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
+let started_at = zart::capture("started-at", || chrono::Utc::now()).await?;
 ```
 
-The `zart_capture!` macro expands to `ctx.capture("name", || expr).await?`, so you write the expression directly — no closure syntax needed.
+## The `zart::now()` Helper
 
-## The `ctx.now()` Helper
-
-For the common case of capturing the current UTC timestamp, use the built-in `now()` method:
+For the common case of capturing the current UTC timestamp, use the built-in `now()` function:
 
 ```rust
-let started_at = ctx.now("started-at").await?;
+let started_at = zart::now("started-at").await?;
 
-ctx.sleep("initial-wait", Duration::from_secs(5)).await?;
+zart::sleep("initial-wait", Duration::from_secs(5)).await?;
 
-let resumed_at = ctx.now("resumed-at").await?;
+let resumed_at = zart::now("resumed-at").await?;
 ```
 
-This is shorthand for `ctx.capture("started-at", chrono::Utc::now).await?`.
+This is shorthand for `zart::capture("started-at", chrono::Utc::now).await?`.
 
 ## Full Example
 
 ```rust
 use zart::prelude::*;
-use zart::zart_capture;
+use zart::zart_durable;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -89,16 +79,12 @@ impl DurableExecution for SleepTask {
     type Data = SleepInput;
     type Output = SleepOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        let started_at = zart::now("started-at").await?;
 
-        ctx.sleep("initial-wait", Duration::from_secs(5)).await?;
+        zart::sleep("initial-wait", Duration::from_secs(5)).await?;
 
-        let resumed_at = zart_capture!(ctx, "resumed-at", chrono::Utc::now());
+        let resumed_at = zart::now("resumed-at").await?;
 
         Ok(SleepOutput {
             task_name: data.task_name,
@@ -121,7 +107,7 @@ impl DurableExecution for SleepTask {
 | Anything with side effects | ❌ No — use `#[zart_step]` |
 | Work that needs retries | ❌ No — use `#[zart_step]` with retry config |
 
-Captures must be **pure** — no side effects, no I/O. The expression may never run again after the first evaluation.
+Captures must be **pure** — no side effects, no I/O. The closure may never run again after the first evaluation.
 
 ## Step Name Rules
 
@@ -129,11 +115,11 @@ Just like regular steps, each capture must have a **unique, stable name** within
 
 ```rust
 // ✅ Good — stable, descriptive names
-let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
-let user_tz = zart_capture!(ctx, "user-tz", env::var("TZ").unwrap_or_default());
+let started_at = zart::now("started-at").await?;
+let user_tz    = zart::capture("user-tz", || env::var("TZ").unwrap_or_default()).await?;
 
 // ❌ Bad — names that change between runs
-let val = zart_capture!(ctx, &format!("value-{}", data.id), compute());
+let val = zart::capture(&format!("value-{}", data.id), || compute()).await?;
 ```
 
 If you need to capture a value per iteration in a loop, include the loop index in the name — see [Durable Loops](/rust-api/loops/) for patterns.
@@ -143,8 +129,8 @@ If you need to capture a value per iteration in a loop, include the loop index i
 Duplicate capture names return an error — this protects against accidentally reusing a name and getting stale data:
 
 ```rust
-let a = zart_capture!(ctx, "my-value", 42);
-let b = zart_capture!(ctx, "my-value", 99); // StepError: duplicate capture name
+let a = zart::capture("my-value", || 42).await?;
+let b = zart::capture("my-value", || 99).await?; // StepError: duplicate capture name
 ```
 
 During step-mode replay, if a capture is not found in the database (e.g., the step name was changed after the execution started), an error is returned. This means captures added to an existing execution should not be renamed or removed.

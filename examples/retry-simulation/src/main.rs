@@ -5,14 +5,9 @@
 //! showing how the framework handles transient failures automatically.
 //!
 //! Key concepts demonstrated:
-//! - Using `ctx.current_attempt()`, `ctx.max_retries()`, `ctx.is_retry_attempt()` accessors
+//! - Using `zart::context()` to access retry metadata
 //! - Using `#[zart_step]` with retry configuration for automatic retry handling
 //! - Observing the retry behavior in real-time with logging
-//!
-//! This pattern is useful for:
-//! - Testing retry logic without relying on external failures
-//! - Demonstrating resilient behavior in examples and documentation
-//! - Implementing "fail fast, retry successfully" patterns in production
 
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
@@ -28,7 +23,6 @@ use zart::zart_step;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RetrySimulationInput {
-    /// Name to include in the output (just for demonstration)
     name: String,
 }
 
@@ -58,22 +52,20 @@ struct NormalStepResult {
 async fn intentional_failure_step(
     name: String,
     attempt_counter: Arc<AtomicUsize>,
-    ctx: StepContext,
 ) -> Result<RetryStepResult, StepError> {
-    let current = ctx.current_attempt();
-    let max = ctx.max_retries();
-    let is_retry = ctx.is_retry_attempt();
+    let info = zart::context();
+    let current = info.current_attempt;
+    let max = info.max_retries;
+    let is_retry = info.is_retry();
 
     println!(
         "[intentional-failure] Attempt #{} (0-indexed) | is_retry={} | max_retries={:?}",
         current, is_retry, max
     );
 
-    // Track attempts for logging
     attempt_counter.fetch_add(1, Ordering::SeqCst);
 
     if current == 0 {
-        // First attempt: simulate a transient failure
         let msg = format!(
             "⚠️  Simulated transient failure for '{}' on attempt #{}",
             name, current
@@ -88,7 +80,6 @@ async fn intentional_failure_step(
         });
     }
 
-    // Retry attempts: succeed
     let msg = format!("✓  Succeeded for '{}' on retry attempt #{}", name, current);
     println!("{}", msg);
 
@@ -100,8 +91,8 @@ async fn intentional_failure_step(
 
 /// A simple step that always succeeds.
 #[zart_step("normal-step")]
-async fn normal_step(_name: String, ctx: StepContext) -> Result<NormalStepResult, StepError> {
-    let _ = ctx.current_attempt();
+async fn normal_step(_name: String) -> Result<NormalStepResult, StepError> {
+    let _ = zart::context().current_attempt;
     println!("\n[normal-step] Running (no retries needed)");
     Ok(NormalStepResult {
         message: "Normal step completed successfully".to_string(),
@@ -110,7 +101,6 @@ async fn normal_step(_name: String, ctx: StepContext) -> Result<NormalStepResult
 
 // ── Durable Execution Implementation ─────────────────────────────────────────
 
-/// Manual implementation to demonstrate direct TaskContext usage
 struct RetrySimulationTask;
 
 #[async_trait::async_trait]
@@ -118,26 +108,15 @@ impl DurableExecution for RetrySimulationTask {
     type Data = RetrySimulationInput;
     type Output = RetrySimulationOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
         let attempt_counter = Arc::new(AtomicUsize::new(0));
 
-        // Demonstrate the StepContext accessors BEFORE the retry
-        println!("\n=== StepContext Retry Accessors Demo ===\n");
+        println!("\n=== Retry Accessors Demo ===\n");
         println!("Before retry (in body mode):");
-        println!("  - StepContext is only available inside step closures");
-        println!("  - Each step receives its own StepContext with retry metadata");
+        println!("  - zart::context() is available anywhere");
+        println!("  - Each step gets its own retry metadata via zart::context()");
 
-        // Step 1: This step intentionally fails on attempt 0, succeeds on attempt 1
-        let result = ctx
-            .execute_step(intentional_failure_step(
-                data.name.clone(),
-                attempt_counter.clone(),
-            ))
-            .await?;
+        let result = intentional_failure_step(data.name.clone(), attempt_counter.clone()).await?;
 
         let total_attempts = attempt_counter.load(Ordering::SeqCst);
         let mut attempts_log = vec![format!(
@@ -150,8 +129,7 @@ impl DurableExecution for RetrySimulationTask {
         println!("  - Succeeded on attempt #{}", result.attempt_number);
         println!("  - Number of retries: {}", result.attempt_number);
 
-        // Step 2: A normal step that always succeeds
-        let normal_result = ctx.execute_step(normal_step(data.name.clone())).await?;
+        let normal_result = normal_step(data.name.clone()).await?;
         attempts_log.push(format!("normal-step: {}", normal_result.message));
 
         Ok(RetrySimulationOutput {

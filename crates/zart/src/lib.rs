@@ -28,21 +28,19 @@
 //!     type Data = serde_json::Value;
 //!     type Output = serde_json::Value;
 //!
-//!     async fn run(
-//!         &self,
-//!         _ctx: &mut TaskContext,
-//!         data: Self::Data,
-//!     ) -> Result<Self::Output, TaskError> {
+//!     async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
 //!         Ok(data)
 //!     }
 //! }
 //! ```
 
+pub mod api;
 pub mod api_trait;
 pub mod context;
 pub mod durable;
 pub mod error;
 pub mod execution_model;
+pub(crate) mod local;
 pub mod logging;
 pub mod metrics;
 pub mod registry;
@@ -54,8 +52,11 @@ pub mod worker;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
+pub use api::{
+    ExecutionInfo, capture, context, now, schedule, sleep, sleep_until, step, wait, wait_for_event,
+};
 pub use api_trait::{DurableApi, into_durable_api};
-pub use context::{StepContext, StepHandle, TaskContext, ZartStep};
+pub use context::{StepHandle, TaskContext, ZartStep};
 pub use durable::DurableScheduler;
 pub use error::{SchedulerError, StepError, TaskError};
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
@@ -64,19 +65,23 @@ pub use retry::RetryConfig;
 pub use worker::{Worker, WorkerConfig};
 
 // Re-export proc macros from zart-macros
-pub use zart_macros::{z_durable_loop, z_wait_event, zart_capture, zart_durable, zart_step};
+pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 
 /// Commonly used types re-exported for ergonomic imports.
 ///
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
     pub use crate::{
+        ExecutionInfo,
         api_trait::DurableApi,
-        context::{ExecuteStep, StepContext, StepHandle, TaskContext, ZartStep},
+        capture, context,
+        context::{StepHandle, ZartStep},
         durable::DurableScheduler,
         error::{SchedulerError, StepError, TaskError},
+        now,
         registry::{DurableExecution, TaskRegistry},
         retry::RetryConfig,
+        schedule, sleep, sleep_until, step, wait, wait_for_event,
         worker::{Worker, WorkerConfig},
     };
     pub use scheduler::{

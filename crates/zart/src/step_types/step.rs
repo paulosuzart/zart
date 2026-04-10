@@ -24,12 +24,14 @@ pub struct ExecuteLambda;
 impl StepBehavior for ExecuteLambda {
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         step_name: &str,
         lambda: Option<PendingFn>,
     ) -> Result<StepResult, StepError> {
         if let Some(pending) = lambda {
-            let json = pending(ctx.step_context()).await?;
+            let json = crate::local::ZART_PHASE
+                .scope(crate::local::Phase::Step(ctx.step_context()), pending())
+                .await?;
             return Ok(StepResult::Executed(json));
         }
 
@@ -73,7 +75,7 @@ pub struct TransitionOnly;
 impl StepBehavior for TransitionOnly {
     async fn handle(
         &self,
-        _ctx: &mut TaskContext,
+        _ctx: &TaskContext,
         _step_name: &str,
         _lambda: Option<PendingFn>,
     ) -> Result<StepResult, StepError> {
@@ -93,7 +95,7 @@ pub struct LookupCached;
 impl StepBehavior for LookupCached {
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         step_name: &str,
         _lambda: Option<PendingFn>,
     ) -> Result<StepResult, StepError> {

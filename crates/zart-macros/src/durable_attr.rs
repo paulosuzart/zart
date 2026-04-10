@@ -62,7 +62,7 @@ impl Parse for DurableAttr {
 ///
 /// # Parameters
 ///
-/// - First argument: the task name string (required, informational only)
+/// - First argument: `data` — the deserialized input type
 /// - `timeout = "..."`: optional wall-clock timeout (`"5m"`, `"30s"`, `"2h"`)
 ///
 /// # Function signature
@@ -70,24 +70,15 @@ impl Parse for DurableAttr {
 /// The annotated function must have exactly this shape:
 ///
 /// ```rust,ignore
-/// async fn fn_name(
-///     ctx: &mut TaskContext,
-///     data: DataType,
-/// ) -> Result<OutputType, TaskError>
+/// async fn fn_name(data: DataType) -> Result<OutputType, TaskError>
 /// ```
-///
-/// The first parameter **must** be named `ctx` when used together with
-/// [`z_wait_event!`].
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// #[zart_durable("send-report", timeout = "10m")]
-/// async fn send_report(
-///     ctx: &mut TaskContext,
-///     data: ReportRequest,
-/// ) -> Result<ReportId, TaskError> {
-///     // Use ctx.execute_step(MyStep { ... }) for step execution
+/// async fn send_report(data: ReportRequest) -> Result<ReportId, TaskError> {
+///     // Use zart::step(), zart::schedule(), zart::wait(), etc.
 ///     let id = generate_report(&data).await?;
 ///     Ok(id)
 /// }
@@ -103,31 +94,20 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
 
     // ── Validate and extract parameters ──────────────────────────────────────
     let inputs: Vec<_> = func.sig.inputs.iter().collect();
-    if inputs.len() < 2 {
+    if inputs.is_empty() {
         return Err(syn::Error::new_spanned(
             &func.sig,
-            "#[zart_durable] requires at least two parameters: `ctx` and `data`",
+            "#[zart_durable] requires one parameter: `data`",
         ));
     }
 
-    // First param (ctx): extract the pattern; type is enforced by the trait impl.
-    let ctx_pat = match inputs[0] {
-        syn::FnArg::Typed(pt) => &pt.pat,
+    // Single param (data): extract both pattern and type.
+    let (data_pat, data_type) = match inputs[0] {
+        syn::FnArg::Typed(pt) => (&pt.pat, &pt.ty),
         syn::FnArg::Receiver(_) => {
             return Err(syn::Error::new_spanned(
                 inputs[0],
                 "#[zart_durable] cannot be applied to a method with `self`",
-            ));
-        }
-    };
-
-    // Second param (data): extract both pattern and type.
-    let (data_pat, data_type) = match inputs[1] {
-        syn::FnArg::Typed(pt) => (&pt.pat, &pt.ty),
-        syn::FnArg::Receiver(_) => {
-            return Err(syn::Error::new_spanned(
-                inputs[1],
-                "second parameter cannot be `self`",
             ));
         }
     };
@@ -158,7 +138,6 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
 
             async fn run(
                 &self,
-                #ctx_pat: &mut ::zart::context::TaskContext,
                 #data_pat: Self::Data,
             ) -> ::std::result::Result<Self::Output, ::zart::error::TaskError> {
                 #body

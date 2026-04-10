@@ -72,9 +72,11 @@ struct BreweryRaw {
 async fn lookup_zip(
     client: &reqwest::Client,
     zip_code: &str,
-    ctx: StepContext,
 ) -> Result<(String, String), StepError> {
-    println!("[lookup-zip] Attempt {}", ctx.current_attempt() + 1);
+    println!(
+        "[lookup-zip] Attempt {}",
+        zart::context().current_attempt + 1
+    );
 
     let resp = client
         .get(format!("https://api.zippopotam.us/us/{zip_code}"))
@@ -103,9 +105,11 @@ async fn lookup_zip(
 async fn find_breweries(
     client: &reqwest::Client,
     city: &str,
-    ctx: StepContext,
 ) -> Result<Vec<BreweryRaw>, StepError> {
-    println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
+    println!(
+        "[find-breweries] Attempt {}",
+        zart::context().current_attempt + 1
+    );
 
     let resp = client
         .get("https://api.openbrewerydb.org/v1/breweries")
@@ -129,9 +133,8 @@ async fn transform_results(
     raw: &[BreweryRaw],
     city: &str,
     state: &str,
-    ctx: StepContext,
 ) -> Result<Vec<BreweryInfo>, StepError> {
-    let _ = ctx.current_attempt();
+    let _ = zart::context().current_attempt;
     Ok(raw
         .iter()
         .map(|b| BreweryInfo {
@@ -149,24 +152,14 @@ async fn transform_results(
 // ── Durable handler ──────────────────────────────────────────────────────────
 
 #[zart::zart_durable("brewery-finder", timeout = "5m")]
-async fn brewery_finder(
-    ctx: &mut TaskContext,
-    data: FinderInput,
-) -> Result<FinderOutput, TaskError> {
+async fn brewery_finder(data: FinderInput) -> Result<FinderOutput, zart::error::TaskError> {
     let client = reqwest::Client::new();
 
-    // Step 1: Look up ZIP code → (city, state)
-    let (city, state) = ctx
-        .execute_step(lookup_zip(&client, &data.zip_code))
-        .await?;
+    let (city, state) = lookup_zip(&client, &data.zip_code).await?;
 
-    // Step 2: Find breweries in the city
-    let raw_breweries = ctx.execute_step(find_breweries(&client, &city)).await?;
+    let raw_breweries = find_breweries(&client, &city).await?;
 
-    // Step 3: Transform into structured output
-    let breweries = ctx
-        .execute_step(transform_results(&raw_breweries, &city, &state))
-        .await?;
+    let breweries = transform_results(&raw_breweries, &city, &state).await?;
 
     Ok(FinderOutput {
         zip_code: data.zip_code,
@@ -193,22 +186,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
-    // Connect and run migrations
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresScheduler::new(pool));
     sched.run_migrations().await?;
 
-    // Register the macro-generated handler
     let mut registry = TaskRegistry::new();
     registry.register("brewery-finder", BreweryFinder);
     let registry = Arc::new(registry);
 
-    // Start durable execution
     let execution_id = format!("brewery-finder-demo-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone());
 
     let input = FinderInput {
-        zip_code: "97209".to_string(), // Portland, OR — lots of breweries
+        zip_code: "97209".to_string(),
     };
 
     println!(
@@ -219,7 +209,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start_typed(&execution_id, "brewery-finder", &input)
         .await?;
 
-    // Run worker
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
@@ -232,14 +221,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    // Wait a moment for the worker to start polling
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Check initial status
     let initial_status = durable.status(&execution_id).await?;
     println!("Initial execution status: {:?}\n", initial_status.status);
 
-    // Wait for completion
     println!("Waiting for execution to complete...\n");
     let record = durable
         .wait(&execution_id, Duration::from_secs(60), None)

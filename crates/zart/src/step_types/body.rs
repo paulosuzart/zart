@@ -29,7 +29,7 @@ pub struct LookupOrSchedule;
 impl BodyBehavior for LookupOrSchedule {
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         req: &StepRequest<'_>,
     ) -> Result<serde_json::Value, StepError> {
         let step_name = req.step_name;
@@ -118,7 +118,7 @@ pub struct LookupOrScheduleSleep;
 impl BodyBehavior for LookupOrScheduleSleep {
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         req: &StepRequest<'_>,
     ) -> Result<serde_json::Value, StepError> {
         let wake_time = match req.kind {
@@ -192,7 +192,7 @@ pub struct LookupOrScheduleEvent;
 impl BodyBehavior for LookupOrScheduleEvent {
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         req: &StepRequest<'_>,
     ) -> Result<serde_json::Value, StepError> {
         let deadline = match req.kind {
@@ -291,7 +291,7 @@ pub struct LookupOrScheduleWaitGroupBarrier;
 impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         req: &StepRequest<'_>,
     ) -> Result<serde_json::Value, StepError> {
         let (group_step_name, child_names, threshold) = match &req.kind {

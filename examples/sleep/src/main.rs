@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::error::TaskError;
-use zart::{prelude::*, zart_capture};
+use zart::prelude::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SleepInput {
@@ -25,16 +25,12 @@ impl DurableExecution for SleepTask {
     type Data = SleepInput;
     type Output = SleepOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        let started_at = zart_capture!(ctx, "started-at", chrono::Utc::now());
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        let started_at = zart::capture!("started-at", chrono::Utc::now());
 
-        ctx.sleep("initial-sleep", Duration::from_secs(5)).await?;
+        zart::sleep("initial-sleep", Duration::from_secs(5)).await?;
 
-        let resumed_at = zart_capture!(ctx, "resumed-at", chrono::Utc::now());
+        let resumed_at = zart::capture!("resumed-at", chrono::Utc::now());
 
         Ok(SleepOutput {
             task_name: data.task_name,

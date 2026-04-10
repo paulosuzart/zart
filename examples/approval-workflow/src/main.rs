@@ -5,7 +5,7 @@
 //! 2. Wait for manager approval event (with timeout)
 //! 3. Act on the approval decision
 //!
-//! Features: #[zart_durable], #[zart_step], wait_for_event, event delivery.
+//! Features: DurableExecution trait, #[zart_step], wait_for_event, event delivery.
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
@@ -44,11 +44,8 @@ struct ApprovalOutput {
 // ── Step definitions ──────────────────────────────────────────────────────────
 
 #[zart_step("validate-request")]
-async fn validate_request(
-    request: &ApprovalRequest,
-    ctx: StepContext,
-) -> Result<String, StepError> {
-    let _ = ctx.current_attempt();
+async fn validate_request(request: &ApprovalRequest) -> Result<String, StepError> {
+    let _ = zart::context().current_attempt;
     if request.requester_name.is_empty() {
         return Err(StepError::Failed {
             step: "validate-request".to_string(),
@@ -62,13 +59,8 @@ async fn validate_request(
 }
 
 #[zart_step("process-approved")]
-async fn process_approved(
-    resource: &str,
-    requester: &str,
-    ctx: StepContext,
-) -> Result<String, StepError> {
-    let _ = ctx.current_attempt();
-    // In a real system, this would provision the resource
+async fn process_approved(resource: &str, requester: &str) -> Result<String, StepError> {
+    let _ = zart::context().current_attempt;
     Ok(format!("Provisioned {} for {}", resource, requester))
 }
 
@@ -81,24 +73,14 @@ impl DurableExecution for ApprovalTask {
     type Data = ApprovalRequest;
     type Output = ApprovalOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        // Step 1: Validate the request
-        let _validated = ctx.execute_step(validate_request(&data)).await?;
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        let _validated = validate_request(&data).await?;
 
-        // Step 2: Wait for manager approval
-        let decision: ApprovalDecision = ctx
-            .wait_for_event("manager-approval", Some(Duration::from_secs(120)))
-            .await?;
+        let decision: ApprovalDecision =
+            zart::wait_for_event("manager-approval", Some(Duration::from_secs(120))).await?;
 
-        // Step 3: Act on the decision
         if decision.approved {
-            let _provisioned = ctx
-                .execute_step(process_approved(&data.resource, &data.requester_name))
-                .await?;
+            let _provisioned = process_approved(&data.resource, &data.requester_name).await?;
         }
 
         Ok(ApprovalOutput {
@@ -156,7 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start_typed(&execution_id, "approval-task", &request)
         .await?;
 
-    // Start worker
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
@@ -169,12 +150,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    // Wait a bit for the execution to park itself waiting for the event
     tokio::time::sleep(Duration::from_secs(2)).await;
     println!("\nExecution is waiting for manager approval...");
     println!("(Simulating manager delivering the event after 2 seconds)\n");
 
-    // Simulate manager approval
     tokio::time::sleep(Duration::from_secs(2)).await;
     let decision = ApprovalDecision {
         approved: true,
@@ -192,7 +171,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    // Wait for completion
     let record = durable
         .wait(&execution_id, Duration::from_secs(30), None)
         .await?;

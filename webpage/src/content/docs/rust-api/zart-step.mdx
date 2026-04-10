@@ -1,6 +1,6 @@
 ---
 title: ZartStep Trait
-description: Defining durable steps with the ZartStep trait — the contract that powers ctx.execute_step().
+description: Defining durable steps with the ZartStep trait — the contract that powers zart::step().
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -30,15 +30,15 @@ pub trait ZartStep {
     fn timeout(&self) -> Option<Duration> { None }
 
     /// Override the step identity at the call site.
-    fn with_id(self, id: impl Into<String>) -> StepWithId<Self> where Self: Sized;
+    fn named(self, id: impl Into<String>) -> NamedStep<Self> where Self: Sized;
 
-    /// The step's actual logic.
-    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
+    /// The step's actual logic. No ctx parameter — use zart::context() for metadata.
+    async fn run(&self) -> Result<Self::Output, StepError>;
 }
 ```
 
 <Aside type="tip">
-The `run()` method receives a `StepContext` (not `TaskContext`) — a read-only view of execution metadata like `current_attempt()`, `max_retries()`, and `is_retry_attempt()`. Use these to inspect retry state inside your step.
+The `run()` method has no context parameter. Use `zart::context()` to read execution metadata (current attempt, retry state, execution ID) from anywhere in the call stack — including from within a step body.
 </Aside>
 
 ## Step Name Uniqueness
@@ -50,7 +50,7 @@ Two mechanisms ensure uniqueness:
 | Mechanism | Where the name is set | Best for |
 |---|---|---|
 | `{field}` template in `#[zart_step]` | Step definition | Loop index or key fields that are always part of the identity |
-| `.with_id("...")` at the call site | Call site in the durable body | When the naming scheme depends on orchestration context |
+| `.named("...")` at the call site | Call site in the durable body | When the naming scheme depends on orchestration context |
 
 ## Manual Implementation
 
@@ -79,8 +79,8 @@ impl ZartStep for LookupZipStep<'_> {
         Some(RetryConfig::exponential(3, Duration::from_secs(1)))
     }
 
-    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
-        println!("[lookup-zip] Attempt {}", ctx.current_attempt() + 1);
+    async fn run(&self) -> Result<Self::Output, StepError> {
+        println!("[lookup-zip] Attempt {}", zart::context().current_attempt + 1);
 
         let resp = self.client
             .get(format!("https://api.zippopotam.us/us/{}", self.zip_code))
@@ -115,7 +115,7 @@ impl ZartStep for ProcessRegionStep {
         Cow::Owned(format!("process-{}", self.region))
     }
 
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         process_region(&self.region).await
     }
 }
@@ -123,28 +123,20 @@ impl ZartStep for ProcessRegionStep {
 
 ### Using the Step
 
-Execute it via `ctx.execute_step()`:
+Execute via `zart::step()`:
 
 ```rust
-let (city, state) = ctx.execute_step(LookupZipStep {
+let (city, state) = zart::step(LookupZipStep {
     client: &client,
     zip_code: &data.zip_code,
 }).await?;
 ```
 
-Or use the generated `_step` function for a flat call:
+Or if the step implements `IntoFuture` (macro-generated steps do), await it directly:
 
 ```rust
-let (city, state) = lookup_zip_step(&mut ctx, &client, &data.zip_code).await?;
+let (city, state) = lookup_zip(&client, &data.zip_code).await?;
 ```
-
-Or the `ExecuteStep` trait's `.execute()` method:
-
-```rust
-let (city, state) = lookup_zip(&client, &data.zip_code).execute(&mut ctx).await?;
-```
-
-See [Macros](/rust-api/macros/) for a full comparison of all three forms.
 
 ## Retry Configuration
 
@@ -189,27 +181,27 @@ Each step call in an execution must have a **unique name** — reusing the same 
 Two mechanisms make this easy:
 
 - **`{field}` template** — embed a struct field in the step name at definition time: `#[zart_step("fetch-page-{page}")]`. The macro generates a dynamic name at runtime.
-- **`.with_id()`** — override the step identity at the call site: `ctx.execute_step(my_step().with_id(format!("my-step-{i}")))`.
+- **`.named()`** — override the step identity at the call site: `my_step().named(format!("my-step-{i}")).await?`.
 
 See [Durable Loops](/rust-api/loops/) for full patterns, examples, and guidance on which mechanism to use.
 
 ## Parallel Steps
 
-Schedule multiple steps for concurrent execution using `ctx.schedule_step()`:
+Schedule multiple steps for concurrent execution using `zart::schedule()`:
 
 ```rust
-let h1 = ctx.schedule_step(CheckServiceStep { service: "auth-api" });
-let h2 = ctx.schedule_step(CheckServiceStep { service: "payments" });
-let h3 = ctx.schedule_step(CheckServiceStep { service: "users-db" });
+let h1 = zart::schedule(check_service("auth-api".into()));
+let h2 = zart::schedule(check_service("payments".into()));
+let h3 = zart::schedule(check_service("users-db".into()));
 
 // Wait for all — survives restarts
-let results = ctx.wait_all(vec![h1, h2, h3]).await?;
+let results = zart::wait(vec![h1, h2, h3]).await?;
 ```
 
-Each `schedule_step` call creates a separate row in the scheduler. Sub-steps can run on different workers simultaneously.
+Each `zart::schedule` call creates a separate row in the scheduler. Sub-steps can run on different workers simultaneously.
 
 <Aside type="caution">
-`wait_all` durably persists all scheduled steps before executing them. If the process restarts during `wait_all`, it resumes from where it left off — no step is lost or duplicated.
+`zart::wait` durably persists all scheduled steps before executing them. If the process restarts during the wait, it resumes from where it left off — no step is lost or duplicated.
 </Aside>
 
 ## Macro vs Manual
@@ -220,24 +212,19 @@ The `#[zart_step]` macro generates the exact same code as a manual implementatio
 |---|---|---|
 | **Verbosity** | One function + struct generated | Struct + trait impl |
 | **Control** | Good for most cases | Full control over struct, lifetimes |
-| **Testing** | Call `_inner` or `struct.run()` | Instantiate struct, call `run()` |
-| **Calling styles** | Three: `execute_step()`, `.execute(ctx)`, `_step()` | One: `execute_step(struct)` |
+| **Calling** | Direct `.await`, or `zart::step()` | `zart::step(struct)` |
 | **Reuse** | Import and call the function | Import and instantiate the struct |
 | **Lifetime handling** | Macro injects `'a` automatically | You manage lifetimes explicitly |
 
 ```rust
-// Macro style — the #[zart_step] macro generates a struct + impl ZartStep
+// Macro style
 #[zart_step("lookup-zip", retry = "exponential(3, 1s)")]
-async fn lookup_zip(
-    client: &reqwest::Client,
-    zip_code: &str,
-    ctx: StepContext,
-) -> Result<(String, String), StepError> {
+async fn lookup_zip(client: &reqwest::Client, zip_code: &str) -> Result<(String, String), StepError> {
     // ... step logic
 }
 
-// Usage:
-let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
+// Direct await:
+let (city, state) = lookup_zip(&client, &data.zip_code).await?;
 ```
 
 ## Full Example
@@ -264,7 +251,7 @@ impl ZartStep for ValidateRequestStep {
         Cow::Borrowed("validate-request")
     }
 
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         if self.request.requester_name.is_empty() {
             return Err(StepError::Failed {
                 step: "validate-request".into(),
@@ -290,7 +277,7 @@ impl ZartStep for ProcessApprovedStep {
         Cow::Borrowed("process-approved")
     }
 
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(format!("Provisioned {} for {}", self.resource, self.requester))
     }
 }
@@ -304,19 +291,14 @@ impl DurableExecution for ApprovalTask {
     type Data = ApprovalRequest;
     type Output = ApprovalOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        ctx.execute_step(ValidateRequestStep { request: data.clone() }).await?;
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        zart::step(ValidateRequestStep { request: data.clone() }).await?;
 
-        let decision: ApprovalDecision = ctx
-            .wait_for_event("manager-approval", Some(Duration::from_secs(7200)))
-            .await?;
+        let decision: ApprovalDecision =
+            zart::wait_for_event("manager-approval", Some(Duration::from_secs(7200))).await?;
 
         if decision.approved {
-            ctx.execute_step(ProcessApprovedStep {
+            zart::step(ProcessApprovedStep {
                 resource: data.resource.clone(),
                 requester: data.requester_name.clone(),
             }).await?;

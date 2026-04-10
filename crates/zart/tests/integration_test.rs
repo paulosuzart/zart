@@ -19,7 +19,7 @@ mod integration {
     use uuid::Uuid;
     use zart::{
         DurableScheduler, RetryConfig, TaskRegistry, Worker, WorkerConfig,
-        context::{TaskContext, ZartStep},
+        context::ZartStep,
         error::{StepError, TaskError},
         registry::DurableExecution,
         step_types::{
@@ -73,8 +73,8 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-one")
         }
-        async fn run(&self, ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
-            println!("[step-one] Attempt {}", ctx.current_attempt() + 1);
+        async fn run(&self) -> Result<Self::Output, StepError> {
+            println!("[step-one] Attempt {}", zart::context().current_attempt + 1);
             Ok(21i32)
         }
     }
@@ -89,7 +89,7 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-two")
         }
-        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             println!("[step-two] running");
             Ok(self.step1_result * 2)
         }
@@ -102,17 +102,12 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
-            let step1: i32 = ctx.execute_step(StepOne).await?;
-            let step2: i32 = ctx
-                .execute_step(StepTwo {
-                    step1_result: step1,
-                })
-                .await?;
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            let step1: i32 = zart::step(StepOne).await?;
+            let step2: i32 = zart::step(StepTwo {
+                step1_result: step1,
+            })
+            .await?;
             Ok(serde_json::json!({ "answer": step2 }))
         }
     }
@@ -126,7 +121,7 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("fail-step")
         }
-        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             println!("[fail-step] Failing intentionally");
             Err(StepError::Failed {
                 step: "fail-step".to_string(),
@@ -142,12 +137,8 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
-            ctx.execute_step(FailStep).await?;
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            zart::step(FailStep).await?;
             Ok(serde_json::json!({}))
         }
     }
@@ -166,12 +157,12 @@ mod integration {
         fn retry_config(&self) -> Option<RetryConfig> {
             Some(RetryConfig::fixed(3, Duration::from_millis(50)))
         }
-        async fn run(&self, ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             let count = self.attempts.fetch_add(1, Ordering::SeqCst);
             println!(
                 "[transient-step] Attempt {} (0-indexed: {})",
-                ctx.current_attempt() + 1,
-                ctx.current_attempt()
+                zart::context().current_attempt + 1,
+                zart::context().current_attempt
             );
             if count < 2 {
                 Err(StepError::Failed {
@@ -193,16 +184,11 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
-            let result: String = ctx
-                .execute_step(TransientStep {
-                    attempts: self.attempts.clone(),
-                })
-                .await?;
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            let result: String = zart::step(TransientStep {
+                attempts: self.attempts.clone(),
+            })
+            .await?;
             Ok(serde_json::json!({ "result": result }))
         }
     }
@@ -323,14 +309,9 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
-            let approval: ApprovalPayload = ctx
-                .wait_for_event("approve", Some(Duration::from_secs(30)))
-                .await?;
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            let approval: ApprovalPayload =
+                zart::wait_for_event("approve", Some(Duration::from_secs(30))).await?;
             Ok(serde_json::json!({ "approved": approval.approved }))
         }
     }
@@ -488,7 +469,7 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-a")
         }
-        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             println!("[step-a] running");
             Ok(1)
         }
@@ -502,7 +483,7 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-b")
         }
-        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             println!("[step-b] running");
             Ok(2)
         }
@@ -516,7 +497,7 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-c")
         }
-        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             println!("[step-c] running");
             Ok(3)
         }
@@ -529,16 +510,12 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
-            let h1 = ctx.schedule_step(StepA);
-            let h2 = ctx.schedule_step(StepB);
-            let h3 = ctx.schedule_step(StepC);
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            let h1 = zart::schedule(StepA);
+            let h2 = zart::schedule(StepB);
+            let h3 = zart::schedule(StepC);
 
-            let results = ctx.wait_all(vec![h1, h2, h3]).await?;
+            let results = zart::wait(vec![h1, h2, h3]).await?;
             let sum: i32 = results.into_iter().map(|r| r.unwrap()).sum();
             Ok(serde_json::json!({ "sum": sum }))
         }
@@ -1057,11 +1034,7 @@ mod integration {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
-            async fn run(
-                &self,
-                _ctx: &mut TaskContext,
-                _data: Self::Data,
-            ) -> Result<Self::Output, TaskError> {
+            async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
                 self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(serde_json::json!({}))
             }
@@ -1129,10 +1102,7 @@ mod integration {
             fn retry_config(&self) -> Option<RetryConfig> {
                 Some(RetryConfig::fixed(1, Duration::from_millis(50)))
             }
-            async fn run(
-                &self,
-                _ctx: zart::context::StepContext,
-            ) -> Result<Self::Output, StepError> {
+            async fn run(&self) -> Result<Self::Output, StepError> {
                 Err(StepError::Failed {
                     step: "always-fail".to_string(),
                     reason: "permanent error".to_string(),
@@ -1147,12 +1117,8 @@ mod integration {
             type Data = serde_json::Value;
             type Output = serde_json::Value;
 
-            async fn run(
-                &self,
-                ctx: &mut TaskContext,
-                _data: Self::Data,
-            ) -> Result<Self::Output, TaskError> {
-                ctx.execute_step(AlwaysFailStep).await?;
+            async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+                zart::step(AlwaysFailStep).await?;
                 Ok(serde_json::json!({}))
             }
         }
@@ -1203,11 +1169,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            _ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
             self.started.notify_one();
             self.gate.notified().await;
             Ok(serde_json::json!({ "done": true }))
@@ -1224,7 +1186,7 @@ mod integration {
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("gated-step")
         }
-        async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             println!("[gated-step] Scheduling step");
             Ok(1)
         }
@@ -1240,11 +1202,7 @@ mod integration {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            ctx: &mut TaskContext,
-            _data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
             // Signal that we entered the handler (before the step call).
             self.started.notify_one();
             // Wait for the test to cancel the execution.
@@ -1252,7 +1210,7 @@ mod integration {
 
             // This is the first call: returns StepError::Scheduled, causing
             // the worker to call update_task_state and re-queue the task.
-            ctx.execute_step(GatedStep).await?;
+            zart::step(GatedStep).await?;
 
             Ok(serde_json::json!({}))
         }
@@ -1344,7 +1302,7 @@ mod integration {
         // Cancel the execution while the handler is still paused.
         durable.cancel(&execution_id).await.expect("cancel failed");
 
-        // Release the handler; it will now call ctx.execute_step(...) for the first time,
+        // Release the handler; it will now call zart::step(...) for the first time,
         // which returns StepError::Scheduled.
         gate.notify_one();
 

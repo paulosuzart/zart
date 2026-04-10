@@ -1,6 +1,5 @@
 //! Internal state types: StepHandle, attempt history, step records, and ExecutionState.
 
-use super::step_context::StepContext;
 use crate::error::StepError;
 use crate::retry::RetryConfig;
 use serde::{Deserialize, Serialize};
@@ -10,13 +9,13 @@ use std::pin::Pin;
 
 // ── Internal type alias ───────────────────────────────────────────────────────
 
-/// A boxed, one-shot async function that receives a [`StepContext`] and yields a
-/// JSON-serialized step result. Used internally by [`StepHandle`] to store a
-/// pending step lambda.
+/// A boxed, one-shot async function that yields a JSON-serialized step result.
+/// Used internally by [`StepHandle`] to store a pending step lambda.
+///
+/// After Phase 3, the step context lives in task-local storage, so the lambda
+/// takes no arguments.
 pub(crate) type PendingFn = Box<
-    dyn FnOnce(
-            StepContext,
-        ) -> Pin<
+    dyn FnOnce() -> Pin<
             Box<dyn Future<Output = Result<serde_json::Value, StepError>> + Send + 'static>,
         > + Send
         + 'static,

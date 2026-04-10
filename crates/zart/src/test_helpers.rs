@@ -351,3 +351,34 @@ impl DurableStorage for RecordingScheduler {
         Ok(())
     }
 }
+
+// ── Task-local test helper ─────────────────────────────────────────────────────
+
+/// Run `fut` with both `ZART_CTX` and `ZART_PHASE` task-locals set.
+///
+/// Use this in unit tests that need to exercise free functions that read
+/// the task-local context (e.g., `zart::context()`, `zart::step()`).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (scheduler, _) = RecordingScheduler::builder().build();
+/// let ctx = Arc::new(make_body_ctx(scheduler));
+///
+/// let info = with_test_ctx(ctx, crate::local::Phase::Body, async {
+///     zart::context()
+/// }).await;
+/// assert_eq!(info.execution_id, "exec-1");
+/// ```
+pub async fn with_test_ctx<F, T>(
+    ctx: std::sync::Arc<crate::context::TaskContext>,
+    phase: crate::local::Phase,
+    fut: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    crate::local::ZART_CTX
+        .scope(ctx, crate::local::ZART_PHASE.scope(phase, fut))
+        .await
+}

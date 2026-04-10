@@ -14,13 +14,13 @@ Each step call is stored in the database as `{execution_id}:step:{step_name}` wi
 ```rust
 // ❌ Wrong — all iterations share "process-item", second gets first's result
 for item in items {
-    ctx.execute_step(ProcessItemStep { item }).await?;
+    process_item(item).await?;
     // step name is always "process-item" — bug!
 }
 
 // ✅ Correct — each iteration has a unique name
 for (i, item) in items.iter().enumerate() {
-    ctx.execute_step(ProcessItemStep { item, index: i }).await?;
+    process_item(i, item.clone()).await?;
     // step names: "process-item-0", "process-item-1", ...
 }
 ```
@@ -33,14 +33,14 @@ Embed a struct field directly in the step name at definition time. The macro gen
 
 ```rust
 #[zart_step("process-item-{index}")]
-async fn process_item(index: usize, item: Item, ctx: StepContext) -> Result<Output, StepError> {
+async fn process_item(index: usize, item: Item) -> Result<Output, StepError> {
     // step_name() returns "process-item-0", "process-item-1", etc.
     transform(item).await
 }
 
 // In the durable handler — nothing special needed at the call site:
 for (i, item) in items.iter().enumerate() {
-    ctx.execute_step(process_item(i, item.clone())).await?;
+    process_item(i, item.clone()).await?;
 }
 ```
 
@@ -48,43 +48,43 @@ Any field implementing `Display` can appear in the template. Multiple placeholde
 
 ```rust
 #[zart_step("process-{region}-{shard}")]
-async fn process_shard(region: &str, shard: u32, ctx: StepContext) -> Result<(), StepError> {
+async fn process_shard(region: &str, shard: u32) -> Result<(), StepError> {
     // "process-us-east-1-0", "process-us-east-1-1", etc.
 }
 ```
 
-### Option 2 — `.with_id()` at the call site
+### Option 2 — `.named()` at the call site
 
 Override the step name when the unique key isn't captured in the step struct, or when you reuse a step definition under different identities:
 
 ```rust
 #[zart_step("send-notification")]
-async fn send_notification(user_id: &str, ctx: StepContext) -> Result<(), StepError> {
+async fn send_notification(user_id: &str) -> Result<(), StepError> {
     notify(user_id).await
 }
 
 // Give each call a unique name at the call site:
 for (i, user_id) in recipients.iter().enumerate() {
-    ctx.execute_step(
-        send_notification(user_id).with_id(format!("send-notification-{i}"))
-    ).await?;
+    send_notification(user_id)
+        .named(format!("send-notification-{i}"))
+        .await?;
 }
 ```
 
 <Aside type="note">
-`.with_id()` overrides `step_name()` entirely. Retries, timeouts, and the `run()` logic are still taken from the inner step.
+`.named()` overrides `step_name()` entirely. Retries, timeouts, and the `run()` logic are still taken from the inner step.
 </Aside>
 
 ### Choosing between the two
 
-| | `{field}` template | `.with_id()` |
+| | `{field}` template | `.named()` |
 |---|---|---|
 | **Where the name is set** | Step definition | Call site in the durable body |
 | **Same step, different naming schemes** | Requires two definitions | One definition, two call sites |
 | **Naming involves orchestration data** | No — struct fields only | Yes — any expression |
 | **Risk of forgetting** | Lower — always part of the definition | Higher — must remember at each call |
 
-Use `{field}` when the unique key is naturally a field of the step (loop index, item ID). Use `.with_id()` when the unique key comes from orchestration context not captured in the struct.
+Use `{field}` when the unique key is naturally a field of the step (loop index, item ID). Use `.named()` when the unique key comes from orchestration context not captured in the struct.
 
 ## Pattern: Fetch + Iterate
 
@@ -92,27 +92,25 @@ Always fetch the item list inside a step. This ensures the exact same list is re
 
 ```rust
 #[zart_step("fetch-items")]
-async fn fetch_items(ctx: StepContext) -> Result<Vec<Item>, StepError> {
+async fn fetch_items() -> Result<Vec<Item>, StepError> {
     db.fetch_pending_items().await
 }
 
 #[zart_step("process-item-{index}")]
-async fn process_item(index: usize, item: Item, ctx: StepContext) -> Result<Output, StepError> {
+async fn process_item(index: usize, item: Item) -> Result<Output, StepError> {
     processor.handle(&item).await
 }
 
 #[zart_durable("batch-processor")]
-async fn process_batch(
-    ctx: &mut TaskContext,
-    data: BatchData,
-) -> Result<BatchResult, TaskError> {
-    let items = ctx.execute_step(fetch_items()).await?;
+async fn process_batch(data: BatchData) -> Result<BatchResult, TaskError> {
+    let items = fetch_items().await?;
+    let count = items.len();
 
     for (i, item) in items.into_iter().enumerate() {
-        ctx.execute_step(process_item(i, item)).await?;
+        process_item(i, item).await?;
     }
 
-    Ok(BatchResult { processed: items_count })
+    Ok(BatchResult { processed: count })
 }
 ```
 
@@ -128,34 +126,31 @@ Read items, transform each one, write results — all durable:
 
 ```rust
 #[zart_step("fetch-records")]
-async fn fetch_records(ctx: StepContext) -> Result<Vec<Record>, StepError> {
+async fn fetch_records() -> Result<Vec<Record>, StepError> {
     db.query("SELECT * FROM pending").await
 }
 
 #[zart_step("transform-record-{index}")]
-async fn transform_record(index: usize, record: Record, ctx: StepContext) -> Result<Output, StepError> {
+async fn transform_record(index: usize, record: Record) -> Result<Output, StepError> {
     transformer.apply(&record).await
 }
 
 #[zart_step("write-results")]
-async fn write_results(outputs: Vec<Output>, ctx: StepContext) -> Result<(), StepError> {
+async fn write_results(outputs: Vec<Output>) -> Result<(), StepError> {
     db.batch_insert(&outputs).await
 }
 
 #[zart_durable("data-pipeline")]
-async fn run_pipeline(
-    ctx: &mut TaskContext,
-    _data: PipelineInput,
-) -> Result<(), TaskError> {
-    let records = ctx.execute_step(fetch_records()).await?;
+async fn run_pipeline(_data: PipelineInput) -> Result<(), TaskError> {
+    let records = fetch_records().await?;
 
     let mut outputs = Vec::new();
     for (i, record) in records.into_iter().enumerate() {
-        let output = ctx.execute_step(transform_record(i, record)).await?;
+        let output = transform_record(i, record).await?;
         outputs.push(output);
     }
 
-    ctx.execute_step(write_results(outputs)).await?;
+    write_results(outputs).await?;
     Ok(())
 }
 ```
@@ -168,12 +163,12 @@ For large datasets, process in fixed-size chunks. Each chunk is its own durable 
 const CHUNK_SIZE: usize = 100;
 
 #[zart_step("get-total-count")]
-async fn get_total_count(ctx: StepContext) -> Result<usize, StepError> {
+async fn get_total_count() -> Result<usize, StepError> {
     db.count_pending_items().await
 }
 
 #[zart_step("process-chunk-{chunk_idx}")]
-async fn process_chunk(chunk_idx: usize, ctx: StepContext) -> Result<usize, StepError> {
+async fn process_chunk(chunk_idx: usize) -> Result<usize, StepError> {
     let offset = chunk_idx * CHUNK_SIZE;
     let items = db.fetch_items(offset, CHUNK_SIZE).await?;
     processor.process_batch(&items).await?;
@@ -181,16 +176,13 @@ async fn process_chunk(chunk_idx: usize, ctx: StepContext) -> Result<usize, Step
 }
 
 #[zart_durable("chunked-processor")]
-async fn run_chunked(
-    ctx: &mut TaskContext,
-    data: BatchInput,
-) -> Result<usize, TaskError> {
-    let total = ctx.execute_step(get_total_count()).await?;
+async fn run_chunked(data: BatchInput) -> Result<usize, TaskError> {
+    let total = get_total_count().await?;
     let num_chunks = total.div_ceil(CHUNK_SIZE);
     let mut processed = 0;
 
     for chunk_idx in 0..num_chunks {
-        processed += ctx.execute_step(process_chunk(chunk_idx)).await?;
+        processed += process_chunk(chunk_idx).await?;
     }
 
     Ok(processed)
@@ -203,8 +195,8 @@ async fn run_chunked(
 
 **Fetch inside a step** — wrap data-fetching in its own step so the same dataset is used on replay.
 
-**Plain `for` loop** — no special macro or wrapper needed. A standard Rust `for` with `ctx.execute_step()` is all it takes.
+**Plain `for` loop** — no special macro or wrapper needed. A standard Rust `for` with direct step `.await` is all it takes.
 
 ## See it in action
 
-The [Durable Loops example](/examples/durable-loops/) processes a batch of reports using both mechanisms: the `{index}` template for per-item processing steps and `.with_id()` for conditional notification steps.
+The [Durable Loops example](/examples/durable-loops/) processes a batch of reports using both mechanisms: the `{index}` template for per-item processing steps and `.named()` for conditional notification steps.

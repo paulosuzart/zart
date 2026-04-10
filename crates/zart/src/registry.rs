@@ -4,6 +4,7 @@ use crate::context::TaskContext;
 use crate::error::TaskError;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A user-defined durable execution handler.
 ///
@@ -24,11 +25,7 @@ use std::collections::HashMap;
 ///     type Data = String;
 ///     type Output = String;
 ///
-///     async fn run(
-///         &self,
-///         _ctx: &mut TaskContext,
-///         data: Self::Data,
-///     ) -> Result<Self::Output, TaskError> {
+///     async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
 ///         Ok(format!("Hello, {}!", data))
 ///     }
 /// }
@@ -42,10 +39,9 @@ pub trait DurableExecution: Send + Sync + 'static {
 
     /// Execute the task.
     ///
-    /// The `ctx` provides the step API and access to the execution state.
     /// `data` is the deserialized input payload provided when the execution was started.
-    async fn run(&self, ctx: &mut TaskContext, data: Self::Data)
-    -> Result<Self::Output, TaskError>;
+    /// Task context is accessed via `zart::context()` and `zart::*` free functions.
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError>;
 
     /// Maximum number of times the entire task (not individual steps) is retried
     /// before being marked as `dead`. Defaults to `0` (no retries).
@@ -61,11 +57,12 @@ pub trait DurableExecution: Send + Sync + 'static {
 
 /// Type-erased internal trait used by [`TaskRegistry`] to dispatch to concrete handlers.
 #[async_trait]
-pub trait RegisteredTask: Send + Sync {
+#[allow(dead_code)]
+pub(crate) trait RegisteredTask: Send + Sync {
     /// Execute the task with raw JSON data, returning a raw JSON result.
     async fn execute(
         &self,
-        ctx: &mut TaskContext,
+        ctx: Arc<TaskContext>,
         raw_data: serde_json::Value,
     ) -> Result<serde_json::Value, TaskError>;
 
@@ -80,14 +77,23 @@ struct DurableExecutionAdapter<T: DurableExecution>(T);
 impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
     async fn execute(
         &self,
-        ctx: &mut TaskContext,
+        ctx: Arc<TaskContext>,
         raw_data: serde_json::Value,
     ) -> Result<serde_json::Value, TaskError> {
         let data: T::Data = serde_json::from_value(raw_data).map_err(|e| {
             TaskError::HandlerPanic(format!("failed to deserialize task data: {e}"))
         })?;
 
-        let output = self.0.run(ctx, data).await?;
+        let output = crate::local::ZART_CTX
+            .scope(ctx, async move {
+                crate::local::ZART_PHASE
+                    .scope(
+                        crate::local::Phase::Body,
+                        async move { self.0.run(data).await },
+                    )
+                    .await
+            })
+            .await?;
 
         serde_json::to_value(output)
             .map_err(|e| TaskError::HandlerPanic(format!("failed to serialize task output: {e}")))
@@ -128,8 +134,25 @@ impl TaskRegistry {
     }
 
     /// Look up a registered handler by task name.
-    pub fn get_handler(&self, task_name: &str) -> Option<&dyn RegisteredTask> {
+    pub(crate) fn get_handler(&self, task_name: &str) -> Option<&dyn RegisteredTask> {
         self.handlers.get(task_name).map(|h| h.as_ref())
+    }
+
+    /// Execute a registered handler with the given raw JSON data.
+    ///
+    /// This sets up task-local scoping and delegates to the internal adapter.
+    /// Useful for testing without running a full worker.
+    pub async fn execute_handler(
+        &self,
+        task_name: &str,
+        ctx: Arc<TaskContext>,
+        raw_data: serde_json::Value,
+    ) -> Result<serde_json::Value, TaskError> {
+        let handler = self
+            .handlers
+            .get(task_name)
+            .ok_or_else(|| TaskError::HandlerPanic(format!("unknown task: {task_name}")))?;
+        handler.execute(ctx, raw_data).await
     }
 
     /// Returns the number of registered handlers.
@@ -161,11 +184,7 @@ mod tests {
         type Data = serde_json::Value;
         type Output = serde_json::Value;
 
-        async fn run(
-            &self,
-            _ctx: &mut TaskContext,
-            data: Self::Data,
-        ) -> Result<Self::Output, TaskError> {
+        async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
             Ok(data)
         }
     }

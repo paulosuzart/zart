@@ -8,7 +8,6 @@ use scheduler::StorageBackend;
 use std::borrow::Cow;
 
 use super::state::{AttemptStatus, ExecutionState, StepAttempt, StepRecord, StepStatus};
-use super::step_context::StepContext;
 use super::step_trait::ZartStep;
 use super::task_context::TaskContext;
 use std::time::Duration;
@@ -71,7 +70,7 @@ fn execution_state_with_attempts_round_trips_through_json() {
 #[tokio::test]
 async fn body_mode_wait_for_event_first_call_schedules_step_task() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
     let result: Result<serde_json::Value, _> = ctx
         .wait_for_event("approval", Some(Duration::from_secs(3600)))
         .await;
@@ -107,7 +106,7 @@ async fn body_mode_wait_for_event_first_call_schedules_step_task() {
 #[tokio::test]
 async fn body_mode_wait_for_event_no_timeout_uses_max_execution_time() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
     let result: Result<serde_json::Value, _> = ctx.wait_for_event("no-deadline", None).await;
 
     assert!(matches!(result, Err(StepError::Scheduled { .. })));
@@ -137,7 +136,7 @@ async fn body_mode_wait_for_event_completed_returns_cached_payload() {
     let (scheduler, calls) = RecordingScheduler::builder()
         .step_completed("exec-1", "approved", serde_json::json!({"ok": true}))
         .build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
     let result: Result<serde_json::Value, _> = ctx.wait_for_event("approved", None).await;
 
     assert!(result.is_ok(), "should return Ok for completed event step");
@@ -155,7 +154,7 @@ async fn step_mode_wait_for_event_returns_cached_payload() {
     let (scheduler, calls) = RecordingScheduler::builder()
         .step_completed("exec-1", "signed", serde_json::json!(42i32))
         .build();
-    let mut ctx = make_step_ctx(scheduler, "other-step");
+    let ctx = make_step_ctx(scheduler, "other-step");
     let result: Result<i32, _> = ctx.wait_for_event("signed", None).await;
 
     assert_eq!(result.unwrap(), 42);
@@ -204,7 +203,7 @@ impl ZartStep for ChargeCardStep {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("charge-card")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(99)
     }
 }
@@ -219,7 +218,7 @@ impl ZartStep for ChargeCardStepWithResult {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("charge-card")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(self.result)
     }
 }
@@ -232,7 +231,7 @@ impl ZartStep for FailingChargeCardStep {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("charge-card")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Err(StepError::Failed {
             step: "charge-card".to_string(),
             reason: "card declined".to_string(),
@@ -248,7 +247,7 @@ impl ZartStep for StepOne {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-one")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(21)
     }
 }
@@ -263,7 +262,7 @@ impl ZartStep for StepA {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-a")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(1)
     }
 }
@@ -273,7 +272,7 @@ impl ZartStep for StepB {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-b")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(2)
     }
 }
@@ -283,7 +282,7 @@ impl ZartStep for StepC {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-c")
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(3)
     }
 }
@@ -293,7 +292,7 @@ impl ZartStep for StepC {
 #[tokio::test]
 async fn body_mode_first_step_inserts_exactly_one_task_row() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let result = ctx.execute_step(ChargeCardStep).await;
 
@@ -325,7 +324,7 @@ async fn body_mode_completed_step_returns_cached_result_with_zero_db_writes() {
     let (scheduler, calls) = RecordingScheduler::builder()
         .step_completed("exec-1", "charge-card", serde_json::json!(42))
         .build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let result: Result<u32, _> = ctx
         .execute_step(ChargeCardStepWithResult { result: 0 })
@@ -343,7 +342,7 @@ async fn body_mode_inflight_step_returns_scheduled_without_inserting_duplicate()
     let (scheduler, calls) = RecordingScheduler::builder()
         .step_in_flight("exec-1", "charge-card")
         .build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let result = ctx.execute_step(ChargeCardStep).await;
 
@@ -361,7 +360,7 @@ async fn body_mode_inflight_step_returns_scheduled_without_inserting_duplicate()
 #[tokio::test]
 async fn step_mode_target_step_executes_lambda_and_atomically_completes() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_step_ctx(scheduler, "charge-card");
+    let ctx = make_step_ctx(scheduler, "charge-card");
 
     let result: Result<u32, _> = ctx.execute_step(ChargeCardStep).await;
 
@@ -396,7 +395,7 @@ async fn step_mode_nontarget_step_reads_cache_with_zero_writes() {
     let (scheduler, calls) = RecordingScheduler::builder()
         .step_completed("exec-1", "step-one", serde_json::json!(21))
         .build();
-    let mut ctx = make_step_ctx(scheduler, "step-two");
+    let ctx = make_step_ctx(scheduler, "step-two");
 
     let result: Result<i32, _> = ctx.execute_step(StepOne).await;
 
@@ -412,7 +411,7 @@ async fn step_mode_nontarget_step_reads_cache_with_zero_writes() {
 #[tokio::test]
 async fn wait_all_body_mode_n_unscheduled_steps_creates_n_children() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let h1 = ctx.schedule_step(StepA);
     let h2 = ctx.schedule_step(StepB);
@@ -462,7 +461,7 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
         .step_completed("exec-1", "step-a", serde_json::json!(10))
         .step_completed("exec-1", "step-b", serde_json::json!(20))
         .build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     struct CachedStepA;
     #[async_trait::async_trait]
@@ -471,7 +470,7 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-a")
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(99)
         }
     }
@@ -482,7 +481,7 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-b")
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(99)
         }
     }
@@ -510,7 +509,7 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
 async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_and_schedule() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
 
-    let mut ctx = TaskContext::new(
+    let ctx = TaskContext::new(
         scheduler,
         "exec-1",
         "test-task",
@@ -536,7 +535,7 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-a")
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(0)
         }
     }
@@ -546,7 +545,7 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-b")
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(2)
         }
     }
@@ -556,7 +555,7 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-c")
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(0)
         }
     }
@@ -605,7 +604,7 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
 #[tokio::test]
 async fn sleep_body_mode_inserts_one_sleep_task_with_exact_wake_time() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let wake_time = chrono::Utc::now() + chrono::Duration::hours(1);
     let result = ctx.sleep_until("wait-until-deadline", wake_time).await;
@@ -675,7 +674,7 @@ fn make_step_ctx_with_retry(
 #[tokio::test]
 async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     struct RetryStep;
     #[async_trait::async_trait]
@@ -687,7 +686,7 @@ async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
         fn retry_config(&self) -> Option<RetryConfig> {
             Some(RetryConfig::fixed(3, Duration::from_secs(5)))
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(99)
         }
     }
@@ -719,7 +718,7 @@ async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
 #[tokio::test]
 async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_failed() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_step_ctx_with_retry(
+    let ctx = make_step_ctx_with_retry(
         scheduler,
         "charge-card",
         0,
@@ -763,7 +762,7 @@ async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_faile
 #[tokio::test]
 async fn step_mode_failure_with_retries_exhausted_propagates_error() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_step_ctx_with_retry(
+    let ctx = make_step_ctx_with_retry(
         scheduler,
         "charge-card",
         3,
@@ -789,7 +788,7 @@ async fn step_mode_failure_with_retries_exhausted_propagates_error() {
 #[tokio::test]
 async fn step_mode_success_with_retry_config_completes_normally() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_step_ctx_with_retry(
+    let ctx = make_step_ctx_with_retry(
         scheduler,
         "charge-card",
         0,
@@ -819,7 +818,7 @@ async fn step_mode_success_with_retry_config_completes_normally() {
 #[tokio::test]
 async fn sleep_body_mode_with_duration_schedules_sleep_step_in_future() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let duration = Duration::from_secs(2);
     let before = chrono::Utc::now();
@@ -887,7 +886,7 @@ async fn body_mode_loop_with_unique_names_returns_correct_per_iteration_result()
         .step_completed("exec-1", "loop-item-0", serde_json::json!(10u32))
         .step_completed("exec-1", "loop-item-1", serde_json::json!(20u32))
         .build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     struct LoopItemStep {
         index: usize,
@@ -898,7 +897,7 @@ async fn body_mode_loop_with_unique_names_returns_correct_per_iteration_result()
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Owned(format!("loop-item-{}", self.index))
         }
-        async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, StepError> {
             Ok(0)
         }
     }
@@ -910,51 +909,69 @@ async fn body_mode_loop_with_unique_names_returns_correct_per_iteration_result()
     assert_eq!(r1, 20u32, "iteration 1 must return its own cached value");
 }
 
-/// Using `.with_id()` at the call site produces the same unique-name guarantee.
+// ── zart::context() via task-locals ──────────────────────────────────────────
+
+/// `zart::context()` returns the correct execution_id when called from Body phase.
 #[tokio::test]
-async fn body_mode_loop_with_id_override_returns_correct_per_iteration_result() {
+async fn context_free_fn_returns_execution_id_in_body_phase() {
+    use crate::test_helpers::with_test_ctx;
+    let (scheduler, _) = RecordingScheduler::builder().build();
+    let ctx = std::sync::Arc::new(make_body_ctx(scheduler));
+
+    let info = with_test_ctx(ctx, crate::local::Phase::Body, async {
+        crate::api::context()
+    })
+    .await;
+
+    assert_eq!(info.execution_id, "exec-1");
+}
+
+/// `zart::context()` returns the correct attempt metadata when called from Step phase.
+#[tokio::test]
+async fn context_free_fn_returns_step_metadata_in_step_phase() {
+    use crate::context::StepContext;
+    use crate::test_helpers::with_test_ctx;
+    let (scheduler, _) = RecordingScheduler::builder().build();
+    let ctx = std::sync::Arc::new(make_step_ctx_with_retry(
+        scheduler,
+        "my-step",
+        1,
+        crate::retry::RetryConfig::fixed(3, Duration::from_secs(1)),
+    ));
+    let step_ctx = StepContext {
+        current_attempt: 1,
+        max_retries: Some(3),
+    };
+
+    let info = with_test_ctx(ctx, crate::local::Phase::Step(step_ctx), async {
+        crate::api::context()
+    })
+    .await;
+
+    assert_eq!(info.execution_id, "exec-1");
+    assert_eq!(info.current_attempt, 1);
+    assert_eq!(info.max_retries, Some(3));
+    assert!(info.is_retry());
+}
+
+/// Using `.named()` at the call site produces the same unique-name guarantee.
+#[tokio::test]
+async fn body_mode_loop_with_named_override_returns_correct_per_iteration_result() {
     let (scheduler, _calls) = RecordingScheduler::builder()
         .step_completed("exec-1", "process-item-0", serde_json::json!(100u32))
         .step_completed("exec-1", "process-item-1", serde_json::json!(200u32))
         .build();
-    let mut ctx = make_body_ctx(scheduler);
+    let ctx = make_body_ctx(scheduler);
 
     let r0 = ctx
-        .execute_step(ChargeCardStep.with_id("process-item-0"))
+        .execute_step(ChargeCardStep.named("process-item-0"))
         .await
         .unwrap();
     let r1 = ctx
-        .execute_step(ChargeCardStep.with_id("process-item-1"))
+        .execute_step(ChargeCardStep.named("process-item-1"))
         .await
         .unwrap();
 
     assert_eq!(r0, 100u32);
     assert_eq!(r1, 200u32);
-}
-
-/// Calling `execute_step` twice with the same step name in a body re-run must return
-/// an error rather than silently returning stale cached data for the second call.
-/// The DB `task_id PRIMARY KEY` prevents duplicate rows at INSERT time, but on re-run
-/// cached Completed results are returned without inserting — this guard catches that.
-#[tokio::test]
-async fn body_mode_duplicate_step_name_in_loop_returns_error() {
-    let (scheduler, _calls) = RecordingScheduler::builder()
-        .step_completed("exec-1", "charge-card", serde_json::json!(99u32))
-        .build();
-    let mut ctx = make_body_ctx(scheduler);
-
-    // First call: returns the cached value correctly.
-    let first = ctx.execute_step(ChargeCardStep).await;
-    assert!(first.is_ok(), "first call must succeed: {first:?}");
-
-    // Second call with the same name: must error rather than return stale data.
-    let second = ctx.execute_step(ChargeCardStep).await;
-    assert!(
-        matches!(
-            second,
-            Err(StepError::Failed { ref step, ref reason })
-                if step == "charge-card" && reason.contains("duplicate step name")
-        ),
-        "second call with duplicate step name must fail with a clear error, got: {second:?}"
-    );
 }

@@ -178,6 +178,7 @@ pub fn extract_ident_from_pattern(pat: &syn::Pat) -> Option<Ident> {
 }
 
 /// Check if a type is `StepContext` (allowing for various paths).
+#[allow(dead_code)] // kept for potential future use; was used in Phase 1-2 macro validation
 pub fn is_step_context_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty
         && let Some(last) = type_path.path.segments.last()

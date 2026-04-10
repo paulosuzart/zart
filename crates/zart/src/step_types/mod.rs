@@ -209,7 +209,7 @@ pub trait BodyBehavior: Send + Sync {
     /// or newly scheduled.
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         req: &StepRequest<'_>,
     ) -> Result<serde_json::Value, StepError>;
 }
@@ -222,7 +222,7 @@ pub trait StepBehavior: Send + Sync {
     /// Must not execute completion logic directly.
     async fn handle(
         &self,
-        ctx: &mut TaskContext,
+        ctx: &TaskContext,
         step_name: &str,
         lambda: Option<PendingFn>,
     ) -> Result<StepResult, StepError>;

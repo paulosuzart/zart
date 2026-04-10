@@ -1,17 +1,16 @@
 //! Parallel Steps Example
 //!
-//! Demonstrates parallel step execution using schedule_step + wait_all:
+//! Demonstrates parallel step execution using schedule + wait:
 //! 1. Schedule 3 independent simulated health checks
 //! 2. Aggregate results into a summary
 //!
-//! Features: schedule_step, wait_all, structured output, #[zart_step].
+//! Features: zart::schedule, zart::wait, structured output, #[zart_step].
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
 use zart::registry::DurableExecution;
@@ -43,9 +42,12 @@ struct HealthCheckOutput {
 
 /// A health check step that simulates checking a service.
 #[zart_step("check-service")]
-async fn check_service(service: String, ctx: StepContext) -> Result<ServiceResult, StepError> {
-    println!("[check-{}] Attempt {}", service, ctx.current_attempt() + 1);
-    // Simulate a health check with varying latency and status
+async fn check_service(service: String) -> Result<ServiceResult, StepError> {
+    println!(
+        "[check-{}] Attempt {}",
+        service,
+        zart::context().current_attempt + 1
+    );
     let (status, response_ms, issues) = match service.as_str() {
         "auth-api" => ("healthy".to_string(), 42, vec![]),
         "payments" => (
@@ -77,20 +79,14 @@ impl DurableExecution for HealthCheckTask {
     type Data = HealthCheckInput;
     type Output = HealthCheckOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        // Schedule parallel health checks — one per service
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
         let handles: Vec<StepHandle<ServiceResult>> = data
             .services
             .iter()
-            .map(|service| ctx.schedule_step(check_service(service.clone())))
+            .map(|service| zart::schedule(check_service(service.clone())))
             .collect();
 
-        // Wait for all checks to complete
-        let results = ctx.wait_all(handles).await?;
+        let results = zart::wait(handles).await?;
         let mut service_results = vec![];
         for result in results {
             let svc = result.map_err(|e| TaskError::StepFailed {

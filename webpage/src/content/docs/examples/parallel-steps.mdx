@@ -1,13 +1,13 @@
 ---
 title: Parallel Steps
-description: Run independent steps concurrently with schedule_step and wait_all, then aggregate the results.
+description: Run independent steps concurrently with zart::schedule and zart::wait, then aggregate the results.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-This example runs health checks on three services concurrently. Each check is an independent step scheduled at the same time; `wait_all` collects their results once all complete. A final sequential step aggregates the data into a summary.
+This example runs health checks on three services concurrently. Each check is an independent step scheduled at the same time; `zart::wait` collects their results once all complete. A final sequential step aggregates the data into a summary.
 
-**Features demonstrated:** `#[zart_step]`, `ctx.schedule_step()`, `ctx.wait_all()`, structured output, `DurableExecution` trait.
+**Features demonstrated:** `#[zart_step]`, `zart::schedule()`, `zart::wait()`, structured output, `DurableExecution` trait.
 
 ## Data types
 
@@ -40,8 +40,7 @@ use zart::prelude::*;
 use zart::zart_step;
 
 #[zart_step("check-service")]
-async fn check_service(service: String, ctx: StepContext) -> Result<ServiceResult, StepError> {
-    let _ = ctx.current_attempt();
+async fn check_service(service: String) -> Result<ServiceResult, StepError> {
     let (status, response_ms, issues) = match service.as_str() {
         "auth-api"  => ("healthy".into(),  42,  vec![]),
         "payments"  => ("degraded".into(), 156, vec!["high latency detected".into()]),
@@ -62,20 +61,16 @@ impl DurableExecution for HealthCheckTask {
     type Data   = HealthCheckInput;
     type Output = HealthCheckOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
         // Schedule one step per service — all are registered before any runs
         let handles: Vec<StepHandle<ServiceResult>> = data
             .services
             .iter()
-            .map(|service| ctx.schedule_step(check_service(service.clone())))
+            .map(|service| zart::schedule(check_service(service.clone())))
             .collect();
 
         // Block until every scheduled step has a persisted result
-        let results = ctx.wait_all(handles).await?;
+        let results = zart::wait(handles).await?;
 
         let mut service_results = vec![];
         for result in results {
@@ -144,23 +139,23 @@ Each scheduled step is its own persisted record. If the worker crashes after `au
 
 ```rust
 // Sequential — each step waits for the previous one to finish
-let a = ctx.execute_step(StepA).await?;
-let b = ctx.execute_step(StepB).await?;
-let c = ctx.execute_step(StepC).await?;
+let a = step_a().await?;
+let b = step_b().await?;
+let c = step_c().await?;
 
 // Parallel — all three are registered first, then collected together
-let h1 = ctx.schedule_step(StepA);
-let h2 = ctx.schedule_step(StepB);
-let h3 = ctx.schedule_step(StepC);
-let results = ctx.wait_all(vec![h1, h2, h3]).await?;
+let h1 = zart::schedule(step_a());
+let h2 = zart::schedule(step_b());
+let h3 = zart::schedule(step_c());
+let results = zart::wait(vec![h1, h2, h3]).await?;
 ```
 
 Use parallel steps when the work is independent and order does not matter. Use sequential steps when each step depends on the previous step's output.
 
 ## Key concepts
 
-**`ctx.schedule_step(step)`** — registers the step for execution without waiting. Returns a handle. The step is enqueued in the scheduler and may run on any available worker.
+**`zart::schedule(step)`** — registers the step for execution without waiting. Returns a handle. The step is enqueued in the scheduler and may run on any available worker.
 
-**`ctx.wait_all(handles)`** — suspends the current execution until every handle has a result. Returns results in the same order as the input handles.
+**`zart::wait(handles)`** — suspends the current execution until every handle has a result. Returns results in the same order as the input handles.
 
 **Each step is a separate task** — scheduled steps become independent scheduler tasks. They can run on different workers, in any order, and each has its own retry policy if configured.

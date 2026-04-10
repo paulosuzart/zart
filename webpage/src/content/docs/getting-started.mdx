@@ -8,34 +8,39 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 Here is a complete durable workflow in Zart. Every step persists its result — if your process dies and restarts, completed steps are skipped and the workflow continues from where it stopped.
 
 ```rust
-// 1. Define your workflow
-struct OnboardingTask;
+use zart::{zart_durable, zart_step};
+use zart::prelude::*;
 
-#[async_trait]
-impl DurableExecution for OnboardingTask {
-    type Data   = OnboardingData;
-    type Output = ();
-
-    async fn run(&self, ctx: &mut TaskContext, data: OnboardingData)
-        -> Result<(), TaskError>
-    {
-        // Each step runs exactly once — result is stored in the DB
-        ctx.execute_step(SendEmailStep { email: &data.email }).await?;
-
-        // Retry up to 3x with exponential backoff if billing fails
-        ctx.execute_step(SetupBillingStep { email: &data.email }).await?;
-
-        Ok(())
-    }
+// 1. Define steps as plain async functions — no ctx threading
+#[zart_step("send-email", retry = "exponential(3, 2s)")]
+async fn send_email(email: &str) -> Result<(), StepError> {
+    mailer.send(email, "Welcome!").await
 }
 
-// 2. Register and run a worker
+#[zart_step("setup-billing")]
+async fn setup_billing(email: &str) -> Result<CustomerId, StepError> {
+    stripe.create_customer(email).await
+}
+
+// 2. Compose steps inside a durable handler — just call and await
+#[zart_durable("onboarding")]
+async fn onboarding(data: OnboardingData) -> Result<(), TaskError> {
+    // Each step runs exactly once — result is stored in the DB
+    send_email(&data.email).await?;
+
+    // Retry up to 3x with exponential backoff if billing fails
+    setup_billing(&data.email).await?;
+
+    Ok(())
+}
+
+// 3. Register and run a worker
 let mut registry = TaskRegistry::new();
-registry.register("onboarding", OnboardingTask);
+registry.register("onboarding", Onboarding);
 
 Worker::new(scheduler, registry, WorkerConfig::default()).run().await;
 
-// 3. Schedule an execution (idempotent — safe to call twice with the same ID)
+// 4. Schedule an execution (idempotent — safe to call twice with the same ID)
 scheduler.start_typed("signup-user-42", "onboarding", &OnboardingData {
     user_id: "u-42".into(),
     email: "alice@example.com".into(),
@@ -93,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     let scheduler = Arc::new(PostgresScheduler::new(pool));
 
     let mut registry = TaskRegistry::new();
-    registry.register("onboarding", OnboardingTask);
+    registry.register("onboarding", Onboarding);
 
     Worker::new(scheduler, Arc::new(registry), WorkerConfig::default())
         .run()
@@ -122,8 +127,8 @@ let status = durable.wait("signup-user-42", None).await?;
 
 ## Next Steps
 
-- [DurableExecution Trait](/rust-api/task-handler/) — full reference for `ctx.execute_step()`, retries, sleeps, and events
-- [Macros](/rust-api/macros/) — the `#[zart_durable]` and `#[zart_step]` proc-macro layer for less boilerplate
-- [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `wait_all`
+- [DurableExecution Trait](/rust-api/task-handler/) — full reference for steps, retries, sleeps, and events
+- [Macros](/rust-api/macros/) — the `#[zart_durable]` and `#[zart_step]` proc-macro layer
+- [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `zart::wait`
 - [Wait for Event](/rust-api/wait-for-event/) — human-in-the-loop and webhook patterns
 - [PostgreSQL Storage](/features/#7-postgresql-storage) — how workflow state is persisted

@@ -1,6 +1,5 @@
-//! ZartStep trait (raw step definition without macros) and StepWithId wrapper.
+//! ZartStep trait and NamedStep wrapper.
 
-use super::step_context::StepContext;
 use crate::error::StepError;
 use crate::retry::RetryConfig;
 use std::borrow::Cow;
@@ -19,8 +18,10 @@ use std::borrow::Cow;
 ///
 /// impl ZartStep for LookupZipStep<'_> { /* ... */ }
 ///
-/// // Execute via TaskContext:
-/// let (city, state) = ctx.execute_step(LookupZipStep { client: &client, zip_code: &data.zip_code }).await?;
+/// // Execute via free function:
+/// let (city, state) = zart::step(LookupZipStep { client: &client, zip_code: &data.zip_code }).await?;
+/// // Or simply .await (requires IntoFuture, which #[zart_step] generates):
+/// let (city, state) = lookup_zip(&client, &data.zip_code).await?;
 /// ```
 #[async_trait::async_trait]
 pub trait ZartStep {
@@ -41,14 +42,14 @@ pub trait ZartStep {
     ///
     /// ```rust,ignore
     /// for page in 0..num_pages {
-    ///     let items = ctx.execute_step(fetch_page(page).with_id(format!("fetch-page-{page}"))).await?;
+    ///     let items = zart::step(fetch_page(page).named(format!("fetch-page-{page}"))).await?;
     /// }
     /// ```
-    fn with_id(self, id: impl Into<String>) -> StepWithId<Self>
+    fn named(self, id: impl Into<String>) -> NamedStep<Self>
     where
         Self: Sized,
     {
-        StepWithId {
+        NamedStep {
             inner: self,
             id: id.into(),
         }
@@ -70,68 +71,29 @@ pub trait ZartStep {
 
     /// Execute the step logic.
     ///
-    /// The `ctx` provides access to retry metadata like `current_attempt()`.
+    /// Step context is accessed via `zart::context()` from within the step body.
+    /// The framework scopes `Phase::Step` before calling this method.
     ///
-    /// **Note**: Do NOT call this directly. Use `ctx.execute_step(self)` instead,
+    /// **Note**: Do NOT call this directly. Use `zart::step(self)` or `.await` instead,
     /// which handles retry and timeout configuration automatically.
-    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError>;
+    async fn run(&self) -> Result<Self::Output, StepError>;
 }
 
-// ── ExecuteStep — ergonomic step.execute(ctx) calling convention ───────────────
-
-/// Extension trait auto-implemented for all [`ZartStep`] types.
-///
-/// Enables the `step.execute(ctx)` calling convention as an alternative to
-/// `ctx.execute_step(step)`. Both are fully equivalent.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Instead of:
-/// let addr = ctx.execute_step(validate_address(&order_id)).await?;
-///
-/// // Write:
-/// let addr = validate_address(&order_id).execute(&mut ctx).await?;
-/// ```
-#[async_trait::async_trait]
-pub trait ExecuteStep {
-    /// The output type this step produces.
-    type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
-
-    /// Execute this step against the given task context.
-    async fn execute(
-        self,
-        ctx: &mut crate::context::TaskContext,
-    ) -> Result<Self::Output, StepError>;
-}
-
-#[async_trait::async_trait]
-impl<S: ZartStep + Send> ExecuteStep for S {
-    type Output = S::Output;
-
-    async fn execute(
-        self,
-        ctx: &mut crate::context::TaskContext,
-    ) -> Result<Self::Output, StepError> {
-        ctx.execute_step(self).await
-    }
-}
-
-// ── StepWithId — call-site identity override ──────────────────────────────────
+// ── NamedStep — call-site identity override ──────────────────────────────────
 
 /// Wraps any [`ZartStep`] and overrides its tracking identity.
 ///
-/// Created by [`ZartStep::with_id`]. Delegates all behaviour to the inner step
+/// Created by [`ZartStep::named`]. Delegates all behaviour to the inner step
 /// but reports a different name to the durable execution engine, enabling the
 /// same step definition to be called multiple times (e.g. in a loop) with a
 /// unique database key per call.
-pub struct StepWithId<S> {
+pub struct NamedStep<S> {
     pub(crate) inner: S,
     pub(crate) id: String,
 }
 
 #[async_trait::async_trait]
-impl<S> ZartStep for StepWithId<S>
+impl<S> ZartStep for NamedStep<S>
 where
     S: ZartStep + Send + Sync,
 {
@@ -149,7 +111,16 @@ where
         self.inner.timeout()
     }
 
-    async fn run(&self, ctx: StepContext) -> Result<Self::Output, StepError> {
-        self.inner.run(ctx).await
+    async fn run(&self) -> Result<Self::Output, StepError> {
+        self.inner.run().await
+    }
+}
+
+impl<S: ZartStep + Send + Sync + 'static> std::future::IntoFuture for NamedStep<S> {
+    type Output = Result<S::Output, StepError>;
+    type IntoFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(crate::step(self))
     }
 }

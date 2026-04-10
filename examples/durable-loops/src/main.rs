@@ -6,7 +6,7 @@
 //! Key concepts demonstrated:
 //! - Fetching the item list inside a step (stable replay after a process restart)
 //! - Unique step names per iteration via `{index}` template in `#[zart_step("process-report-{index}")]`
-//! - Unique step names per iteration via `.with_id()` at the call site
+//! - Unique step names per iteration via `.named()` at the call site
 
 use async_trait::async_trait;
 use scheduler::PostgresScheduler;
@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::context::TaskContext;
 use zart::error::{StepError, TaskError};
 use zart::prelude::*;
 use zart::registry::DurableExecution;
@@ -54,14 +53,12 @@ struct BatchOutput {
 /// Fetches the report list for the given batch. Running this inside a step ensures
 /// the same list is replayed after a crash — even if the underlying data changed.
 #[zart_step("fetch-reports")]
-async fn fetch_reports(batch_name: String, ctx: StepContext) -> Result<Vec<Report>, StepError> {
-    let _ = ctx.current_attempt();
+async fn fetch_reports(batch_name: String) -> Result<Vec<Report>, StepError> {
+    let _ = zart::context().current_attempt;
     println!(
         "  [fetch-reports] Loading reports for batch '{}'",
         batch_name
     );
-    // In production this would query a database filtered by batch_name.
-    // We return static fake data so the example runs without external dependencies.
     Ok(vec![
         Report {
             id: 1,
@@ -89,16 +86,10 @@ async fn fetch_reports(batch_name: String, ctx: StepContext) -> Result<Vec<Repor
 /// Processes one report.
 ///
 /// The `{index}` placeholder in the step name expands at runtime, producing
-/// unique names: "process-report-0", "process-report-1", etc. Without this,
-/// all iterations would share the same DB key and silently return the first
-/// result for every iteration.
+/// unique names: "process-report-0", "process-report-1", etc.
 #[zart_step("process-report-{index}")]
-async fn process_report(
-    index: usize,
-    report: Report,
-    ctx: StepContext,
-) -> Result<ProcessedReport, StepError> {
-    let _ = ctx.current_attempt();
+async fn process_report(index: usize, report: Report) -> Result<ProcessedReport, StepError> {
+    let _ = zart::context().current_attempt;
     let score = (report.value * 10.0) as u64;
     let flagged = report.value < 80.0;
     println!(
@@ -114,14 +105,10 @@ async fn process_report(
 }
 
 /// Sends a notification alert. This step has a static name — callers must
-/// supply `.with_id()` for uniqueness when calling it in a loop.
+/// supply `.named()` for uniqueness when calling it in a loop.
 #[zart_step("notify-stakeholder")]
-async fn notify_stakeholder(
-    email: String,
-    report_title: String,
-    ctx: StepContext,
-) -> Result<(), StepError> {
-    let _ = ctx.current_attempt();
+async fn notify_stakeholder(email: String, report_title: String) -> Result<(), StepError> {
+    let _ = zart::context().current_attempt;
     println!("  [notify] Sent alert for '{}' to {}", report_title, email);
     Ok(())
 }
@@ -135,36 +122,21 @@ impl DurableExecution for ReportBatchTask {
     type Data = BatchInput;
     type Output = BatchOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        // Step 1: fetch the list inside a step so the same list is used on replay.
-        let reports = ctx
-            .execute_step(fetch_reports(data.batch_name.clone()))
-            .await?;
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        let reports = fetch_reports(data.batch_name.clone()).await?;
         println!("Fetched {} reports\n", reports.len());
 
-        // Step 2: process each report.
-        // The `{index}` template generates unique step names per iteration:
-        // "process-report-0", "process-report-1", ...
         let mut processed = Vec::new();
         for (i, report) in reports.into_iter().enumerate() {
-            let result = ctx.execute_step(process_report(i, report)).await?;
+            let result = process_report(i, report).await?;
             processed.push(result);
         }
 
-        // Step 3: notify stakeholders for flagged reports using .with_id().
-        // `notify_stakeholder` has a static name, so we override it per call.
-        // This produces unique keys: "notify-stakeholder-2", etc.
         for (i, p) in processed.iter().enumerate() {
             if p.flagged {
-                ctx.execute_step(
-                    notify_stakeholder("team@example.com".into(), p.title.clone())
-                        .with_id(format!("notify-stakeholder-{i}")),
-                )
-                .await?;
+                notify_stakeholder("team@example.com".into(), p.title.clone())
+                    .named(format!("notify-stakeholder-{i}"))
+                    .await?;
             }
         }
 

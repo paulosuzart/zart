@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This example shows how to pause a durable execution and wait for a human decision before proceeding. The workflow validates a resource-access request, parks itself waiting for manager approval, then either provisions the resource or records the rejection — depending on what the manager decides.
 
-**Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, `ctx.execute_step()`, `ctx.wait_for_event()`, `durable.offer_event()`.
+**Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, `zart::wait_for_event()`, `durable.offer_event()`.
 
 ## Data types
 
@@ -43,8 +43,7 @@ use zart::prelude::*;
 use zart::zart_step;
 
 #[zart_step("validate-request")]
-async fn validate_request(request: &ApprovalRequest, ctx: StepContext) -> Result<String, StepError> {
-    let _ = ctx.current_attempt();
+async fn validate_request(request: &ApprovalRequest) -> Result<String, StepError> {
     if request.requester_name.is_empty() {
         return Err(StepError::Failed {
             step: "validate-request".into(),
@@ -55,8 +54,7 @@ async fn validate_request(request: &ApprovalRequest, ctx: StepContext) -> Result
 }
 
 #[zart_step("process-approved")]
-async fn process_approved(resource: &str, requester: &str, ctx: StepContext) -> Result<String, StepError> {
-    let _ = ctx.current_attempt();
+async fn process_approved(resource: &str, requester: &str) -> Result<String, StepError> {
     // In a real system, this would provision the resource
     Ok(format!("Provisioned {} for {}", resource, requester))
 }
@@ -64,27 +62,23 @@ async fn process_approved(resource: &str, requester: &str, ctx: StepContext) -> 
 
 ## The workflow
 
-The durable handler composes steps and uses `wait_for_event` to pause for the manager's decision.
+The durable handler composes steps and uses `zart::wait_for_event` to pause for the manager's decision.
 
 ```rust
 #[zart_durable("approval-task", timeout = "5m")]
-async fn approval_task(
-    ctx: &mut TaskContext,
-    data: ApprovalRequest,
-) -> Result<ApprovalOutput, TaskError> {
+async fn approval_task(data: ApprovalRequest) -> Result<ApprovalOutput, TaskError> {
     // Step 1: validate the request
-    ctx.execute_step(validate_request(&data)).await?;
+    validate_request(&data).await?;
 
     // Step 2: park until a manager delivers the approval event
     // The task is stored in the DB with a far-future execution time.
     // offer_event() wakes it up with the typed payload.
-    let decision: ApprovalDecision = ctx
-        .wait_for_event("manager-approval", Some(Duration::from_secs(120)))
-        .await?;
+    let decision: ApprovalDecision =
+        zart::wait_for_event("manager-approval", Some(Duration::from_secs(120))).await?;
 
     // Step 3: act on the decision
     if decision.approved {
-        ctx.execute_step(process_approved(&data.resource, &data.requester_name)).await?;
+        process_approved(&data.resource, &data.requester_name).await?;
     }
 
     Ok(ApprovalOutput {
@@ -156,12 +150,12 @@ Execution completed!
 ```
 
 <Aside type="tip">
-The timeout passed to `wait_for_event` (120 s here) is how long the workflow will wait before failing with a timeout error. Set it to `None` to wait indefinitely.
+The timeout passed to `zart::wait_for_event` (120 s here) is how long the workflow will wait before failing with a timeout error. Set it to `None` to wait indefinitely.
 </Aside>
 
 ## Key concepts
 
-**`ctx.wait_for_event(name, timeout)`** — suspends the durable execution. The task record is written back to the database with a far-future `scheduled_at` time so workers ignore it. The execution does not consume a worker thread while it waits.
+**`zart::wait_for_event(name, timeout)`** — suspends the durable execution. The task record is written back to the database with a far-future `scheduled_at` time so workers ignore it. The execution does not consume a worker thread while it waits.
 
 **`durable.offer_event(execution_id, event_name, payload)`** — delivers the event. Zart writes the payload into the task's step results under the event name, resets `scheduled_at` to now, and the next worker poll picks it up.
 

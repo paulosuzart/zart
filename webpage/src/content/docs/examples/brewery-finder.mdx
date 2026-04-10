@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This example builds a durable workflow that takes a US ZIP code, resolves it to a city via the [Zippopotamus API](https://www.zippopotam.us/), then fetches breweries in that city from the [Open Brewery DB](https://www.openbrewerydb.org/). All steps are persisted — if the process crashes mid-flight, completed API calls are not retried.
 
-**Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, `ctx.execute_step()`, sequential steps, structured output.
+**Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, sequential steps, structured output.
 
 ## Data types
 
@@ -48,9 +48,8 @@ use zart::zart_step;
 async fn lookup_zip(
     client: &reqwest::Client,
     zip_code: &str,
-    ctx: StepContext,
 ) -> Result<(String, String), StepError> {
-    println!("[lookup-zip] Attempt {}", ctx.current_attempt() + 1);
+    println!("[lookup-zip] Attempt {}", zart::context().current_attempt + 1);
 
     let resp = client
         .get(format!("https://api.zippopotam.us/us/{zip_code}"))
@@ -76,9 +75,8 @@ async fn lookup_zip(
 async fn find_breweries(
     client: &reqwest::Client,
     city: &str,
-    ctx: StepContext,
 ) -> Result<Vec<BreweryRaw>, StepError> {
-    println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
+    println!("[find-breweries] Attempt {}", zart::context().current_attempt + 1);
 
     let resp = client
         .get("https://api.openbrewerydb.org/v1/breweries")
@@ -99,9 +97,7 @@ async fn transform_results(
     raw: &[BreweryRaw],
     city: &str,
     state: &str,
-    ctx: StepContext,
 ) -> Result<Vec<BreweryInfo>, StepError> {
-    let _ = ctx.current_attempt();
     Ok(raw.iter().map(|b| BreweryInfo {
         name: b.name.clone(),
         brewery_type: b.brewery_type.clone().unwrap_or_else(|| "unknown".into()),
@@ -113,24 +109,21 @@ async fn transform_results(
 
 ## The workflow
 
-The durable handler composes steps using `ctx.execute_step()`. The body is pure orchestration — no closures, no manual `.clone()` capture.
+The durable handler composes steps by calling them directly with `.await`. Each step call is persisted before moving on.
 
 ```rust
 #[zart_durable("brewery-finder", timeout = "5m")]
-async fn brewery_finder(
-    ctx: &mut TaskContext,
-    data: FinderInput,
-) -> Result<FinderOutput, TaskError> {
+async fn brewery_finder(data: FinderInput) -> Result<FinderOutput, TaskError> {
     let client = reqwest::Client::new();
 
     // Step 1: resolve ZIP → city/state, retry up to 3× with exponential backoff
-    let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
+    let (city, state) = lookup_zip(&client, &data.zip_code).await?;
 
     // Step 2: find breweries in that city, retry on transient failures
-    let raw_breweries = ctx.execute_step(find_breweries(&client, &city)).await?;
+    let raw_breweries = find_breweries(&client, &city).await?;
 
     // Step 3: transform raw API data into structured output (no retries needed)
-    let breweries = ctx.execute_step(transform_results(&raw_breweries, &city, &state)).await?;
+    let breweries = transform_results(&raw_breweries, &city, &state).await?;
 
     Ok(FinderOutput {
         zip_code: data.zip_code,
@@ -190,10 +183,10 @@ Step results are stored in PostgreSQL after each successful step. Kill the proce
 
 ## Key concepts
 
-**`#[zart_step]` macro** — turns an async function into a step struct that implements `ZartStep`. The step name and retry config are specified as attributes. Each parameter (except `ctx: StepContext`) becomes a field on the generated struct.
+**`#[zart_step]` macro** — turns an async function into a step struct that implements `ZartStep`. The step name and retry config are specified as attributes. Each parameter becomes a field on the generated struct.
 
 **`retry` attribute** — `"exponential(3, 1s)"` generates a `RetryConfig::exponential(3, Duration::from_secs(1))`. Use `"fixed(n, dur)"` for constant-delay retries. Omit the attribute for steps that don't need retry.
 
-**`ctx.execute_step()`** — executes a step struct returned by the generated builder function. The framework reads `step_name()` and `retry_config()` from the `ZartStep` trait and applies them automatically.
+**Direct `.await`** — steps produced by the macro implement `IntoFuture`, so calling `step_fn(args).await?` runs the step through the framework. The step name and retry policy are applied automatically.
 
 **Sequential data flow** — each step's return value is available to the next step as a normal Rust variable. There is no special API for passing data between steps.

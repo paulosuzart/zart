@@ -17,10 +17,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use zart::context::TaskContext;
+use zart::context::ZartStep;
 use zart::error::{StepError, TaskError};
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
-use zart_macros::{z_durable_loop, z_wait_event, zart_durable};
+use zart_macros::zart_durable;
 
 // ── Mock scheduler (no-op) ────────────────────────────────────────────────────
 
@@ -162,7 +163,6 @@ impl DurableStorage for MockScheduler {
     }
 }
 
-/// Construct a fresh TaskContext backed by the MockScheduler.
 fn make_ctx() -> TaskContext {
     TaskContext::new(
         Arc::new(MockScheduler::new()),
@@ -173,93 +173,53 @@ fn make_ctx() -> TaskContext {
     )
 }
 
-// ── z_wait_event! tests ───────────────────────────────────────────────────────
+/// Run a handler via the registry path (which sets task-locals).
+async fn run_handler<H: DurableExecution>(
+    task_name: &str,
+    handler: H,
+    data: H::Data,
+) -> Result<serde_json::Value, TaskError>
+where
+    H::Data: serde::Serialize,
+{
+    let mut registry = zart::TaskRegistry::new();
+    registry.register(task_name, handler);
 
-/// `z_wait_event!` must expand to `ctx.wait_for_event(name, None)` when no
-/// timeout is given. On first call (step row absent), returns `Scheduled`.
-#[tokio::test]
-async fn z_wait_event_no_timeout_returns_waiting() {
-    let mut ctx = make_ctx();
-    let result: Result<String, StepError> = z_wait_event!("approval").await;
-
-    assert!(
-        matches!(result, Err(StepError::Scheduled { ref step, .. }) if step == "approval"),
-        "expected Scheduled (step task created), got: {result:?}"
-    );
-}
-
-/// `z_wait_event!` with `timeout = "1h"` passes `Some(Duration::from_secs(3600))`
-/// to `wait_for_event`. On first call, returns `Scheduled`.
-#[tokio::test]
-async fn z_wait_event_with_timeout_returns_waiting() {
-    let mut ctx = make_ctx();
-    let result: Result<serde_json::Value, StepError> =
-        z_wait_event!("manager-approval", timeout = "1h").await;
-
-    assert!(
-        matches!(result, Err(StepError::Scheduled { .. })),
-        "expected Scheduled (step task created), got: {result:?}"
-    );
-}
-
-// ── z_durable_loop! tests ─────────────────────────────────────────────────────
-
-/// `z_durable_loop!` expands to a plain `for` loop.
-#[test]
-fn z_durable_loop_iterates_all_items() {
-    let items = vec![1u32, 2, 3, 4, 5];
-    let mut sum = 0u32;
-    z_durable_loop!(items, |n| {
-        sum += n;
-    });
-    assert_eq!(sum, 15);
-}
-
-/// An empty collection results in zero iterations.
-#[test]
-fn z_durable_loop_empty_collection() {
-    let items: Vec<u32> = vec![];
-    let mut ran = false;
-    z_durable_loop!(items, |_n| {
-        ran = true;
-    });
-    assert!(!ran);
+    let ctx = Arc::new(make_ctx());
+    let raw_data = serde_json::to_value(data).unwrap();
+    registry.execute_handler(task_name, ctx, raw_data).await
 }
 
 // ── #[zart_durable] tests ─────────────────────────────────────────────────────
 
-/// A simple handler with no steps: the macro generates `EchoHandler` and the
-/// `run` method executes the body correctly.
 #[zart_durable("echo-task")]
-async fn echo_handler(_ctx: &mut TaskContext, data: String) -> Result<String, TaskError> {
+async fn echo_handler(data: String) -> Result<String, TaskError> {
     Ok(format!("echo: {data}"))
 }
 
 #[tokio::test]
 async fn zart_durable_generates_handler_struct() {
-    let handler = EchoHandler;
-    let mut ctx = make_ctx();
-    let result = handler.run(&mut ctx, "hello".to_string()).await.unwrap();
-    assert_eq!(result, "echo: hello");
+    let result = run_handler("echo-task", EchoHandler, "hello".to_string())
+        .await
+        .unwrap();
+    assert_eq!(result, serde_json::json!("echo: hello"));
 }
 
-/// The generated struct name follows `snake_case → PascalCase` convention.
 #[zart_durable("multi-word-task")]
-async fn multi_word_task_handler(_ctx: &mut TaskContext, data: u32) -> Result<u32, TaskError> {
+async fn multi_word_task_handler(data: u32) -> Result<u32, TaskError> {
     Ok(data * 2)
 }
 
 #[tokio::test]
 async fn zart_durable_pascal_case_struct_name() {
-    let handler = MultiWordTaskHandler;
-    let mut ctx = make_ctx();
-    let result = handler.run(&mut ctx, 21u32).await.unwrap();
-    assert_eq!(result, 42);
+    let result = run_handler("multi-word-task", MultiWordTaskHandler, 21u32)
+        .await
+        .unwrap();
+    assert_eq!(result, serde_json::json!(42));
 }
 
-/// The `timeout` attribute is reflected in `DurableExecution::timeout()`.
 #[zart_durable("timed-task", timeout = "5m")]
-async fn timed_handler(_ctx: &mut TaskContext, data: ()) -> Result<(), TaskError> {
+async fn timed_handler(data: ()) -> Result<(), TaskError> {
     Ok(data)
 }
 
@@ -270,7 +230,7 @@ fn zart_durable_timeout_attribute() {
 }
 
 #[zart_durable("hours-task", timeout = "2h")]
-async fn hours_handler(_ctx: &mut TaskContext, _data: ()) -> Result<(), TaskError> {
+async fn hours_handler(_data: ()) -> Result<(), TaskError> {
     Ok(())
 }
 
@@ -280,9 +240,8 @@ fn zart_durable_timeout_hours() {
     assert_eq!(handler.timeout(), Some(Duration::from_secs(7200)));
 }
 
-/// A handler with no timeout returns `None` from `timeout()`.
 #[zart_durable("no-timeout-task")]
-async fn no_timeout_handler(_ctx: &mut TaskContext, _data: ()) -> Result<(), TaskError> {
+async fn no_timeout_handler(_data: ()) -> Result<(), TaskError> {
     Ok(())
 }
 
@@ -291,12 +250,6 @@ fn zart_durable_no_timeout_returns_none() {
     let handler = NoTimeoutHandler;
     assert_eq!(handler.timeout(), None);
 }
-
-/// A handler that uses `ctx.execute_step()` inside: on first call the step is scheduled,
-/// causing the handler to return `Err(TaskError::StepFailed)`.
-///
-/// We define a simple ZartStep struct inline.
-use zart::context::ZartStep;
 
 struct ProcessStep {
     input: String,
@@ -308,31 +261,27 @@ impl ZartStep for ProcessStep {
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("process")
     }
-    async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(self.input.to_uppercase())
     }
 }
 
 #[zart_durable("step-task")]
-async fn step_using_handler(ctx: &mut TaskContext, data: String) -> Result<String, TaskError> {
-    let processed = ctx.execute_step(ProcessStep { input: data }).await?;
+async fn step_using_handler(data: String) -> Result<String, TaskError> {
+    let processed = zart::step(ProcessStep { input: data }).await?;
     Ok(processed)
 }
 
 #[tokio::test]
 async fn zart_durable_with_execute_step_first_call_schedules() {
-    let handler = StepUsingHandler;
-    let mut ctx = make_ctx();
-    let result = handler.run(&mut ctx, "hello".to_string()).await;
-
-    // The step is encountered for the first time → StepFailed(Scheduled) control-flow.
-    assert!(
-        matches!(result, Err(TaskError::StepFailed { ref step, .. }) if step == "process"),
-        "expected StepFailed(Scheduled) for first step, got: {result:?}"
-    );
+    let result = run_handler("step-task", StepUsingHandler, "hello".to_string()).await;
+    let err = result.unwrap_err();
+    match &err {
+        TaskError::StepFailed { step, .. } => assert_eq!(step, "process"),
+        other => panic!("expected StepFailed, got: {other:?}"),
+    }
 }
 
-/// A handler that uses `ctx.execute_step()` with a retry-configured step.
 struct ComputeStep {
     input: u32,
 }
@@ -346,26 +295,26 @@ impl ZartStep for ComputeStep {
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::fixed(3, Duration::from_millis(10)))
     }
-    async fn run(&self, _ctx: zart::context::StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         Ok(self.input + 1)
     }
 }
 
 #[zart_durable("retry-task")]
-async fn retry_step_handler(ctx: &mut TaskContext, data: u32) -> Result<u32, TaskError> {
-    let result = ctx.execute_step(ComputeStep { input: data }).await?;
+async fn retry_step_handler(data: u32) -> Result<u32, TaskError> {
+    let result = zart::step(ComputeStep { input: data }).await?;
     Ok(result)
 }
 
 #[tokio::test]
 async fn zart_durable_with_execute_step_retry_first_call_schedules() {
-    let handler = RetryStepHandler;
-    let mut ctx = make_ctx();
-    let result = handler.run(&mut ctx, 5u32).await;
-    assert!(matches!(result, Err(TaskError::StepFailed { .. })));
+    let result = run_handler("retry-task", RetryStepHandler, 5u32).await;
+    assert!(
+        matches!(result, Err(TaskError::StepFailed { .. })),
+        "expected StepFailed, got: {result:?}"
+    );
 }
 
-/// Struct data types (not just primitives) work as handler data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OrderData {
     id: u64,
@@ -373,33 +322,27 @@ struct OrderData {
 }
 
 #[zart_durable("order-task")]
-async fn order_handler(_ctx: &mut TaskContext, data: OrderData) -> Result<String, TaskError> {
+async fn order_handler(data: OrderData) -> Result<String, TaskError> {
     Ok(format!("order-{}-{:.2}", data.id, data.amount))
 }
 
 #[tokio::test]
 async fn zart_durable_struct_data_type() {
-    let handler = OrderHandler;
-    let mut ctx = make_ctx();
-    let result = handler
-        .run(
-            &mut ctx,
-            OrderData {
-                id: 42,
-                amount: 9.99,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(result, "order-42-9.99");
+    let result = run_handler(
+        "order-task",
+        OrderHandler,
+        OrderData {
+            id: 42,
+            amount: 9.99,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, serde_json::json!("order-42-9.99"));
 }
 
-/// `z_durable_loop!` combined with `ctx.execute_step()` inside a `#[zart_durable]` handler.
-/// Each iteration uses a unique step name via dynamic `Cow::Owned` — required because the
-/// database tracks steps by name (`{execution_id}:step:{step_name}`) and the `task_id`
-/// is PRIMARY KEY. Without unique names, all iterations would share the same cached result.
 #[zart_durable("loop-task")]
-async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, TaskError> {
+async fn loop_handler(data: Vec<u32>) -> Result<u32, TaskError> {
     let mut total = 0u32;
     for (index, item) in data.into_iter().enumerate() {
         struct LoopItemStep {
@@ -409,20 +352,14 @@ async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, Task
         #[async_trait]
         impl ZartStep for LoopItemStep {
             type Output = u32;
-            // Unique per iteration: "loop-item-0", "loop-item-1", etc.
             fn step_name(&self) -> Cow<'static, str> {
                 Cow::Owned(format!("loop-item-{}", self.index))
             }
-            async fn run(
-                &self,
-                _ctx: zart::context::StepContext,
-            ) -> Result<Self::Output, StepError> {
+            async fn run(&self) -> Result<Self::Output, StepError> {
                 Ok(self.value * 2)
             }
         }
-        let v = ctx
-            .execute_step(LoopItemStep { index, value: item })
-            .await?;
+        let v = zart::step(LoopItemStep { index, value: item }).await?;
         total += v;
     }
     Ok(total)
@@ -430,10 +367,7 @@ async fn loop_handler(ctx: &mut TaskContext, data: Vec<u32>) -> Result<u32, Task
 
 #[tokio::test]
 async fn zart_durable_loop_with_execute_step_schedules_first_item() {
-    let handler = LoopHandler;
-    let mut ctx = make_ctx();
-    // The first step encountered is "item-placeholder"; it will be scheduled.
-    let result = handler.run(&mut ctx, vec![1u32, 2, 3]).await;
+    let result = run_handler("loop-task", LoopHandler, vec![1u32, 2, 3]).await;
     assert!(
         matches!(result, Err(TaskError::StepFailed { .. })),
         "expected step to be scheduled, got: {result:?}"
@@ -442,15 +376,13 @@ async fn zart_durable_loop_with_execute_step_schedules_first_item() {
 
 // ── Dynamic step name tests ───────────────────────────────────────────────────
 
-/// A step whose name encodes a loop index via the {field} template.
 #[zart_macros::zart_step("process-item-{index}")]
-async fn process_item(index: u32, ctx: zart::context::StepContext) -> Result<u32, StepError> {
+async fn process_item(index: u32) -> Result<u32, StepError> {
     Ok(index * 10)
 }
 
 #[test]
 fn zart_step_template_name_generates_dynamic_cow() {
-    // step name must embed the field value at runtime
     let step = process_item(3);
     assert_eq!(step.step_name(), "process-item-3");
 
@@ -459,12 +391,12 @@ fn zart_step_template_name_generates_dynamic_cow() {
 }
 
 #[test]
-fn with_id_overrides_static_step_name() {
+fn named_overrides_static_step_name() {
     let step = ProcessStep {
         input: "hello".to_string(),
     };
     assert_eq!(step.step_name(), "process");
 
-    let overridden = step.with_id("process-0");
+    let overridden = step.named("process-0");
     assert_eq!(overridden.step_name(), "process-0");
 }

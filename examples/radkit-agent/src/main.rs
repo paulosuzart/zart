@@ -9,6 +9,7 @@
 //! radkit LLM integration, dependency injection,
 //! AI-powered extraction and summarization, structured output.
 
+use async_trait::async_trait;
 use chrono::Utc;
 use radkit::agent::LlmFunction;
 use radkit::macros::LLMOutput;
@@ -78,9 +79,11 @@ struct BreweryRaw {
 async fn extract_location(
     llm: Arc<dyn BaseLlm>,
     query: &str,
-    ctx: StepContext,
 ) -> Result<ExtractedLocation, StepError> {
-    println!("[extract-location] Attempt {}", ctx.current_attempt() + 1);
+    println!(
+        "[extract-location] Attempt {}",
+        zart::context().current_attempt + 1
+    );
 
     let prompt = format!(
         r#"Extract the city and state from this query. Return valid JSON.
@@ -111,8 +114,11 @@ Respond with only a JSON object with "city" and "state" fields."#
 }
 
 #[zart_step("find-breweries", retry = "exponential(3, 1s)")]
-async fn find_breweries(city: &str, ctx: StepContext) -> Result<Vec<BreweryRaw>, StepError> {
-    println!("[find-breweries] Attempt {}", ctx.current_attempt() + 1);
+async fn find_breweries(city: &str) -> Result<Vec<BreweryRaw>, StepError> {
+    println!(
+        "[find-breweries] Attempt {}",
+        zart::context().current_attempt + 1
+    );
 
     let client = reqwest::Client::new();
     let resp = client
@@ -139,9 +145,8 @@ async fn transform_results(
     raw: Vec<BreweryRaw>,
     city: &str,
     state: &str,
-    ctx: StepContext,
 ) -> Result<Vec<BreweryInfo>, StepError> {
-    let _ = ctx.current_attempt();
+    let _ = zart::context().current_attempt;
     Ok(raw
         .into_iter()
         .map(|b| BreweryInfo {
@@ -159,9 +164,11 @@ async fn generate_summary(
     query: &str,
     location: &ExtractedLocation,
     breweries: &[BreweryInfo],
-    ctx: StepContext,
 ) -> Result<String, StepError> {
-    println!("[generate-summary] Attempt {}", ctx.current_attempt() + 1);
+    println!(
+        "[generate-summary] Attempt {}",
+        zart::context().current_attempt + 1
+    );
 
     let brewery_list = breweries
         .iter()
@@ -210,50 +217,28 @@ struct RadkitAgent {
     llm: Arc<dyn BaseLlm>,
 }
 
-#[async_trait::async_trait]
+#[async_trait]
 impl DurableExecution for RadkitAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
-        // Step 1: Use radkit LLM to extract location
-        let location = ctx
-            .execute_step(extract_location(self.llm.clone(), &data.query))
-            .await?;
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        let location = extract_location(self.llm.clone(), &data.query).await?;
 
         println!(
             "  Extracted location: {}, {}",
             location.city, location.state
         );
 
-        // Step 2: Find breweries in the extracted city
-        let raw_breweries: Vec<BreweryRaw> =
-            ctx.execute_step(find_breweries(&location.city)).await?;
+        let raw_breweries: Vec<BreweryRaw> = find_breweries(&location.city).await?;
 
         println!("  Found {} raw brewery results", raw_breweries.len());
 
-        // Step 3: Transform raw data into structured output
-        let breweries: Vec<BreweryInfo> = ctx
-            .execute_step(transform_results(
-                raw_breweries,
-                &location.city,
-                &location.state,
-            ))
-            .await?;
+        let breweries: Vec<BreweryInfo> =
+            transform_results(raw_breweries, &location.city, &location.state).await?;
 
-        // Step 4: Use radkit LLM to generate a friendly summary
-        let summary = ctx
-            .execute_step(generate_summary(
-                self.llm.clone(),
-                &data.query,
-                &location,
-                &breweries,
-            ))
-            .await?;
+        let summary =
+            generate_summary(self.llm.clone(), &data.query, &location, &breweries).await?;
 
         Ok(AgentOutput {
             query: data.query,
@@ -285,7 +270,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sched = Arc::new(PostgresScheduler::new(pool));
     sched.run_migrations().await?;
 
-    // Create LLM provider
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));
 

@@ -11,7 +11,6 @@ use crate::retry::RetryConfig;
 use crate::step_types::{StepDefId, StepRequest, StepResult};
 use scheduler::StorageBackend;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -21,8 +20,11 @@ use super::step_trait::ZartStep;
 
 // ── TaskContext ───────────────────────────────────────────────────────────────
 
-/// Provides the step execution API (`step`, `step_with_retry`, `step_with_timeout`, …)
+/// Provides the step execution API (`execute_step`, `schedule_step`, `wait_all`, `sleep`, etc.)
 /// and access to the initial payload and execution metadata.
+///
+/// Users typically do not interact with this type directly — use the `zart::*` free functions
+/// instead. `TaskContext` is a framework-internal type that implements the scheduling logic.
 pub struct TaskContext {
     /// The underlying scheduler (used to schedule step tasks).
     pub(crate) scheduler: Arc<dyn StorageBackend>,
@@ -40,22 +42,10 @@ pub struct TaskContext {
     /// Opaque lock token from the current pick-up. Required for scheduler calls.
     pub(crate) lock_token: String,
     /// The original JSON payload supplied when the execution was started.
-    data: serde_json::Value,
+    pub(crate) data: serde_json::Value,
     /// How this task should behave when executing steps.
     /// `Body`/`Step` use per-row tasks.
     pub(crate) execution_mode: ExecutionMode,
-    /// Step names whose cached result has been returned during the current body re-run.
-    ///
-    /// The database enforces `task_id PRIMARY KEY` which prevents duplicate step task rows
-    /// (each step ID is `{run_id}:step:{step_name}`). However, that constraint only
-    /// applies at INSERT time. On body re-run, the framework returns cached Completed results
-    /// without re-inserting — so two calls with the same step name in a loop would silently
-    /// return the same cached value for both iterations.
-    ///
-    /// This set provides a fast-fail complement to the DB constraint: if a step name is
-    /// encountered twice after its cached result has already been returned in the same
-    /// body re-run, return an error immediately with a clear diagnosis.
-    seen_step_names: HashSet<String>,
 }
 
 impl TaskContext {
@@ -81,7 +71,6 @@ impl TaskContext {
             lock_token: lock_token.into(),
             data,
             execution_mode: ExecutionMode::Body,
-            seen_step_names: HashSet::new(),
         }
     }
 
@@ -122,8 +111,6 @@ impl TaskContext {
             _ => (0, None),
         };
         StepContext {
-            execution_id: self.execution_id.clone(),
-            task_name: self.task_name.clone(),
             current_attempt,
             max_retries,
         }
@@ -134,14 +121,14 @@ impl TaskContext {
     /// Internal dispatcher for `execute_step`, delegating orchestration to
     /// declarative dispatch/behaviors.
     async fn step_internal<T, F, Fut>(
-        &mut self,
+        &self,
         step_name: &str,
         _retry_config: Option<RetryConfig>,
         step_fn: F,
     ) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce(StepContext) -> Fut,
+        F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, StepError>>,
     {
         match &self.execution_mode {
@@ -155,20 +142,7 @@ impl TaskContext {
                 .await;
 
                 match result {
-                    Ok(v) => {
-                        if !self.seen_step_names.insert(step_name.to_string()) {
-                            return Err(StepError::Failed {
-                                step: step_name.to_string(),
-                                reason: format!(
-                                    "duplicate step name '{step_name}' in the same execution — \
-                                     each call must produce a unique step name. \
-                                     Use a {{field}} template in #[zart_step] (e.g. \"my-step-{{index}}\") \
-                                     or call `.with_id(\"...\")` at the call site."
-                                ),
-                            });
-                        }
-                        Ok(v)
-                    }
+                    Ok(v) => Ok(v),
                     Err(e) => Err(e),
                 }
             }
@@ -176,7 +150,11 @@ impl TaskContext {
                 let target = target_step.clone();
 
                 if step_name == target {
-                    let immediate_outcome = match step_fn(self.step_context()).await {
+                    let step_ctx = self.step_context();
+                    let immediate_outcome = match crate::local::ZART_PHASE
+                        .scope(crate::local::Phase::Step(step_ctx), step_fn())
+                        .await
+                    {
                         Ok(v) => serde_json::to_value(v)
                             .map(StepResult::Executed)
                             .map_err(|e| StepError::Failed {
@@ -216,25 +194,19 @@ impl TaskContext {
     /// 1. Reads `step.step_name()` for tracking
     /// 2. Reads `step.retry_config()` and applies retries if set
     /// 3. Reads `step.timeout()` and applies timeout if set
-    /// 4. Calls `step.run(ctx)` to execute the step logic
+    /// 4. Calls `step.run()` to execute the step logic
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // Manual ZartStep
-    /// let (city, state) = ctx.execute_step(LookupZipStep {
-    ///     client: &client,
-    ///     zip_code: &data.zip_code,
-    /// }).await?;
+    /// // Via zart::step free function (preferred):
+    /// let result = zart::step(my_step()).await?;
     ///
-    /// // Or via #[zart_step] macro (step functions return the struct)
-    /// let (city, state) = ctx.execute_step(lookup_zip(&client, &data.zip_code)).await?;
+    /// // Or directly on TaskContext (internal):
+    /// let result = ctx.execute_step(my_step()).await?;
     /// ```
     #[instrument(name = "step.execute_typed", skip(self, step), fields(step_name = tracing::field::Empty))]
-    pub async fn execute_step<S: ZartStep + Send>(
-        &mut self,
-        step: S,
-    ) -> Result<S::Output, StepError> {
+    pub async fn execute_step<S: ZartStep + Send>(&self, step: S) -> Result<S::Output, StepError> {
         let step_name = step.step_name();
         let retry_config = step.retry_config();
         let timeout_duration = step.timeout();
@@ -242,10 +214,10 @@ impl TaskContext {
         // Set the span field
         tracing::Span::current().record("step_name", step_name.as_ref());
 
-        // Build the step logic
-        let step_fn = move |sctx: StepContext| {
+        // Build the step logic — no StepContext arg; context lives in task-local.
+        let step_fn = move || {
             let this = step;
-            async move { this.run(sctx).await }
+            async move { this.run().await }
         };
 
         // Apply timeout wrapper if needed, then delegate to step_internal
@@ -253,8 +225,8 @@ impl TaskContext {
             Some(timeout_dur) => {
                 let retry_cfg = retry_config;
                 let step_name_owned = step_name.to_string();
-                let wrapped_fn = move |sctx: StepContext| {
-                    let f = step_fn(sctx);
+                let wrapped_fn = move || {
+                    let f = step_fn();
                     async move {
                         tokio::time::timeout(timeout_dur, f).await.map_err(|_| {
                             StepError::Timeout {
@@ -280,10 +252,7 @@ impl TaskContext {
     /// - **Step absent**: registers it as `Scheduled` and stores the lambda.
     /// - **Step `Scheduled`**: stores the lambda for execution in `wait_all`.
     /// - **Step `Completed`**: discards the lambda; `wait_all` will return the cached result.
-    pub fn schedule_step<S: ZartStep + Send + 'static>(
-        &mut self,
-        step: S,
-    ) -> StepHandle<S::Output> {
+    pub fn schedule_step<S: ZartStep + Send + 'static>(&self, step: S) -> StepHandle<S::Output> {
         let step_name = step.step_name();
         let step_name_str = step_name.to_string();
 
@@ -296,10 +265,10 @@ impl TaskContext {
         let pending: Option<PendingFn> =
             if !matches!(&self.execution_mode, ExecutionMode::Step { .. }) || is_target {
                 let name_for_err = step_name_str.clone();
-                Some(Box::new(move |sctx: StepContext| {
+                Some(Box::new(move || {
                     let step = step;
                     Box::pin(async move {
-                        let result = step.run(sctx).await?;
+                        let result = step.run().await?;
                         serde_json::to_value(result).map_err(|e| StepError::Failed {
                             step: name_for_err,
                             reason: format!("serialize error: {e}"),
@@ -328,7 +297,7 @@ impl TaskContext {
     /// An individual step failure appears as `Err(StepError)` inside the `Vec`;
     /// the outer `Err` is reserved for control-flow or programming errors.
     pub async fn wait_all<T>(
-        &mut self,
+        &self,
         handles: Vec<StepHandle<T>>,
     ) -> Result<Vec<Result<T, StepError>>, StepError>
     where
@@ -424,13 +393,8 @@ impl TaskContext {
     /// The `step_name` must be a stable, unique string within this execution body.
     /// It is used as the database key for durably persisting the sleep checkpoint.
     /// Treat it like a migration name — do not change it after the execution has started.
-    ///
-    /// # Duplicate name detection
-    ///
-    /// If the same `step_name` is used twice in one execution body, returns an error.
-    /// Each sleep call must have a unique name so the framework can skip it on replay.
     pub async fn sleep(
-        &mut self,
+        &self,
         step_name: &str,
         duration: std::time::Duration,
     ) -> Result<(), StepError> {
@@ -444,18 +408,10 @@ impl TaskContext {
     /// The `step_name` must be a stable, unique string within this execution body.
     /// See [`sleep`](Self::sleep) for details.
     pub async fn sleep_until(
-        &mut self,
+        &self,
         step_name: &str,
         wake_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), StepError> {
-        if !self.seen_step_names.insert(step_name.to_string()) {
-            return Err(StepError::Failed {
-                step: step_name.to_string(),
-                reason: format!(
-                    "duplicate sleep name '{step_name}' — each sleep must have a unique stable ID"
-                ),
-            });
-        }
         let req = StepRequest::new_sleep(step_name, wake_time);
         crate::step_types::dispatch::step_internal::<serde_json::Value>(
             StepDefId::Sleep,
@@ -472,7 +428,7 @@ impl TaskContext {
     /// This method captures deadline intent and delegates orchestration to
     /// declarative dispatch/behaviors for both body and step replay modes.
     pub async fn wait_for_event<T>(
-        &mut self,
+        &self,
         event_name: &str,
         timeout: Option<std::time::Duration>,
     ) -> Result<T, StepError>
@@ -510,40 +466,24 @@ impl TaskContext {
     ///
     /// The `step_name` must be a stable, unique string within this execution body.
     /// Treat it like a migration name — do not change it after the execution has started.
-    pub async fn capture<T, F>(&mut self, step_name: &str, f: F) -> Result<T, StepError>
+    pub async fn capture<T, F>(&self, step_name: &str, f: F) -> Result<T, StepError>
     where
         T: Serialize + for<'de> Deserialize<'de>,
         F: FnOnce() -> T,
     {
-        if !self.seen_step_names.insert(step_name.to_string()) {
-            return Err(StepError::Failed {
-                step: step_name.to_string(),
-                reason: format!(
-                    "duplicate capture name '{step_name}' — each capture must have a unique stable ID"
-                ),
-            });
-        }
         crate::step_types::dispatch::capture_internal(self, step_name, f).await
     }
 
     /// Capture the current UTC time durably.
     ///
     /// Shorthand for `ctx.capture(step_name, chrono::Utc::now)`.
-    pub async fn now(
-        &mut self,
-        step_name: &str,
-    ) -> Result<chrono::DateTime<chrono::Utc>, StepError> {
+    pub async fn now(&self, step_name: &str) -> Result<chrono::DateTime<chrono::Utc>, StepError> {
         self.capture(step_name, chrono::Utc::now).await
     }
 
     /// Returns the original JSON payload provided when the execution was started.
     pub fn data(&self) -> &serde_json::Value {
         &self.data
-    }
-
-    /// Mutate the execution-level data (persisted on next re-schedule).
-    pub fn set_data(&mut self, data: serde_json::Value) {
-        self.data = data;
     }
 
     /// Returns the unique ID of the enclosing durable execution.
@@ -571,20 +511,7 @@ impl TaskContext {
     /// Returns `0` if this is the first attempt or if no retry is configured.
     /// Returns `1` for the first retry, `2` for the second retry, etc.
     ///
-    /// This is useful for implementing intentional failure patterns in examples
-    /// or for logging/debugging retry behavior.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Inside a ZartStep::run implementation:
-    /// if ctx.current_attempt() == 0 {
-    ///     // Simulate transient failure on first attempt
-    ///     return Err(StepError::Failed { step: "my-step".into(), reason: "Temporary failure".into() });
-    /// }
-    /// // Succeed on retry
-    /// Ok(SuccessResult { message: "Succeeded!" })
-    /// ```
+    /// Users should prefer `zart::context().current_attempt` instead.
     pub fn current_attempt(&self) -> usize {
         match &self.execution_mode {
             ExecutionMode::Step { retry_attempt, .. } => *retry_attempt,

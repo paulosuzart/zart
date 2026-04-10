@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 /// - step mode: cache non-target steps, resolve target via step behavior + completion
 pub async fn step_internal<T>(
     step_def_id: StepDefId,
-    ctx: &mut TaskContext,
+    ctx: &TaskContext,
     req: StepRequest<'_>,
     lambda: Option<PendingFn>,
 ) -> Result<T, StepError>
@@ -84,7 +84,7 @@ where
 /// Handles retry scheduling on failure and routes to completion behavior on success.
 pub async fn step_internal_target_step<T>(
     step_def_id: StepDefId,
-    ctx: &mut TaskContext,
+    ctx: &TaskContext,
     step_name: &str,
     immediate_outcome: Result<StepResult, StepError>,
 ) -> Result<T, StepError>

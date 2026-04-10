@@ -5,9 +5,9 @@ description: Iterate over a collection durably — each item is processed in its
 
 import { Aside } from '@astrojs/starlight/components';
 
-This example processes a batch of reports. It fetches the list inside a step for stable replay, then iterates over it with two uniqueness mechanisms: the `{index}` template and `.with_id()`.
+This example processes a batch of reports. It fetches the list inside a step for stable replay, then iterates over it with two uniqueness mechanisms: the `{index}` template and `.named()`.
 
-**Features demonstrated:** `#[zart_step("name-{field}")]`, `.with_id()`, `ctx.execute_step()` in a loop, fetch-inside-step pattern, `DurableExecution` trait.
+**Features demonstrated:** `#[zart_step("name-{field}")]`, `.named()`, step calls in a loop, fetch-inside-step pattern, `DurableExecution` trait.
 
 ## Data types
 
@@ -50,8 +50,7 @@ use zart::zart_step;
 /// database query filtered by batch_name. Wrapping it in a step means the same
 /// list is replayed after any restart — even if the underlying data changes.
 #[zart_step("fetch-reports")]
-async fn fetch_reports(batch_name: String, ctx: StepContext) -> Result<Vec<Report>, StepError> {
-    let _ = ctx.current_attempt();
+async fn fetch_reports(batch_name: String) -> Result<Vec<Report>, StepError> {
     // In production: db.query("SELECT ... WHERE batch = ?", batch_name).await
     Ok(vec![
         Report { id: 1, title: "Q1 Sales".into(), value: 84.5 },
@@ -64,23 +63,15 @@ async fn fetch_reports(batch_name: String, ctx: StepContext) -> Result<Vec<Repor
 /// The `{index}` placeholder expands at runtime, producing unique DB keys:
 /// "process-report-0", "process-report-1", ...
 #[zart_step("process-report-{index}")]
-async fn process_report(
-    index: usize,
-    report: Report,
-    _ctx: StepContext,
-) -> Result<ProcessedReport, StepError> {
+async fn process_report(index: usize, report: Report) -> Result<ProcessedReport, StepError> {
     let score = (report.value * 10.0) as u64;
     let flagged = report.value < 80.0;
     Ok(ProcessedReport { id: report.id, title: report.title, score, flagged })
 }
 
-/// Static step name — callers must supply `.with_id()` when calling in a loop.
+/// Static step name — callers must supply `.named()` when calling in a loop.
 #[zart_step("notify-stakeholder")]
-async fn notify_stakeholder(
-    email: String,
-    report_title: String,
-    _ctx: StepContext,
-) -> Result<(), StepError> {
+async fn notify_stakeholder(email: String, report_title: String) -> Result<(), StepError> {
     println!("Sent alert for '{}' to {}", report_title, email);
     Ok(())
 }
@@ -96,29 +87,23 @@ impl DurableExecution for ReportBatchTask {
     type Data = BatchInput;
     type Output = BatchOutput;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: Self::Data,
-    ) -> Result<Self::Output, TaskError> {
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
         // Fetch inside a step so the same list is used on replay.
-        let reports = ctx.execute_step(fetch_reports(data.batch_name.clone())).await?;
+        let reports = fetch_reports(data.batch_name.clone()).await?;
 
         // {index} template — unique names baked into the step definition.
         let mut processed = Vec::new();
         for (i, report) in reports.into_iter().enumerate() {
-            let result = ctx.execute_step(process_report(i, report)).await?;
+            let result = process_report(i, report).await?;
             processed.push(result);
         }
 
-        // .with_id() — override the static name at the call site.
+        // .named() — override the static name at the call site.
         for (i, p) in processed.iter().enumerate() {
             if p.flagged {
-                ctx.execute_step(
-                    notify_stakeholder("team@example.com".into(), p.title.clone())
-                        .with_id(format!("notify-stakeholder-{i}")),
-                )
-                .await?;
+                notify_stakeholder("team@example.com".into(), p.title.clone())
+                    .named(format!("notify-stakeholder-{i}"))
+                    .await?;
             }
         }
 
@@ -178,6 +163,6 @@ If the worker crashes after processing reports 0–2 but before report 3, the re
 
 **`{field}` template** — the `{index}` placeholder in `#[zart_step("process-report-{index}")]` expands at runtime using `self.index`. Each iteration gets a distinct DB key without any call-site boilerplate.
 
-**`.with_id()`** — when the unique key isn't part of the step struct (or the step is reused under different naming schemes), override the name at the call site: `.with_id(format!("notify-stakeholder-{i}"))`.
+**`.named()`** — when the unique key isn't part of the step struct (or the step is reused under different naming schemes), override the name at the call site: `.named(format!("notify-stakeholder-{i}"))`.
 
 See [Durable Loops](/rust-api/loops/) for full documentation on both mechanisms and guidance on when to use each.

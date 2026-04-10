@@ -15,19 +15,20 @@ zart-macros = "0.1"
 
 ## `#[zart_durable]`
 
-Annotate an async function to make it a durable workflow. The macro generates the `DurableExecution` impl, registers the output type, and wires up the `TaskContext`.
+Annotate an async function to make it a durable workflow. The macro generates the `DurableExecution` impl and a unit struct named after the function in PascalCase.
 
 ```rust
 use zart_macros::zart_durable;
 
 #[zart_durable("checkout", timeout = "10m")]
-async fn checkout(
-    ctx: &mut zart::context::TaskContext,
-    order: Order,
-) -> Result<Receipt, zart::error::TaskError> {
-    // workflow body
+async fn checkout(order: Order) -> Result<Receipt, zart::error::TaskError> {
+    // workflow body — use zart::* free functions for all operations
     Ok(Receipt { /* ... */ })
 }
+
+// Macro generates `struct Checkout;` and `impl DurableExecution for Checkout`
+// Register with:
+registry.register("checkout", Checkout);
 ```
 
 **Parameters:**
@@ -37,18 +38,20 @@ async fn checkout(
 | `"name"` | string | yes | Task name used when scheduling |
 | `timeout` | duration string | no | Wall-clock timeout, e.g. `"30m"`, `"2h"`, `"90s"` |
 
-The function must take `ctx: &mut TaskContext` as the first parameter and return `Result<T, TaskError>` where `T` impls `Serialize`.
+The function must accept the workflow payload as its only parameter and return `Result<T, TaskError>` where `T` implements `Serialize`.
 
 ## `#[zart_step]`
 
-Turn an async function into a durable step. The macro generates a step struct, implements `ZartStep`, and provides two execution conveniences.
+Turn an async function into a durable step. The macro generates a step struct, implements `ZartStep`, and wires up `IntoFuture` so the step can be directly awaited.
 
 ```rust
 use zart_macros::zart_step;
 
 #[zart_step("charge-card", retry = "exponential(3, 2s)")]
-async fn charge_card(card: &str, amount: i64, ctx: StepContext) -> Result<ChargeResult, StepError> {
-    println!("Attempt {}", ctx.current_attempt() + 1);
+async fn charge_card(card: &str, amount: i64) -> Result<ChargeResult, StepError> {
+    if zart::context().is_retry() {
+        println!("Retry attempt #{}", zart::context().current_attempt);
+    }
     stripe.charge(card, amount).await
 }
 ```
@@ -61,103 +64,58 @@ async fn charge_card(card: &str, amount: i64, ctx: StepContext) -> Result<Charge
 | `retry` | string | no | Retry config: `"fixed(n, dur)"` or `"exponential(n, dur)"` |
 | `timeout` | duration string | no | Per-step timeout, e.g. `"5m"`, `"30s"` |
 
-The last parameter must be named `ctx` and typed `StepContext`. The return type must be `Result<T, StepError>`.
-
 ### What the Macro generates
 
-For the `charge_card` example above, the macro produces four items:
+For the `charge_card` example above, the macro produces:
 
-1. **`ChargeCardStep` struct** — holds the parameters (`card`, `amount`)
-2. **`impl ZartStep`** — with `step_name()`, `retry_config()`, and `run()`
-3. **Builder function** — `fn charge_card(card, amount) -> ChargeCardStep` (rewrites the original fn)
-4. **`charge_card_step` async fn** — one-call build-and-execute (see option 3 below)
+1. **`ChargeCardStep<'_>` struct** — holds the parameters (`card`, `amount`)
+2. **`impl ZartStep`** — with `step_name()`, `retry_config()`, and `run()` (no ctx parameter)
+3. **Builder function** — `fn charge_card(card, amount) -> ChargeCardStep<'_>` (replaces the original fn)
+4. **`impl IntoFuture`** — delegates to `zart::step(self)`, enabling direct `.await`
 
-### Three Ways to Call a Step
+### Calling a Step
 
-All three forms are fully equivalent. Choose the one that fits the surrounding code.
-
-**Option 1 — `ctx.execute_step()` (method-first):**
+**Direct await (recommended):**
 
 ```rust
-let charge = ctx.execute_step(charge_card(&card, amount)).await?;
+let charge = charge_card(&card, amount).await?;
 ```
 
-The step struct is passed to `ctx`. This is the original pattern, useful when `ctx` is already the focal point of the durable body.
+The step builder returns a value that implements `IntoFuture`. Awaiting it calls `zart::step()` internally, which persists the result.
 
-**Option 2 — `.execute(ctx)` (step-first trait method):**
+**Via `zart::step()` explicitly** — useful when passing the step to another function:
 
 ```rust
-let charge = charge_card(&card, amount).execute(&mut ctx).await?;
+let charge = zart::step(charge_card(&card, amount)).await?;
 ```
 
-The `ExecuteStep` trait is auto-implemented for all `ZartStep` types. Reads naturally when the step is the focus.
-
-**Option 3 — `_step` async function (flat call):**
+**Via `zart::schedule()` for parallel execution:**
 
 ```rust
-let charge = charge_card_step(&mut ctx, &card, amount).await?;
+let handle = zart::schedule(charge_card(&card, amount));
+// ... schedule other steps ...
+let results = zart::wait(vec![handle]).await?;
 ```
 
-The macro generates a `_step`-suffixed async fn that builds and executes in one call. `ctx` is the first parameter, followed by the step's own arguments. No struct or trait visible at the call site.
+### Dynamic Step Names
 
-Steps with references work seamlessly — the macro handles lifetime injection automatically:
-
-```rust
-#[zart_step("fetch-data")]
-async fn fetch_data(client: &reqwest::Client, url: &str, ctx: StepContext)
-    -> Result<String, StepError>
-{
-    client.get(url).send().await?.text().await
-}
-
-// Option 1:
-let data = ctx.execute_step(fetch_data(&client, &url)).await?;
-
-// Option 2:
-let data = fetch_data(&client, &url).execute(&mut ctx).await?;
-
-// Option 3:
-let data = fetch_data_step(&mut ctx, &client, &url).await?;
-```
-
-## `z_wait_event!`
-
-Suspend the workflow until an external event is delivered. The process can restart freely; the workflow resumes when the event arrives.
+Use a `{field}` placeholder in the step name for loops or repeated steps:
 
 ```rust
-use zart_macros::z_wait_event;
-
-let approval: ApprovalPayload =
-    z_wait_event!("manager-approval", timeout = "24h").await?;
-
-println!("Approved by: {}", approval.reviewer);
-```
-
-Returns `Err(TaskError::EventTimeout)` if the timeout expires before the event is delivered.
-
-## `z_durable_loop!`
-
-A loop construct whose iteration counter is persisted. Even if the process restarts mid-loop, already-completed iterations are skipped.
-
-```rust
-use zart_macros::{zart_durable, z_durable_loop, zart_step};
-
-#[zart_step("process-item")]
-async fn process_item(item: &Item, ctx: StepContext) -> Result<Processed, StepError> {
-    processor.handle(item).await
-}
-
-#[zart_durable("batch-job")]
-async fn batch_job(
-    ctx: &mut TaskContext,
-    batch: BatchInput,
-) -> Result<(), TaskError> {
-    for item in &batch.items {
-        ctx.execute_step(process_item(item)).await?;
-    }
-    Ok(())
+#[zart_step("process-item-{index}")]
+async fn process_item(index: usize, item: Item) -> Result<Output, StepError> {
+    // step_name() returns "process-item-0", "process-item-1", etc.
+    transform(item).await
 }
 ```
+
+For call-site naming, use `.named()`:
+
+```rust
+notify_user(user_id).named(format!("notify-{i}")).await?;
+```
+
+See [Durable Loops](/rust-api/loops/) for detailed patterns.
 
 ## Side-by-Side: Macros vs. Manual
 
@@ -170,24 +128,20 @@ use zart::prelude::*;
 use zart_macros::{zart_durable, zart_step};
 
 #[zart_step("send-email")]
-async fn send_email(email: &str, ctx: StepContext) -> Result<(), StepError> {
+async fn send_email(email: &str) -> Result<(), StepError> {
     send_welcome_email(email).await
 }
 
 #[zart_step("create-stripe-customer", retry = "exponential(3, 2s)")]
-async fn create_customer(email: &str, ctx: StepContext) -> Result<String, StepError> {
+async fn create_customer(email: &str) -> Result<String, StepError> {
     create_stripe_customer(email).await
 }
 
 #[zart_durable("onboarding", timeout = "50h")]
-async fn onboarding(
-    ctx: &mut TaskContext,
-    data: OnboardingData,
-) -> Result<OnboardingResult, TaskError> {
-    // All three forms coexist in the same body:
-    send_email_step(&mut ctx, &data.email).await?;                    // flat call
-    let customer_id = ctx.execute_step(create_customer(&data.email)).await?; // execute_step
-    let _: VerifyPayload = ctx.wait_for_event(
+async fn onboarding(data: OnboardingData) -> Result<OnboardingResult, TaskError> {
+    send_email(&data.email).await?;
+    let customer_id = create_customer(&data.email).await?;
+    let _: VerifyPayload = zart::wait_for_event(
         "email-verified",
         Some(Duration::from_secs(172_800)),
     ).await?;
@@ -208,7 +162,7 @@ struct SendEmailStep { email: String }
 impl ZartStep for SendEmailStep {
     type Output = ();
     fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("send-email") }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         send_welcome_email(&self.email).await
     }
 }
@@ -222,7 +176,7 @@ impl ZartStep for CreateCustomerStep {
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::exponential(3, Duration::from_secs(2)))
     }
-    async fn run(&self, _ctx: StepContext) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, StepError> {
         create_stripe_customer(&self.email).await
     }
 }
@@ -234,14 +188,11 @@ impl DurableExecution for OnboardingTask {
     type Data   = OnboardingData;
     type Output = OnboardingResult;
 
-    async fn run(
-        &self,
-        ctx: &mut TaskContext,
-        data: OnboardingData,
-    ) -> Result<Self::Output, TaskError> {
-        ctx.execute_step(SendEmailStep { email: data.email.clone() }).await?;
-        let customer_id: String = ctx.execute_step(CreateCustomerStep { email: data.email.clone() }).await?;
-        let _: VerifyPayload = ctx.wait_for_event(
+    async fn run(&self, data: OnboardingData) -> Result<Self::Output, TaskError> {
+        zart::step(SendEmailStep { email: data.email.clone() }).await?;
+        let customer_id: String =
+            zart::step(CreateCustomerStep { email: data.email.clone() }).await?;
+        let _: VerifyPayload = zart::wait_for_event(
             "email-verified",
             Some(Duration::from_secs(172_800)),
         ).await?;
@@ -259,7 +210,7 @@ The macro style generates exactly these trait impls at compile time. You can ins
 
 ## Duration Strings
 
-Both `#[zart_durable]`, `#[zart_step]`, and `z_wait_event!` accept human-readable duration strings:
+Both `#[zart_durable]` and `#[zart_step]` accept human-readable duration strings:
 
 | String | Duration |
 |---|---|
