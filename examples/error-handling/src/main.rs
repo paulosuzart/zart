@@ -15,7 +15,7 @@ use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
-use zart::error::{ExecutionFailure, StepOutcome, TaskError, ZartStepError};
+use zart::error::{ExecutionFailure, StepOutcome, TaskError};
 use zart::prelude::*;
 use zart::{zart_durable, zart_step};
 
@@ -128,29 +128,29 @@ async fn handle_order_failure(
     eprintln!("[on_failure] invoked for account={}", data.account_id);
 
     match failure {
+        ExecutionFailure::StepFailed { step, raw } if step == "charge-card" => {
+            eprintln!("[on_failure] payment failed: {raw}");
+            Ok(OrderOutput {
+                status: "payment_failed".to_string(),
+                transaction_id: None,
+                balance: None,
+                inventory_item: None,
+                message: format!("Payment failed: {raw}"),
+            })
+        }
+        ExecutionFailure::StepFailed { step, raw } if step == "reserve-inventory" => {
+            eprintln!("[on_failure] inventory failed: {raw}");
+            Ok(OrderOutput {
+                status: "inventory_failed".to_string(),
+                transaction_id: None,
+                balance: None,
+                inventory_item: None,
+                message: format!("Inventory reservation failed: {raw}"),
+            })
+        }
         ExecutionFailure::StepFailed { step, raw } => {
-            if step.contains("charge-card") {
-                eprintln!("[on_failure] payment failed: {raw}");
-                Ok(OrderOutput {
-                    status: "payment_failed".to_string(),
-                    transaction_id: None,
-                    balance: None,
-                    inventory_item: None,
-                    message: format!("Payment failed: {raw}"),
-                })
-            } else if step.contains("reserve-inventory") {
-                eprintln!("[on_failure] inventory failed: {raw}");
-                Ok(OrderOutput {
-                    status: "inventory_failed".to_string(),
-                    transaction_id: None,
-                    balance: None,
-                    inventory_item: None,
-                    message: format!("Inventory reservation failed: {raw}"),
-                })
-            } else {
-                eprintln!("[on_failure] unknown step failure: {step}: {raw}");
-                Err(TaskError::Cancelled)
-            }
+            eprintln!("[on_failure] unknown step failure: {step}: {raw}");
+            Err(TaskError::Cancelled)
         }
         ExecutionFailure::ExecutionDeadlineExceeded => {
             eprintln!("[on_failure] execution deadline exceeded");
@@ -186,14 +186,13 @@ async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
         inventory.item, inventory.quantity
     );
 
-    // ── 2. step() + explicit matching — branch on specific business errors ───
+    // ── 2. zart::step() — branch on specific business errors ─────────────────
     let balance = match zart::step(check_balance(data.account_id.clone())).await? {
         StepOutcome::Ok(b) => {
             println!("[process_order] Balance check: ${b}");
             b
         }
         StepOutcome::BusinessErr(PaymentError::InsufficientFunds { balance, needed }) => {
-            println!("[process_order] Insufficient funds: ${balance} < ${needed}");
             return Ok(OrderOutput {
                 status: "insufficient_funds".to_string(),
                 transaction_id: None,
@@ -203,7 +202,6 @@ async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
             });
         }
         StepOutcome::BusinessErr(PaymentError::CardDeclined { reason }) => {
-            println!("[process_order] Unexpected card decline: {reason}");
             return Ok(OrderOutput {
                 status: "card_declined".to_string(),
                 transaction_id: None,
@@ -212,32 +210,8 @@ async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
                 message: format!("Card declined: {reason}"),
             });
         }
-        StepOutcome::ZartErr(ZartStepError::RetryExhausted {
-            step,
-            attempts,
-            last_error,
-        }) => {
-            println!(
-                "[process_order] Balance check retries exhausted ({attempts} attempts), last_error: {last_error}"
-            );
-            return Ok(OrderOutput {
-                status: "balance_check_exhausted".to_string(),
-                transaction_id: None,
-                balance: None,
-                inventory_item: Some(inventory.item),
-                message: format!("Balance check '{step}' failed after {attempts} attempts"),
-            });
-        }
-        StepOutcome::ZartErr(e) => {
-            println!("[process_order] Balance check framework error: {e}");
-            return Ok(OrderOutput {
-                status: "balance_error".to_string(),
-                transaction_id: None,
-                balance: None,
-                inventory_item: Some(inventory.item),
-                message: format!("Balance check failed: {e}"),
-            });
-        }
+        // Everything else falls through to on_failure.
+        StepOutcome::ZartErr(e) => return Err(e.into()),
     };
 
     // ── 3. step_or_else() — inline fallback on business error only ────────────

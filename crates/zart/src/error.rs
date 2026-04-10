@@ -299,6 +299,24 @@ impl From<StepError> for TaskError {
     }
 }
 
+/// Converts a [`ZartStepError`] into a [`TaskError::StepFailed`].
+///
+/// This enables `.into()` calls when a handler wants to propagate
+/// a framework-level error as a task failure.
+impl From<ZartStepError> for TaskError {
+    fn from(e: ZartStepError) -> Self {
+        let step = match &e {
+            ZartStepError::RetryExhausted { step, .. } => step.clone(),
+            ZartStepError::TimedOut { step, .. } => step.clone(),
+            ZartStepError::DeadlineExceeded { step } => step.clone(),
+        };
+        TaskError::StepFailed {
+            step,
+            source: StepError::Other(Box::new(e)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +334,151 @@ mod tests {
             next_execution: None,
         };
         assert!(err.to_string().contains("send-email"));
+    }
+
+    // ── StepOutcome ──────────────────────────────────────────────────────
+
+    #[test]
+    fn step_outcome_debug_variants() {
+        let ok: StepOutcome<String, String> = StepOutcome::Ok("hello".to_string());
+        assert!(format!("{ok:?}").contains("Ok"));
+
+        let business: StepOutcome<String, String> =
+            StepOutcome::BusinessErr("business failed".to_string());
+        assert!(format!("{business:?}").contains("BusinessErr"));
+
+        let zart_err = StepOutcome::<String, String>::ZartErr(ZartStepError::RetryExhausted {
+            step: "my-step".to_string(),
+            attempts: 3,
+            last_error: serde_json::json!({"detail": "timeout"}),
+        });
+        assert!(format!("{zart_err:?}").contains("ZartErr"));
+    }
+
+    // ── ZartStepError ────────────────────────────────────────────────────
+
+    #[test]
+    fn zart_step_error_display_retry_exhausted() {
+        let err = ZartStepError::RetryExhausted {
+            step: "charge-card".to_string(),
+            attempts: 3,
+            last_error: serde_json::json!({"reason": "network"}),
+        };
+        assert!(err.to_string().contains("charge-card"));
+        assert!(err.to_string().contains("3"));
+    }
+
+    #[test]
+    fn zart_step_error_display_timed_out() {
+        let err = ZartStepError::TimedOut {
+            step: "slow-api".to_string(),
+            duration: std::time::Duration::from_secs(30),
+        };
+        assert!(err.to_string().contains("slow-api"));
+        assert!(err.to_string().contains("30"));
+    }
+
+    #[test]
+    fn zart_step_error_display_deadline_exceeded() {
+        let err = ZartStepError::DeadlineExceeded {
+            step: "wait-approval".to_string(),
+        };
+        assert!(err.to_string().contains("wait-approval"));
+    }
+
+    #[test]
+    fn zart_step_error_is_std_error() {
+        let err: Box<dyn std::error::Error> = Box::new(ZartStepError::DeadlineExceeded {
+            step: "test".to_string(),
+        });
+        assert!(err.to_string().contains("test"));
+    }
+
+    #[test]
+    fn zart_step_error_last_error_retry_exhausted() {
+        let err = ZartStepError::RetryExhausted {
+            step: "charge-card".to_string(),
+            attempts: 3,
+            last_error: serde_json::json!({"reason": "expired"}),
+        };
+
+        #[derive(Debug, serde::Deserialize, PartialEq)]
+        struct CardDeclined {
+            reason: String,
+        }
+
+        let result = err.last_error::<CardDeclined>();
+        assert!(result.is_some());
+        let deserialized = result.unwrap().unwrap();
+        assert_eq!(deserialized.reason, "expired");
+    }
+
+    #[test]
+    fn zart_step_error_last_error_returns_none_for_timed_out() {
+        let err = ZartStepError::TimedOut {
+            step: "test".to_string(),
+            duration: std::time::Duration::from_secs(10),
+        };
+        assert!(err.last_error::<String>().is_none());
+    }
+
+    #[test]
+    fn zart_step_error_last_error_returns_none_for_deadline() {
+        let err = ZartStepError::DeadlineExceeded {
+            step: "test".to_string(),
+        };
+        assert!(err.last_error::<String>().is_none());
+    }
+
+    // ── ExecutionFailure ─────────────────────────────────────────────────
+
+    #[test]
+    fn execution_failure_debug_step_failed() {
+        let failure = ExecutionFailure::StepFailed {
+            step: "charge-card".to_string(),
+            raw: serde_json::json!({"error": "declined"}),
+        };
+        let debug = format!("{failure:?}");
+        assert!(debug.contains("StepFailed"));
+        assert!(debug.contains("charge-card"));
+    }
+
+    #[test]
+    fn execution_failure_debug_deadline_exceeded() {
+        let failure = ExecutionFailure::ExecutionDeadlineExceeded;
+        let debug = format!("{failure:?}");
+        assert!(debug.contains("ExecutionDeadlineExceeded"));
+    }
+
+    #[test]
+    fn execution_failure_debug_retries_exhausted() {
+        let failure = ExecutionFailure::RetriesExhausted { attempts: 5 };
+        let debug = format!("{failure:?}");
+        assert!(debug.contains("RetriesExhausted"));
+        assert!(debug.contains("5"));
+    }
+
+    #[test]
+    fn execution_failure_display_step_failed() {
+        let failure = ExecutionFailure::StepFailed {
+            step: "reserve-stock".to_string(),
+            raw: serde_json::json!({}),
+        };
+        assert_eq!(failure.to_string(), "Step 'reserve-stock' failed");
+    }
+
+    #[test]
+    fn execution_failure_display_deadline_exceeded() {
+        let failure = ExecutionFailure::ExecutionDeadlineExceeded;
+        assert_eq!(failure.to_string(), "Execution deadline exceeded");
+    }
+
+    #[test]
+    fn execution_failure_display_retries_exhausted() {
+        let failure = ExecutionFailure::RetriesExhausted { attempts: 3 };
+        assert_eq!(
+            failure.to_string(),
+            "Execution retries exhausted after 3 attempts"
+        );
     }
 }
