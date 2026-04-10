@@ -373,13 +373,17 @@ impl TaskContext {
                         });
                     }
 
-                    // Retries exhausted — complete with rx kind.
-                    self.complete_step_and_schedule_body(
-                        json,
-                        RK::RetryExhausted,
-                        retry_attempt + 1,
-                    )
-                    .await?;
+                    // No retries remaining. If retries were never configured (max_attempts == 0),
+                    // store as business error ('err'). If retries were configured but exhausted,
+                    // store as 'rx'.
+                    let outcome_kind =
+                        if retry_config.as_ref().is_some_and(|rc| rc.max_attempts > 0) {
+                            RK::RetryExhausted
+                        } else {
+                            RK::Err
+                        };
+                    self.complete_step_and_schedule_body(json, outcome_kind, retry_attempt + 1)
+                        .await?;
                     return Err(StepError::StepExecuted {
                         step: step_name_owned,
                     });

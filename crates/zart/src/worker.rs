@@ -2,7 +2,7 @@
 
 use crate::context::TaskContext;
 use crate::emit_metric;
-use crate::error::{StepError, TaskError};
+use crate::error::{ExecutionFailure, StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 #[cfg(feature = "metrics")]
 use crate::metrics::{
@@ -417,7 +417,8 @@ async fn dispatch_task(
     });
 
     // Execute the handler.
-    let result = handler.execute(ctx, task.data).await;
+    let task_data = task.data.clone();
+    let result = handler.execute(ctx, task_data).await;
 
     // ── Stop heartbeat — handler has returned ────────────────────────────────
     heartbeat_cancellation.cancel();
@@ -562,7 +563,47 @@ async fn dispatch_task(
                     .with_label_values(&[&task.task_name, "failed"])
                     .observe(duration);
             });
-            error!(error = %err, "Task failed");
+
+            // If this is a body task for a durable execution, invoke on_failure
+            // before deciding whether to fail or complete.
+            let failure = build_execution_failure(&err, &task);
+            if has_execution {
+                match handler.on_failure(task.data.clone(), failure).await {
+                    Ok(output) => {
+                        // on_failure recovered — complete the execution with synthetic result.
+                        info!("on_failure recovered — completing execution with synthetic result");
+                        emit_metric!(
+                            EXECUTIONS_TOTAL
+                                .with_label_values(&["recovered", &task.task_name])
+                                .inc()
+                        );
+                        if let Err(e) = ctx_cleanup
+                            .scheduler
+                            .mark_completed(
+                                &task.task_id,
+                                Some(output.clone()),
+                                &ctx_cleanup.lock_token,
+                            )
+                            .await
+                        {
+                            error!(error = %e, "Failed to mark task completed after on_failure recovery");
+                        }
+                        let _ = ctx_cleanup
+                            .scheduler
+                            .complete_execution(&execution_id, output)
+                            .await
+                            .map_err(|e| error!(error = %e, "Failed to complete execution record after on_failure recovery"));
+                        return;
+                    }
+                    Err(recovery_err) => {
+                        // on_failure did not recover — fail as normal.
+                        error!(error = %recovery_err, "on_failure did not recover the execution");
+                    }
+                }
+            } else {
+                error!(error = %err, "Task failed");
+            }
+
             emit_metric!(TASKS_TOTAL.with_label_values(&["failed"]).inc());
             if has_execution {
                 emit_metric!(
@@ -591,6 +632,41 @@ async fn dispatch_task(
                     .await
                     .map_err(|e| error!(error = %e, "Failed to fail execution record"));
             }
+        }
+    }
+}
+
+/// Build an [`ExecutionFailure`] from a [`TaskError`] for `on_failure` invocation.
+fn build_execution_failure(err: &TaskError, task: &scheduler::FetchedTask) -> ExecutionFailure {
+    match err {
+        TaskError::StepFailed { step, source } => {
+            // Serialize the inner error for the failure envelope.
+            let raw = serde_json::json!({
+                "step": step,
+                "error": source.to_string(),
+                "error_kind": format!("{:?}", source),
+            });
+            ExecutionFailure::StepFailed {
+                step: step.clone(),
+                raw,
+            }
+        }
+        TaskError::MaxRetriesExhausted { max_retries } => ExecutionFailure::RetriesExhausted {
+            attempts: *max_retries,
+        },
+        TaskError::Timeout { duration } => {
+            let _ = duration;
+            ExecutionFailure::ExecutionDeadlineExceeded
+        }
+        TaskError::Cancelled => {
+            let step = task.task_name.clone();
+            let raw = serde_json::json!({ "error": "cancelled" });
+            ExecutionFailure::StepFailed { step, raw }
+        }
+        TaskError::HandlerPanic(reason) => {
+            let step = task.task_name.clone();
+            let raw = serde_json::json!({ "panic": reason });
+            ExecutionFailure::StepFailed { step, raw }
         }
     }
 }
