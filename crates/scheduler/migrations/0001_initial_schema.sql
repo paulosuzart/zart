@@ -1,3 +1,24 @@
+-- Outcome discriminant for completed steps.
+CREATE TYPE step_result_kind AS ENUM ('ok', 'err', 'rx', 'timeout', 'dl');
+
+-- Lifecycle status of a task row.
+CREATE TYPE task_status AS ENUM ('scheduled', 'picked_up', 'completed', 'failed', 'dead', 'cancelled');
+
+-- Lifecycle status of an execution run.
+CREATE TYPE execution_status AS ENUM ('scheduled', 'running', 'completed', 'failed', 'cancelled');
+
+-- What triggered a run.
+CREATE TYPE execution_trigger AS ENUM ('initial', 'restart', 'selective_rerun');
+
+-- Lifecycle status of a step row.
+CREATE TYPE step_status AS ENUM ('scheduled', 'running', 'completed', 'dead');
+
+-- Kind of step stored in zart_steps.
+CREATE TYPE step_kind AS ENUM ('step', 'sleep', 'wait_all', 'wait_for_event', 'wait_group', 'capture');
+
+-- Status of a single step attempt.
+CREATE TYPE step_attempt_status AS ENUM ('completed', 'failed');
+
 -- Individual scheduled tasks (backing each step of a durable execution)
 CREATE TABLE IF NOT EXISTS zart_tasks (
     task_id        TEXT PRIMARY KEY,
@@ -12,7 +33,7 @@ CREATE TABLE IF NOT EXISTS zart_tasks (
     state          JSONB NOT NULL DEFAULT '{"data": {}, "retry_count": 0}',
 
     -- Concurrency & lifecycle
-    status         TEXT NOT NULL DEFAULT 'scheduled',
+    status         task_status NOT NULL DEFAULT 'scheduled',
     worker_id      TEXT,
     locked_at      TIMESTAMPTZ,
     attempt        INTEGER NOT NULL DEFAULT 0,
@@ -44,12 +65,12 @@ CREATE TABLE IF NOT EXISTS zart_execution_runs (
     execution_id    TEXT NOT NULL REFERENCES zart_executions(execution_id),
     run_index       INTEGER NOT NULL,  -- 0 = first, 1 = first restart, …
     payload         JSONB NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'scheduled',
+    status          execution_status NOT NULL DEFAULT 'scheduled',
     result          JSONB,
     started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
     triggered_by    TEXT,
-    trigger         TEXT NOT NULL DEFAULT 'initial',  -- 'initial' | 'restart' | 'selective_rerun'
+    trigger         execution_trigger NOT NULL DEFAULT 'initial',
 
     UNIQUE (execution_id, run_index)
 );
@@ -59,17 +80,20 @@ CREATE TABLE IF NOT EXISTS zart_steps (
     step_id         TEXT PRIMARY KEY,   -- same as step task_id
     run_id          TEXT NOT NULL REFERENCES zart_execution_runs(run_id),
     step_name       TEXT NOT NULL,
-    step_kind       TEXT NOT NULL DEFAULT 'step',
+    step_kind       step_kind NOT NULL DEFAULT 'step',
 
     -- The task currently responsible for this step.
     -- Updated when a retry creates a new task row.
     task_id         TEXT,
 
-    status          TEXT NOT NULL DEFAULT 'scheduled',
+    status          step_status NOT NULL DEFAULT 'scheduled',
     retry_attempt   INTEGER NOT NULL DEFAULT 0,
     retry_config    JSONB,
 
     result          JSONB,
+    -- Outcome discriminant: 'ok' | 'err' | 'rx' | 'timeout' | 'dl'
+    result_kind     step_result_kind,
+
     last_error      TEXT,
 
     -- Wait-group inline state (NULL for non-wait-group steps)
@@ -91,7 +115,7 @@ CREATE TABLE IF NOT EXISTS zart_step_attempts (
     attempt_number  INTEGER NOT NULL,   -- 1-indexed
     started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
-    status          TEXT NOT NULL,      -- 'completed' | 'failed'
+    status          step_attempt_status NOT NULL,
     result          JSONB,
     error           TEXT,
     UNIQUE (step_id, attempt_number)

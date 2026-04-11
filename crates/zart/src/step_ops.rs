@@ -9,7 +9,7 @@
 
 use scheduler::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StorageBackend, StorageError,
+    ScheduleResult, ScheduleStepParams, StepKind, StepResultKind, StorageBackend, StorageError,
 };
 
 /// Parameters for [`schedule_step_task`].
@@ -27,6 +27,8 @@ pub struct ResumeBodySpec<'a> {
     pub step_task_id: &'a str,
     pub step_id: &'a str,
     pub result: serde_json::Value,
+    /// Outcome discriminant.
+    pub result_kind: crate::step_types::ResultKind,
     pub lock_token: &'a str,
     pub next_body_task_id: &'a str,
     pub task_name: &'a str,
@@ -79,7 +81,7 @@ pub async fn schedule_step_task(
             task_name: spec.task_name.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.step_name.to_string(),
-            step_kind: "step".to_string(),
+            step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data: spec.data,
             metadata,
@@ -152,7 +154,7 @@ pub async fn schedule_wait_group_child_task(
             task_name: task_name.to_string(),
             run_id: run_id.to_string(),
             step_name: step_name.to_string(),
-            step_kind: "step".to_string(),
+            step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data,
             metadata,
@@ -195,6 +197,7 @@ pub async fn complete_step_and_schedule_body(
             step_task_id: spec.step_task_id.to_string(),
             step_id: spec.step_id.to_string(),
             result: spec.result,
+            result_kind: StepResultKind::from(spec.result_kind),
             lock_token: spec.lock_token.to_string(),
             attempt_number: spec.attempt_number,
             next_body_task_id: spec.next_body_task_id.to_string(),
@@ -260,7 +263,7 @@ pub async fn schedule_wait_for_event_task(
             task_name: spec.task_name.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.event_name.to_string(),
-            step_kind: "wait_for_event".to_string(),
+            step_kind: StepKind::WaitForEvent,
             execution_time,
             data: spec.data,
             metadata,
@@ -294,7 +297,7 @@ pub async fn schedule_sleep_task(
             task_name: task_name.to_string(),
             run_id: run_id.to_string(),
             step_name: "__sleep".to_string(),
-            step_kind: "sleep".to_string(),
+            step_kind: StepKind::Sleep,
             execution_time: wake_time,
             data,
             metadata,
@@ -312,7 +315,7 @@ mod tests {
         CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
         CompleteWaitGroupChildParams, DurableStorage, EventDeliveryResult,
         FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams, ScheduleAtParams,
-        Scheduler, StepLookup, StepRow, UpsertWaitGroupStepParams,
+        Scheduler, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
     use std::sync::{Arc, Mutex};
 
@@ -501,7 +504,7 @@ mod tests {
             &self,
             _run_id: &str,
             _step_name: &str,
-            _step_kind: &str,
+            _step_kind: StepKind,
             _result: serde_json::Value,
         ) -> Result<(), StorageError> {
             Ok(())

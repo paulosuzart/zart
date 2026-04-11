@@ -187,6 +187,12 @@ example-sleep db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-sleep
 
+# Run the error-handling example (typed errors, StepOutcome, step_or_else, on_failure)
+# Usage: just example-error-handling [DATABASE_URL]
+example-error-handling db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-error-handling
+
 # Run all examples sequentially (requires PostgreSQL and internet)
 run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
     just example-brewery-finder {{db_url}}
@@ -196,6 +202,7 @@ run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
     just example-retry-simulation {{db_url}}
     just example-durable-loops {{db_url}}
     just example-sleep {{db_url}}
+    just example-error-handling {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)
 # The examples themselves serve as integration tests — run them via just run-all-examples

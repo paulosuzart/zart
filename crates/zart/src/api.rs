@@ -5,7 +5,7 @@
 //! implementation detail.
 
 use crate::context::{StepHandle, ZartStep};
-use crate::error::StepError;
+use crate::error::{StepError, StepOutcome, TaskError};
 use crate::execution_model::ExecutionMode;
 
 use serde::de::DeserializeOwned;
@@ -17,17 +17,94 @@ use crate::local::{Phase, ZART_CTX, ZART_PHASE, body_ctx};
 
 // ── Free functions ─────────────────────────────────────────────────────────────
 
-/// Execute a step and return its result.
+/// Execute a step and return the three-way outcome.
 ///
-/// This is the primary way to call a step from a durable handler body.
-/// The step is executed with automatic retry and timeout handling.
+/// The outer `Result` propagates control-flow signals (`Scheduled`, `StepExecuted`)
+/// — always propagated with `?`, never matched by users.
+/// The [`StepOutcome`] is what users actually work with: `Ok`, `BusinessErr(E)`, or `ZartErr`.
+///
+/// Use this when the handler body genuinely needs to branch on a specific step's outcome.
+/// For the default path (fail-fast on any non-Ok outcome), use [`require`] instead.
 ///
 /// # Panics
 ///
 /// Panics if called from inside a step body (i.e. from `Phase::Step`).
 /// Steps may not schedule other steps.
-pub async fn step<S: ZartStep + Send>(s: S) -> Result<S::Output, StepError> {
+pub async fn step<S: ZartStep + Send>(s: S) -> Result<StepOutcome<S::Output, S::Error>, StepError> {
     body_ctx().execute_step(s).await
+}
+
+/// Execute a step that must succeed. Fails the execution on any non-Ok outcome.
+///
+/// This is the preferred default — use [`step`] only when the body genuinely
+/// needs to branch on a specific step's failure.
+///
+/// Both `BusinessErr` and `ZartErr` result in `TaskError::StepFailed`, preserving
+/// the step name in the resulting error for `on_failure` inspection.
+///
+/// # Panics
+///
+/// Panics if called from inside a step body.
+pub async fn require<S>(s: S) -> Result<S::Output, TaskError>
+where
+    S: ZartStep + Send,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    let step_name = s.step_name().into_owned();
+    match step(s).await? {
+        StepOutcome::Ok(v) => Ok(v),
+        StepOutcome::BusinessErr(e) => Err(TaskError::StepFailed {
+            step: step_name.clone(),
+            source: StepError::Failed {
+                step: step_name,
+                reason: e.to_string(),
+            },
+        }),
+        StepOutcome::ZartErr(e) => Err(TaskError::StepFailed {
+            step: step_name,
+            source: StepError::Other(Box::new(e)),
+        }),
+    }
+}
+
+/// Execute a step, returning `default` on any failure (business or framework).
+///
+/// Both `BusinessErr` and `ZartErr` are discarded without inspection — this is a
+/// blind fallback. Use this only when the specific failure reason does not matter
+/// and the default value is always safe to return. If you need to log or inspect
+/// the error before falling back, use [`step_or_else`] instead.
+///
+/// # Panics
+///
+/// Panics if called from inside a step body.
+pub async fn step_or<S: ZartStep + Send>(s: S, default: S::Output) -> Result<S::Output, StepError> {
+    Ok(match step(s).await? {
+        StepOutcome::Ok(v) => v,
+        _ => default,
+    })
+}
+
+/// Execute a step, computing a fallback on business error.
+///
+/// The closure receives `S::Error` only — `ZartStepError` (retry exhausted, timeout)
+/// is not passed to `f` and still propagates as a framework error. This is intentional:
+/// framework-level failures are not business decisions and should not be silently swallowed
+/// by an inline fallback. Use [`step`] + explicit match if you need to handle both arms,
+/// or let `ZartErr` reach `on_failure`.
+///
+/// # Panics
+///
+/// Panics if called from inside a step body.
+pub async fn step_or_else<S, F>(s: S, f: F) -> Result<S::Output, StepError>
+where
+    S: ZartStep + Send,
+    F: FnOnce(S::Error) -> S::Output,
+{
+    match step(s).await? {
+        StepOutcome::Ok(v) => Ok(v),
+        StepOutcome::BusinessErr(e) => Ok(f(e)),
+        StepOutcome::ZartErr(e) => Err(StepError::Other(Box::new(e))),
+    }
 }
 
 /// Register a step for parallel execution without waiting for it to complete.

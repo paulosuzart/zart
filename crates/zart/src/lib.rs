@@ -53,12 +53,15 @@ pub mod worker;
 pub(crate) mod test_helpers;
 
 pub use api::{
-    ExecutionInfo, capture, context, now, schedule, sleep, sleep_until, step, wait, wait_for_event,
+    ExecutionInfo, capture, context, now, require, schedule, sleep, sleep_until, step, step_or,
+    step_or_else, wait, wait_for_event,
 };
 pub use api_trait::{DurableApi, into_durable_api};
 pub use context::{StepHandle, TaskContext, ZartStep};
 pub use durable::DurableScheduler;
-pub use error::{SchedulerError, StepError, TaskError};
+pub use error::{
+    ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
+};
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
@@ -77,11 +80,14 @@ pub mod prelude {
         capture, context,
         context::{StepHandle, ZartStep},
         durable::DurableScheduler,
-        error::{SchedulerError, StepError, TaskError},
+        error::{
+            ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
+        },
         now,
         registry::{DurableExecution, TaskRegistry},
+        require,
         retry::RetryConfig,
-        schedule, sleep, sleep_until, step, wait, wait_for_event,
+        schedule, sleep, sleep_until, step, step_or, step_or_else, wait, wait_for_event,
         worker::{Worker, WorkerConfig},
     };
     pub use scheduler::{

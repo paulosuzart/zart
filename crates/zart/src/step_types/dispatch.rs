@@ -15,8 +15,10 @@ use crate::error::{StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 use crate::retry::RetryConfig;
 use crate::step_ops;
-use crate::step_types::{CompletionOutcome, CompletionSpec, StepDefId, StepRequest, StepResult};
-use scheduler::TaskStatus;
+use crate::step_types::{
+    CompletionOutcome, CompletionSpec, ResultKind, StepDefId, StepRequest, StepResult,
+};
+use scheduler::{StepKind, TaskStatus};
 use serde::{Deserialize, Serialize};
 
 /// TaskContext step internal entry point for declarative step handling.
@@ -24,25 +26,19 @@ use serde::{Deserialize, Serialize};
 /// Routes body-mode and step-mode behavior through `StepDefId` traits:
 /// - body mode: lookup/schedule via body behavior
 /// - step mode: cache non-target steps, resolve target via step behavior + completion
-pub async fn step_internal<T>(
+///
+/// Returns `(raw_json, ResultKind)` — the caller is responsible for deserialization
+/// into the appropriate type based on `ResultKind`.
+pub async fn step_internal_raw(
     step_def_id: StepDefId,
     ctx: &TaskContext,
     req: StepRequest<'_>,
     lambda: Option<PendingFn>,
-) -> Result<T, StepError>
-where
-    T: for<'de> serde::Deserialize<'de> + serde::Serialize,
-{
+) -> Result<(serde_json::Value, ResultKind), StepError> {
     let step_name = req.step_name;
 
     match &ctx.execution_mode {
-        ExecutionMode::Body => {
-            let json = step_def_id.body_behavior().handle(ctx, &req).await?;
-            serde_json::from_value(json).map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: format!("failed to deserialize cached result: {e}"),
-            })
-        }
+        ExecutionMode::Body => step_def_id.body_behavior().handle(ctx, &req).await,
 
         ExecutionMode::Step { target_step, .. } => {
             if step_def_id == StepDefId::WaitGroupBarrier {
@@ -63,34 +59,56 @@ where
                     StepResult::Executed(v) | StepResult::Cached(v) => v,
                     StepResult::Transition => serde_json::Value::Null,
                 };
-                return serde_json::from_value(json).map_err(|e| StepError::Failed {
-                    step: step_name.to_string(),
-                    reason: format!("failed to deserialize cached result: {e}"),
-                });
+                return Ok((json, ResultKind::Ok));
             }
 
             let immediate_outcome = step_def_id
                 .step_behavior()
                 .handle(ctx, step_name, lambda)
                 .await;
-            step_internal_target_step(step_def_id, ctx, step_name, immediate_outcome).await
+            step_internal_target_step_raw(step_def_id, ctx, step_name, immediate_outcome).await
         }
     }
+}
+
+/// Legacy shim: `step_internal<T>` deserializes the result as T.
+/// Preserved for `capture_internal`, `wait_for_event`, and other internal paths
+/// where the result is always a success type.
+pub async fn step_internal<T>(
+    step_def_id: StepDefId,
+    ctx: &TaskContext,
+    req: StepRequest<'_>,
+    lambda: Option<PendingFn>,
+) -> Result<T, StepError>
+where
+    T: for<'de> serde::Deserialize<'de> + serde::Serialize,
+{
+    let step_name = req.step_name;
+    let (json, kind) = step_internal_raw(step_def_id, ctx, req, lambda).await?;
+    if !matches!(kind, ResultKind::Ok) {
+        return Err(StepError::Failed {
+            step: step_name.to_string(),
+            reason: format!("step_internal expected ResultKind::Ok but got {:?}", kind),
+        });
+    }
+    serde_json::from_value(json).map_err(|e| StepError::Failed {
+        step: step_name.to_string(),
+        reason: format!("failed to deserialize cached result: {e}"),
+    })
 }
 
 /// Target-step completion path with retry orchestration.
 ///
 /// Called when the walk reaches the target step in step mode.
 /// Handles retry scheduling on failure and routes to completion behavior on success.
-pub async fn step_internal_target_step<T>(
+///
+/// Returns `(raw_json, ResultKind)` for the caller to deserialize.
+pub async fn step_internal_target_step_raw(
     step_def_id: StepDefId,
     ctx: &TaskContext,
     step_name: &str,
     immediate_outcome: Result<StepResult, StepError>,
-) -> Result<T, StepError>
-where
-    T: for<'de> serde::Deserialize<'de> + serde::Serialize,
-{
+) -> Result<(serde_json::Value, ResultKind), StepError> {
     let (retry_attempt, retry_config) = match &ctx.execution_mode {
         ExecutionMode::Step {
             retry_attempt,
@@ -108,7 +126,9 @@ where
     let step_result = match immediate_outcome {
         Ok(r) => r,
         Err(err) => {
-            if let Some(next) = next_retry_time(err.to_string(), &retry_config, retry_attempt) {
+            if let Some(next) =
+                next_retry_time_with_error(err.to_string(), &retry_config, retry_attempt)
+            {
                 step_ops::reschedule_step_for_retry(
                     &*ctx.scheduler,
                     &ctx.task_id,
@@ -123,9 +143,7 @@ where
                     reason: format!("failed to schedule retry: {e}"),
                 })?;
 
-                return Err(StepError::StepExecuted {
-                    step: step_name.to_string(),
-                });
+                return Ok((serde_json::Value::Null, ResultKind::Ok));
             }
 
             if step_def_id == StepDefId::WaitGroupChild {
@@ -162,9 +180,7 @@ where
                             reason: e.to_string(),
                         })?;
 
-                    return Err(StepError::StepExecuted {
-                        step: step_name.to_string(),
-                    });
+                    return Ok((serde_json::Value::Null, ResultKind::Ok));
                 }
             }
 
@@ -205,8 +221,25 @@ where
             reason: e.to_string(),
         })?;
 
-    Err(StepError::StepExecuted {
+    Ok((serde_json::Value::Null, ResultKind::Ok))
+}
+
+/// Target-step completion path (legacy shim).
+/// Deserializes the result as T. Preserved for backward compatibility.
+pub async fn step_internal_target_step<T>(
+    step_def_id: StepDefId,
+    ctx: &TaskContext,
+    step_name: &str,
+    immediate_outcome: Result<StepResult, StepError>,
+) -> Result<T, StepError>
+where
+    T: for<'de> serde::Deserialize<'de> + serde::Serialize,
+{
+    let (json, _kind) =
+        step_internal_target_step_raw(step_def_id, ctx, step_name, immediate_outcome).await?;
+    serde_json::from_value(json).map_err(|e| StepError::Failed {
         step: step_name.to_string(),
+        reason: format!("failed to deserialize cached result: {e}"),
     })
 }
 
@@ -273,7 +306,7 @@ where
     })?;
 
     ctx.scheduler
-        .insert_completed_step(ctx.run_id(), step_name, "capture", json)
+        .insert_completed_step(ctx.run_id(), step_name, StepKind::Capture, json)
         .await
         .map_err(|e| StepError::Failed {
             step: step_name.to_string(),
@@ -288,15 +321,21 @@ struct RetryPlan {
     error: String,
 }
 
-fn next_retry_time(
+/// Compute the next retry time for a step, if retries remain.
+pub fn next_retry_time(
+    retry_config: &Option<RetryConfig>,
+    retry_attempt: usize,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let cfg = retry_config.as_ref()?;
+    let delay = cfg.delay_for(retry_attempt + 1)?;
+    Some(chrono::Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero()))
+}
+
+fn next_retry_time_with_error(
     error: String,
     retry_config: &Option<RetryConfig>,
     retry_attempt: usize,
 ) -> Option<RetryPlan> {
-    let cfg = retry_config.clone()?;
-    let delay = cfg.delay_for(retry_attempt + 1)?;
-    let when =
-        chrono::Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero());
-
+    let when = next_retry_time(retry_config, retry_attempt)?;
     Some(RetryPlan { when, error })
 }

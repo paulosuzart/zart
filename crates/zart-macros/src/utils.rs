@@ -85,6 +85,34 @@ pub fn extract_ok_type(ret: &ReturnType) -> SynResult<&Type> {
     ))
 }
 
+/// Extract the `E` from `Result<T, E>` in a function return type.
+pub fn extract_error_type(ret: &ReturnType) -> SynResult<&Type> {
+    let ty = match ret {
+        ReturnType::Type(_, ty) => ty,
+        ReturnType::Default => {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "function must return `Result<T, E>`",
+            ));
+        }
+    };
+
+    if let Type::Path(type_path) = ty.as_ref()
+        && let Some(last) = type_path.path.segments.last()
+        && last.ident == "Result"
+        && let PathArguments::AngleBracketed(args) = &last.arguments
+        && args.args.len() >= 2
+        && let Some(GenericArgument::Type(err_type)) = args.args.iter().nth(1)
+    {
+        return Ok(err_type);
+    }
+
+    Err(syn::Error::new_spanned(
+        ty,
+        "return type must be `Result<T, E>`",
+    ))
+}
+
 // ── Template parsing ──────────────────────────────────────────────────────────
 
 /// Parse `{field_name}` template placeholders in a step name string.

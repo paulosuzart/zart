@@ -16,8 +16,11 @@ use crate::utils::{extract_ok_type, parse_duration_str, snake_to_pascal};
 /// Accepted forms:
 /// - `#[zart_durable("my-task")]`
 /// - `#[zart_durable("my-task", timeout = "5m")]`
+/// - `#[zart_durable("my-task", on_failure = my_failure_handler)]`
+/// - `#[zart_durable("my-task", timeout = "5m", on_failure = my_failure_handler)]`
 pub struct DurableAttr {
     pub timeout_secs: Option<u64>,
+    pub on_failure_fn: Option<syn::Ident>,
 }
 
 impl Parse for DurableAttr {
@@ -26,23 +29,36 @@ impl Parse for DurableAttr {
         // the struct name is derived from the function name instead).
         let _task_name: syn::LitStr = input.parse()?;
         let mut timeout_secs = None;
+        let mut on_failure_fn = None;
 
-        if input.peek(syn::Token![,]) {
+        while input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
             let key: syn::Ident = input.parse()?;
             let _: syn::Token![=] = input.parse()?;
-            let value: syn::LitStr = input.parse()?;
-            if key == "timeout" {
-                timeout_secs = Some(parse_duration_str(&value.value(), value.span())?);
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    format!("unknown attribute key '{key}'; expected 'timeout'"),
-                ));
+
+            match key.to_string().as_str() {
+                "timeout" => {
+                    let value: syn::LitStr = input.parse()?;
+                    timeout_secs = Some(parse_duration_str(&value.value(), value.span())?);
+                }
+                "on_failure" => {
+                    on_failure_fn = Some(input.parse()?);
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!(
+                            "unknown attribute key '{key}'; expected 'timeout' or 'on_failure'"
+                        ),
+                    ));
+                }
             }
         }
 
-        Ok(DurableAttr { timeout_secs })
+        Ok(DurableAttr {
+            timeout_secs,
+            on_failure_fn,
+        })
     }
 }
 
@@ -64,6 +80,7 @@ impl Parse for DurableAttr {
 ///
 /// - First argument: `data` — the deserialized input type
 /// - `timeout = "..."`: optional wall-clock timeout (`"5m"`, `"30s"`, `"2h"`)
+/// - `on_failure = fn_name`: optional centralized failure handler
 ///
 /// # Function signature
 ///
@@ -71,6 +88,12 @@ impl Parse for DurableAttr {
 ///
 /// ```rust,ignore
 /// async fn fn_name(data: DataType) -> Result<OutputType, TaskError>
+/// ```
+///
+/// The `on_failure` handler function signature must be:
+///
+/// ```rust,ignore
+/// async fn handler_name(data: DataType, failure: ExecutionFailure) -> Result<OutputType, TaskError>
 /// ```
 ///
 /// # Example
@@ -128,6 +151,21 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
         quote! {}
     };
 
+    // ── Optional on_failure method ────────────────────────────────────────────
+    let on_failure_method = if let Some(ref handler_ident) = args.on_failure_fn {
+        quote! {
+            async fn on_failure(
+                &self,
+                #data_pat: Self::Data,
+                failure: ::zart::error::ExecutionFailure,
+            ) -> ::std::result::Result<Self::Output, ::zart::error::TaskError> {
+                #handler_ident(#data_pat, failure).await
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(quote! {
         #vis struct #struct_ident;
 
@@ -144,6 +182,8 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
             }
 
             #timeout_method
+
+            #on_failure_method
         }
     })
 }

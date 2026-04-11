@@ -27,8 +27,9 @@ pub use recurrence::Recurrence;
 pub use types::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
     CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
-    ExecutionStatus, FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams,
-    ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepLookup, StepRow, TaskStatus,
+    ExecutionStatus, ExecutionTrigger, FailWaitGroupChildParams, FetchedTask,
+    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
+    StepKind, StepLookup, StepResultKind, StepRow, StepStatus, TaskStatus,
     UpsertWaitGroupStepParams,
 };
 
@@ -386,7 +387,7 @@ pub trait DurableStorage: Send + Sync {
         &self,
         run_id: &str,
         step_name: &str,
-        step_kind: &str,
+        step_kind: StepKind,
         result: serde_json::Value,
     ) -> Result<(), StorageError> {
         let _ = (run_id, step_name, step_kind, result);

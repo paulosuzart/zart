@@ -1,6 +1,5 @@
 //! ZartStep trait and NamedStep wrapper.
 
-use crate::error::StepError;
 use crate::retry::RetryConfig;
 use std::borrow::Cow;
 
@@ -27,6 +26,12 @@ use std::borrow::Cow;
 pub trait ZartStep {
     /// The output type this step produces.
     type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
+
+    /// The error type this step returns on failure.
+    ///
+    /// Must be serializable so the error survives a database round-trip for body replay.
+    /// The `#[zart_step]` macro infers this from the `E` in `Result<T, E>` automatically.
+    type Error: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
 
     /// The name of this step (used for tracking in the database).
     ///
@@ -74,9 +79,13 @@ pub trait ZartStep {
     /// Step context is accessed via `zart::context()` from within the step body.
     /// The framework scopes `Phase::Step` before calling this method.
     ///
+    /// This method returns `Result<Self::Output, Self::Error>` — pure Rust, no
+    /// framework types. Retry, timeout, and deadline handling are managed by the
+    /// framework at the `zart::step()` boundary.
+    ///
     /// **Note**: Do NOT call this directly. Use `zart::step(self)` or `.await` instead,
     /// which handles retry and timeout configuration automatically.
-    async fn run(&self) -> Result<Self::Output, StepError>;
+    async fn run(&self) -> Result<Self::Output, Self::Error>;
 }
 
 // ── NamedStep — call-site identity override ──────────────────────────────────
@@ -98,6 +107,7 @@ where
     S: ZartStep + Send + Sync,
 {
     type Output = S::Output;
+    type Error = S::Error;
 
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Owned(self.id.clone())
@@ -111,16 +121,19 @@ where
         self.inner.timeout()
     }
 
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         self.inner.run().await
     }
 }
 
-impl<S: ZartStep + Send + Sync + 'static> std::future::IntoFuture for NamedStep<S> {
-    type Output = Result<S::Output, StepError>;
+impl<S: ZartStep + Send + Sync + 'static> std::future::IntoFuture for NamedStep<S>
+where
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    type Output = Result<S::Output, crate::error::TaskError>;
     type IntoFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(crate::step(self))
+        Box::pin(crate::api::require(self))
     }
 }

@@ -7,7 +7,7 @@
 mod integration {
     use scheduler::{
         CompleteWaitGroupChildParams, DurableStorage as _, EventDeliveryResult, ExecutionStatus,
-        FailWaitGroupChildParams, PostgresScheduler, Scheduler as _,
+        FailWaitGroupChildParams, PostgresScheduler, ScheduleStepParams, Scheduler as _, StepKind,
     };
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
@@ -20,12 +20,31 @@ mod integration {
     use zart::{
         DurableScheduler, RetryConfig, TaskRegistry, Worker, WorkerConfig,
         context::ZartStep,
-        error::{StepError, TaskError},
+        error::TaskError,
         registry::DurableExecution,
         step_types::{
             CompletionBehavior, CompletionOutcome, CompletionSpec, StepDefId, StepResult,
         },
     };
+
+    // ── Local step error for test steps ───────────────────────────────────────
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    enum TestStepError {
+        Failed { step: String, reason: String },
+    }
+
+    impl std::fmt::Display for TestStepError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                TestStepError::Failed { step, reason } => {
+                    write!(f, "Step '{step}' failed: {reason}")
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for TestStepError {}
 
     // ── Shared helpers ────────────────────────────────────────────────────────
 
@@ -70,10 +89,11 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for StepOne {
         type Output = i32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-one")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[step-one] Attempt {}", zart::context().current_attempt + 1);
             Ok(21i32)
         }
@@ -86,10 +106,11 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for StepTwo {
         type Output = i32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-two")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[step-two] running");
             Ok(self.step1_result * 2)
         }
@@ -103,8 +124,8 @@ mod integration {
         type Output = serde_json::Value;
 
         async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
-            let step1: i32 = zart::step(StepOne).await?;
-            let step2: i32 = zart::step(StepTwo {
+            let step1: i32 = zart::require(StepOne).await?;
+            let step2: i32 = zart::require(StepTwo {
                 step1_result: step1,
             })
             .await?;
@@ -118,12 +139,13 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for FailStep {
         type Output = serde_json::Value;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("fail-step")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[fail-step] Failing intentionally");
-            Err(StepError::Failed {
+            Err(TestStepError::Failed {
                 step: "fail-step".to_string(),
                 reason: "intentional failure".to_string(),
             })
@@ -138,7 +160,7 @@ mod integration {
         type Output = serde_json::Value;
 
         async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
-            zart::step(FailStep).await?;
+            zart::require(FailStep).await?;
             Ok(serde_json::json!({}))
         }
     }
@@ -151,13 +173,14 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for TransientStep {
         type Output = String;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("transient-step")
         }
         fn retry_config(&self) -> Option<RetryConfig> {
             Some(RetryConfig::fixed(3, Duration::from_millis(50)))
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             let count = self.attempts.fetch_add(1, Ordering::SeqCst);
             println!(
                 "[transient-step] Attempt {} (0-indexed: {})",
@@ -165,7 +188,7 @@ mod integration {
                 zart::context().current_attempt
             );
             if count < 2 {
-                Err(StepError::Failed {
+                Err(TestStepError::Failed {
                     step: "transient-step".to_string(),
                     reason: format!("transient error #{}", count + 1),
                 })
@@ -185,7 +208,7 @@ mod integration {
         type Output = serde_json::Value;
 
         async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
-            let result: String = zart::step(TransientStep {
+            let result: String = zart::require(TransientStep {
                 attempts: self.attempts.clone(),
             })
             .await?;
@@ -466,10 +489,11 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for StepA {
         type Output = i32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-a")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[step-a] running");
             Ok(1)
         }
@@ -480,10 +504,11 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for StepB {
         type Output = i32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-b")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[step-b] running");
             Ok(2)
         }
@@ -494,10 +519,11 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for StepC {
         type Output = i32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-c")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[step-c] running");
             Ok(3)
         }
@@ -622,7 +648,7 @@ mod integration {
                 task_name: task_name.to_string(),
                 run_id: run_id.clone(),
                 step_name: "child-1".to_string(),
-                step_kind: "step".to_string(),
+                step_kind: StepKind::Step,
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 metadata: serde_json::json!({
@@ -645,7 +671,7 @@ mod integration {
                 task_name: task_name.to_string(),
                 run_id: run_id.clone(),
                 step_name: "child-2".to_string(),
-                step_kind: "step".to_string(),
+                step_kind: StepKind::Step,
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 metadata: serde_json::json!({
@@ -771,7 +797,7 @@ mod integration {
                 task_name: task_name.to_string(),
                 run_id: run_id.clone(),
                 step_name: "fail-1".to_string(),
-                step_kind: "step".to_string(),
+                step_kind: StepKind::Step,
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 metadata: serde_json::json!({
@@ -794,7 +820,7 @@ mod integration {
                 task_name: task_name.to_string(),
                 run_id: run_id.clone(),
                 step_name: "fail-2".to_string(),
-                step_kind: "step".to_string(),
+                step_kind: StepKind::Step,
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 metadata: serde_json::json!({
@@ -940,7 +966,7 @@ mod integration {
                 task_name: task_name.to_string(),
                 run_id: run_id.clone(),
                 step_name: "phase3-step".to_string(),
-                step_kind: "step".to_string(),
+                step_kind: StepKind::Step,
                 execution_time: chrono::Utc::now(),
                 data: serde_json::json!({}),
                 metadata: serde_json::json!({
@@ -1096,14 +1122,15 @@ mod integration {
         #[async_trait::async_trait]
         impl ZartStep for AlwaysFailStep {
             type Output = String;
+            type Error = TestStepError;
             fn step_name(&self) -> Cow<'static, str> {
                 Cow::Borrowed("always-fail")
             }
             fn retry_config(&self) -> Option<RetryConfig> {
                 Some(RetryConfig::fixed(1, Duration::from_millis(50)))
             }
-            async fn run(&self) -> Result<Self::Output, StepError> {
-                Err(StepError::Failed {
+            async fn run(&self) -> Result<Self::Output, Self::Error> {
+                Err(TestStepError::Failed {
                     step: "always-fail".to_string(),
                     reason: "permanent error".to_string(),
                 })
@@ -1118,7 +1145,7 @@ mod integration {
             type Output = serde_json::Value;
 
             async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
-                zart::step(AlwaysFailStep).await?;
+                zart::require(AlwaysFailStep).await?;
                 Ok(serde_json::json!({}))
             }
         }
@@ -1183,10 +1210,11 @@ mod integration {
     #[async_trait::async_trait]
     impl ZartStep for GatedStep {
         type Output = i32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("gated-step")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             println!("[gated-step] Scheduling step");
             Ok(1)
         }
@@ -1210,7 +1238,7 @@ mod integration {
 
             // This is the first call: returns StepError::Scheduled, causing
             // the worker to call update_task_state and re-queue the task.
-            zart::step(GatedStep).await?;
+            zart::require(GatedStep).await?;
 
             Ok(serde_json::json!({}))
         }

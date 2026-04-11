@@ -1,0 +1,292 @@
+---
+title: Error Handling
+description: Handle business errors and framework failures with typed step errors, inline matching, fallbacks, and centralized on_failure recovery.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Zart separates two distinct kinds of step failures:
+
+- **Business errors** — typed errors your step logic returns (e.g. `InsufficientFunds`, `OutOfStock`). These represent domain decisions.
+- **Framework errors** — infrastructure-level outcomes like retry exhausted, timeout, or deadline exceeded. These come from `ZartStepError`.
+
+This example shows an order-processing workflow that demonstrates all four error handling patterns.
+
+**Features demonstrated:** typed step errors with `thiserror`, `require()` (fail-fast), `zart::step()` + `StepOutcome`, `zart::step_or_else()`, `on_failure` handler, `ExecutionFailure`, deserializing errors inside `on_failure`.
+
+## Step error types
+
+Every step declares a typed error. It must be `Serialize + Deserialize` so Zart can persist it to the database and recover it later in `on_failure`.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+enum PaymentError {
+    #[error("insufficient funds: balance {balance}, needed {needed}")]
+    InsufficientFunds { balance: f64, needed: f64 },
+    #[error("card declined: {reason}")]
+    CardDeclined { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+enum InventoryError {
+    #[error("item out of stock: {item}")]
+    OutOfStock { item: String },
+    #[error("item reserved by another order")]
+    Reserved,
+}
+```
+
+`thiserror` is the right choice here: it generates `Display` and `Error` impl from the `#[error]` attribute while keeping the type concrete and matchable. Use `anyhow` only when you have a heterogeneous mix of errors whose concrete type you don't need to inspect (e.g. in CLI glue code or LLM API wrappers).
+
+## Step definitions
+
+```rust
+/// Fail-fast example: reserve inventory or abort immediately.
+#[zart_step("reserve-inventory")]
+async fn reserve_inventory(order_id: String) -> Result<InventoryResult, InventoryError> {
+    Ok(InventoryResult { item: "widget".to_string(), quantity: 1 })
+}
+
+/// Explicit-match example: may return InsufficientFunds so the body can branch.
+#[zart_step("check-balance")]
+async fn check_balance(account_id: String) -> Result<f64, PaymentError> {
+    // Simulated: 30% chance of low balance.
+    if low_balance_condition() {
+        return Err(PaymentError::InsufficientFunds { balance: 5.0, needed: 50.0 });
+    }
+    Ok(100.0)
+}
+
+/// Fallback example: retries twice, then the body provides a fallback value.
+#[zart_step("charge-card", retry = "fixed(2, 1s)")]
+async fn charge_card(account_id: String, amount: f64) -> Result<PaymentResult, PaymentError> {
+    if zart::context().current_attempt == 0 {
+        return Err(PaymentError::CardDeclined { reason: "temporary network error".to_string() });
+    }
+    Ok(PaymentResult { transaction_id: format!("txn-{amount}"), amount })
+}
+```
+
+## Defining the workflow
+
+<Tabs>
+<TabItem label="Macro">
+
+```rust
+#[zart_durable("error-handling-demo", on_failure = handle_order_failure)]
+async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
+    // Pattern 1 — require(): fail-fast on any non-Ok outcome.
+    let inventory = reserve_inventory(data.order_id.clone()).await?;
+
+    // Pattern 2 — zart::step(): explicit three-way match.
+    let balance = match zart::step(check_balance(data.account_id.clone())).await? {
+        StepOutcome::Ok(b) => b,
+        StepOutcome::BusinessErr(PaymentError::InsufficientFunds { balance, needed }) => {
+            return Ok(OrderOutput {
+                status: "insufficient_funds".to_string(),
+                message: format!("Need ${needed}, have ${balance}"),
+                ..Default::default()
+            });
+        }
+        StepOutcome::BusinessErr(PaymentError::CardDeclined { reason }) => {
+            return Ok(OrderOutput {
+                status: "card_declined".to_string(),
+                message: format!("Card declined: {reason}"),
+                ..Default::default()
+            });
+        }
+        StepOutcome::ZartErr(e) => return Err(e.into()),
+    };
+
+    // Pattern 3 — step_or_else(): inline fallback for business errors only.
+    let payment = zart::step_or_else(
+        charge_card(data.account_id.clone(), data.amount),
+        |_err| PaymentResult { transaction_id: "fallback".to_string(), amount: 0.0 },
+    )
+    .await?;
+
+    Ok(OrderOutput {
+        status: "completed".to_string(),
+        transaction_id: Some(payment.transaction_id),
+        balance: Some(balance),
+        inventory_item: Some(inventory.item),
+        message: "Order processed successfully".to_string(),
+    })
+}
+```
+
+</TabItem>
+<TabItem label="Trait">
+
+```rust
+struct OrderProcessor;
+
+#[async_trait]
+impl DurableExecution for OrderProcessor {
+    type Data = OrderInput;
+    type Output = OrderOutput;
+
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        // Pattern 1 — require(): fail-fast.
+        let inventory = reserve_inventory(data.order_id.clone()).await?;
+
+        // Pattern 2 — zart::step(): explicit three-way match.
+        let balance = match zart::step(check_balance(data.account_id.clone())).await? {
+            StepOutcome::Ok(b) => b,
+            StepOutcome::BusinessErr(PaymentError::InsufficientFunds { balance, needed }) => {
+                return Ok(OrderOutput {
+                    status: "insufficient_funds".to_string(),
+                    message: format!("Need ${needed}, have ${balance}"),
+                    ..Default::default()
+                });
+            }
+            StepOutcome::BusinessErr(err) => {
+                return Ok(OrderOutput {
+                    status: "payment_error".to_string(),
+                    message: err.to_string(),
+                    ..Default::default()
+                });
+            }
+            StepOutcome::ZartErr(e) => return Err(e.into()),
+        };
+
+        // Pattern 3 — step_or_else(): inline fallback.
+        let payment = zart::step_or_else(
+            charge_card(data.account_id.clone(), data.amount),
+            |_err| PaymentResult { transaction_id: "fallback".to_string(), amount: 0.0 },
+        )
+        .await?;
+
+        Ok(OrderOutput {
+            status: "completed".to_string(),
+            transaction_id: Some(payment.transaction_id),
+            balance: Some(balance),
+            inventory_item: Some(inventory.item),
+            message: "Order processed successfully".to_string(),
+        })
+    }
+
+    // Pattern 4 — on_failure: override the trait method directly.
+    async fn on_failure(
+        &self,
+        data: Self::Data,
+        failure: ExecutionFailure,
+    ) -> Result<Self::Output, TaskError> {
+        handle_order_failure(data, failure).await
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+<Aside type="tip">
+The macro approach (`#[zart_durable]`) generates the same `DurableExecution` impl as the trait approach. Use the macro for less boilerplate; use the trait when you need more control over generated code or want to implement the trait in a non-function context.
+</Aside>
+
+## The `on_failure` handler
+
+`on_failure` is called when any step propagates an error out of `run`, or when an execution-level failure occurs (deadline, retries exhausted). It receives the original input `data` and an `ExecutionFailure` describing what went wrong.
+
+```rust
+async fn handle_order_failure(
+    data: OrderInput,
+    failure: ExecutionFailure,
+) -> Result<OrderOutput, TaskError> {
+    match failure {
+        ExecutionFailure::StepFailed { step, raw } if step == "charge-card" => {
+            // `raw` is the JSON-serialized step error. Deserialize it for precise matching.
+            match serde_json::from_value::<PaymentError>(raw.clone()) {
+                Ok(PaymentError::InsufficientFunds { balance, needed }) => {
+                    Ok(OrderOutput {
+                        status: "payment_failed".to_string(),
+                        message: format!("Insufficient funds: have ${balance}, need ${needed}"),
+                        balance: Some(balance),
+                        ..Default::default()
+                    })
+                }
+                Ok(PaymentError::CardDeclined { reason }) => {
+                    Ok(OrderOutput {
+                        status: "payment_failed".to_string(),
+                        message: format!("Card declined: {reason}"),
+                        ..Default::default()
+                    })
+                }
+                Err(_) => {
+                    // Not a business error — framework error (timeout, retries exhausted).
+                    // `raw` is a ZartStepError JSON blob, not a PaymentError.
+                    Ok(OrderOutput {
+                        status: "payment_failed".to_string(),
+                        message: format!("Payment step failed with framework error: {raw}"),
+                        ..Default::default()
+                    })
+                }
+            }
+        }
+
+        ExecutionFailure::StepFailed { step, raw } if step == "reserve-inventory" => {
+            match serde_json::from_value::<InventoryError>(raw.clone()) {
+                Ok(InventoryError::OutOfStock { item }) => Ok(OrderOutput {
+                    status: "inventory_failed".to_string(),
+                    message: format!("Item out of stock: {item}"),
+                    ..Default::default()
+                }),
+                Ok(InventoryError::Reserved) => Ok(OrderOutput {
+                    status: "inventory_failed".to_string(),
+                    message: "Item reserved by another order".to_string(),
+                    ..Default::default()
+                }),
+                Err(_) => Err(TaskError::Cancelled),
+            }
+        }
+
+        ExecutionFailure::ExecutionDeadlineExceeded => Ok(OrderOutput {
+            status: "timed_out".to_string(),
+            message: "Execution deadline exceeded".to_string(),
+            ..Default::default()
+        }),
+
+        ExecutionFailure::RetriesExhausted { attempts } => Ok(OrderOutput {
+            status: "retries_exhausted".to_string(),
+            message: format!("Gave up after {attempts} attempts"),
+            ..Default::default()
+        }),
+
+        _ => Err(TaskError::Cancelled),
+    }
+}
+```
+
+<Aside type="note">
+`on_failure` is a plain `async fn` — it has no dependency on the Zart runtime and can be unit-tested without any database or scheduler setup.
+</Aside>
+
+## Inline body vs `on_failure`: when to use which
+
+| | Inline (`zart::step` / `step_or_else`) | `on_failure` |
+|---|---|---|
+| **Scope** | A single step's outcome | Any step failure or execution-level event |
+| **Access to prior results** | Yes — all bindings in scope | No — only `data` and `failure` |
+| **Can return a success output** | Yes | Yes |
+| **Best for** | Simple fallbacks, branching on specific errors | Global safety nets, compensation transactions, audit logging |
+
+## Key concepts
+
+**`StepOutcome<T, E>`** — the three-way result of `zart::step(...)`:
+- `StepOutcome::Ok(T)` — step succeeded
+- `StepOutcome::BusinessErr(E)` — step returned its typed error
+- `StepOutcome::ZartErr(ZartStepError)` — framework failure (retry exhausted, timeout, deadline)
+
+**`step_or_else(step, |e| fallback)`** — intercepts only `BusinessErr(E)`. Framework errors still propagate as `Err`. The closure receives the typed `E` and must return `T`.
+
+**`ExecutionFailure::StepFailed { step, raw }`** — `step` is the step name string; `raw` is `serde_json::Value` containing the serialized error. Use `serde_json::from_value::<MyError>(raw)` to recover the typed error. If deserialization fails, the failure was a framework error (the JSON is a `ZartStepError`, not your type).
+
+**`require()`** — calling `step.await?` without wrapping in `zart::step()` uses `require()` semantics: any non-Ok outcome immediately propagates as `TaskError`, routing to `on_failure`.
+
+## Running the example
+
+```bash
+just example-error-handling
+```
+
+Requires a running PostgreSQL instance (`just up`).

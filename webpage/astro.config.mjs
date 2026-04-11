@@ -62,6 +62,7 @@ export default defineConfig({
             { label: "Brewery Finder", link: "/examples/brewery-finder" },
             { label: "Approval Workflow", link: "/examples/approval-workflow" },
             { label: "Parallel Steps", link: "/examples/parallel-steps" },
+            { label: "Error handler", link: "/examples/error-handling" },
           ],
         },
 

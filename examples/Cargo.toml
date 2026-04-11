@@ -32,6 +32,10 @@ path = "durable-loops/src/main.rs"
 name = "example-sleep"
 path = "sleep/src/main.rs"
 
+[[bin]]
+name = "example-error-handling"
+path = "error-handling/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }
@@ -48,4 +52,7 @@ tracing-subscriber = { workspace = true }
 sqlx = { workspace = true }
 radkit = { version = "0.0.5", features = ["runtime"] }
 schemars = { version = "1", features = ["derive"] }
+# anyhow is used by radkit-agent for LLM/HTTP error handling where concrete error
+# types are unknown at compile time. All other examples use thiserror.
 anyhow = "1.0"
+thiserror = { workspace = true }

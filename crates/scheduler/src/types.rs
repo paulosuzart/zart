@@ -12,7 +12,7 @@ pub struct ScheduleStepParams {
     pub task_name: String,
     pub run_id: String,
     pub step_name: String,
-    pub step_kind: String,
+    pub step_kind: StepKind,
     pub execution_time: DateTime<Utc>,
     pub data: serde_json::Value,
     pub metadata: serde_json::Value,
@@ -25,6 +25,8 @@ pub struct CompleteStepAndScheduleBodyParams {
     pub step_task_id: String,
     pub step_id: String,
     pub result: serde_json::Value,
+    /// Outcome discriminant stored in `zart_steps.result_kind`.
+    pub result_kind: StepResultKind,
     pub lock_token: String,
     pub attempt_number: usize,
     pub next_body_task_id: String,
@@ -134,6 +136,8 @@ pub struct StepLookup {
     pub status: TaskStatus,
     /// JSON result stored when the step completed. `None` if not yet complete.
     pub result: Option<serde_json::Value>,
+    /// Outcome discriminant. `None` for rows written before this column existed (treated as `Ok`).
+    pub result_kind: Option<StepResultKind>,
 }
 
 impl std::fmt::Display for FetchedTask {
@@ -163,6 +167,8 @@ pub struct ScheduleResult {
 /// The lifecycle status of a task row in the database.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "task_status", rename_all = "snake_case"))]
 pub enum TaskStatus {
     /// Waiting to be picked up by a worker.
     Scheduled,
@@ -196,6 +202,8 @@ impl std::str::FromStr for TaskStatus {
 /// The lifecycle status of a durable execution record in `zart_executions`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "execution_status", rename_all = "snake_case"))]
 pub enum ExecutionStatus {
     Scheduled,
     Running,
@@ -228,6 +236,77 @@ impl std::str::FromStr for ExecutionStatus {
             other => Err(format!("unknown execution status: {other}")),
         }
     }
+}
+
+/// The kind of step stored in `zart_steps.step_kind`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "step_kind", rename_all = "snake_case"))]
+pub enum StepKind {
+    /// A user-defined step with a lambda.
+    Step,
+    /// A timed pause (`zart::sleep`). No lambda — fires when `execution_time` arrives.
+    Sleep,
+    /// A fan-out wait: all children must complete (or threshold reached) before resuming.
+    WaitAll,
+    /// An external event wait. Parked until the event is delivered.
+    WaitForEvent,
+    /// A wait-group coordinator row. Tracks child completion state.
+    WaitGroup,
+    /// A capture step: synchronously persisted on first encounter, no task row.
+    Capture,
+}
+
+/// The lifecycle status of a step row in `zart_steps`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "step_status", rename_all = "snake_case"))]
+pub enum StepStatus {
+    /// Waiting to be picked up by a worker.
+    Scheduled,
+    /// Currently being executed by a worker.
+    Running,
+    /// Step finished (successfully or with a recorded error).
+    Completed,
+    /// All retry attempts exhausted; step will not be retried.
+    Dead,
+}
+
+/// What triggered a run of a durable execution (`zart_execution_runs.trigger`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "execution_trigger", rename_all = "snake_case"))]
+pub enum ExecutionTrigger {
+    /// First ever run of this execution.
+    Initial,
+    /// A manual or automatic restart.
+    Restart,
+    /// A selective re-run of specific steps.
+    SelectiveRerun,
+}
+
+/// Outcome discriminant for a completed step, stored in `zart_steps.result_kind`.
+///
+/// The short abbreviations (`Rx`, `Dl`) match the pre-existing PostgreSQL
+/// `step_result_kind` enum labels introduced in the initial schema migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "step_result_kind", rename_all = "snake_case"))]
+pub enum StepResultKind {
+    /// Step succeeded — `result` holds the serialized output.
+    Ok,
+    /// Step returned a business error — `result` holds the serialized error.
+    Err,
+    /// All retries exhausted — `result` holds the last serialized error.
+    Rx,
+    /// Step timed out — `result` is NULL.
+    Timeout,
+    /// wait_for_event deadline exceeded — `result` is NULL.
+    Dl,
 }
 
 /// Parameters for [`Scheduler::schedule_at`].
@@ -309,8 +388,8 @@ pub struct ExecutionRunRecord {
     pub started_at: DateTime<Utc>,
     /// When this run finished (None if still running).
     pub completed_at: Option<DateTime<Utc>>,
-    /// What triggered this run: 'initial', 'restart', or 'selective_rerun'.
-    pub trigger: String,
+    /// What triggered this run.
+    pub trigger: ExecutionTrigger,
 }
 
 /// A step record from the `zart_steps` table.
@@ -324,12 +403,12 @@ pub struct StepRow {
     pub run_id: String,
     /// The step name (unique within a run).
     pub step_name: String,
-    /// What kind of step this is: 'step', 'sleep', 'wait_all', 'wait_for_event', 'wait_group'.
-    pub step_kind: String,
+    /// What kind of step this is.
+    pub step_kind: StepKind,
     /// The task currently responsible for this step (None if completed or not yet scheduled).
     pub task_id: Option<String>,
-    /// Current status: 'scheduled', 'running', 'completed', 'dead'.
-    pub status: String,
+    /// Current lifecycle status of this step.
+    pub status: StepStatus,
     /// How many retries have been attempted (0 = no retries yet).
     pub retry_attempt: i32,
     /// Retry policy serialized as JSON.

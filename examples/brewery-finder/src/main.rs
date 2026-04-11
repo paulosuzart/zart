@@ -14,8 +14,15 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::error::StepError;
 use zart::prelude::*;
+
+// ── Local serializable step error ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+pub enum StepError {
+    #[error("Step '{step}' failed: {reason}")]
+    Failed { step: String, reason: String },
+}
 
 // ── Input / Output types ──────────────────────────────────────────────────────
 

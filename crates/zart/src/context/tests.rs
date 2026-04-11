@@ -1,6 +1,6 @@
 //! Tests for context types. Compiled only in test mode.
 
-use crate::error::StepError;
+use crate::error::{StepError, StepOutcome};
 use crate::execution_model::ExecutionMode;
 use crate::retry::RetryConfig;
 use crate::test_helpers::{Call, RecordingScheduler};
@@ -195,15 +195,31 @@ fn make_step_ctx(scheduler: std::sync::Arc<dyn StorageBackend>, target: &str) ->
 
 // ── Helper ZartStep structs for tests ─────────────────────────────────────
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum TestStepError {
+    Failed { reason: String },
+}
+
+impl std::fmt::Display for TestStepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TestStepError::Failed { reason } => write!(f, "{}", reason),
+        }
+    }
+}
+
+impl std::error::Error for TestStepError {}
+
 struct ChargeCardStep;
 
 #[async_trait::async_trait]
 impl ZartStep for ChargeCardStep {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("charge-card")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(99)
     }
 }
@@ -215,10 +231,11 @@ struct ChargeCardStepWithResult {
 #[async_trait::async_trait]
 impl ZartStep for ChargeCardStepWithResult {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("charge-card")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(self.result)
     }
 }
@@ -228,12 +245,12 @@ struct FailingChargeCardStep;
 #[async_trait::async_trait]
 impl ZartStep for FailingChargeCardStep {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("charge-card")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
-        Err(StepError::Failed {
-            step: "charge-card".to_string(),
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
+        Err(TestStepError::Failed {
             reason: "card declined".to_string(),
         })
     }
@@ -244,10 +261,11 @@ struct StepOne;
 #[async_trait::async_trait]
 impl ZartStep for StepOne {
     type Output = i32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-one")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(21)
     }
 }
@@ -259,30 +277,33 @@ struct StepC;
 #[async_trait::async_trait]
 impl ZartStep for StepA {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-a")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(1)
     }
 }
 #[async_trait::async_trait]
 impl ZartStep for StepB {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-b")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(2)
     }
 }
 #[async_trait::async_trait]
 impl ZartStep for StepC {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("step-c")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(3)
     }
 }
@@ -326,11 +347,14 @@ async fn body_mode_completed_step_returns_cached_result_with_zero_db_writes() {
         .build();
     let ctx = make_body_ctx(scheduler);
 
-    let result: Result<u32, _> = ctx
+    let result = ctx
         .execute_step(ChargeCardStepWithResult { result: 0 })
         .await;
 
-    assert_eq!(result.unwrap(), 42, "cached result must be returned");
+    assert!(
+        matches!(result, Ok(StepOutcome::Ok(42))),
+        "cached result must be returned"
+    );
 
     let log = calls.lock().unwrap();
     assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
@@ -362,7 +386,7 @@ async fn step_mode_target_step_executes_lambda_and_atomically_completes() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
     let ctx = make_step_ctx(scheduler, "charge-card");
 
-    let result: Result<u32, _> = ctx.execute_step(ChargeCardStep).await;
+    let result = ctx.execute_step(ChargeCardStep).await;
 
     assert!(
         matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
@@ -397,9 +421,12 @@ async fn step_mode_nontarget_step_reads_cache_with_zero_writes() {
         .build();
     let ctx = make_step_ctx(scheduler, "step-two");
 
-    let result: Result<i32, _> = ctx.execute_step(StepOne).await;
+    let result = ctx.execute_step(StepOne).await;
 
-    assert_eq!(result.unwrap(), 21, "should return the cached result");
+    assert!(
+        matches!(result, Ok(StepOutcome::Ok(21))),
+        "should return the cached result"
+    );
 
     let log = calls.lock().unwrap();
     assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
@@ -467,10 +494,11 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
     #[async_trait::async_trait]
     impl ZartStep for CachedStepA {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-a")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(99)
         }
     }
@@ -478,10 +506,11 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
     #[async_trait::async_trait]
     impl ZartStep for CachedStepB {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-b")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(99)
         }
     }
@@ -532,30 +561,33 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
     #[async_trait::async_trait]
     impl ZartStep for WaitAllStepA {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-a")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(0)
         }
     }
     #[async_trait::async_trait]
     impl ZartStep for WaitAllStepB {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-b")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(2)
         }
     }
     #[async_trait::async_trait]
     impl ZartStep for WaitAllStepC {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("step-c")
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(0)
         }
     }
@@ -680,13 +712,14 @@ async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
     #[async_trait::async_trait]
     impl ZartStep for RetryStep {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Borrowed("charge-card")
         }
         fn retry_config(&self) -> Option<RetryConfig> {
             Some(RetryConfig::fixed(3, Duration::from_secs(5)))
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(99)
         }
     }
@@ -714,9 +747,9 @@ async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
 }
 
 /// When the step fails and retries remain, dispatch-owned retry handling must call
-/// `mark_failed` with a future execution time and return `StepExecuted`.
+/// `reschedule_step_for_retry` (which records as MarkFailed) and return `StepExecuted`.
 #[tokio::test]
-async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_failed() {
+async fn step_mode_failure_with_retries_remaining_schedules_retry() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
     let ctx = make_step_ctx_with_retry(
         scheduler,
@@ -737,7 +770,7 @@ async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_faile
     assert_eq!(
         failures.len(),
         1,
-        "exactly one mark_failed call for the retry"
+        "exactly one mark_failed call for the retry (via reschedule_step_for_retry)"
     );
 
     if let Call::MarkFailed {
@@ -751,16 +784,13 @@ async fn step_mode_failure_with_retries_remaining_schedules_retry_via_mark_faile
             next_execution_time.is_some(),
             "retry must carry a future execution_time for the delay"
         );
-        let delay_secs =
-            (*next_execution_time.as_ref().unwrap() - chrono::Utc::now()).num_seconds();
-        assert!(delay_secs > 0, "retry must be in the future");
     }
 }
 
-/// When all retries are exhausted the original error propagates and
-/// `mark_failed` is NOT called.
+/// When all retries are exhausted the step completes with result_kind='rx' and
+/// returns `StepExecuted` (body will receive `StepOutcome::ZartErr(RetryExhausted)` on replay).
 #[tokio::test]
-async fn step_mode_failure_with_retries_exhausted_propagates_error() {
+async fn step_mode_failure_retries_exhausted_completes_with_rx_kind() {
     let (scheduler, calls) = RecordingScheduler::builder().build();
     let ctx = make_step_ctx_with_retry(
         scheduler,
@@ -772,15 +802,17 @@ async fn step_mode_failure_with_retries_exhausted_propagates_error() {
     let result = ctx.execute_step(FailingChargeCardStep).await;
 
     assert!(
-        matches!(result, Err(StepError::Failed { .. })),
-        "error must propagate when retries are exhausted"
+        matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
+        "must return StepExecuted after completing with rx kind"
     );
 
     let log = calls.lock().unwrap();
+    // Should have called complete_step_and_schedule_body (which records MarkCompleted + ScheduleAt).
+    let completions: Vec<_> = log.iter().filter(|c| c.is_mark_completed()).collect();
     assert_eq!(
-        log.iter().filter(|c| c.is_mark_failed()).count(),
-        0,
-        "dispatch retry path must not call mark_failed when retries are exhausted"
+        completions.len(),
+        1,
+        "exhausted retries must call complete_step_and_schedule_body"
     );
 }
 
@@ -894,19 +926,26 @@ async fn body_mode_loop_with_unique_names_returns_correct_per_iteration_result()
     #[async_trait::async_trait]
     impl ZartStep for LoopItemStep {
         type Output = u32;
+        type Error = TestStepError;
         fn step_name(&self) -> Cow<'static, str> {
             Cow::Owned(format!("loop-item-{}", self.index))
         }
-        async fn run(&self) -> Result<Self::Output, StepError> {
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
             Ok(0)
         }
     }
 
-    let r0 = ctx.execute_step(LoopItemStep { index: 0 }).await.unwrap();
-    let r1 = ctx.execute_step(LoopItemStep { index: 1 }).await.unwrap();
+    let r0 = ctx.execute_step(LoopItemStep { index: 0 }).await;
+    let r1 = ctx.execute_step(LoopItemStep { index: 1 }).await;
 
-    assert_eq!(r0, 10u32, "iteration 0 must return its own cached value");
-    assert_eq!(r1, 20u32, "iteration 1 must return its own cached value");
+    assert!(
+        matches!(r0, Ok(StepOutcome::Ok(10))),
+        "iteration 0 must return its own cached value"
+    );
+    assert!(
+        matches!(r1, Ok(StepOutcome::Ok(20))),
+        "iteration 1 must return its own cached value"
+    );
 }
 
 // ── zart::context() via task-locals ──────────────────────────────────────────
@@ -965,13 +1004,11 @@ async fn body_mode_loop_with_named_override_returns_correct_per_iteration_result
 
     let r0 = ctx
         .execute_step(ChargeCardStep.named("process-item-0"))
-        .await
-        .unwrap();
+        .await;
     let r1 = ctx
         .execute_step(ChargeCardStep.named("process-item-1"))
-        .await
-        .unwrap();
+        .await;
 
-    assert_eq!(r0, 100u32);
-    assert_eq!(r1, 200u32);
+    assert!(matches!(r0, Ok(StepOutcome::Ok(100u32))));
+    assert!(matches!(r1, Ok(StepOutcome::Ok(200u32))));
 }

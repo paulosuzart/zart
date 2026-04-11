@@ -18,10 +18,29 @@ use std::sync::Arc;
 use std::time::Duration;
 use zart::context::TaskContext;
 use zart::context::ZartStep;
-use zart::error::{StepError, TaskError};
+use zart::error::TaskError;
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
 use zart_macros::zart_durable;
+
+// ── Local step error for test steps ───────────────────────────────────────
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum TestStepError {
+    Failed { step: String, reason: String },
+}
+
+impl std::fmt::Display for TestStepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TestStepError::Failed { step, reason } => {
+                write!(f, "Step '{step}' failed: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TestStepError {}
 
 // ── Mock scheduler (no-op) ────────────────────────────────────────────────────
 
@@ -258,17 +277,18 @@ struct ProcessStep {
 #[async_trait]
 impl ZartStep for ProcessStep {
     type Output = String;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("process")
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(self.input.to_uppercase())
     }
 }
 
 #[zart_durable("step-task")]
 async fn step_using_handler(data: String) -> Result<String, TaskError> {
-    let processed = zart::step(ProcessStep { input: data }).await?;
+    let processed = zart::require(ProcessStep { input: data }).await?;
     Ok(processed)
 }
 
@@ -289,20 +309,21 @@ struct ComputeStep {
 #[async_trait]
 impl ZartStep for ComputeStep {
     type Output = u32;
+    type Error = TestStepError;
     fn step_name(&self) -> Cow<'static, str> {
         Cow::Borrowed("compute")
     }
     fn retry_config(&self) -> Option<RetryConfig> {
         Some(RetryConfig::fixed(3, Duration::from_millis(10)))
     }
-    async fn run(&self) -> Result<Self::Output, StepError> {
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
         Ok(self.input + 1)
     }
 }
 
 #[zart_durable("retry-task")]
 async fn retry_step_handler(data: u32) -> Result<u32, TaskError> {
-    let result = zart::step(ComputeStep { input: data }).await?;
+    let result = zart::require(ComputeStep { input: data }).await?;
     Ok(result)
 }
 
@@ -352,14 +373,15 @@ async fn loop_handler(data: Vec<u32>) -> Result<u32, TaskError> {
         #[async_trait]
         impl ZartStep for LoopItemStep {
             type Output = u32;
+            type Error = TestStepError;
             fn step_name(&self) -> Cow<'static, str> {
                 Cow::Owned(format!("loop-item-{}", self.index))
             }
-            async fn run(&self) -> Result<Self::Output, StepError> {
+            async fn run(&self) -> Result<Self::Output, Self::Error> {
                 Ok(self.value * 2)
             }
         }
-        let v = zart::step(LoopItemStep { index, value: item }).await?;
+        let v = zart::require(LoopItemStep { index, value: item }).await?;
         total += v;
     }
     Ok(total)
@@ -377,7 +399,7 @@ async fn zart_durable_loop_with_execute_step_schedules_first_item() {
 // ── Dynamic step name tests ───────────────────────────────────────────────────
 
 #[zart_macros::zart_step("process-item-{index}")]
-async fn process_item(index: u32) -> Result<u32, StepError> {
+async fn process_item(index: u32) -> Result<u32, TestStepError> {
     Ok(index * 10)
 }
 

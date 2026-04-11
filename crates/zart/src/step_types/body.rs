@@ -13,14 +13,14 @@ use crate::error::StepError;
 #[cfg(feature = "metrics")]
 use crate::metrics::STEPS_TOTAL;
 use crate::step_ops;
-use crate::step_types::{BodyBehavior, StepRequest, StepRequestKind};
+use crate::step_types::{BodyBehavior, ResultKind, StepRequest, StepRequestKind};
 
 /// Default body behavior for regular step-like entries:
 /// - `step`
 /// - `wait_group_child`
 ///
 /// Behavior:
-/// 1. If completed in storage, return cached result.
+/// 1. If completed in storage, return cached result + result_kind.
 /// 2. If scheduled/running, return `StepError::Scheduled`.
 /// 3. If absent, schedule a step task and return `StepError::Scheduled`.
 pub struct LookupOrSchedule;
@@ -31,7 +31,7 @@ impl BodyBehavior for LookupOrSchedule {
         &self,
         ctx: &TaskContext,
         req: &StepRequest<'_>,
-    ) -> Result<serde_json::Value, StepError> {
+    ) -> Result<(serde_json::Value, ResultKind), StepError> {
         let step_name = req.step_name;
 
         let lookup = ctx
@@ -47,17 +47,22 @@ impl BodyBehavior for LookupOrSchedule {
             Some(StepLookup {
                 status: TaskStatus::Completed,
                 result: Some(json),
+                result_kind,
                 ..
-            }) => Ok(json),
+            }) => {
+                let kind = result_kind.map(ResultKind::from).unwrap_or(ResultKind::Ok);
+                Ok((json, kind))
+            }
 
             Some(StepLookup {
                 status: TaskStatus::Completed,
                 result: None,
+                result_kind,
                 ..
-            }) => Err(StepError::Failed {
-                step: step_name.to_string(),
-                reason: "step completed but result is missing".to_string(),
-            }),
+            }) => {
+                let kind = result_kind.map(ResultKind::from).unwrap_or(ResultKind::Ok);
+                Ok((serde_json::Value::Null, kind))
+            }
 
             Some(_) => {
                 emit_metric!(
@@ -120,7 +125,7 @@ impl BodyBehavior for LookupOrScheduleSleep {
         &self,
         ctx: &TaskContext,
         req: &StepRequest<'_>,
-    ) -> Result<serde_json::Value, StepError> {
+    ) -> Result<(serde_json::Value, ResultKind), StepError> {
         let wake_time = match req.kind {
             StepRequestKind::Sleep { wake_time } => wake_time,
             _ => {
@@ -146,7 +151,7 @@ impl BodyBehavior for LookupOrScheduleSleep {
             Some(StepLookup {
                 status: TaskStatus::Completed,
                 ..
-            }) => Ok(serde_json::Value::Null),
+            }) => Ok((serde_json::Value::Null, ResultKind::Ok)),
 
             Some(_) => Err(StepError::Scheduled {
                 step: step_name.to_string(),
@@ -194,7 +199,7 @@ impl BodyBehavior for LookupOrScheduleEvent {
         &self,
         ctx: &TaskContext,
         req: &StepRequest<'_>,
-    ) -> Result<serde_json::Value, StepError> {
+    ) -> Result<(serde_json::Value, ResultKind), StepError> {
         let deadline = match req.kind {
             StepRequestKind::WaitForEvent { deadline } => deadline,
             _ => {
@@ -220,17 +225,22 @@ impl BodyBehavior for LookupOrScheduleEvent {
             Some(StepLookup {
                 status: TaskStatus::Completed,
                 result: Some(json),
+                result_kind,
                 ..
-            }) => Ok(json),
+            }) => {
+                let kind = result_kind.map(ResultKind::from).unwrap_or(ResultKind::Ok);
+                Ok((json, kind))
+            }
 
             Some(StepLookup {
                 status: TaskStatus::Completed,
                 result: None,
+                result_kind,
                 ..
-            }) => Err(StepError::Failed {
-                step: step_name.to_string(),
-                reason: "event step completed but result is missing".to_string(),
-            }),
+            }) => {
+                let kind = result_kind.map(ResultKind::from).unwrap_or(ResultKind::Ok);
+                Ok((serde_json::Value::Null, kind))
+            }
 
             Some(_) => {
                 emit_metric!(
@@ -293,7 +303,7 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
         &self,
         ctx: &TaskContext,
         req: &StepRequest<'_>,
-    ) -> Result<serde_json::Value, StepError> {
+    ) -> Result<(serde_json::Value, ResultKind), StepError> {
         let (group_step_name, child_names, threshold) = match &req.kind {
             StepRequestKind::WaitGroupBarrier {
                 group_step_name,
@@ -393,7 +403,7 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
                     }
                 }
             }
-            return Ok(serde_json::Value::Array(results));
+            return Ok((serde_json::Value::Array(results), ResultKind::Ok));
         }
 
         Err(StepError::Scheduled {

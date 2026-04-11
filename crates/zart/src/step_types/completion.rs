@@ -37,6 +37,7 @@ impl CompletionBehavior for ScheduleNextBody {
                 step_task_id: &spec.step_task_id,
                 step_id: &canonical_step_id,
                 result: serialized,
+                result_kind: crate::step_types::ResultKind::Ok,
                 lock_token: &spec.worker_id,
                 next_body_task_id: &next_body_task_id,
                 task_name: &spec.task_name,
@@ -180,7 +181,7 @@ mod tests {
     use scheduler::{
         CompleteAndScheduleParams, DurableStorage, EventDeliveryResult, FetchedTask,
         RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
-        Scheduler, StepLookup, StepRow, UpsertWaitGroupStepParams,
+        Scheduler, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
     use std::sync::{Arc, Mutex};
 
@@ -445,7 +446,7 @@ mod tests {
             &self,
             _run_id: &str,
             _step_name: &str,
-            _step_kind: &str,
+            _step_kind: StepKind,
             _result: serde_json::Value,
         ) -> Result<(), StorageError> {
             Ok(())

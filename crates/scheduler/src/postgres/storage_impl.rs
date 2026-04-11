@@ -7,8 +7,8 @@ use super::PostgresScheduler;
 use crate::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
     DurableStorage, EventDeliveryResult, ExecutionRecord, ExecutionStatus,
-    FailWaitGroupChildParams, RescheduleStepForRetryParams, ScheduleStepParams, StepLookup,
-    StorageError, UpsertWaitGroupStepParams,
+    FailWaitGroupChildParams, RescheduleStepForRetryParams, ScheduleStepParams, StepKind,
+    StepLookup, StepResultKind, StepStatus, StorageError, TaskStatus, UpsertWaitGroupStepParams,
 };
 
 #[async_trait]
@@ -164,7 +164,7 @@ impl DurableStorage for PostgresScheduler {
             String,
             serde_json::Value,
             Option<serde_json::Value>,
-            String,
+            ExecutionStatus,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             i32,
@@ -184,22 +184,7 @@ impl DurableStorage for PostgresScheduler {
 
         match row {
             None => Ok(None),
-            Some((
-                _run_id,
-                task_name,
-                payload,
-                result,
-                status_str,
-                scheduled_at,
-                completed_at,
-                version,
-            )) => {
-                let status = status_str.parse::<ExecutionStatus>().map_err(|e| {
-                    StorageError::Database(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )))
-                })?;
+            Some((_run_id, task_name, payload, result, status, scheduled_at, completed_at, version)) => {
                 Ok(Some(ExecutionRecord {
                     execution_id: execution_id.to_string(),
                     task_name,
@@ -258,14 +243,12 @@ impl DurableStorage for PostgresScheduler {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<ExecutionRecord>, StorageError> {
-        let status_str: Option<String> = status.map(|s| s.to_string());
-
         let rows: Vec<(
             String,
             String,
             serde_json::Value,
             Option<serde_json::Value>,
-            String,
+            ExecutionStatus,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             i32,
@@ -275,13 +258,13 @@ impl DurableStorage for PostgresScheduler {
                    r.started_at, r.completed_at, 1
             FROM zart_executions e
             JOIN zart_execution_runs r ON e.current_run_id = r.run_id
-            WHERE ($1::TEXT IS NULL OR r.status    = $1)
+            WHERE ($1::execution_status IS NULL OR r.status = $1)
               AND ($2::TEXT IS NULL OR e.task_name = $2)
             ORDER BY r.started_at DESC
             LIMIT $3 OFFSET $4
             "#,
         )
-        .bind(&status_str)
+        .bind(status)
         .bind(task_name)
         .bind(limit as i64)
         .bind(offset as i64)
@@ -290,26 +273,18 @@ impl DurableStorage for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         rows.into_iter()
-            .map(
-                |(eid, tname, payload, result, status_str, scheduled_at, completed_at, version)| {
-                    let status = status_str.parse::<ExecutionStatus>().map_err(|e| {
-                        StorageError::Database(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            e,
-                        )))
-                    })?;
-                    Ok(ExecutionRecord {
-                        execution_id: eid,
-                        task_name: tname,
-                        payload,
-                        status,
-                        result,
-                        scheduled_at,
-                        completed_at,
-                        version,
-                    })
-                },
-            )
+            .map(|(eid, tname, payload, result, status, scheduled_at, completed_at, version)| {
+                Ok(ExecutionRecord {
+                    execution_id: eid,
+                    task_name: tname,
+                    payload,
+                    status,
+                    result,
+                    scheduled_at,
+                    completed_at,
+                    version,
+                })
+            })
             .collect()
     }
 
@@ -820,33 +795,34 @@ impl DurableStorage for PostgresScheduler {
         // step_id = "{run_id}:step:{step_name}" matches the ID format used at scheduling time.
         let task_id = format!("{run_id}:step:{step_name}");
 
-        let row: Option<(String, String, Option<serde_json::Value>)> = sqlx::query_as(
-            r#"
-            SELECT step_id, status, result
+        let row: Option<(String, StepStatus, Option<serde_json::Value>, Option<StepResultKind>)> =
+            sqlx::query_as(
+                r#"
+            SELECT step_id, status, result, result_kind
             FROM zart_steps
             WHERE step_id = $1
             "#,
-        )
-        .bind(&task_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+            )
+            .bind(&task_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         match row {
             None => Ok(None),
-            Some((step_id, status_str, result)) => {
-                // Map zart_steps status to TaskStatus
-                let status = match status_str.as_str() {
-                    "scheduled" => crate::TaskStatus::Scheduled,
-                    "running" => crate::TaskStatus::PickedUp,
-                    "completed" => crate::TaskStatus::Completed,
-                    "dead" => crate::TaskStatus::Dead,
-                    _ => crate::TaskStatus::Scheduled,
+            Some((step_id, step_status, result, result_kind)) => {
+                // Map step_status to the TaskStatus expected by StepLookup callers.
+                let status = match step_status {
+                    StepStatus::Scheduled => TaskStatus::Scheduled,
+                    StepStatus::Running => TaskStatus::PickedUp,
+                    StepStatus::Completed => TaskStatus::Completed,
+                    StepStatus::Dead => TaskStatus::Dead,
                 };
                 Ok(Some(StepLookup {
                     task_id: step_id,
                     status,
                     result,
+                    result_kind,
                 }))
             }
         }
@@ -891,9 +867,9 @@ impl DurableStorage for PostgresScheduler {
             String,
             String,
             String,
-            String,
+            StepKind,
             Option<String>,
-            String,
+            StepStatus,
             i32,
             Option<serde_json::Value>,
             Option<serde_json::Value>,
@@ -923,22 +899,9 @@ impl DurableStorage for PostgresScheduler {
         match row {
             None => Ok(None),
             Some((
-                step_id,
-                run_id,
-                step_name,
-                step_kind,
-                task_id,
-                status,
-                retry_attempt,
-                retry_config,
-                result,
-                last_error,
-                wg_total,
-                wg_remaining,
-                wg_threshold,
-                wg_first_failed,
-                scheduled_at,
-                completed_at,
+                step_id, run_id, step_name, step_kind, task_id, status, retry_attempt,
+                retry_config, result, last_error, wg_total, wg_remaining, wg_threshold,
+                wg_first_failed, scheduled_at, completed_at,
             )) => Ok(Some(StepRow {
                 step_id,
                 run_id,
@@ -967,9 +930,9 @@ impl DurableStorage for PostgresScheduler {
             String,
             String,
             String,
-            String,
+            StepKind,
             Option<String>,
-            String,
+            StepStatus,
             i32,
             Option<serde_json::Value>,
             Option<serde_json::Value>,
@@ -997,8 +960,12 @@ impl DurableStorage for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         rows.into_iter()
-            .map(
-                |(
+            .map(|(
+                step_id, run_id, step_name, step_kind, task_id, status, retry_attempt,
+                retry_config, result, last_error, wg_total, wg_remaining, wg_threshold,
+                wg_first_failed, scheduled_at, completed_at,
+            )| {
+                Ok(StepRow {
                     step_id,
                     run_id,
                     step_name,
@@ -1015,27 +982,8 @@ impl DurableStorage for PostgresScheduler {
                     wg_first_failed,
                     scheduled_at,
                     completed_at,
-                )| {
-                    Ok(StepRow {
-                        step_id,
-                        run_id,
-                        step_name,
-                        step_kind,
-                        task_id,
-                        status,
-                        retry_attempt,
-                        retry_config,
-                        result,
-                        last_error,
-                        wg_total,
-                        wg_remaining,
-                        wg_threshold,
-                        wg_first_failed,
-                        scheduled_at,
-                        completed_at,
-                    })
-                },
-            )
+                })
+            })
             .collect()
     }
 
@@ -1121,10 +1069,11 @@ impl DurableStorage for PostgresScheduler {
 
         sqlx::query(
             r#"
-            UPDATE zart_steps SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
+            UPDATE zart_steps SET status = 'completed', result = $1, result_kind = $2, completed_at = $3 WHERE step_id = $4
             "#,
         )
         .bind(&params.result)
+        .bind(&params.result_kind)
         .bind(Utc::now())
         .bind(&params.step_id)
         .execute(&mut *tx)
@@ -1312,7 +1261,7 @@ impl DurableStorage for PostgresScheduler {
         &self,
         run_id: &str,
         step_name: &str,
-        step_kind: &str,
+        step_kind: StepKind,
         result: serde_json::Value,
     ) -> Result<(), StorageError> {
         let step_id = format!("{run_id}:step:{step_name}");
