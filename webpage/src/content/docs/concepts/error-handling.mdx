@@ -1,0 +1,193 @@
+---
+title: Error Handling
+description: "The three-way step outcome model: Ok, BusinessErr, and ZartErr — and the four calling conventions."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## The Core Idea: Typed, Three-Way Step Outcomes
+
+Every step declares its own error type. Zart distinguishes between:
+
+- **`Ok(T)`** — the step succeeded.
+- **`BusinessErr(E)`** — the step's own error type (e.g., `PaymentError::InsufficientFunds`). These are **business decisions**.
+- **`ZartErr(ZartStepError)`** — a framework-level failure (retry exhausted, step timed out). These are **infrastructure problems**.
+
+```rust
+pub enum StepOutcome<T, E> {
+    Ok(T),              // success
+    BusinessErr(E),     // the step's own error — a business decision
+    ZartErr(ZartStepError),  // framework failure (retry exhausted, timeout)
+}
+```
+
+This distinction matters because business errors deserve specific handling — insufficient funds is different from a declined card — while framework errors should typically escalate to a centralized recovery path.
+
+## Four Calling Conventions
+
+### 1. `zart::require()` — Fail-Fast (the Default)
+
+The most common path. Any non-`Ok` outcome (business or framework error) fails the entire execution.
+
+```rust
+let inventory = reserve_inventory(order_id.clone()).await?;
+// ──────────────────────────────────────────────────────────────
+// If reserve_inventory returns BusinessErr or ZartErr,
+// the execution fails immediately with TaskError::StepFailed.
+```
+
+Use `require` when a step's failure means the whole workflow cannot proceed.
+
+### 2. `zart::step()` — Explicit Three-Way Matching
+
+When the body genuinely needs to branch on a step's specific business error, use `zart::step()` and match on `StepOutcome`.
+
+```rust
+use zart::error::StepOutcome;
+
+let balance = match zart::step(check_balance(account_id.clone())).await? {
+    StepOutcome::Ok(b) => {
+        println!("Balance: ${}", b);
+        b
+    }
+    StepOutcome::BusinessErr(PaymentError::InsufficientFunds { balance, needed }) => {
+        return Ok(OrderOutput {
+            status: "insufficient_funds".into(),
+            message: format!("Have ${}, need ${}", balance, needed),
+            // ...
+        });
+    }
+    StepOutcome::BusinessErr(PaymentError::CardDeclined { reason }) => {
+        return Ok(OrderOutput {
+            status: "card_declined".into(),
+            message: format!("Card declined: {}", reason),
+            // ...
+        });
+    }
+    StepOutcome::ZartErr(e) => return Err(e.into()),  // escalate to on_failure
+};
+```
+
+The outer `?` propagates control-flow signals (`Scheduled`, `StepExecuted`) — these are framework internals, never matched by user code. The `StepOutcome` is what you actually branch on.
+
+### 3. `zart::step_or()` — Blind Fallback
+
+Discard any error and return a default value. Use only when the failure reason doesn't matter.
+
+```rust
+let cached_config = zart::step_or(
+    fetch_remote_config(),
+    Config::default(),
+).await?;
+```
+
+### 4. `zart::step_or_else()` — Computed Fallback
+
+The closure receives the step's `Error` type — framework errors (`ZartErr`) still propagate and are not silently swallowed.
+
+```rust
+let payment = zart::step_or_else(
+    charge_card(account_id.clone(), data.amount),
+    |e: PaymentError| {
+        println!("Payment fallback: {}", e);
+        PaymentResult { transaction_id: "fallback".into(), amount: 0.0 }
+    },
+)
+.await?;
+```
+
+If `charge_card` returns `BusinessErr(PaymentError::CardDeclined)`, the closure runs. If it returns `ZartErr` (retry exhausted), the error propagates — no silent swallowing.
+
+## Centralized Recovery with `on_failure`
+
+When any propagated failure reaches the top of `run`, the `on_failure` handler is invoked. This is a plain async function — fully unit-testable without any framework setup.
+
+```rust
+#[zart_durable("order-processing", on_failure = handle_order_failure)]
+async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
+    let inventory = reserve_inventory(data.order_id.clone()).await?;
+    let payment = charge_card(data.account_id.clone(), data.amount).await?;
+    // ...
+}
+
+async fn handle_order_failure(
+    data: OrderInput,
+    failure: ExecutionFailure,
+) -> Result<OrderOutput, TaskError> {
+    match failure {
+        ExecutionFailure::StepFailed { step, raw } if step == "charge-card" => {
+            // Deserialize raw back into the step's typed error
+            match serde_json::from_value::<PaymentError>(raw.clone()) {
+                Ok(PaymentError::InsufficientFunds { balance, needed }) => {
+                    Ok(OrderOutput {
+                        status: "payment_failed".into(),
+                        message: format!("Insufficient funds: have ${}, need ${}", balance, needed),
+                        // ...
+                    })
+                }
+                Ok(PaymentError::CardDeclined { reason }) => {
+                    Ok(OrderOutput {
+                        status: "payment_failed".into(),
+                        message: format!("Card declined: {}", reason),
+                        // ...
+                    })
+                }
+                Err(_) => {
+                    // Framework error — raw may not be a PaymentError
+                    Ok(OrderOutput {
+                        status: "payment_failed".into(),
+                        message: format!("Payment step failed: {}", raw),
+                        // ...
+                    })
+                }
+            }
+        }
+        ExecutionFailure::ExecutionDeadlineExceeded => {
+            Ok(OrderOutput { status: "timed_out".into(), /* ... */ })
+        }
+        ExecutionFailure::RetriesExhausted { attempts } => {
+            Ok(OrderOutput {
+                status: "retries_exhausted".into(),
+                message: format!("Gave up after {} attempts", attempts),
+                // ...
+            })
+        }
+    }
+}
+```
+
+### `ExecutionFailure` Variants
+
+| Variant | Meaning |
+|---|---|
+| `StepFailed { step, raw }` | A step returned a non-Ok outcome that propagated to the top. `raw` is the JSON-serialized error. |
+| `ExecutionDeadlineExceeded` | The execution-level timeout (`timeout = "30m"`) was exceeded. |
+| `RetriesExhausted { attempts }` | The execution-level retry policy exhausted all attempts. |
+
+## Error Types at a Glance
+
+| Type | Where it appears | What it means |
+|---|---|---|
+| `StepOutcome<T, E>` | Return of `zart::step()` | Three-way: Ok / BusinessErr / ZartErr |
+| `StepError` | `?` propagation, `zart::wait` element | Control-flow signal or user domain error |
+| `TaskError` | Return of `run`, return of `require` | Top-level execution failure |
+| `ZartStepError` | Inside `StepOutcome::ZartErr` | Framework failure: retry exhausted, timeout |
+| `ExecutionFailure` | Passed to `on_failure` | Why the centralized handler was invoked |
+
+## Choosing a Calling Convention
+
+```
+Does the step's failure mean the whole workflow should stop?
+├─ Yes → use require()
+└─ No → Do you need to branch on specific business errors?
+        ├─ Yes → use step() + match StepOutcome
+        └─ No → Is a default value always acceptable?
+                ├─ Yes → use step_or()
+                └─ No → use step_or_else() with a fallback closure
+```
+
+## Next Steps
+
+- [**Timeouts and Cancellation**](/concepts/timeouts/) — execution deadlines and event timeouts
+- [**Macros**](/api/macros/) — the `on_failure` attribute syntax
+- [**Error Types**](/api/error-types/) — detailed reference of every error type

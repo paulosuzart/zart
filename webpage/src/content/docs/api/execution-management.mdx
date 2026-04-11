@@ -1,0 +1,199 @@
+---
+title: Execution Management
+description: Reference for DurableScheduler — start, status, wait, cancel, and offer_event.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`DurableScheduler` is the high-level entry point for interacting with durable executions. It wraps the underlying `Scheduler` and provides execution-aware operations.
+
+## Construction
+
+```rust
+let durable = DurableScheduler::new(scheduler.clone());
+```
+
+The `scheduler` is typically an `Arc<PostgresScheduler>`. The `DurableScheduler` borrows it via `Arc` so it can be shared between your web server (scheduling) and the worker (executing).
+
+## Starting an Execution
+
+### `start_typed`
+
+Start a new durable execution with typed input data.
+
+```rust
+async fn start_typed<T: Serialize>(
+    &self,
+    execution_id: &str,
+    task_name: &str,
+    data: &T,
+) -> Result<ScheduleResult, SchedulerError>
+```
+
+The `execution_id` serves as an **idempotency key**. If an execution with that ID already exists (and is not terminal), returns `SchedulerError::ExecutionAlreadyExists`.
+
+```rust
+durable
+    .start_typed("signup-user-42", "onboarding", &OnboardingData {
+        email: "alice@example.com".into(),
+    })
+    .await?;
+```
+
+### `start`
+
+Start a new durable execution with raw JSON data.
+
+```rust
+async fn start(
+    &self,
+    execution_id: &str,
+    task_name: &str,
+    data: serde_json::Value,
+) -> Result<ScheduleResult, SchedulerError>
+```
+
+Use this when the input is already a `serde_json::Value` or when you're building tooling on top of Zart.
+
+## Checking Status
+
+### `status`
+
+Get the current status of a durable execution without blocking.
+
+```rust
+async fn status(
+    &self,
+    execution_id: &str,
+) -> Result<DurableExecutionStatus, SchedulerError>
+```
+
+```rust
+let record = durable.status("signup-user-42").await?;
+println!("Status: {:?}", record.status);
+```
+
+### `wait`
+
+Block until the execution completes, fails, or the timeout is exceeded.
+
+```rust
+async fn wait(
+    &self,
+    execution_id: &str,
+    timeout: Duration,
+    poll_interval: Option<Duration>,
+) -> Result<DurableExecutionStatus, SchedulerError>
+```
+
+```rust
+let record = durable
+    .wait("signup-user-42", Duration::from_secs(60), None)
+    .await?;
+```
+
+The `poll_interval` controls how often the status is checked. Pass `None` for the default.
+
+### `wait_with_timeout`
+
+A convenience method that waits with a capped timeout.
+
+```rust
+async fn wait_with_timeout(
+    &self,
+    execution_id: &str,
+    max_wait: Duration,
+) -> Result<DurableExecutionStatus, SchedulerError>
+```
+
+Returns `Err(SchedulerError::WaitTimedOut(_))` if the execution doesn't complete in time.
+
+## Cancelling
+
+```rust
+async fn cancel(
+    &self,
+    execution_id: &str,
+) -> Result<bool, SchedulerError>
+```
+
+Returns `true` if the execution was successfully cancelled, `false` if it was already terminal (completed, failed, or previously cancelled).
+
+## Delivering Events
+
+### `offer_event`
+
+Deliver an event to a waiting durable execution.
+
+```rust
+async fn offer_event(
+    &self,
+    execution_id: &str,
+    event_name: &str,
+    payload: serde_json::Value,
+) -> Result<(), SchedulerError>
+```
+
+```rust
+durable
+    .offer_event(
+        &execution_id,
+        "manager-approval",
+        serde_json::to_value(&decision)?,
+    )
+    .await?;
+```
+
+The event is deserialized into the type expected by the corresponding `zart::wait_for_event` call inside the execution.
+
+## Execution Status
+
+`DurableExecutionStatus` contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `String` | Registered task name |
+| `execution_id` | `String` | Unique execution identifier |
+| `payload` | `serde_json::Value` | Original input |
+| `status` | `ExecutionStatus` | Current state |
+| `result` | `Option<serde_json::Value>` | Output if completed, error info if failed |
+| `scheduled_at` | `DateTime<Utc>` | When the execution was first scheduled |
+| `completed_at` | `Option<DateTime<Utc>>` | When the execution reached a terminal state |
+| `steps` | `Vec<StepStatusInfo>` | Per-step status and results |
+
+`ExecutionStatus` variants:
+
+| Variant | Meaning |
+|---|---|
+| `Pending` | Scheduled but not yet picked up by a worker |
+| `Running` | Actively being processed |
+| `Waiting` | Durably paused (sleep or event wait) |
+| `Completed` | Finished successfully |
+| `Failed` | Exhausted retries or unhandled error |
+| `Cancelled` | Stopped via `cancel()` |
+
+## Listing Executions
+
+```rust
+async fn list_executions(
+    &self,
+    status_filter: Option<ExecutionStatus>,
+    task_name: Option<String>,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<DurableExecutionStatus>, SchedulerError>
+```
+
+Query executions with optional filtering by status and task name, with pagination.
+
+```rust
+let all = durable
+    .list_executions(None, Some("onboarding".into()), 100, 0)
+    .await?;
+```
+
+## Next Steps
+
+- [**Durable Execution**](/concepts/durable-execution/) — the concept and lifecycle
+- [**Free Functions**](/api/free-functions/) — `sleep`, `wait_for_event`, `schedule`, `wait`
+- [**Error Types**](/api/error-types/) — `SchedulerError`, `TaskError`, `ExecutionFailure`

@@ -1,0 +1,162 @@
+---
+title: Flow Control
+description: Sequential execution, parallel steps, durable loops, and how to compose them.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Sequential Execution (the Default)
+
+By default, steps execute in the order you call them. Each `.await?` is a durable checkpoint — the result is persisted before the next step begins.
+
+```rust
+#[zart_durable("user-onboarding")]
+async fn user_onboarding(data: OnboardingData) -> Result<(), TaskError> {
+    let user    = create_user(&data.email).await?;        // ✓ persisted
+    let account = setup_account(&user.id).await?;         // ✓ persisted
+    send_welcome_email(&user.email).await?;               // ✓ persisted
+    Ok(())
+}
+```
+
+If the process crashes after `setup_account`, a restart skips `create_user` and `setup_account` entirely and resumes at `send_welcome_email`.
+
+## Parallel Steps — `schedule` + `wait`
+
+When steps are independent, fan them out concurrently with `zart::schedule` and collect results with `zart::wait`.
+
+```rust
+#[zart_durable("health-check")]
+async fn health_check(input: HealthCheckInput) -> Result<HealthCheckOutput, TaskError> {
+    // Schedule all checks in parallel
+    let handles: Vec<StepHandle<ServiceResult>> = input
+        .services
+        .iter()
+        .map(|service| zart::schedule(check_service(service.clone())))
+        .collect();
+
+    // Durably wait for all of them to complete
+    let results = zart::wait(handles).await?;
+
+    // Collect results (fail-fast on any step failure)
+    let mut service_results = Vec::new();
+    for result in results {
+        let svc = result.map_err(|e| TaskError::StepFailed {
+            step: "health-check".to_string(),
+            source: e,
+        })?;
+        service_results.push(svc);
+    }
+
+    Ok(HealthCheckOutput {
+        services_checked: service_results.len(),
+        results: service_results,
+    })
+}
+```
+
+### How it works
+
+1. `zart::schedule` registers a step for parallel execution and returns a `StepHandle`.
+2. Each scheduled step becomes an independent task in PostgreSQL — it can run on a different worker.
+3. `zart::wait` durably suspends the parent body until all children complete.
+4. On restart, the parent resumes from the `wait` call — children that already completed are loaded from the database.
+
+### Dynamic fan-out
+
+The number of parallel steps doesn't need to be known at compile time:
+
+```rust
+let handles: Vec<_> = items
+    .iter()
+    .map(|item| zart::schedule(process_item(item.clone())))
+    .collect();
+
+let results = zart::wait(handles).await?;
+```
+
+## Durable Loops
+
+Iterating over a collection is just a normal Rust `for` loop. The key requirement: **every step name must be unique**.
+
+### Using `{index}` in the step name
+
+```rust
+#[zart_step("process-report-{index}")]
+async fn process_report(index: usize, report: Report) -> Result<ProcessedReport, StepError> {
+    let score = (report.value * 10.0) as u64;
+    Ok(ProcessedReport { id: report.id, title: report.title, score, flagged: score < 800 })
+}
+
+#[zart_durable("report-batch")]
+async fn report_batch(data: BatchInput) -> Result<BatchOutput, TaskError> {
+    let reports = fetch_reports(data.batch_name.clone()).await?;
+
+    let mut processed = Vec::new();
+    for (i, report) in reports.into_iter().enumerate() {
+        let result = process_report(i, report).await?;
+        // step names: "process-report-0", "process-report-1", …
+        processed.push(result);
+    }
+
+    let flagged = processed.iter().filter(|p| p.flagged).count();
+    Ok(BatchOutput { total: processed.len(), flagged })
+}
+```
+
+### Using `.named()` at the call site
+
+For steps with static names that are called inside a loop, use `.named()`:
+
+```rust
+#[zart_step("notify-stakeholder")]
+async fn notify_stakeholder(email: String, title: String) -> Result<(), StepError> {
+    // static step name: "notify-stakeholder"
+}
+
+for (i, report) in processed.iter().enumerate() {
+    if report.flagged {
+        notify_stakeholder("team@example.com".into(), report.title.clone())
+            .named(format!("notify-{}", i))  // unique name per iteration
+            .await?;
+    }
+}
+```
+
+### The fetch-inside-step pattern
+
+When a loop iterates over external data (e.g., database rows, API responses), fetch the list **inside a step** so the same list is replayed after a crash — even if the underlying data changed.
+
+```rust
+#[zart_step("fetch-reports")]
+async fn fetch_reports(batch: String) -> Result<Vec<Report>, StepError> {
+    db.query("SELECT * FROM reports WHERE batch = $1", &[&batch]).await
+}
+
+let reports = fetch_reports(data.batch_name.clone()).await?;
+// On replay: returns the same Vec, even if the DB table changed.
+```
+
+## Mixing Sequential and Parallel
+
+Sequential and parallel steps compose freely:
+
+```rust
+// Phase 1: sequential setup
+let config = load_config().await?;
+
+// Phase 2: parallel fan-out
+let h1 = zart::schedule(process_payments(&config.batch_1));
+let h2 = zart::schedule(process_payments(&config.batch_2));
+let h3 = zart::schedule(process_payments(&config.batch_3));
+let results = zart::wait(vec![h1, h2, h3]).await?;
+
+// Phase 3: sequential cleanup
+generate_summary(&results).await?;
+```
+
+## Next Steps
+
+- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
+- [**Macros**](/api/macros/) — full reference for `#[zart_durable]` and `#[zart_step]`
+- [**Free Functions**](/api/free-functions/) — `schedule`, `wait`, `sleep`, and more

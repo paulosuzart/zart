@@ -1,0 +1,240 @@
+---
+title: Steps
+description: What steps are, how to define them with #[zart_step], and the built-in types: sleep, capture, and wait_for_event.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## What Is a Step?
+
+A **step** is the fundamental unit of durable work in Zart. Each step:
+
+- Executes exactly once per execution — on replay, the stored result is returned without re-running the logic.
+- Persists its result (success or failure) to PostgreSQL.
+- Has a **stable, unique name** within its execution.
+- Can be retried automatically with configurable policies.
+
+Steps are just async functions with an attribute. No special context objects to thread through your code.
+
+```rust
+use zart::prelude::*;
+use zart::zart_step;
+
+#[zart_step("send-welcome-email")]
+async fn send_welcome_email(user_email: &str) -> Result<(), StepError> {
+    mailer.send(user_email, "Welcome to Zart!").await
+}
+```
+
+Call it from your durable handler like any other async function:
+
+```rust
+#[zart_durable("onboarding")]
+async fn onboarding(data: OnboardingData) -> Result<(), TaskError> {
+    send_welcome_email(&data.email).await?;
+    // ──✓── result persisted to DB
+    Ok(())
+}
+```
+
+## Defining Steps with `#[zart_step]`
+
+The `#[zart_step]` attribute transforms an `async fn` into a type that implements `ZartStep`. The generated code handles:
+
+- **Step name** — derived from the attribute string: `"send-welcome-email"`.
+- **Execution** — the function body becomes `ZartStep::run()`.
+- **Calling convention** — `IntoFuture` is implemented so you call it directly: `send_welcome_email("a@b.com").await?`.
+
+### Parameters and Return
+
+Steps can accept any arguments and return `Result<T, E>` where `T: Serialize` and `E: Serialize + std::error::Error`.
+
+```rust
+#[zart_step("charge-card")]
+async fn charge_card(
+    card_token: &str,
+    amount_cents: i64,
+) -> Result<PaymentResult, PaymentError> {
+    stripe.create_charge(card_token, amount_cents).await
+}
+```
+
+### Step Name Uniqueness
+
+Every step name must be unique **within a single execution**. Zart uses `(execution_id, step_name)` as the lookup key for replay. If two steps share a name, the second one will incorrectly receive the first one's cached result.
+
+For steps in loops, use the `{index}` template or `.named()`:
+
+```rust
+// Template form — {index} expands at runtime
+#[zart_step("process-report-{index}")]
+async fn process_report(index: usize, report: Report) -> Result<ProcessedReport, StepError> {
+    // step_name becomes "process-report-0", "process-report-1", …
+}
+
+// .named() form — for static step functions called in a loop
+for (i, item) in items.iter().enumerate() {
+    notify_stakeholder(item.email)
+        .named(format!("notify-{}", i))
+        .await?;
+}
+```
+
+## Retry Policies
+
+Steps can be configured with automatic retries via the `retry` parameter:
+
+```rust
+// 3 retries, exponential backoff starting at 2 seconds
+#[zart_step("fetch-api", retry = "exponential(3, 2s)")]
+async fn fetch_api() -> Result<Response, StepError> { /* ... */ }
+
+// 3 retries, fixed 1-second delay between attempts
+#[zart_step("send-notification", retry = "fixed(3, 1s)")]
+async fn send_notification() -> Result<(), StepError> { /* ... */ }
+```
+
+Each retry attempt is tracked independently. You can inspect the current attempt number from within the step:
+
+```rust
+#[zart_step("charge-card", retry = "fixed(2, 1s)")]
+async fn charge_card() -> Result<(), PaymentError> {
+    let attempt = zart::context().current_attempt; // 0, 1, 2, …
+    println!("Attempt {}", attempt + 1);
+    // ...
+}
+```
+
+## Sleep — Durable Delays
+
+`zart::sleep` suspends a workflow without blocking a thread. The execution is checkpointed and the continuation is scheduled for `now + duration`.
+
+```rust
+use std::time::Duration;
+
+#[zart_durable("delayed-notification")]
+async fn delayed_notification(data: NotificationData) -> Result<(), TaskError> {
+    send_confirmation(&data.email).await?;
+
+    // Durable sleep — survives restarts, zero threads blocked
+    zart::sleep("wait-24h", Duration::from_secs(86400)).await?;
+
+    send_followup(&data.email).await?;
+    Ok(())
+}
+```
+
+The `name` must be stable and unique within the execution body. Treat it like a migration name — don't change it after the execution has started.
+
+### `sleep_until` — Absolute Time
+
+```rust
+let next_monday = compute_next_monday();
+zart::sleep_until("wait-for-monday", next_monday).await?;
+```
+
+## `capture` and `now` — Durable Values
+
+Sometimes you need to persist a pure value (like a timestamp or a computed ID) so it survives restarts. `zart::capture` stores the result of a synchronous closure as a completed step row:
+
+```rust
+let started_at = zart::capture!("started-at", chrono::Utc::now());
+// On replay: returns the cached DateTime — Utc::now() is never called again.
+```
+
+`zart::now` is a shorthand:
+
+```rust
+let created_at = zart::now("created-at").await?;
+```
+
+The value is durably stored and returned identically on every replay. This is useful for:
+
+- Recording when an execution started (for audit logs or SLA tracking).
+- Generating stable identifiers that must not change on replay.
+- Capturing environment state (timezone, feature flags) at execution start.
+
+## `wait_for_event` — External Signals
+
+`zart::wait_for_event` suspends an execution until an external signal arrives. The event can come from another Rust process, an HTTP webhook, or the CLI.
+
+```rust
+use std::time::Duration;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApprovalDecision {
+    approved: bool,
+    reviewer: String,
+    comment: String,
+}
+
+#[zart_durable("approval-workflow")]
+async fn approval_workflow(req: ApprovalRequest) -> Result<ApprovalOutput, TaskError> {
+    // Validate first
+    validate_request(&req).await?;
+
+    // Park until a manager responds
+    let decision: ApprovalDecision =
+        zart::wait_for_event("manager-approval", Some(Duration::from_secs(86400))).await?;
+
+    // Act on the decision
+    if decision.approved {
+        provision_resource(&req.resource).await?;
+    }
+
+    Ok(ApprovalOutput { /* ... */ })
+}
+```
+
+Deliver an event from anywhere with access to the `DurableScheduler`:
+
+```rust
+durable
+    .offer_event(
+        &execution_id,
+        "manager-approval",
+        serde_json::to_value(&decision)?,
+    )
+    .await?;
+```
+
+Or via the HTTP API:
+
+```http
+POST /api/v1/events/{execution_id}/manager-approval
+Content-Type: application/json
+
+{ "approved": true, "reviewer": "Alice", "comment": "Approved" }
+```
+
+If no event arrives before the timeout, `wait_for_event` returns an error — use this to implement deadline-based workflows.
+
+## Reading Execution Context
+
+`zart::context()` returns read-only metadata about the current execution. It's callable from **anywhere** — the handler body or inside a step body.
+
+```rust
+let info = zart::context();
+println!("Execution: {}", info.execution_id);
+println!("Task:      {}", info.task_name);
+println!("Attempt:   {}", info.current_attempt);
+println!("Is retry:  {}", info.is_retry());
+println!("Payload:   {}", info.data);
+```
+
+Fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `execution_id` | `String` | Unique identifier of this execution |
+| `task_name` | `String` | Registered name of the handler |
+| `data` | `serde_json::Value` | The original input payload (read-only) |
+| `current_attempt` | `usize` | 0-indexed retry count |
+| `max_retries` | `Option<usize>` | Maximum configured retries |
+| `is_retry()` | `bool` | Convenience: `current_attempt > 0` |
+
+## Next Steps
+
+- [**Flow Control**](/concepts/flow-control/) — parallel steps, durable loops, and sequencing
+- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
+- [**Macros**](/api/macros/) — full `#[zart_step]` and `#[zart_durable]` reference

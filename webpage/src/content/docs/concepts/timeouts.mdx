@@ -1,0 +1,117 @@
+---
+title: Timeouts and Cancellation
+description: Execution deadlines, event wait timeouts, and how to cancel a running workflow.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Execution Timeouts
+
+Set a top-level deadline on your durable handler with the `timeout` attribute. If the execution doesn't complete within this time, it fails with `ExecutionDeadlineExceeded`.
+
+```rust
+#[zart_durable("order-fulfillment", timeout = "30m")]
+async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
+    // Must complete within 30 minutes or the execution fails.
+    validate_address(&data.order_id).await?;
+    process_payment(&data.order_id).await?;
+    ship_order(&data.order_id).await?;
+    Ok(receipt)
+}
+```
+
+Duration strings support:
+
+| Format | Example | Meaning |
+|---|---|---|
+| `Xs` | `30s` | Seconds |
+| `Xm` | `30m` | Minutes |
+| `Xh` | `2h` | Hours |
+| `Xd` | `3d` | Days |
+
+### No Timeout
+
+Omit the `timeout` attribute entirely for executions that may run indefinitely (e.g., long-lived approval workflows).
+
+```rust
+#[zart_durable("approval-workflow")]
+async fn approval_workflow(req: ApprovalRequest) -> Result<ApprovalOutput, TaskError> {
+    // No timeout — waits indefinitely for manager approval.
+    let decision = zart::wait_for_event("manager-approval", Some(Duration::from_secs(604800))).await?;
+    // ...
+}
+```
+
+## Event Wait Timeouts
+
+`zart::wait_for_event` accepts an optional `Duration`. If no event arrives before the timeout, the wait fails.
+
+```rust
+// Wait up to 7 days for approval
+let decision: ApprovalDecision = zart::wait_for_event(
+    "manager-approval",
+    Some(Duration::from_secs(7 * 86400)),
+).await?;
+```
+
+Pass `None` to wait indefinitely (until cancelled or the execution-level timeout is exceeded):
+
+```rust
+let event: ShipmentEvent = zart::wait_for_event("shipment-ready", None).await?;
+```
+
+The event wait timeout is independent of the execution-level timeout. If the event wait times out, the execution fails with a `StepError` that propagates to the top (or to `on_failure`).
+
+## Cancelling an Execution
+
+Stop a running execution from the outside:
+
+```rust
+let cancelled = durable.cancel("signup-user-42").await?;
+```
+
+- A cancelled execution stops at its **next scheduling point**.
+- A step currently running will finish, but no new steps will be scheduled.
+- If the execution is durably sleeping or waiting for an event, it is cancelled immediately.
+- The status becomes `Cancelled`.
+
+## Step-Level Timeouts
+
+Individual steps can have their own timeouts via the `#[zart_step]` attribute:
+
+```rust
+#[zart_step("call-external-api", timeout = "2m")]
+async fn call_external_api() -> Result<Response, StepError> {
+    // Must return within 2 minutes or the step times out.
+}
+```
+
+If a step exceeds its timeout, it fails with `StepError::Timeout`. Combined with retries, a step will retry up to its `max_attempts`, and each attempt is individually bounded by the timeout.
+
+```rust
+#[zart_step("flaky-api", retry = "fixed(3, 1s)", timeout = "30s")]
+async fn call_flaky_api() -> Result<Response, StepError> {
+    // Each of the 3 attempts has a 30-second deadline.
+}
+```
+
+## Timeout Hierarchy
+
+```
+Execution timeout (30m)
+├── Step A (timeout: 2m, retry: fixed(3, 1s))
+│   └── Each attempt: max 2 minutes
+├── Step B (no timeout)
+├── zart::sleep("wait", 1h)
+│   └── Does not count toward step timeouts
+└── zart::wait_for_event("signal", Some(7d))
+    └── Bounded by both the event timeout AND the execution timeout
+```
+
+The execution-level timeout is the ultimate ceiling. Even if individual steps have no timeouts, the entire execution fails when the deadline is exceeded.
+
+## Next Steps
+
+- [**Free Functions**](/api/free-functions/) — reference for `sleep`, `sleep_until`, `wait_for_event`
+- [**Execution Management**](/api/execution-management/) — `DurableScheduler` reference
+- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model

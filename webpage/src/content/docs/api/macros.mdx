@@ -1,0 +1,203 @@
+---
+title: Macros
+description: Full reference for #[zart_durable] and #[zart_step] proc-macros.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## `#[zart_durable]`
+
+Transforms an `async fn` into a durable execution handler. The generated code implements the necessary trait infrastructure so the worker can dispatch your function.
+
+### Syntax
+
+```rust
+#[zart_durable("task-name")]
+#[zart_durable("task-name", timeout = "30m")]
+#[zart_durable("task-name", on_failure = my_failure_handler)]
+#[zart_durable("task-name", timeout = "30m", on_failure = my_failure_handler)]
+```
+
+### Parameters
+
+| Parameter | Required | Description |
+|---|---|---|
+| `"task-name"` | Yes | Registered name of the handler. Used by `DurableScheduler::start_typed` to look up the handler. |
+| `timeout` | No | Execution-level deadline. Duration string: `30s`, `5m`, `2h`, `3d`. |
+| `on_failure` | No | Name of an `async fn` that handles execution-level failures. |
+
+### Function Signature
+
+```rust
+#[zart_durable("my-task")]
+async fn my_handler(data: MyInput) -> Result<MyOutput, TaskError>
+```
+
+The input type must implement `DeserializeOwned` and the output type must implement `Serialize`.
+
+### The `on_failure` Handler
+
+```rust
+async fn handle_failure(
+    data: MyInput,
+    failure: ExecutionFailure,
+) -> Result<MyOutput, TaskError>
+```
+
+The handler receives the original input and the failure details. It can return a compensated output (e.g., "payment failed, here's your balance") or re-propagate the error.
+
+```rust
+#[zart_durable("order-processing", on_failure = handle_order_failure)]
+async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
+    // ...
+}
+
+async fn handle_order_failure(
+    data: OrderInput,
+    failure: ExecutionFailure,
+) -> Result<OrderOutput, TaskError> {
+    match failure {
+        ExecutionFailure::StepFailed { step, raw } if step == "charge-card" => {
+            // Deserialize raw into the step's typed error
+            match serde_json::from_value::<PaymentError>(raw) {
+                Ok(PaymentError::InsufficientFunds { balance, needed }) => {
+                    Ok(OrderOutput { /* ... */ })
+                }
+                Err(_) => Ok(OrderOutput { /* generic failure */ }),
+            }
+        }
+        ExecutionFailure::ExecutionDeadlineExceeded => {
+            Ok(OrderOutput { status: "timed_out".into(), /* ... */ })
+        }
+        ExecutionFailure::RetriesExhausted { attempts } => {
+            Ok(OrderOutput { /* ... */ })
+        }
+    }
+}
+```
+
+### Examples
+
+```rust
+// Minimal
+#[zart_durable("echo")]
+async fn echo(data: String) -> Result<String, TaskError> {
+    Ok(format!("echo: {}", data))
+}
+
+// With timeout
+#[zart_durable("timed-task", timeout = "5m")]
+async fn timed_task(_data: ()) -> Result<(), TaskError> {
+    Ok(())
+}
+
+// With struct input
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OrderData { id: u64, amount: f64 }
+
+#[zart_durable("order-task")]
+async fn order_handler(data: OrderData) -> Result<String, TaskError> {
+    Ok(format!("order-{}-{:.2}", data.id, data.amount))
+}
+```
+
+## `#[zart_step]`
+
+Transforms an `async fn` into a type that implements `ZartStep`. The generated code implements `IntoFuture` so you call the function directly.
+
+### Syntax
+
+```rust
+#[zart_step("step-name")]
+#[zart_step("step-name", retry = "fixed(3, 1s)")]
+#[zart_step("step-name", retry = "exponential(3, 1s)")]
+#[zart_step("step-name", timeout = "5m")]
+#[zart_step("step-name", retry = "...", timeout = "...")]
+```
+
+### Parameters
+
+| Parameter | Required | Description |
+|---|---|---|
+| `"step-name"` | Yes | Stable, unique name within the execution. |
+| `retry` | No | Retry policy: `fixed(n, delay)` or `exponential(n, delay)`. |
+| `timeout` | No | Step-level deadline. Duration string: `30s`, `5m`, `2h`. |
+
+### Retry Syntax
+
+| Form | Meaning |
+|---|---|
+| `fixed(3, 1s)` | 3 retries, 1-second fixed delay between each |
+| `exponential(5, 2s)` | 5 retries, exponential backoff starting at 2 seconds |
+
+Duration units: `s` (seconds), `m` (minutes), `h` (hours).
+
+### Function Signature
+
+```rust
+#[zart_step("my-step")]
+async fn my_step(arg1: Type1, arg2: &str) -> Result<OutputType, ErrorType>
+```
+
+The return type must be `Result<T, E>` where `T: Serialize` and `E: Serialize + std::error::Error`.
+
+### Dynamic Step Names
+
+Use `{identifier}` placeholders in the step name. Each placeholder is replaced with the value of the corresponding function parameter at runtime.
+
+```rust
+#[zart_step("process-report-{index}")]
+async fn process_report(index: usize, report: Report) -> Result<ProcessedReport, StepError> {
+    // Produces: "process-report-0", "process-report-1", …
+}
+```
+
+### Examples
+
+```rust
+// Basic
+#[zart_step("send-email")]
+async fn send_email(to: &str) -> Result<(), StepError> {
+    mailer.send(to, "Hello").await
+}
+
+// With retries
+#[zart_step("fetch-api", retry = "exponential(3, 2s)")]
+async fn fetch_api() -> Result<Response, StepError> {
+    client.get("https://api.example.com").send().await
+}
+
+// With timeout
+#[zart_step("call-service", timeout = "30s")]
+async fn call_service() -> Result<String, StepError> {
+    external_client.call().await
+}
+
+// With both
+#[zart_step("flaky-api", retry = "fixed(3, 1s)", timeout = "30s")]
+async fn flaky_call() -> Result<Response, StepError> {
+    client.get("https://unreliable.example.com").send().await
+}
+// Each of the 3 attempts has a 30-second deadline.
+```
+
+## What the Macros Generate
+
+### `#[zart_durable]` generates:
+
+- A unit struct named after your function (e.g., `Onboarding` for `onboarding`).
+- An `impl DurableExecution` with `run()` delegating to your function.
+- Registration with the `TaskRegistry` under the specified task name.
+
+### `#[zart_step]` generates:
+
+- A struct named from your function (e.g., `SendEmail` for `send_email`) with fields for each argument.
+- `impl ZartStep` with `step_name()` returning the specified name.
+- `impl IntoFuture` so you call the function directly: `send_email("a@b.com").await?`.
+- `retry_config()` and `timeout()` if the respective attributes are present.
+
+## Next Steps
+
+- [**Free Functions**](/api/free-functions/) — all `zart::` free functions
+- [**Steps**](/concepts/steps/) — conceptual walkthrough for steps and retries
+- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model

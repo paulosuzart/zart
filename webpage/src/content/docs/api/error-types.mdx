@@ -1,0 +1,141 @@
+---
+title: Error Types
+description: Reference for every error type in Zart — StepOutcome, StepError, TaskError, ZartStepError, ExecutionFailure, and SchedulerError.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Zart uses a typed error hierarchy that separates business decisions from framework failures. This document is a reference — for the conceptual walkthrough see [**Error Handling**](/concepts/error-handling/).
+
+## `StepOutcome<T, E>`
+
+The three-way result of `zart::step()`.
+
+```rust
+pub enum StepOutcome<T, E> {
+    Ok(T),
+    BusinessErr(E),
+    ZartErr(ZartStepError),
+}
+```
+
+| Variant | Meaning |
+|---|---|
+| `Ok(T)` | The step succeeded; `T` is the result. |
+| `BusinessErr(E)` | The step failed with its own error type. This is a **business decision** (e.g., `PaymentError::InsufficientFunds`). |
+| `ZartErr(ZartStepError)` | The framework could not complete the step (retry exhausted, timeout). This is **not** a business decision. |
+
+## `StepError`
+
+Used in `zart::wait` results and for control-flow signalling.
+
+```rust
+pub enum StepError {
+    Scheduled { step: String, next_execution: Option<DateTime<Utc>> },
+    StepExecuted { step: String },
+    Failed { step: String, reason: String },
+    RetryExhausted { step: String, attempts: usize },
+    Timeout { step: String, duration: Duration },
+    DeadlineExceeded { step: String },
+    Other(Box<dyn std::error::Error + Send + Sync>),
+}
+```
+
+| Variant | When it appears |
+|---|---|
+| `Scheduled` | Control-flow: the step has been registered but not yet executed. Propagated internally, never matched by users. |
+| `StepExecuted` | Control-flow: the step was executed and its result was persisted. Propagated internally, never matched by users. |
+| `Failed` | The step's `run()` returned `Err(E)`. The `reason` is the error message. |
+| `RetryExhausted` | All retry attempts failed. `attempts` is the total count. |
+| `Timeout` | The step exceeded its configured timeout. |
+| `DeadlineExceeded` | The execution-level timeout was exceeded. |
+| `Other` | An opaque framework error. |
+
+## `TaskError`
+
+The top-level error type returned by `run()` and by `zart::require()`.
+
+```rust
+pub enum TaskError {
+    StepFailed { step: String, source: StepError },
+    MaxRetriesExhausted { max_retries: usize },
+    Timeout { duration: Duration },
+    Cancelled,
+    HandlerPanic(String),
+}
+```
+
+| Variant | When it appears |
+|---|---|
+| `StepFailed` | A step returned a non-Ok outcome that propagated to the top. |
+| `MaxRetriesExhausted` | The execution-level retry policy exhausted all attempts. |
+| `Timeout` | The execution-level `timeout` was exceeded. |
+| `Cancelled` | The execution was cancelled via `cancel()`. |
+| `HandlerPanic` | The handler body panicked. The `String` contains the panic message. |
+
+## `ZartStepError`
+
+The framework-level error type inside `StepOutcome::ZartErr`.
+
+```rust
+pub enum ZartStepError {
+    RetryExhausted { step: String, attempts: usize, last_error: serde_json::Value },
+    TimedOut { step: String, duration: Duration },
+    DeadlineExceeded { step: String },
+}
+```
+
+### Inspecting the Last Error
+
+When a step exhausts retries, the last error is preserved as JSON. You can deserialize it back into the step's error type:
+
+```rust
+let err: ZartStepError = // ...
+if let Some(Ok(last)) = err.last_error::<PaymentError>() {
+    match last {
+        PaymentError::InsufficientFunds { balance, needed } => { /* ... */ }
+        PaymentError::CardDeclined { reason } => { /* ... */ }
+    }
+}
+```
+
+## `ExecutionFailure`
+
+Passed to the `on_failure` handler.
+
+```rust
+pub enum ExecutionFailure {
+    StepFailed { step: String, raw: serde_json::Value },
+    ExecutionDeadlineExceeded,
+    RetriesExhausted { attempts: usize },
+}
+```
+
+| Variant | When it appears |
+|---|---|
+| `StepFailed` | A step returned a non-Ok outcome. `raw` is the JSON-serialized error — deserialize it into the step's typed error for precise matching. |
+| `ExecutionDeadlineExceeded` | The `timeout` attribute on `#[zart_durable]` was exceeded. |
+| `RetriesExhausted` | The execution-level retry policy exhausted all attempts. |
+
+## `SchedulerError`
+
+Errors from `DurableScheduler` operations (start, wait, cancel, offer_event).
+
+```rust
+pub enum SchedulerError {
+    // ... database and scheduling errors ...
+    ExecutionAlreadyExists(String, ExecutionStatus),
+    WaitTimedOut(String),
+}
+```
+
+| Variant | When it appears |
+|---|---|
+| `ExecutionAlreadyExists(id, status)` | `start_typed` was called with an ID that already exists. `status` is the current status of the existing execution. |
+| `WaitTimedOut(id)` | `wait` or `wait_with_timeout` exceeded its timeout without the execution completing. |
+
+## Next Steps
+
+- [**Error Handling**](/concepts/error-handling/) — conceptual walkthrough of the three-way model
+- [**Free Functions**](/api/free-functions/) — `require`, `step`, `step_or`, `step_or_else`
+- [**Macros**](/api/macros/) — `on_failure` handler syntax

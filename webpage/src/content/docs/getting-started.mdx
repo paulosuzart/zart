@@ -11,7 +11,7 @@ Here is a complete durable workflow in Zart. Every step persists its result — 
 use zart::{zart_durable, zart_step};
 use zart::prelude::*;
 
-// 1. Define steps as plain async functions — no ctx threading
+// 1. Define steps as plain async functions
 #[zart_step("send-email", retry = "exponential(3, 2s)")]
 async fn send_email(email: &str) -> Result<(), StepError> {
     mailer.send(email, "Welcome!").await
@@ -25,39 +25,25 @@ async fn setup_billing(email: &str) -> Result<CustomerId, StepError> {
 // 2. Compose steps inside a durable handler — just call and await
 #[zart_durable("onboarding")]
 async fn onboarding(data: OnboardingData) -> Result<(), TaskError> {
-    // Each step runs exactly once — result is stored in the DB
-    send_email(&data.email).await?;
-
-    // Retry up to 3x with exponential backoff if billing fails
-    setup_billing(&data.email).await?;
-
+    send_email(&data.email).await?;       // ✓ persisted, retried on failure
+    setup_billing(&data.email).await?;    // ✓ persisted
     Ok(())
 }
-
-// 3. Register and run a worker
-let mut registry = TaskRegistry::new();
-registry.register("onboarding", Onboarding);
-
-Worker::new(scheduler, registry, WorkerConfig::default()).run().await;
-
-// 4. Schedule an execution (idempotent — safe to call twice with the same ID)
-scheduler.start_typed("signup-user-42", "onboarding", &OnboardingData {
-    user_id: "u-42".into(),
-    email: "alice@example.com".into(),
-}).await?;
 ```
 
+No context objects to thread through your code. Steps look and feel like plain async functions — they just happen to be durable.
+
 <Aside type="tip" title="What makes Zart different?">
-Unlike message queues or job frameworks, Zart persists the *result* of each step. If your server crashes after charging a card but before sending a receipt, Zart resumes from the receipt step — the charge is **never retried**.
+Unlike message queues or job frameworks, Zart persists the **result** of each step. If your server crashes after charging a card but before sending a receipt, Zart resumes from the receipt step — the charge is **never retried**.
 </Aside>
 
 ## Prerequisites
 
 - Rust 1.75 or later
-- **PostgreSQL** database
-- `tokio` runtime
+- A PostgreSQL 14+ database
+- A `tokio` runtime
 
-## Installation
+## Step 1: Add Dependencies
 
 ```toml
 # Cargo.toml
@@ -68,67 +54,113 @@ async-trait   = "0.1"
 tokio         = { version = "1", features = ["full"] }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
-
-zart-postgres = "0.1"
+sqlx          = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 ```
 
-## Run Migrations
+## Step 2: Run Migrations
 
 ```rust
-use sqlx::{PgPool, migrate::MigrateDatabase};
+use sqlx::PgPool;
 
-// In your application startup code
 let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-
-// Run migrations programmatically
-sqlx::migrate!("./migrations").run(&pool).await?;
+let sched = Arc::new(PostgresScheduler::new(pool));
+sched.run_migrations().await?;
 ```
 
-This creates the `zart_executions`, `zart_tasks`, and `zart_events` tables. Migrations are idempotent — safe to run on every deploy.
+This creates the `zart_tasks`, `zart_execution_runs`, and `zart_events` tables. Migrations are idempotent — safe to run on every deploy.
 
-## Start a Worker
+You can also run them from the CLI:
+
+```bash
+just migrate
+```
+
+## Step 3: Register Handlers and Start a Worker
 
 ```rust
-use zart::{TaskRegistry, Worker, WorkerConfig};
-use zart_postgres::PostgresScheduler;
+use zart::prelude::*;
+use zart::registry::TaskRegistry;
+use zart::worker::Worker;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-    let scheduler = Arc::new(PostgresScheduler::new(pool));
+    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let sched = Arc::new(PostgresScheduler::new(pool));
+    sched.run_migrations().await?;
 
     let mut registry = TaskRegistry::new();
     registry.register("onboarding", Onboarding);
 
-    Worker::new(scheduler, Arc::new(registry), WorkerConfig::default())
-        .run()
-        .await;
+    let config = zart::WorkerConfig {
+        poll_interval: Duration::from_millis(200),
+        max_tasks_per_poll: 10,
+        max_concurrent_tasks: 4,
+        shutdown_timeout: Duration::from_secs(5),
+        orphan_timeout: Duration::from_secs(30),
+        ..Default::default()
+    };
+
+    let worker = Arc::new(Worker::new(sched.clone(), Arc::new(registry), config));
+    let w = worker.clone();
+    tokio::spawn(async move { w.run().await });
 
     Ok(())
 }
 ```
 
-## Schedule an Execution
+The worker polls PostgreSQL for due tasks and dispatches them to registered handlers. Multiple worker instances can run against the same database — `SKIP LOCKED` ensures each task is processed by exactly one worker.
+
+## Step 4: Schedule an Execution
 
 Call this from anywhere — a web handler, a background task, a test:
 
 ```rust
-let durable = DurableScheduler::new(scheduler.clone());
+let durable = DurableScheduler::new(sched.clone());
 
-durable.start_typed(
-    "signup-user-42",   // idempotency key — safe to call twice
-    "onboarding",
-    &OnboardingData { user_id: "u-42".into(), email: "alice@example.com".into() },
-).await?;
-
-// Optionally wait for it to finish
-let status = durable.wait("signup-user-42", None).await?;
+durable
+    .start_typed(
+        "signup-user-42",   // idempotency key — safe to call twice
+        "onboarding",
+        &OnboardingData { email: "alice@example.com".into() },
+    )
+    .await?;
 ```
+
+## Step 5: Wait for Completion (Optional)
+
+```rust
+let record = durable
+    .wait("signup-user-42", Duration::from_secs(60), None)
+    .await?;
+
+if record.status == scheduler::ExecutionStatus::Completed {
+    println!("Onboarding completed!");
+}
+```
+
+## Run the Examples
+
+The repository ships with runnable examples:
+
+```bash
+# Start PostgreSQL
+docker compose up -d
+
+# Run migrations
+just migrate
+
+# Try the sleep example
+just example-sleep
+
+# Try the brewery finder
+just example-brewery
+```
+
+See the full [Examples](/examples/brewery-finder/) section for detailed walkthroughs.
 
 ## Next Steps
 
-- [DurableExecution Trait](/rust-api/task-handler/) — full reference for steps, retries, sleeps, and events
-- [Macros](/rust-api/macros/) — the `#[zart_durable]` and `#[zart_step]` proc-macro layer
-- [Parallel Steps](/rust-api/parallel-steps/) — run steps concurrently with `zart::wait`
-- [Wait for Event](/rust-api/wait-for-event/) — human-in-the-loop and webhook patterns
-- [PostgreSQL Storage](/features/#7-postgresql-storage) — how workflow state is persisted
+- [**Durable Execution**](/concepts/durable-execution/) — the core concept, lifecycle, and idempotency
+- [**Steps**](/concepts/steps/) — defining steps, retries, sleeps, events, and durable values
+- [**Flow Control**](/concepts/flow-control/) — parallel steps and durable loops
+- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model

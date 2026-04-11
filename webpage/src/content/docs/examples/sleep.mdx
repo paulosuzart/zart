@@ -1,0 +1,106 @@
+---
+title: Sleep
+description: Demonstrate durable sleep and capture — pause a workflow without blocking threads, and persist values durably.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This example shows a minimal durable workflow that sleeps for 5 seconds, then completes. It demonstrates `zart::capture!` for persisting values and `zart::sleep` for durable delays.
+
+**Features demonstrated:** `DurableExecution` trait, `zart::capture!`, `zart::sleep`, durable value persistence.
+
+## Data types
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SleepInput {
+    task_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SleepOutput {
+    task_name: String,
+    started_at: String,
+    resumed_at: String,
+}
+```
+
+## The workflow
+
+```rust
+use zart::prelude::*;
+use zart::error::TaskError;
+
+struct SleepTask;
+
+#[async_trait::async_trait]
+impl DurableExecution for SleepTask {
+    type Data   = SleepInput;
+    type Output = SleepOutput;
+
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        // Capture the start time durably — survives restarts
+        let started_at = zart::capture!("started-at", chrono::Utc::now());
+
+        // Durable sleep — zero threads blocked, persists to DB
+        zart::sleep("initial-sleep", Duration::from_secs(5)).await?;
+
+        // Capture the resumed time — different from started_at after any restart
+        let resumed_at = zart::capture!("resumed-at", chrono::Utc::now());
+
+        Ok(SleepOutput {
+            task_name: data.task_name,
+            started_at: started_at.to_rfc3339(),
+            resumed_at: resumed_at.to_rfc3339(),
+        })
+    }
+}
+```
+
+## What this demonstrates
+
+### `zart::capture!` — durable value persistence
+
+`zart::capture!("started-at", chrono::Utc::now())` evaluates the expression once, writes it to the database as a completed step row, and returns the value. On replay after a restart, the cached value is returned — `chrono::Utc::now()` is **never called again**.
+
+This is useful for:
+- Recording when an execution started (audit logs, SLA tracking).
+- Generating stable identifiers that must not change on replay.
+- Capturing environment state (timezone, feature flags) at execution start.
+
+### `zart::sleep` — durable delays
+
+`zart::sleep("initial-sleep", Duration::from_secs(5)).await?` suspends the execution and schedules a continuation for `now + duration`. Zero threads are blocked while sleeping. The sleep is durable — if the worker restarts, the execution resumes from this point when the sleep timer fires.
+
+The `name` must be stable and unique within the execution body. Treat it like a migration name — don't change it after the execution has started.
+
+## Running the example
+
+```bash
+just example-sleep
+```
+
+## What you'll see
+
+```
+=== Zart Sleep Example ===
+
+Starting execution 'sleep-demo-...'...
+
+=== Execution Completed ===
+  Task:       demo
+  Started:    2024-01-15T10:30:00.000000+00:00
+  Resumed:    2024-01-15T10:30:05.000000+00:00
+```
+
+<Aside type="tip">
+The 5-second difference between `started_at` and `resumed_at` is the durable sleep. If you kill the worker during the sleep and restart it, the timestamps remain the same — the cached values are returned from the database, not recomputed.
+</Aside>
+
+## Key concepts
+
+**`zart::capture!(name, expr)`** — macro that expands to `::zart::capture(name, || expr).await?`. Evaluates the expression once, persists the result, and returns it on every replay.
+
+**`zart::sleep(name, duration)`** — durable delay. The execution is suspended and rescheduled for `now + duration`. No worker thread is occupied during the sleep.
+
+**Step name stability** — both `capture` and `sleep` require stable names. Changing the name after an execution has started creates a new step, potentially breaking replay semantics.

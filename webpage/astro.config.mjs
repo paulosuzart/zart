@@ -32,25 +32,32 @@ export default defineConfig({
           items: [
             { label: "About", link: "/about" },
             { label: "Getting Started", link: "/getting-started" },
-            { label: "Features", link: "/features" },
           ],
         },
 
-        // ── Reference ──────────────────────────────────────────
+        // ── Concepts ───────────────────────────────────────────
         {
-          label: "Rust API",
+          label: "Concepts",
           items: [
-            { label: "Overview", link: "/rust-api/overview" },
-            { label: "DurableExecution Trait", link: "/rust-api/task-handler" },
-            { label: "ZartStep Trait", link: "/rust-api/zart-step" },
-            { label: "Macros", link: "/rust-api/macros" },
-            { label: "Durable Loops", link: "/rust-api/loops" },
-            { label: "Capture Variables", link: "/rust-api/capture-variables" },
+            { label: "Durable Execution", link: "/concepts/durable-execution" },
+            { label: "Steps", link: "/concepts/steps" },
+            { label: "Flow Control", link: "/concepts/flow-control" },
+            { label: "Error Handling", link: "/concepts/error-handling" },
+            { label: "Timeouts & Cancellation", link: "/concepts/timeouts" },
+          ],
+        },
+
+        // ── API Reference ──────────────────────────────────────
+        {
+          label: "API Reference",
+          items: [
+            { label: "Free Functions", link: "/api/free-functions" },
+            { label: "Macros", link: "/api/macros" },
             {
-              label: "Parallel Steps",
-              link: "/rust-api/parallel-steps",
+              label: "Execution Management",
+              link: "/api/execution-management",
             },
-            { label: "Wait for Event", link: "/rust-api/wait-for-event" },
+            { label: "Error Types", link: "/api/error-types" },
           ],
         },
 
@@ -58,11 +65,14 @@ export default defineConfig({
         {
           label: "Examples",
           items: [
-            { label: "Radkit LLM Agent SDK", link: "/examples/radkit-agent" },
             { label: "Brewery Finder", link: "/examples/brewery-finder" },
             { label: "Approval Workflow", link: "/examples/approval-workflow" },
             { label: "Parallel Steps", link: "/examples/parallel-steps" },
-            { label: "Error handler", link: "/examples/error-handling" },
+            { label: "Error Handling", link: "/examples/error-handling" },
+            { label: "Durable Loops", link: "/examples/durable-loops" },
+            { label: "Sleep", link: "/examples/sleep" },
+            { label: "Retry Simulation", link: "/examples/retry-simulation" },
+            { label: "Radkit LLM Agent", link: "/examples/radkit-agent" },
           ],
         },
 

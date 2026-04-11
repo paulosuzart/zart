@@ -1,0 +1,121 @@
+---
+title: Durable Execution
+description: The core concept — what durable execution is, how to trigger workflows, and how to wait for results.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## What Is Durable Execution?
+
+Durable execution lets you write long-running workflows as ordinary async Rust code. Each step is checkpointed to the database. If your process crashes, times out, or gets redeployed, Zart resumes from the last successful step — no work is lost, no step is repeated.
+
+Think of it like GitHub Actions: your workflow has multiple steps, and if the infrastructure fails mid-run, it resumes where it left off. No one configures durability as a non-functional requirement — it's just how the platform works. Zart brings that same default-reliable experience to your Rust backend.
+
+```
+Step 1: send_email    ──✓── persisted
+Step 2: charge_card   ──💥── crash here
+Step 3: send_receipt
+─────────────────────────────
+Restart → Step 1 is SKIPPED (cached)
+        → Step 2 is SKIPPED (cached)
+        → Step 3 runs → done
+```
+
+## How to Trigger a Workflow
+
+Every durable execution is identified by a **unique execution ID** that doubles as an idempotency key. Calling `start_typed` with the same ID twice is safe — the second call returns `ExecutionAlreadyExists` so you can wait on the existing execution instead of creating a duplicate.
+
+```rust
+use zart::prelude::*;
+use zart::scheduler::DurableScheduler;
+
+let durable = DurableScheduler::new(scheduler.clone());
+
+// Schedule a new execution (idempotent)
+durable
+    .start_typed("signup-user-42", "onboarding", &OnboardingData {
+        email: "alice@example.com".into(),
+    })
+    .await?;
+```
+
+You trigger executions from anywhere — a web handler, a CLI command, a background job. The scheduler and the worker share the same PostgreSQL backend, so they can run in the same process or on separate machines.
+
+## How to Wait for Results
+
+### `wait` — block until completion
+
+```rust
+let record = durable
+    .wait("signup-user-42", Duration::from_secs(60), None)
+    .await?;
+
+if record.status == ExecutionStatus::Completed {
+    let output: OnboardingOutput = serde_json::from_value(record.result.unwrap())?;
+    println!("Done: {:?}", output);
+}
+```
+
+The second parameter is a timeout — if the execution doesn't finish in time, `wait` returns an error. The third parameter (`poll_interval`) controls how often the status is checked; pass `None` for the default.
+
+### `status` — check without blocking
+
+```rust
+let record = durable.status("signup-user-42").await?;
+println!("Status: {:?}", record.status);
+// ExecutionStatus::Pending | Running | Completed | Failed | Cancelled
+```
+
+### `cancel` — stop a running execution
+
+```rust
+let cancelled = durable.cancel("signup-user-42").await?;
+```
+
+A cancelled execution stops at its next scheduling point. Steps currently running will finish, but no new steps will be scheduled.
+
+## The Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: start_typed
+    Pending --> Running: worker picks up
+    Running --> Waiting: sleep / wait_for_event
+    Waiting --> Running: timer fires / event arrives
+    Running --> Completed: all steps succeed
+    Running --> Failed: step fails, no retry
+    Running --> Failed: retries exhausted
+    Running --> Cancelled: cancel called
+    Waiting --> Failed: event timeout
+```
+
+1. **Schedule** — `start_typed` inserts a row in `zart_executions` with status `pending`.
+2. **Claim** — Workers poll PostgreSQL with `SELECT … FOR UPDATE SKIP LOCKED`. Exactly one worker owns one execution.
+3. **Run** — The handler body executes. Each step call checks the database:
+   - **Hit** — stored result deserialized and returned; the step logic is never called again.
+   - **Miss** — the step runs, the result is persisted, then returned.
+4. **Complete** — the handler returns `Ok`; status becomes `completed` and the output is stored.
+5. **Fail** — the handler returns `Err`; after retries are exhausted, status becomes `failed`.
+
+## Idempotency Guarantee
+
+The execution ID is your idempotency key. If the same user signs up twice due to a double-click, the second `start_typed` call returns `ExecutionAlreadyExists` — you detect this and simply wait on the existing execution.
+
+```rust
+match durable.start_typed(&exec_id, "onboarding", &input).await {
+    Ok(_) => println!("New execution started"),
+    Err(SchedulerError::ExecutionAlreadyExists(_)) => {
+        println!("Already running, waiting on existing…");
+    }
+    Err(e) => return Err(e.into()),
+}
+
+// In all cases, wait on the execution
+let record = durable.wait(&exec_id, Duration::from_secs(60), None).await?;
+```
+
+## Next Steps
+
+- [**Steps**](/concepts/steps/) — define and compose durable work
+- [**Flow Control**](/concepts/flow-control/) — parallel steps, sleeps, and events
+- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
