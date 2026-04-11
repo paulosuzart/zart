@@ -1,6 +1,6 @@
 //! High-level durable execution entry point.
 //!
-//! [`DurableScheduler`] wraps the underlying [`Scheduler`] and provides
+//! [`DurableScheduler`] wraps the underlying `Scheduler` and provides
 //! execution-aware operations: starting executions with idempotency keys,
 //! querying status, and waiting for completion.
 

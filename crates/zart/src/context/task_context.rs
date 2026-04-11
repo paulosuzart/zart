@@ -51,7 +51,7 @@ pub struct TaskContext {
 impl TaskContext {
     /// Construct a new `TaskContext`.
     ///
-    /// Called by the [`Worker`] when it picks up a task.
+    /// Called by the worker when it picks up a task.
     pub fn new(
         scheduler: Arc<dyn StorageBackend>,
         execution_id: impl Into<String>,

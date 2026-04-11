@@ -2,10 +2,10 @@
 //!
 //! This module is split into several sub-modules for maintainability:
 //!
-//! - [`state`] — `StepHandle`, attempt history, step records, `ExecutionState`
-//! - [`step_context`] — `StepContext` for read-only execution metadata (internal)
-//! - [`step_trait`] — `ZartStep` trait and `NamedStep` wrapper
-//! - [`task_context`] — `TaskContext` (the primary execution interface)
+//! - `state` — `StepHandle`, attempt history, step records, `ExecutionState`
+//! - `step_context` — `StepContext` for read-only execution metadata (internal)
+//! - `step_trait` — `ZartStep` trait and `NamedStep` wrapper
+//! - `task_context` — `TaskContext` (the primary execution interface)
 
 mod state;
 mod step_context;

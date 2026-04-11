@@ -1,4 +1,4 @@
-//! PostgreSQL-backed implementation of the [`Scheduler`] trait.
+//! PostgreSQL-backed implementation of the `Scheduler` trait.
 //!
 //! Uses `sqlx` with a `PgPool` for connection pooling. Task locking is
 //! implemented with `SELECT … FOR UPDATE SKIP LOCKED` so multiple workers
@@ -6,7 +6,7 @@
 //!
 //! # Migrations
 //!
-//! Call [`PostgresScheduler::run_migrations`] (or `just migrate`) once before
+//! Call `PostgresScheduler::run_migrations` (or `just migrate`) once before
 //! starting workers. It applies the embedded SQL files under `migrations/`.
 
 mod scheduler_impl;
@@ -14,11 +14,11 @@ mod storage_impl;
 
 use sqlx::PgPool;
 
-/// A [`Scheduler`] backed by a PostgreSQL database.
+/// A `Scheduler` backed by a PostgreSQL database.
 ///
-/// Create one with [`PostgresScheduler::new`], passing in an already-built
-/// `sqlx::PgPool`. Call [`run_migrations`][Self::run_migrations] before first
-/// use to ensure the schema is up to date.
+/// Create one with `PostgresScheduler::new`, passing in an already-built
+/// `sqlx::PgPool`. Call `run_migrations` before first use to ensure the
+/// schema is up to date.
 pub struct PostgresScheduler {
     pool: PgPool,
 }

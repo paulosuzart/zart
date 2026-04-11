@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::PostgresScheduler;
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler,
-    StorageError,
+    StorageError, TaskStatus,
 };
 
 #[async_trait]
@@ -226,8 +226,8 @@ impl Scheduler for PostgresScheduler {
         lock_token: &str,
     ) -> Result<(), StorageError> {
         let (new_status, exec_time) = match next_execution_time {
-            Some(t) => ("scheduled", Some(t)),
-            None => ("failed", None),
+            Some(t) => (TaskStatus::Scheduled, Some(t)),
+            None => (TaskStatus::Failed, None),
         };
 
         let rows_affected = if let Some(t) = exec_time {

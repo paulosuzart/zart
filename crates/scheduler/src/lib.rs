@@ -151,7 +151,7 @@ pub trait Scheduler: Send + Sync {
 ///
 /// Extends [`Scheduler`] for backends that support the `zart_executions` table
 /// and the execution-model step rows. Implement this alongside [`Scheduler`]
-/// to enable [`DurableScheduler`], [`Worker`], and [`TaskContext`] in their
+/// to enable `DurableScheduler`, `Worker`, and `TaskContext` in their
 /// full durable-execution mode.
 ///
 /// A plain task-queue backend only needs to implement [`Scheduler`].
@@ -229,7 +229,7 @@ pub trait DurableStorage: Send + Sync {
 
     /// Back-compat shim: completes a wait_for_event step and schedules body.
     ///
-    /// New callers should use [`deliver_event`]. This helper maps:
+    /// New callers should use `deliver_event`. This helper maps:
     /// - `Delivered` -> `true`
     /// - `AlreadyDelivered`/`NotRegistered` -> `false`
     async fn complete_event_step_and_schedule_body(

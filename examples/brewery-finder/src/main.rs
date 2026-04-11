@@ -5,7 +5,7 @@
 //! 2. Find breweries in that city via Open Brewery DB API
 //! 3. Return a structured result with all brewery data
 //!
-//! Features: #[zart_durable], #[zart_step], external API calls,
+//! Features: `#[zart_durable]`, `#[zart_step]`, external API calls,
 //! structured output (no file I/O).
 
 use chrono::Utc;

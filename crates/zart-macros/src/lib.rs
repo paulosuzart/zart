@@ -10,7 +10,7 @@
 //! - [`#[zart_step]`](macro@zart_step) — annotate an async function as a step builder,
 //!   generating a struct that can be `.await`ed directly.
 //! - [`z_wait_event!`](macro@z_wait_event) — wrapper around `zart::wait_for_event(name, timeout)`
-//! - [`zart_capture!`](macro@zart_capture) — capture a synchronous value durably
+//! - `zart_capture!` — capture a synchronous value durably
 //!
 //! # Required dependencies
 //!

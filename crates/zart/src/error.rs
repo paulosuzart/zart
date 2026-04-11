@@ -171,7 +171,7 @@ impl ZartStepError {
 
 // ── ExecutionFailure ─────────────────────────────────────────────────────────
 
-/// Describes why `on_failure` was invoked on a [`DurableExecution`].
+/// Describes why `on_failure` was invoked on a `DurableExecution`.
 ///
 /// Returned to the centralized failure handler when a step failure propagates
 /// out of the body, or when an execution-level failure occurs.

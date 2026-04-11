@@ -1,10 +1,10 @@
 //! Free functions that implement execution-model-specific scheduling.
 //!
-//! These compose the generic [`Scheduler`] primitives (`schedule_at`,
+//! These compose the generic `Scheduler` primitives (`schedule_at`,
 //! `complete_and_schedule`, `mark_completed`) to perform operations specific
 //! to the per-row step execution model.
 //!
-//! Keeping this logic here means [`PostgresScheduler`] remains a clean,
+//! Keeping this logic here means `PostgresScheduler` remains a clean,
 //! generic storage backend with no execution-model knowledge.
 
 use scheduler::{

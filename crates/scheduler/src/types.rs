@@ -327,7 +327,7 @@ pub enum StepResultKind {
     Dl,
 }
 
-/// Parameters for [`Scheduler::schedule_at`].
+/// Parameters for `StorageBackend::schedule_at`.
 ///
 /// Groups the seven positional arguments into a single struct so call sites
 /// stay readable and the trait method stays within clippy's argument limit.
@@ -347,7 +347,7 @@ pub struct ScheduleAtParams {
     pub metadata: serde_json::Value,
 }
 
-/// Parameters for [`Scheduler::complete_and_schedule`].
+/// Parameters for `StorageBackend::complete_and_schedule`.
 ///
 /// Groups the nine positional arguments into a single struct so the atomic
 /// "complete one task and insert the next" operation remains readable.
@@ -447,4 +447,245 @@ pub struct StepRow {
     pub scheduled_at: DateTime<Utc>,
     /// When this step completed (None if still in progress).
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TaskStatus ────────────────────────────────────────────────────────────
+
+    /// Verify every `TaskStatus` variant serializes to the snake_case string
+    /// that PostgreSQL stores.  If a variant is renamed in Rust without updating
+    /// the DB migration, this will fail before the code ever touches a database.
+    #[test]
+    fn task_status_serde_round_trip() {
+        let cases: &[(TaskStatus, &str)] = &[
+            (TaskStatus::Scheduled, "\"scheduled\""),
+            (TaskStatus::PickedUp, "\"picked_up\""),
+            (TaskStatus::Completed, "\"completed\""),
+            (TaskStatus::Failed, "\"failed\""),
+            (TaskStatus::Dead, "\"dead\""),
+            (TaskStatus::Cancelled, "\"cancelled\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                serialized, *expected_json,
+                "TaskStatus::{variant:?} serialized as {serialized}, expected {expected_json}"
+            );
+            let deserialized: TaskStatus =
+                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                    panic!("failed to deserialize {expected_json} back to TaskStatus: {e}")
+                });
+            assert_eq!(deserialized, *variant);
+        }
+    }
+
+    /// `FromStr` must agree with serde so that DB reads are consistent
+    /// regardless of which parsing path is used.
+    #[test]
+    fn task_status_from_str_matches_serde() {
+        let cases = ["scheduled", "picked_up", "completed", "failed", "dead", "cancelled"];
+        for s in cases {
+            let via_serde: TaskStatus =
+                serde_json::from_str(&format!("\"{s}\"")).unwrap_or_else(|e| {
+                    panic!("serde failed for {s}: {e}")
+                });
+            let via_from_str: TaskStatus = s.parse().unwrap_or_else(|e| {
+                panic!("FromStr failed for {s}: {e}")
+            });
+            assert_eq!(via_serde, via_from_str, "mismatch for {s}");
+        }
+    }
+
+    // ── ExecutionStatus ───────────────────────────────────────────────────────
+
+    #[test]
+    fn execution_status_serde_round_trip() {
+        let cases: &[(ExecutionStatus, &str)] = &[
+            (ExecutionStatus::Scheduled, "\"scheduled\""),
+            (ExecutionStatus::Running, "\"running\""),
+            (ExecutionStatus::Completed, "\"completed\""),
+            (ExecutionStatus::Failed, "\"failed\""),
+            (ExecutionStatus::Cancelled, "\"cancelled\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                serialized, *expected_json,
+                "ExecutionStatus::{variant:?} serialized as {serialized}, expected {expected_json}"
+            );
+            let deserialized: ExecutionStatus =
+                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                    panic!("failed to deserialize {expected_json} back to ExecutionStatus: {e}")
+                });
+            assert_eq!(deserialized, *variant);
+        }
+    }
+
+    // ── StepKind ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn step_kind_serde_round_trip() {
+        let cases: &[(StepKind, &str)] = &[
+            (StepKind::Step, "\"step\""),
+            (StepKind::Sleep, "\"sleep\""),
+            (StepKind::WaitAll, "\"wait_all\""),
+            (StepKind::WaitForEvent, "\"wait_for_event\""),
+            (StepKind::WaitGroup, "\"wait_group\""),
+            (StepKind::Capture, "\"capture\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                serialized, *expected_json,
+                "StepKind::{variant:?} serialized as {serialized}, expected {expected_json}"
+            );
+            let deserialized: StepKind =
+                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                    panic!("failed to deserialize {expected_json} back to StepKind: {e}")
+                });
+            assert_eq!(deserialized, *variant);
+        }
+    }
+
+    // ── StepStatus ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn step_status_serde_round_trip() {
+        let cases: &[(StepStatus, &str)] = &[
+            (StepStatus::Scheduled, "\"scheduled\""),
+            (StepStatus::Running, "\"running\""),
+            (StepStatus::Completed, "\"completed\""),
+            (StepStatus::Dead, "\"dead\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                serialized, *expected_json,
+                "StepStatus::{variant:?} serialized as {serialized}, expected {expected_json}"
+            );
+            let deserialized: StepStatus =
+                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                    panic!("failed to deserialize {expected_json} back to StepStatus: {e}")
+                });
+            assert_eq!(deserialized, *variant);
+        }
+    }
+
+    // ── StepResultKind ────────────────────────────────────────────────────────
+
+    #[test]
+    fn step_result_kind_serde_round_trip() {
+        let cases: &[(StepResultKind, &str)] = &[
+            (StepResultKind::Ok, "\"ok\""),
+            (StepResultKind::Err, "\"err\""),
+            (StepResultKind::Rx, "\"rx\""),
+            (StepResultKind::Timeout, "\"timeout\""),
+            (StepResultKind::Dl, "\"dl\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                serialized, *expected_json,
+                "StepResultKind::{variant:?} serialized as {serialized}, expected {expected_json}"
+            );
+            let deserialized: StepResultKind =
+                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                    panic!("failed to deserialize {expected_json} back to StepResultKind: {e}")
+                });
+            assert_eq!(deserialized, *variant);
+        }
+    }
+
+    // ── ExecutionTrigger ──────────────────────────────────────────────────────
+
+    #[test]
+    fn execution_trigger_serde_round_trip() {
+        let cases: &[(ExecutionTrigger, &str)] = &[
+            (ExecutionTrigger::Initial, "\"initial\""),
+            (ExecutionTrigger::Restart, "\"restart\""),
+            (ExecutionTrigger::SelectiveRerun, "\"selective_rerun\""),
+        ];
+        for (variant, expected_json) in cases {
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(
+                serialized, *expected_json,
+                "ExecutionTrigger::{variant:?} serialized as {serialized}, expected {expected_json}"
+            );
+            let deserialized: ExecutionTrigger =
+                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                    panic!("failed to deserialize {expected_json} back to ExecutionTrigger: {e}")
+                });
+            assert_eq!(deserialized, *variant);
+        }
+    }
+
+    // ── sqlx PG type names (postgres feature only) ────────────────────────────
+    //
+    // These verify that the `#[sqlx(type_name = "...")]` attribute on each enum
+    // matches the CREATE TYPE name in the migration.  A mismatch would cause
+    // "wrong type" errors at runtime when sqlx tries to bind a typed parameter
+    // to a $N placeholder — exactly the class of bug that caused the mark_failed
+    // runtime failure where `&str` was bound where `task_status` was expected.
+    #[cfg(feature = "postgres")]
+    mod pg_type_names {
+        use super::*;
+        use sqlx::{Type, TypeInfo};
+
+        #[test]
+        fn task_status_pg_type_name() {
+            assert_eq!(
+                TaskStatus::type_info().name(),
+                "task_status",
+                "TaskStatus sqlx type_name must match the PG enum in migrations"
+            );
+        }
+
+        #[test]
+        fn execution_status_pg_type_name() {
+            assert_eq!(
+                ExecutionStatus::type_info().name(),
+                "execution_status",
+                "ExecutionStatus sqlx type_name must match the PG enum in migrations"
+            );
+        }
+
+        #[test]
+        fn step_kind_pg_type_name() {
+            assert_eq!(
+                StepKind::type_info().name(),
+                "step_kind",
+                "StepKind sqlx type_name must match the PG enum in migrations"
+            );
+        }
+
+        #[test]
+        fn step_status_pg_type_name() {
+            assert_eq!(
+                StepStatus::type_info().name(),
+                "step_status",
+                "StepStatus sqlx type_name must match the PG enum in migrations"
+            );
+        }
+
+        #[test]
+        fn step_result_kind_pg_type_name() {
+            assert_eq!(
+                StepResultKind::type_info().name(),
+                "step_result_kind",
+                "StepResultKind sqlx type_name must match the PG enum in migrations"
+            );
+        }
+
+        #[test]
+        fn execution_trigger_pg_type_name() {
+            assert_eq!(
+                ExecutionTrigger::type_info().name(),
+                "execution_trigger",
+                "ExecutionTrigger sqlx type_name must match the PG enum in migrations"
+            );
+        }
+    }
 }

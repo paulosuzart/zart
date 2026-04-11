@@ -33,76 +33,86 @@ Think of it like GitHub Actions: your workflow has multiple steps, and if the in
 
 ## Complete Example
 
-An order fulfillment workflow that validates an address, processes payment, waits for warehouse notification, then waits for an external shipment event:
+An order fulfillment workflow that validates an address, processes payment, then waits for an external shipment event:
 
 ```rust
 use zart::prelude::*;
 use zart::{zart_durable, zart_step};
+use zart::error::TaskError;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-// ── Input / Output ────────────────────────────────────────────────────────────
+// ── Input / Output / Events ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OrderInput {
     order_id: String,
-    customer_email: String,
+    amount: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Receipt {
     order_id: String,
-    total_cents: i64,
+    transaction_id: String,
     tracking_number: String,
 }
 
-// ── Step 1: Validate and enrich address ───────────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ShipmentEvent {
+    tracking_number: String,
+}
+
+// ── Step error types ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+enum PaymentError {
+    #[error("card declined: {reason}")]
+    CardDeclined { reason: String },
+}
+
+// ── Step 1: Validate and charge ───────────────────────────────────────────────
 // Retries up to 3 times with exponential backoff on transient failures.
 
-#[zart_step("validate-address", retry = "exponential(3, 2s)")]
-async fn validate_address(order_id: &str, ctx: StepContext) -> Result<Address, StepError> {
-    println!("Validating address for order {} (attempt {})", order_id, ctx.current_attempt() + 1);
-    address_service.validate(order_id).await
+#[zart_step("process-payment", retry = "exponential(3, 2s)")]
+async fn process_payment(order_id: String, amount: f64) -> Result<String, PaymentError> {
+    println!("Charging order {} (attempt {})", order_id, zart::context().current_attempt + 1);
+    // ... call payment service ...
+    Ok(format!("txn-{order_id}"))
 }
 
-// ── Step 2: Process payment ───────────────────────────────────────────────────
-// No retries — the payment service handles idempotency internally.
+// ── Step 2: Reserve inventory ─────────────────────────────────────────────────
 
-#[zart_step("process-payment")]
-async fn process_payment(order_id: &str, ctx: StepContext) -> Result<PaymentResult, StepError> {
-    payment_service.charge(order_id).await
+#[zart_step("reserve-inventory")]
+async fn reserve_inventory(order_id: String) -> Result<(), PaymentError> {
+    // ... call inventory service ...
+    Ok(())
 }
 
-// ── Durable workflow: ties it all together ────────────────────────────────────
+// ── Durable workflow ──────────────────────────────────────────────────────────
 
 #[zart_durable("order-fulfillment", timeout = "30m")]
-async fn order_fulfillment(
-    ctx: &mut TaskContext,
-    input: OrderInput,
-) -> Result<Receipt, TaskError> {
-    // Three equivalent calling styles — pick what fits your team:
-    let addr = validate_address_step(&mut ctx, &input.order_id).await?;          // flat call
-    let payment = ctx.execute_step(process_payment(&input.order_id)).await?;     // execute_step
-    let shipment = pack_order(&input.order_id, &addr).execute(&mut ctx).await?;  // step-first trait
+async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
+    let txn_id = process_payment(data.order_id.clone(), data.amount).await?;
+    reserve_inventory(data.order_id.clone()).await?;
 
     // Durable sleep — survives restarts, no threads blocked
-    ctx.sleep("warehouse-settle", Duration::from_secs(60)).await?;
+    zart::sleep("warehouse-settle", Duration::from_secs(60)).await?;
 
     // Wait up to 1 hour for an external "shipment_ready" event
-    let event: ShipmentEvent = ctx.wait_for_event(
+    let event: ShipmentEvent = zart::wait_for_event(
         "shipment_ready",
         Some(Duration::from_secs(3600)),
     ).await?;
 
     Ok(Receipt {
-        order_id: input.order_id,
-        total_cents: payment.amount_cents,
+        order_id: data.order_id,
+        transaction_id: txn_id,
         tracking_number: event.tracking_number,
     })
 }
 ```
 
-If the process crashes after `validate_address` completes, a restart skips that step entirely and resumes from `process_payment`. No double-charges, no re-validation.
+If the process crashes after `process_payment` completes, a restart skips that step and resumes from `reserve_inventory`. No double-charges.
 
 ---
 
