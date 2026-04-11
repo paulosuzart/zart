@@ -168,7 +168,10 @@ pub struct ScheduleResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "task_status", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "task_status", rename_all = "snake_case")
+)]
 pub enum TaskStatus {
     /// Waiting to be picked up by a worker.
     Scheduled,
@@ -203,7 +206,10 @@ impl std::str::FromStr for TaskStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "execution_status", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "execution_status", rename_all = "snake_case")
+)]
 pub enum ExecutionStatus {
     Scheduled,
     Running,
@@ -242,7 +248,10 @@ impl std::str::FromStr for ExecutionStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "step_kind", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "step_kind", rename_all = "snake_case")
+)]
 pub enum StepKind {
     /// A user-defined step with a lambda.
     Step,
@@ -262,7 +271,10 @@ pub enum StepKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "step_status", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "step_status", rename_all = "snake_case")
+)]
 pub enum StepStatus {
     /// Waiting to be picked up by a worker.
     Scheduled,
@@ -278,7 +290,10 @@ pub enum StepStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "execution_trigger", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "execution_trigger", rename_all = "snake_case")
+)]
 pub enum ExecutionTrigger {
     /// First ever run of this execution.
     Initial,
@@ -295,7 +310,10 @@ pub enum ExecutionTrigger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "step_result_kind", rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "step_result_kind", rename_all = "snake_case")
+)]
 pub enum StepResultKind {
     /// Step succeeded — `result` holds the serialized output.
     Ok,

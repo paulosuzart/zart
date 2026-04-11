@@ -28,9 +28,8 @@ pub use types::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
     CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
     ExecutionStatus, ExecutionTrigger, FailWaitGroupChildParams, FetchedTask,
-    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
-    StepKind, StepLookup, StepResultKind, StepRow, StepStatus, TaskStatus,
-    UpsertWaitGroupStepParams,
+    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepKind,
+    StepLookup, StepResultKind, StepRow, StepStatus, TaskStatus, UpsertWaitGroupStepParams,
 };
 
 #[cfg(feature = "postgres")]

@@ -7,7 +7,7 @@
 mod integration {
     use scheduler::{
         CompleteWaitGroupChildParams, DurableStorage as _, EventDeliveryResult, ExecutionStatus,
-        FailWaitGroupChildParams, PostgresScheduler, ScheduleStepParams, Scheduler as _, StepKind,
+        FailWaitGroupChildParams, PostgresScheduler, Scheduler as _, StepKind,
     };
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
