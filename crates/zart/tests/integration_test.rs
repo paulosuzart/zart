@@ -1602,8 +1602,8 @@ mod integration {
         // Insert a step that has already timed out (simulating what happens when
         // a Global-scope step exceeds its deadline). We insert the step row and
         // its task with an already-expired deadline in metadata.
-        let run_id = format!("admin-deadline-retry-{}", Uuid::new_v4());
-        let execution_id = run_id.split(":run:").next().unwrap();
+        let execution_id = format!("admin-deadline-retry-{}", Uuid::new_v4());
+        let run_id = format!("{execution_id}:run:0");
 
         // Create the execution record.
         scheduler
