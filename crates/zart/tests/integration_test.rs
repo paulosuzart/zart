@@ -1605,28 +1605,16 @@ mod integration {
         let execution_id = format!("admin-deadline-retry-{}", Uuid::new_v4());
         let run_id = format!("{execution_id}:run:0");
 
-        // Create the execution record.
+        // Create the execution record (this also creates the run row at index 0).
         scheduler
-            .start_execution(execution_id, "test-task", serde_json::json!({}))
+            .start_execution(&execution_id, "test-task", serde_json::json!({}))
             .await
             .expect("start_execution failed");
 
-        // Insert a run row so admin_retry_step can find it.
+        // Connect to the database for manual inserts.
         let pool = sqlx::PgPool::connect(&pg_url())
             .await
             .expect("failed to connect to PostgreSQL");
-        sqlx::query(
-            r#"
-            INSERT INTO zart_execution_runs (run_id, execution_id, run_index, payload, trigger, status)
-            VALUES ($1, $2, 0, $3, 'initial', 'running')
-            "#,
-        )
-        .bind(&run_id)
-        .bind(execution_id)
-        .bind(serde_json::json!({}))
-        .execute(&pool)
-        .await
-        .expect("insert run failed");
 
         // Insert a step row in Dead status (as if it timed out).
         let step_task_id = format!("{run_id}:step:slow-step");
@@ -1691,7 +1679,7 @@ mod integration {
 
         // The step should now be in 'scheduled' status (ready for worker pickup).
         let step_status: Option<String> = sqlx::query_scalar(
-            r#"SELECT status FROM zart_steps WHERE step_name = $1 AND run_id = $2"#,
+            r#"SELECT status::text FROM zart_steps WHERE step_name = $1 AND run_id = $2"#,
         )
         .bind("slow-step")
         .bind(&run_id)
