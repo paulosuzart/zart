@@ -8,9 +8,13 @@ use syn::{GenericArgument, Ident, Lifetime, PathArguments, Result as SynResult, 
 
 /// Parse a human-readable duration string into seconds.
 ///
-/// Accepted formats: `"5m"`, `"10s"`, `"2h"`, `"48h"`.
+/// Accepted formats: `"3d"`, `"48h"`, `"5m"`, `"10s"`.
 pub fn parse_duration_str(s: &str, span: Span) -> SynResult<u64> {
-    if let Some(h) = s.strip_suffix('h') {
+    if let Some(d) = s.strip_suffix('d') {
+        d.parse::<u64>()
+            .map(|n| n * 86400)
+            .map_err(|_| syn::Error::new(span, format!("invalid days in duration '{s}'")))
+    } else if let Some(h) = s.strip_suffix('h') {
         h.parse::<u64>()
             .map(|n| n * 3600)
             .map_err(|_| syn::Error::new(span, format!("invalid hours in duration '{s}'")))
@@ -24,7 +28,7 @@ pub fn parse_duration_str(s: &str, span: Span) -> SynResult<u64> {
     } else {
         Err(syn::Error::new(
             span,
-            format!("duration must end with 'h', 'm', or 's' — got '{s}'"),
+            format!("duration must end with 'd', 'h', 'm', or 's' — got '{s}'"),
         ))
     }
 }
@@ -266,6 +270,12 @@ mod tests {
     fn parse_duration_hours() {
         let secs = parse_duration_str("2h", Span::call_site()).unwrap();
         assert_eq!(secs, 7200);
+    }
+
+    #[test]
+    fn parse_duration_days() {
+        let secs = parse_duration_str("3d", Span::call_site()).unwrap();
+        assert_eq!(secs, 259200);
     }
 
     #[test]

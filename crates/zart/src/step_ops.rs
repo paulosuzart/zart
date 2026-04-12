@@ -20,6 +20,9 @@ pub struct StepTaskSpec<'a> {
     pub step_name: &'a str,
     pub data: serde_json::Value,
     pub retry_config: Option<&'a crate::retry::RetryConfig>,
+    /// Deadline for this step (used when timeout_scope == Global).
+    /// When set, written to task metadata as an RFC3339 timestamp.
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Parameters for [`complete_step_and_schedule_body`].
@@ -68,6 +71,9 @@ pub async fn schedule_step_task(
     });
     if let Some(rc) = spec.retry_config {
         metadata["retry_config"] = serde_json::to_value(rc).unwrap_or(serde_json::Value::Null);
+    }
+    if let Some(deadline) = spec.deadline {
+        metadata["deadline"] = serde_json::Value::String(deadline.to_rfc3339());
     }
     let retry_config_json = spec
         .retry_config

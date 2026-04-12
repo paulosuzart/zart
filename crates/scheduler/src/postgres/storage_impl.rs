@@ -1437,7 +1437,11 @@ impl DurableStorage for PostgresScheduler {
             });
         }
 
-        // 2. Extract metadata from the old task for reuse.
+        // 2. Extract metadata from the old task for reuse, but clear the
+        //    step-level deadline. An admin retry gives the step a fresh chance,
+        //    so the original deadline (which has already passed) must not be
+        //    carried forward. The worker will apply a raw timeout duration
+        //    when the step is executed.
         let task_metadata: serde_json::Value = if old_task_id.is_empty() {
             serde_json::json!({})
         } else {
@@ -1450,7 +1454,13 @@ impl DurableStorage for PostgresScheduler {
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
-            meta_opt.flatten().unwrap_or_else(|| serde_json::json!({}))
+            let mut meta = meta_opt.flatten().unwrap_or_else(|| serde_json::json!({}));
+            // Clear the persisted deadline — the admin retry deserves a fresh
+            // timeout, not a deadline that already expired.
+            if let Some(obj) = meta.as_object_mut() {
+                obj.remove("deadline");
+            }
+            meta
         };
 
         // 3. Create a new task for the retry.

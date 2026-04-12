@@ -43,20 +43,48 @@ You trigger executions from anywhere — a web handler, a CLI command, a backgro
 
 ## How to Wait for Results
 
-### `wait` — block until completion
+### `wait_completion<T>` — block and deserialize
+
+The simplest way to wait for a result. Blocks until the execution finishes, then deserializes the output to `T`.
 
 ```rust
-let record = durable
-    .wait("signup-user-42", Duration::from_secs(60), None)
+let output: OnboardingOutput = durable
+    .wait_completion("signup-user-42", Duration::from_secs(60), None)
     .await?;
 
-if record.status == ExecutionStatus::Completed {
-    let output: OnboardingOutput = serde_json::from_value(record.result.unwrap())?;
-    println!("Done: {:?}", output);
-}
+println!("Done: {:?}", output);
 ```
 
-The second parameter is a timeout — if the execution doesn't finish in time, `wait` returns an error. The third parameter (`poll_interval`) controls how often the status is checked; pass `None` for the default.
+If the execution doesn't finish within the timeout, `wait_completion` returns `WaitTimedOut`. Deserialization errors are surfaced as `SchedulerError::Deserialization`.
+
+### `start_and_wait_for<H>` — start and wait in one call
+
+For the common case where you start an execution and immediately wait, use `start_and_wait_for`. It infers input and output types from the handler type:
+
+```rust
+let output: OnboardingOutput = durable
+    .start_and_wait_for::<OnboardingTask>(
+        "signup-user-42",
+        &OnboardingData { email: "alice@example.com".into() },
+        Duration::from_secs(60),
+    )
+    .await?;
+```
+
+### `start_and_wait<I, O>` — start and wait with explicit types
+
+When you don't have a handler type in scope (dynamic task names, ad-hoc scenarios):
+
+```rust
+let output: OnboardingOutput = durable
+    .start_and_wait::<OnboardingData, OnboardingOutput>(
+        "signup-user-42",
+        "onboarding",
+        &OnboardingData { email: "alice@example.com".into() },
+        Duration::from_secs(60),
+    )
+    .await?;
+```
 
 ### `status` — check without blocking
 
@@ -104,14 +132,16 @@ The execution ID is your idempotency key. If the same user signs up twice due to
 ```rust
 match durable.start_typed(&exec_id, "onboarding", &input).await {
     Ok(_) => println!("New execution started"),
-    Err(SchedulerError::ExecutionAlreadyExists(_)) => {
+    Err(SchedulerError::ExecutionAlreadyExists(_, _)) => {
         println!("Already running, waiting on existing…");
     }
     Err(e) => return Err(e.into()),
 }
 
-// In all cases, wait on the execution
-let record = durable.wait(&exec_id, Duration::from_secs(60), None).await?;
+// In all cases, wait on the execution and get typed output
+let output: OnboardingOutput = durable
+    .wait_completion(&exec_id, Duration::from_secs(60), None)
+    .await?;
 ```
 
 ## Next Steps

@@ -368,6 +368,83 @@ async fn dispatch_task(
         .unwrap_or(&execution_id)
         .to_string();
 
+    // Parse step deadline from task metadata (set when timeout_scope == Global).
+    let step_deadline = task
+        .metadata
+        .get("deadline")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+
+    // Compute execution deadline from handler timeout + execution scheduled_at.
+    let execution_deadline = if has_execution {
+        if let Some(timeout_dur) = handler.timeout() {
+            match scheduler.get_execution(&execution_id).await {
+                Ok(Some(exec)) => Some(
+                    exec.scheduled_at
+                        + chrono::Duration::from_std(timeout_dur)
+                            .unwrap_or(chrono::Duration::zero()),
+                ),
+                Ok(None) | Err(_) => {
+                    // Execution not found or DB error — proceed without execution deadline.
+                    warn!("Could not load execution {execution_id} for deadline check");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Check if execution deadline has already passed.
+    if let Some(deadline) = execution_deadline
+        && chrono::Utc::now() >= deadline
+    {
+        info!(
+            execution_id = %execution_id,
+            "Execution deadline exceeded before dispatch — invoking on_failure"
+        );
+        let failure = ExecutionFailure::ExecutionDeadlineExceeded;
+        match handler.on_failure(task.data.clone(), failure).await {
+            Ok(output) => {
+                info!(
+                    "on_failure recovered from execution deadline — completing with synthetic result"
+                );
+                if let Err(e) = scheduler
+                    .mark_completed(&task.task_id, Some(output.clone()), &task.lock_token)
+                    .await
+                {
+                    error!(error = %e, "Failed to mark task completed after deadline on_failure recovery");
+                }
+                let _ = scheduler
+                    .complete_execution(&execution_id, output)
+                    .await
+                    .map_err(|e| error!(error = %e, "Failed to complete execution record"));
+            }
+            Err(recovery_err) => {
+                error!(error = %recovery_err, "on_failure did not recover execution deadline");
+                if let Err(e) = scheduler
+                    .mark_failed(
+                        &task.task_id,
+                        "execution deadline exceeded",
+                        None,
+                        &task.lock_token,
+                    )
+                    .await
+                {
+                    error!(error = %e, "Failed to mark task failed after deadline exceeded");
+                }
+                let _ = scheduler
+                    .fail_execution(&execution_id)
+                    .await
+                    .map_err(|e| error!(error = %e, "Failed to fail execution record"));
+            }
+        }
+        return;
+    }
+
     let ctx = Arc::new(
         TaskContext::new(
             scheduler.clone(),
@@ -378,7 +455,9 @@ async fn dispatch_task(
         )
         .with_task_id(task.task_id.clone())
         .with_run_id(run_id.clone())
-        .with_execution_mode(exec_mode.clone()),
+        .with_execution_mode(exec_mode.clone())
+        .with_step_deadline(step_deadline)
+        .with_execution_deadline(execution_deadline),
     );
     let ctx_cleanup = Arc::clone(&ctx);
 

@@ -26,8 +26,11 @@ pub trait ZartStep {
     /// Optional retry configuration. Default: None (no retries).
     fn retry_config(&self) -> Option<RetryConfig> { None }
 
-    /// Optional wall-clock timeout. Default: None.
+    /// Optional wall-clock timeout (deadline). Default: None.
     fn timeout(&self) -> Option<Duration> { None }
+
+    /// Timeout scope: `Global` (default) or `PerAttempt`. Default: Global.
+    fn timeout_scope(&self) -> TimeoutScope { TimeoutScope::Global }
 
     /// Override the step identity at the call site.
     fn named(self, id: impl Into<String>) -> NamedStep<Self> where Self: Sized;
@@ -168,11 +171,30 @@ Override `timeout()` to enforce a wall-clock deadline:
 
 ```rust
 fn timeout(&self) -> Option<Duration> {
-    Some(Duration::from_secs(30)) // 30-second timeout
+    Some(Duration::from_secs(300)) // 5-minute deadline
 }
 ```
 
-If the step does not complete within the timeout, it returns `StepError::Timeout`. You can combine retry and timeout — each individual attempt gets the timeout deadline.
+By default, the timeout uses **global scope** — the deadline is calculated from the first attempt, and all retries share the same window. Override `timeout_scope()` to change this:
+
+```rust
+fn timeout(&self) -> Option<Duration> {
+    Some(Duration::from_secs(30))
+}
+
+fn timeout_scope(&self) -> TimeoutScope {
+    TimeoutScope::PerAttempt // each retry gets a fresh 30-second countdown
+}
+```
+
+| Scope | Behavior |
+|---|---|
+| `Global` (default) | Deadline = `first_attempt + duration`. All retries must fit within this window. The deadline is persisted in task metadata and survives restarts. |
+| `PerAttempt` | Each retry attempt gets a fresh countdown. No deadline is persisted. |
+
+**Timeout is always terminal** — it never triggers a retry. Retry is reserved for business errors only.
+
+See [Timeouts and Deadlines](/concepts/timeouts/) for a full conceptual walkthrough.
 
 ## Loops and Repeated Calls
 

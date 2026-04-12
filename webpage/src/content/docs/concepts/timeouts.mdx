@@ -1,18 +1,24 @@
 ---
-title: Timeouts and Cancellation
-description: Execution deadlines, event wait timeouts, and how to cancel a running workflow.
+title: Timeouts and Deadlines
+description: Deadline-based timeouts for steps and executions, timeout scopes, and how they interact with retries.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-## Execution Timeouts
+## Core Concept: Deadlines, Not Durations
 
-Set a top-level deadline on your durable handler with the `timeout` attribute. If the execution doesn't complete within this time, it fails with `ExecutionDeadlineExceeded`.
+A timeout is a **deadline**. When you say `timeout = "5m"`, you're saying "this must finish by `first_attempt_time + 5m`."
+
+The framework records the deadline when a step or execution is first scheduled. On every subsequent attempt — retry, worker restart, or reschedule — the framework checks `now() >= deadline` rather than starting a fresh countdown. The deadline is **persisted** in the task's metadata so it survives across worker restarts and retries.
+
+## Execution-Level Timeouts
+
+Set a top-level deadline on your durable handler with the `timeout` attribute. The deadline is computed as `scheduled_at + timeout_duration` when the execution is first started.
 
 ```rust
 #[zart_durable("order-fulfillment", timeout = "30m")]
 async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
-    // Must complete within 30 minutes or the execution fails.
+    // Must complete within 30 minutes of when the execution was first scheduled.
     validate_address(&data.order_id).await?;
     process_payment(&data.order_id).await?;
     ship_order(&data.order_id).await?;
@@ -20,7 +26,9 @@ async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
 }
 ```
 
-Duration strings support:
+If the execution deadline is exceeded, the worker invokes your `on_failure` handler (if defined) before marking the execution as failed. This gives you a chance to compensate — refund a payment, notify the user, etc.
+
+Duration strings support the following units:
 
 | Format | Example | Meaning |
 |---|---|---|
@@ -42,9 +50,78 @@ async fn approval_workflow(req: ApprovalRequest) -> Result<ApprovalOutput, TaskE
 }
 ```
 
+## Step-Level Timeouts and Timeout Scope
+
+Individual steps can have their own timeouts via the `#[zart_step]` attribute:
+
+```rust
+#[zart_step("call-external-api", timeout = "5m", retry = "fixed(3, 1s)")]
+async fn call_external_api() -> Result<Response, StepError> {
+    // ...
+}
+```
+
+### Timeout Scope: `global` (default) vs `per_attempt`
+
+The `timeout_scope` attribute controls how the timeout behaves across retries:
+
+| Scope | Behavior | Example |
+|---|---|---|
+| `global` (default) | Deadline is calculated from the **first attempt**. All retries share the same window. | `timeout = "5m"` → 5 minutes total from the first attempt |
+| `per_attempt` | Each retry attempt gets a **fresh countdown**. No deadline is persisted. | `timeout = "30s", timeout_scope = "per_attempt"` → each attempt gets 30 seconds |
+
+```rust
+// Global scope (default): 5 minutes total across all retries
+#[zart_step("call-api", timeout = "5m", retry = "fixed(3, 1s)")]
+async fn call_api() -> Result<Response, StepError> {
+    // First attempt at 10:21:30 → deadline = 10:26:30
+    // If attempt 1 fails at 10:22:00 and retries, attempt 2 has ~4m29s remaining
+    client.get("https://api.example.com").send().await
+}
+
+// Per-attempt scope: each attempt gets a fresh 30 seconds
+#[zart_step("call-api", timeout = "30s", timeout_scope = "per_attempt", retry = "fixed(3, 1s)")]
+async fn call_api_per_attempt() -> Result<Response, StepError> {
+    // Each of the 3 attempts gets its own 30-second countdown
+    client.get("https://api.example.com").send().await
+}
+```
+
+### Timeout Is Always Terminal
+
+**Important**: When a step times out — whether under `global` or `per_attempt` scope — it is **terminal**. The retry policy is **never** consulted for a timeout. Timeout means the step already broke a policy; retry is reserved for business errors only.
+
+| Scenario | Retries remain? | Behavior |
+|---|---|---|
+| Step times out | — | Terminal `TimedOut`. Body resumes with `StepOutcome::ZartErr(TimedOut)`. |
+| Business error | Yes | Retry. Under `global` scope, the retry carries the deadline forward. |
+| Business error | No | Terminal `RetryExhausted`. Body resumes. |
+
+If a retry is scheduled under `global` scope but the deadline has already passed when the worker picks it up, the step immediately completes with `TimedOut` — the lambda is never executed.
+
+## Timeout + Execution Deadline Hierarchy
+
+The execution-level timeout is the ultimate ceiling. Even if individual steps have generous timeouts or no timeouts at all, the entire execution fails when the execution deadline is exceeded.
+
+```
+Execution timeout (30m)
+├── Step A (timeout: 5m, scope: global, retry: fixed(3, 1s))
+│   └── All retries must complete within 5m of the first attempt
+├── Step B (timeout: 30s, scope: per_attempt, retry: fixed(3, 1s))
+│   └── Each attempt gets 30s, but capped by the 30m execution deadline
+├── Step C (no timeout)
+│   └── Still bounded by the 30m execution deadline
+├── zart::sleep("wait", 1h)
+│   └── Sleep duration is independent, but execution deadline still applies
+└── zart::wait_for_event("signal", Some(7d))
+    └── Event-wait deadline is independent of step/execution deadlines
+```
+
+When a step runs under `global` scope, its effective timeout is capped by whichever deadline is sooner: the step's own deadline or the execution's deadline.
+
 ## Event Wait Timeouts
 
-`zart::wait_for_event` accepts an optional `Duration`. If no event arrives before the timeout, the wait fails.
+`zart::wait_for_event` accepts an optional `Duration`. If no event arrives before the timeout, the wait fails with `DeadlineExceeded`.
 
 ```rust
 // Wait up to 7 days for approval
@@ -60,7 +137,9 @@ Pass `None` to wait indefinitely (until cancelled or the execution-level timeout
 let event: ShipmentEvent = zart::wait_for_event("shipment-ready", None).await?;
 ```
 
-The event wait timeout is independent of the execution-level timeout. If the event wait times out, the execution fails with a `StepError` that propagates to the top (or to `on_failure`).
+<Aside type="tip">
+Event-wait deadlines are **independent** of step and execution deadlines. The event-wait timeout governs only the event itself. However, if the execution-level deadline is exceeded, the entire execution fails regardless of the event's own timeout.
+</Aside>
 
 ## Cancelling an Execution
 
@@ -75,40 +154,16 @@ let cancelled = durable.cancel("signup-user-42").await?;
 - If the execution is durably sleeping or waiting for an event, it is cancelled immediately.
 - The status becomes `Cancelled`.
 
-## Step-Level Timeouts
+## Admin Operations and Deadlines
 
-Individual steps can have their own timeouts via the `#[zart_step]` attribute:
+When an administrator retries a failed/timed-out step via `retry_step`, the framework **clears the persisted deadline** from the step's task metadata before creating the new task.
 
-```rust
-#[zart_step("call-external-api", timeout = "2m")]
-async fn call_external_api() -> Result<Response, StepError> {
-    // Must return within 2 minutes or the step times out.
-}
-```
+This means:
+- The retried step gets a **fresh timeout budget** — it is not bound by the original deadline that already expired.
+- If the step has a configured timeout, the timeout is applied as a **raw duration** (same behavior as `PerAttempt` scope) rather than a remaining-time calculation.
+- This is intentional: an admin retry is an explicit operator decision that the step deserves another chance. Carrying forward an already-expired deadline would cause the retry to silently time out immediately.
 
-If a step exceeds its timeout, it fails with `StepError::Timeout`. Combined with retries, a step will retry up to its `max_attempts`, and each attempt is individually bounded by the timeout.
-
-```rust
-#[zart_step("flaky-api", retry = "fixed(3, 1s)", timeout = "30s")]
-async fn call_flaky_api() -> Result<Response, StepError> {
-    // Each of the 3 attempts has a 30-second deadline.
-}
-```
-
-## Timeout Hierarchy
-
-```
-Execution timeout (30m)
-├── Step A (timeout: 2m, retry: fixed(3, 1s))
-│   └── Each attempt: max 2 minutes
-├── Step B (no timeout)
-├── zart::sleep("wait", 1h)
-│   └── Does not count toward step timeouts
-└── zart::wait_for_event("signal", Some(7d))
-    └── Bounded by both the event timeout AND the execution timeout
-```
-
-The execution-level timeout is the ultimate ceiling. Even if individual steps have no timeouts, the entire execution fails when the deadline is exceeded.
+**Note**: `restart` and `rerun_steps` start entirely new runs. Steps are re-scheduled through the normal path, which computes fresh deadlines from `now() + timeout_duration`. Pause/resume also naturally gets fresh deadlines since the body replays and re-schedules steps.
 
 ## Next Steps
 

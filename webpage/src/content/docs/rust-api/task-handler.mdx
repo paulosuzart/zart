@@ -20,7 +20,7 @@ pub trait DurableExecution: Send + Sync {
     /// Retry the full execution this many times on task-level failure. Default: 0.
     fn max_retries(&self) -> usize { 0 }
 
-    /// Wall-clock timeout for the entire execution. Default: None.
+    /// Wall-clock timeout for the entire execution. Default: None (no deadline).
     fn timeout(&self) -> Option<Duration> { None }
 }
 ```
@@ -28,6 +28,10 @@ pub trait DurableExecution: Send + Sync {
 Both `Data` and `Output` must implement `serde` traits — Zart serializes them to the database.
 
 The `run` method receives the deserialized payload. All workflow operations are available as free functions under `zart::` — there is no context object to thread through your code.
+
+### Execution Timeout
+
+When `timeout()` returns `Some(duration)`, the framework computes a deadline as `scheduled_at + duration` when the execution is first started. The worker checks this deadline before dispatching each task. If the deadline has passed, the worker invokes `on_failure(ExecutionDeadlineExceeded)` instead of executing the task.
 
 ## TaskRegistry
 

@@ -70,17 +70,24 @@ enum PaymentError {
     CardDeclined { reason: String },
 }
 
-// ── Step 1: Validate and charge ───────────────────────────────────────────────
+// ── Step 1: Validate address ──────────────────────────────────────────────────
+
+#[zart_step("validate-address")]
+async fn validate_address(order_id: String) -> Result<String, PaymentError> {
+    // ... call address validation service ...
+    Ok(format!("addr-{order_id}"))
+}
+
+// ── Step 2: Process payment ───────────────────────────────────────────────────
 // Retries up to 3 times with exponential backoff on transient failures.
 
 #[zart_step("process-payment", retry = "exponential(3, 2s)")]
 async fn process_payment(order_id: String, amount: f64) -> Result<String, PaymentError> {
-    println!("Charging order {} (attempt {})", order_id, zart::context().current_attempt + 1);
     // ... call payment service ...
     Ok(format!("txn-{order_id}"))
 }
 
-// ── Step 2: Reserve inventory ─────────────────────────────────────────────────
+// ── Step 3: Reserve inventory ─────────────────────────────────────────────────
 
 #[zart_step("reserve-inventory")]
 async fn reserve_inventory(order_id: String) -> Result<(), PaymentError> {
@@ -92,6 +99,7 @@ async fn reserve_inventory(order_id: String) -> Result<(), PaymentError> {
 
 #[zart_durable("order-fulfillment", timeout = "30m")]
 async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
+    validate_address(data.order_id.clone()).await?;
     let txn_id = process_payment(data.order_id.clone(), data.amount).await?;
     reserve_inventory(data.order_id.clone()).await?;
 

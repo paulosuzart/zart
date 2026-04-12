@@ -22,11 +22,14 @@ use crate::utils::{
 /// - `#[zart_step("step-name", retry = "fixed(3, 1s)")]`
 /// - `#[zart_step("step-name", retry = "exponential(3, 1s)")]`
 /// - `#[zart_step("step-name", timeout = "5m")]`
+/// - `#[zart_step("step-name", timeout = "5m", timeout_scope = "global")]`
+/// - `#[zart_step("step-name", timeout = "30s", timeout_scope = "per_attempt")]`
 /// - `#[zart_step("step-name", retry = "...", timeout = "...")]`
 pub struct StepAttr {
     pub step_name: String,
     pub retry_config: Option<RetryAttr>,
     pub timeout_secs: Option<u64>,
+    pub timeout_scope: Option<String>,
 }
 
 /// Parsed retry attribute.
@@ -40,6 +43,7 @@ impl Parse for StepAttr {
         let step_name: syn::LitStr = input.parse()?;
         let mut retry_config = None;
         let mut timeout_secs = None;
+        let mut timeout_scope = None;
 
         while input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
@@ -54,10 +58,15 @@ impl Parse for StepAttr {
                 "timeout" => {
                     timeout_secs = Some(parse_duration_str(&value.value(), value.span())?);
                 }
+                "timeout_scope" => {
+                    timeout_scope = Some(value.value());
+                }
                 _ => {
                     return Err(syn::Error::new(
                         key.span(),
-                        format!("unknown attribute key '{key}'; expected 'retry' or 'timeout'"),
+                        format!(
+                            "unknown attribute key '{key}'; expected 'retry', 'timeout', or 'timeout_scope'"
+                        ),
                     ));
                 }
             }
@@ -67,6 +76,7 @@ impl Parse for StepAttr {
             step_name: step_name.value(),
             retry_config,
             timeout_secs,
+            timeout_scope,
         })
     }
 }
@@ -191,6 +201,29 @@ fn generate_zart_step_impl(
         quote! {} // Uses trait default (None)
     };
 
+    // Generate timeout_scope method
+    let timeout_scope_method = if let Some(scope_str) = &args.timeout_scope {
+        let scope_ident = match scope_str.as_str() {
+            "global" => quote! { ::zart::timeout::TimeoutScope::Global },
+            "per_attempt" => quote! { ::zart::timeout::TimeoutScope::PerAttempt },
+            _ => {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "invalid timeout_scope '{scope_str}'; expected 'global' or 'per_attempt'"
+                    ),
+                ));
+            }
+        };
+        quote! {
+            fn timeout_scope(&self) -> ::zart::timeout::TimeoutScope {
+                #scope_ident
+            }
+        }
+    } else {
+        quote! {} // Uses trait default (Global)
+    };
+
     // Extract the Output type and Error type from Result<T, E>
     let output_type = extract_ok_type(output)?;
     let error_type = extract_error_type(output)?;
@@ -216,6 +249,7 @@ fn generate_zart_step_impl(
 
             #retry_config_method
             #timeout_method
+            #timeout_scope_method
 
             async fn run(&self) -> ::std::result::Result<Self::Output, Self::Error> {
                 #run_body
@@ -281,7 +315,8 @@ fn generate_retry_config_expr(retry_attr: &RetryAttr) -> SynResult<TokenStream2>
 /// |---|---|---|
 /// | `"step-name"` | Yes | The name used for step tracking in the database. Supports `{field}` template for dynamic names. |
 /// | `retry = "..."` | No | Retry configuration. Supports `fixed(n, duration)` and `exponential(n, duration)`. |
-/// | `timeout = "..."` | No | Step timeout. Supports duration strings like `"5m"`, `"30s"`, `"2h"`. |
+/// | `timeout = "..."` | No | Step timeout. Supports duration strings like `"5m"`, `"30s"`, `"2h"`, `"3d"`. |
+/// | `timeout_scope = "..."` | No | Timeout scope: `"global"` (default, deadline shared across retries) or `"per_attempt"` (fresh countdown each attempt). |
 pub(crate) fn expand_zart_step(args: StepAttr, func: syn::ItemFn) -> SynResult<TokenStream2> {
     let fn_name = &func.sig.ident;
     let vis = &func.vis;

@@ -1,6 +1,7 @@
 //! ZartStep trait and NamedStep wrapper.
 
 use crate::retry::RetryConfig;
+use crate::timeout::TimeoutScope;
 use std::borrow::Cow;
 
 // ── ZartStep trait (raw step definition without macros) ────────────────────────
@@ -74,6 +75,15 @@ pub trait ZartStep {
         None
     }
 
+    /// The scope of this step's timeout.
+    ///
+    /// - `TimeoutScope::Global` (default): the timeout is a deadline calculated from the
+    ///   first attempt. All retries must complete within this window.
+    /// - `TimeoutScope::PerAttempt`: each retry attempt gets a fresh countdown.
+    fn timeout_scope(&self) -> TimeoutScope {
+        TimeoutScope::Global
+    }
+
     /// Execute the step logic.
     ///
     /// Step context is accessed via `zart::context()` from within the step body.
@@ -119,6 +129,10 @@ where
 
     fn timeout(&self) -> Option<std::time::Duration> {
         self.inner.timeout()
+    }
+
+    fn timeout_scope(&self) -> TimeoutScope {
+        self.inner.timeout_scope()
     }
 
     async fn run(&self) -> Result<Self::Output, Self::Error> {

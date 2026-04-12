@@ -83,6 +83,13 @@ impl BodyBehavior for LookupOrSchedule {
                         .inc()
                 );
 
+                // Compute deadline from timeout for Global scope.
+                // The caller (execute_step) sets req.timeout only when scope == Global.
+                let deadline = req.timeout.map(|d| {
+                    chrono::Utc::now()
+                        + chrono::Duration::from_std(d).unwrap_or(chrono::Duration::zero())
+                });
+
                 let task_id = format!("{}:step:{}", ctx.run_id(), step_name);
                 step_ops::schedule_step_task(
                     &*ctx.scheduler,
@@ -93,6 +100,7 @@ impl BodyBehavior for LookupOrSchedule {
                         step_name,
                         data: ctx.data().clone(),
                         retry_config: req.retry_config,
+                        deadline,
                     },
                 )
                 .await

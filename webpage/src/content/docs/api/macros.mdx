@@ -112,6 +112,8 @@ Transforms an `async fn` into a type that implements `ZartStep`. The generated c
 #[zart_step("step-name", retry = "fixed(3, 1s)")]
 #[zart_step("step-name", retry = "exponential(3, 1s)")]
 #[zart_step("step-name", timeout = "5m")]
+#[zart_step("step-name", timeout = "5m", timeout_scope = "global")]
+#[zart_step("step-name", timeout = "30s", timeout_scope = "per_attempt")]
 #[zart_step("step-name", retry = "...", timeout = "...")]
 ```
 
@@ -121,7 +123,19 @@ Transforms an `async fn` into a type that implements `ZartStep`. The generated c
 |---|---|---|
 | `"step-name"` | Yes | Stable, unique name within the execution. |
 | `retry` | No | Retry policy: `fixed(n, delay)` or `exponential(n, delay)`. |
-| `timeout` | No | Step-level deadline. Duration string: `30s`, `5m`, `2h`. |
+| `timeout` | No | Step-level deadline. Duration string: `30s`, `5m`, `2h`, `3d`. See [Timeout Scope](#timeout-scope) below. |
+| `timeout_scope` | No | How the timeout applies across retries: `global` (default) or `per_attempt`. |
+
+### Timeout Scope
+
+The `timeout_scope` attribute controls whether a step's timeout is a **global deadline** (shared across all retry attempts) or a **per-attempt countdown** (fresh countdown on each attempt):
+
+| Value | Behavior |
+|---|---|
+| `global` (default) | Deadline = `first_attempt + duration`. All retries share the same window. If the deadline has passed when a retry is picked up, the step immediately completes with `TimedOut`. |
+| `per_attempt` | Each retry attempt gets a fresh countdown. No deadline is persisted. |
+
+See [Timeouts and Deadlines](/concepts/timeouts/) for a full conceptual walkthrough.
 
 ### Retry Syntax
 
@@ -130,7 +144,7 @@ Transforms an `async fn` into a type that implements `ZartStep`. The generated c
 | `fixed(3, 1s)` | 3 retries, 1-second fixed delay between each |
 | `exponential(5, 2s)` | 5 retries, exponential backoff starting at 2 seconds |
 
-Duration units: `s` (seconds), `m` (minutes), `h` (hours).
+Duration units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
 
 ### Function Signature
 
@@ -173,12 +187,17 @@ async fn call_service() -> Result<String, StepError> {
     external_client.call().await
 }
 
-// With both
-#[zart_step("flaky-api", retry = "fixed(3, 1s)", timeout = "30s")]
+// With both — global scope (default): 5 minutes total across all retries
+#[zart_step("flaky-api", retry = "fixed(3, 1s)", timeout = "5m")]
 async fn flaky_call() -> Result<Response, StepError> {
     client.get("https://unreliable.example.com").send().await
 }
-// Each of the 3 attempts has a 30-second deadline.
+
+// Per-attempt scope: each attempt gets a fresh 30 seconds
+#[zart_step("call-service", timeout = "30s", timeout_scope = "per_attempt", retry = "fixed(3, 1s)")]
+async fn call_service_per_attempt() -> Result<String, StepError> {
+    external_client.call().await
+}
 ```
 
 ## What the Macros Generate
@@ -194,7 +213,7 @@ async fn flaky_call() -> Result<Response, StepError> {
 - A struct named from your function (e.g., `SendEmail` for `send_email`) with fields for each argument.
 - `impl ZartStep` with `step_name()` returning the specified name.
 - `impl IntoFuture` so you call the function directly: `send_email("a@b.com").await?`.
-- `retry_config()` and `timeout()` if the respective attributes are present.
+- `retry_config()`, `timeout()`, and `timeout_scope()` if the respective attributes are present.
 
 ## Next Steps
 

@@ -48,6 +48,7 @@ pub mod registry;
 pub mod retry;
 pub mod step_ops;
 pub mod step_types;
+pub mod timeout;
 pub mod worker;
 
 #[cfg(test)]
@@ -70,6 +71,7 @@ pub use error::{
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
+pub use timeout::TimeoutScope;
 pub use worker::{Worker, WorkerConfig};
 
 // Re-export proc macros from zart-macros

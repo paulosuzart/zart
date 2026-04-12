@@ -6,9 +6,9 @@
 
 use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
-
 use crate::retry::RetryConfig;
 use crate::step_types::{StepDefId, StepRequest, StepResult};
+use crate::timeout::TimeoutScope;
 use scheduler::{StepResultKind, StorageBackend};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -46,6 +46,12 @@ pub struct TaskContext {
     /// How this task should behave when executing steps.
     /// `Body`/`Step` use per-row tasks.
     pub(crate) execution_mode: ExecutionMode,
+    /// The deadline for this step task (parsed from task metadata).
+    /// Set when timeout_scope == Global. Absent for PerAttempt or no timeout.
+    pub(crate) step_deadline: Option<chrono::DateTime<chrono::Utc>>,
+    /// The deadline for the enclosing execution (parsed from task metadata or execution row).
+    /// Set when the durable handler has a timeout. Used to cap step timeouts.
+    pub(crate) execution_deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl TaskContext {
@@ -71,6 +77,8 @@ impl TaskContext {
             lock_token: lock_token.into(),
             data,
             execution_mode: ExecutionMode::Body,
+            step_deadline: None,
+            execution_deadline: None,
         }
     }
 
@@ -92,6 +100,21 @@ impl TaskContext {
     /// so that step rows are inserted with the correct FK into `zart_execution_runs`.
     pub fn with_run_id(mut self, run_id: impl Into<String>) -> Self {
         self.run_id = run_id.into();
+        self
+    }
+
+    /// Set the step deadline (parsed from task metadata).
+    pub fn with_step_deadline(mut self, deadline: Option<chrono::DateTime<chrono::Utc>>) -> Self {
+        self.step_deadline = deadline;
+        self
+    }
+
+    /// Set the execution deadline (parsed from task metadata or execution row).
+    pub fn with_execution_deadline(
+        mut self,
+        deadline: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        self.execution_deadline = deadline;
         self
     }
 
@@ -141,7 +164,7 @@ impl TaskContext {
                 let result = crate::step_types::dispatch::step_internal(
                     StepDefId::Step,
                     self,
-                    StepRequest::new_step(step_name, _retry_config.as_ref()),
+                    StepRequest::new_step(step_name, _retry_config.as_ref(), None),
                     None,
                 )
                 .await;
@@ -180,7 +203,7 @@ impl TaskContext {
                     crate::step_types::dispatch::step_internal(
                         StepDefId::Step,
                         self,
-                        StepRequest::new_step(step_name, None),
+                        StepRequest::new_step(step_name, None, None),
                         None,
                     )
                     .await
@@ -230,6 +253,9 @@ impl TaskContext {
             _ => step.retry_config(),
         };
 
+        // Capture timeout_scope before the closure moves `step`.
+        let timeout_scope = step.timeout_scope();
+
         // Set the span field
         tracing::Span::current().record("step_name", step_name.as_ref());
 
@@ -264,9 +290,14 @@ impl TaskContext {
         match &self.execution_mode {
             ExecutionMode::Body => {
                 // Body mode: look up via body behavior, deserialize based on ResultKind.
+                // For Global scope, pass the timeout so body behavior computes a deadline.
+                // For PerAttempt scope, timeout is applied at execution time (no deadline in metadata).
+                let timeout_for_request =
+                    timeout_duration.filter(|_| matches!(timeout_scope, TimeoutScope::Global));
                 let req = crate::step_types::StepRequest::new_step(
                     &step_name_owned,
                     retry_config.as_ref(),
+                    timeout_for_request,
                 );
                 let (json, kind) = StepDefId::Step.body_behavior().handle(self, &req).await?;
 
@@ -315,7 +346,8 @@ impl TaskContext {
 
                 if step_name.as_ref() != target {
                     // Non-target step: just look it up (should be completed).
-                    let req = crate::step_types::StepRequest::new_step(&step_name_owned, None);
+                    let req =
+                        crate::step_types::StepRequest::new_step(&step_name_owned, None, None);
                     let (json, _kind) = StepDefId::Step.body_behavior().handle(self, &req).await?;
                     // Non-target steps in step mode should always be Ok.
                     let v = serde_json::from_value(json).map_err(|e| StepError::Failed {
@@ -326,15 +358,95 @@ impl TaskContext {
                 }
 
                 // Target step: run the lambda and handle completion.
+                // Compute effective timeout based on scope and deadlines.
+                let effective_timeout =
+                    |ctx: &TaskContext, timeout_dur: std::time::Duration, scope: TimeoutScope| {
+                        match scope {
+                            TimeoutScope::Global => {
+                                // Use the stored step deadline to compute remaining time.
+                                if let Some(deadline) = ctx.step_deadline {
+                                    let now = chrono::Utc::now();
+                                    if now >= deadline {
+                                        return None; // Already past deadline — no lambda execution.
+                                    }
+                                    let remaining = deadline - now;
+                                    // Cap by execution deadline if present.
+                                    let capped = if let Some(exec_deadline) = ctx.execution_deadline
+                                    {
+                                        if exec_deadline < deadline {
+                                            (exec_deadline - now).to_std().ok()
+                                        } else {
+                                            remaining.to_std().ok()
+                                        }
+                                    } else {
+                                        remaining.to_std().ok()
+                                    };
+                                    capped.filter(|d| !d.is_zero())
+                                } else {
+                                    // No deadline stored — fall back to raw duration (backward compat).
+                                    Some(timeout_dur)
+                                }
+                            }
+                            TimeoutScope::PerAttempt => {
+                                // Each attempt gets a fresh countdown.
+                                Some(timeout_dur)
+                            }
+                        }
+                    };
+
                 let (json, kind) = if let Some(timeout_dur) = timeout_duration {
-                    match tokio::time::timeout(timeout_dur, run_with_serialization()).await {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            let dummy = serde_json::Value::String(format!(
-                                "step timed out after {:?}",
-                                timeout_dur
-                            ));
-                            (dummy, RK::TimedOut)
+                    // Check for expired deadline before running the lambda.
+                    if matches!(timeout_scope, TimeoutScope::Global) {
+                        if let Some(deadline) = self.step_deadline {
+                            if chrono::Utc::now() >= deadline {
+                                // Deadline already passed — immediate TimedOut, no lambda.
+                                let dummy =
+                                    serde_json::Value::String("step deadline reached".to_string());
+                                (dummy, RK::TimedOut)
+                            } else {
+                                // Compute remaining time, capped by execution deadline.
+                                let remaining = effective_timeout(self, timeout_dur, timeout_scope);
+                                if let Some(dur) = remaining {
+                                    match tokio::time::timeout(dur, run_with_serialization()).await
+                                    {
+                                        Ok(result) => result?,
+                                        Err(_) => {
+                                            let dummy = serde_json::Value::String(format!(
+                                                "step timed out after {:?}",
+                                                dur
+                                            ));
+                                            (dummy, RK::TimedOut)
+                                        }
+                                    }
+                                } else {
+                                    run_with_serialization().await?
+                                }
+                            }
+                        } else {
+                            // No deadline stored — fall back to raw duration (backward compat / PerAttempt).
+                            match tokio::time::timeout(timeout_dur, run_with_serialization()).await
+                            {
+                                Ok(result) => result?,
+                                Err(_) => {
+                                    let dummy = serde_json::Value::String(format!(
+                                        "step timed out after {:?}",
+                                        timeout_dur
+                                    ));
+                                    (dummy, RK::TimedOut)
+                                }
+                            }
+                        }
+                    } else {
+                        // PerAttempt scope: fresh countdown.
+                        match tokio::time::timeout(timeout_dur, run_with_serialization()).await {
+                            Ok(result) => result?,
+                            Err(_) => {
+                                let dummy = serde_json::Value::String(format!(
+                                    "step timed out after {:?}",
+                                    timeout_dur
+                                ));
+                                (dummy, RK::TimedOut)
+                            }
                         }
                     }
                 } else {

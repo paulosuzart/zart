@@ -85,6 +85,12 @@ pub enum ZartStepError {
 }
 ```
 
+| Variant | When it fires |
+|---|---|
+| `RetryExhausted` | All retry attempts failed with business errors. `last_error` holds the error from the final attempt. |
+| `TimedOut` | The step's deadline was exceeded. Under `global` scope, this means the total budget across all attempts ran out. Under `per_attempt` scope, this single attempt exceeded its budget. **Timeout is always terminal — it never triggers a retry.** |
+| `DeadlineExceeded` | A `wait_for_event` call exceeded its event-wait deadline. Independent of step/execution deadlines. |
+
 ### Inspecting the Last Error
 
 When a step exhausts retries, the last error is preserved as JSON. You can deserialize it back into the step's error type:
@@ -114,7 +120,7 @@ pub enum ExecutionFailure {
 | Variant | When it appears |
 |---|---|
 | `StepFailed` | A step returned a non-Ok outcome. `raw` is the JSON-serialized error — deserialize it into the step's typed error for precise matching. |
-| `ExecutionDeadlineExceeded` | The `timeout` attribute on `#[zart_durable]` was exceeded. |
+| `ExecutionDeadlineExceeded` | The execution-level timeout (set via `#[zart_durable(..., timeout = "...")]`) was exceeded. The deadline is calculated from when the execution was first scheduled. |
 | `RetriesExhausted` | The execution-level retry policy exhausted all attempts. |
 
 ## `SchedulerError`

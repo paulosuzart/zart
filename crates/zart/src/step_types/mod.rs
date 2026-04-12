@@ -24,6 +24,9 @@ pub struct StepRequest<'a> {
     pub kind: StepRequestKind<'a>,
     /// Retry policy for this step (used by body behavior to embed in metadata).
     pub retry_config: Option<&'a RetryConfig>,
+    /// Timeout duration for this step (used when timeout_scope == Global).
+    /// When set, the body behavior computes a deadline and writes it to metadata.
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// Kind-specific parameters for a step invocation.
@@ -49,11 +52,16 @@ pub enum StepRequestKind<'a> {
 }
 
 impl<'a> StepRequest<'a> {
-    pub fn new_step(step_name: &'a str, retry_config: Option<&'a RetryConfig>) -> Self {
+    pub fn new_step(
+        step_name: &'a str,
+        retry_config: Option<&'a RetryConfig>,
+        timeout: Option<std::time::Duration>,
+    ) -> Self {
         Self {
             step_name,
             kind: StepRequestKind::Step,
             retry_config,
+            timeout,
         }
     }
 
@@ -62,6 +70,7 @@ impl<'a> StepRequest<'a> {
             step_name,
             kind: StepRequestKind::Sleep { wake_time },
             retry_config: None,
+            timeout: None,
         }
     }
 
@@ -73,6 +82,7 @@ impl<'a> StepRequest<'a> {
             step_name,
             kind: StepRequestKind::WaitForEvent { deadline },
             retry_config: None,
+            timeout: None,
         }
     }
 
@@ -89,6 +99,7 @@ impl<'a> StepRequest<'a> {
                 threshold,
             },
             retry_config: None,
+            timeout: None,
         }
     }
 
@@ -97,6 +108,7 @@ impl<'a> StepRequest<'a> {
             step_name,
             kind: StepRequestKind::WaitGroupChild,
             retry_config: None,
+            timeout: None,
         }
     }
 }
