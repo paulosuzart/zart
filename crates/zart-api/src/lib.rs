@@ -28,10 +28,12 @@
 //! # }
 //! ```
 
+pub mod admin_routes;
 pub mod models;
 pub mod routes;
 pub mod server;
 pub mod state;
 
+pub use admin_routes::admin_router;
 pub use server::ApiServer;
-pub use state::AppState;
+pub use state::{AdminState, AppState};

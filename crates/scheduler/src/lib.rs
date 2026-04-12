@@ -16,6 +16,7 @@
 //! ```
 
 pub mod error;
+pub mod pause_storage;
 pub mod recurrence;
 pub mod types;
 
@@ -270,6 +271,18 @@ pub trait DurableStorage: Send + Sync {
         Err(StorageError::NotImplemented("get_step_status"))
     }
 
+    /// Get the current `run_id` for an execution.
+    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
+        let _ = execution_id;
+        Err(StorageError::NotImplemented("get_current_run_id"))
+    }
+
+    /// List all runs for an execution, ordered by `run_index ASC`.
+    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+        let _ = execution_id;
+        Err(StorageError::NotImplemented("list_runs"))
+    }
+
     /// Check whether all wait_all children are completed.
     async fn check_wait_all_children(
         &self,
@@ -391,6 +404,64 @@ pub trait DurableStorage: Send + Sync {
     ) -> Result<(), StorageError> {
         let _ = (run_id, step_name, step_kind, result);
         Err(StorageError::NotImplemented("insert_completed_step"))
+    }
+
+    /// Retry a single dead step within the current run.
+    ///
+    /// Finds the dead step by `run_id` + `step_name`, creates a new task for it
+    /// with `retry_attempt = 0`, and sets the run status back to `running`.
+    /// No new run is started — scoped to the current run.
+    ///
+    /// # Errors
+    /// - [`StorageError::StepNotFound`] if no step exists for the given name
+    /// - [`StorageError::StepStatusMismatch`] if the step is not in `dead` status
+    async fn admin_retry_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        let _ = (run_id, step_name, triggered_by);
+        Err(StorageError::NotImplemented("admin_retry_step"))
+    }
+
+    /// Restart an entire execution from scratch.
+    ///
+    /// Archives the current run to `zart_execution_runs` (preserving history),
+    /// creates a new run with `trigger = 'restart'`, and schedules a fresh
+    /// body task at segment 0.
+    ///
+    /// If `new_payload` is `Some`, it replaces the execution's payload.
+    /// Returns the new `run_id`.
+    async fn admin_restart_execution(
+        &self,
+        execution_id: &str,
+        new_payload: Option<serde_json::Value>,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        let _ = (execution_id, new_payload, triggered_by);
+        Err(StorageError::NotImplemented("admin_restart_execution"))
+    }
+
+    /// Selectively rerun a subset of steps while preserving others.
+    ///
+    /// Archives the current run, starts a new run, and schedules a fresh body
+    /// task. Failed/dead steps are always rerun. `force_rerun` steps are
+    /// rerun even if completed. `preserve` steps are carried forward (ignored
+    /// for failed/dead steps).
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(new_run_id, effective_rerun_steps)`.
+    async fn admin_rerun_steps(
+        &self,
+        execution_id: &str,
+        force_rerun: &[String],
+        preserve: &[String],
+        triggered_by: Option<&str>,
+    ) -> Result<(String, Vec<String>), StorageError> {
+        let _ = (execution_id, force_rerun, preserve, triggered_by);
+        Err(StorageError::NotImplemented("admin_rerun_steps"))
     }
 }
 

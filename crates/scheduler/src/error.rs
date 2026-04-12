@@ -28,4 +28,16 @@ pub enum StorageError {
     /// The operation is not implemented by this backend.
     #[error("Not implemented: {0}")]
     NotImplemented(&'static str),
+
+    /// A step was found but was not in the expected status (e.g. not dead for retry).
+    #[error("Step '{step}' has status '{actual}', expected '{expected}'")]
+    StepStatusMismatch {
+        step: String,
+        actual: String,
+        expected: String,
+    },
+
+    /// No step was found for the given name and run.
+    #[error("Step '{0}' not found")]
+    StepNotFound(String),
 }

@@ -486,15 +486,20 @@ mod tests {
     /// regardless of which parsing path is used.
     #[test]
     fn task_status_from_str_matches_serde() {
-        let cases = ["scheduled", "picked_up", "completed", "failed", "dead", "cancelled"];
+        let cases = [
+            "scheduled",
+            "picked_up",
+            "completed",
+            "failed",
+            "dead",
+            "cancelled",
+        ];
         for s in cases {
-            let via_serde: TaskStatus =
-                serde_json::from_str(&format!("\"{s}\"")).unwrap_or_else(|e| {
-                    panic!("serde failed for {s}: {e}")
-                });
-            let via_from_str: TaskStatus = s.parse().unwrap_or_else(|e| {
-                panic!("FromStr failed for {s}: {e}")
-            });
+            let via_serde: TaskStatus = serde_json::from_str(&format!("\"{s}\""))
+                .unwrap_or_else(|e| panic!("serde failed for {s}: {e}"));
+            let via_from_str: TaskStatus = s
+                .parse()
+                .unwrap_or_else(|e| panic!("FromStr failed for {s}: {e}"));
             assert_eq!(via_serde, via_from_str, "mismatch for {s}");
         }
     }
@@ -542,10 +547,9 @@ mod tests {
                 serialized, *expected_json,
                 "StepKind::{variant:?} serialized as {serialized}, expected {expected_json}"
             );
-            let deserialized: StepKind =
-                serde_json::from_str(expected_json).unwrap_or_else(|e| {
-                    panic!("failed to deserialize {expected_json} back to StepKind: {e}")
-                });
+            let deserialized: StepKind = serde_json::from_str(expected_json).unwrap_or_else(|e| {
+                panic!("failed to deserialize {expected_json} back to StepKind: {e}")
+            });
             assert_eq!(deserialized, *variant);
         }
     }
@@ -614,8 +618,8 @@ mod tests {
                 serialized, *expected_json,
                 "ExecutionTrigger::{variant:?} serialized as {serialized}, expected {expected_json}"
             );
-            let deserialized: ExecutionTrigger =
-                serde_json::from_str(expected_json).unwrap_or_else(|e| {
+            let deserialized: ExecutionTrigger = serde_json::from_str(expected_json)
+                .unwrap_or_else(|e| {
                     panic!("failed to deserialize {expected_json} back to ExecutionTrigger: {e}")
                 });
             assert_eq!(deserialized, *variant);

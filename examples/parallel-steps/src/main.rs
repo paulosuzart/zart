@@ -176,33 +176,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initial execution status: {:?}\n", initial_status.status);
 
     println!("Waiting for execution to complete...\n");
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(60), None)
+    let output: HealthCheckOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(60), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: HealthCheckOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("Execution completed!");
-            println!("  Services checked: {}", output.services_checked);
-            println!("  Total issues:     {}", output.total_issues);
+    println!("Execution completed!");
+    println!("  Services checked: {}", output.services_checked);
+    println!("  Total issues:     {}", output.total_issues);
 
-            if !output.results.is_empty() {
-                println!();
-                for r in &output.results {
-                    println!("  {} — {} ({}ms)", r.name, r.status, r.response_ms);
-                    for issue in &r.issues {
-                        println!("    ⚠️  {}", issue);
-                    }
-                }
-            }
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
+    if !output.results.is_empty() {
+        println!();
+        for r in &output.results {
+            println!("  {} — {} ({}ms)", r.name, r.status, r.response_ms);
+            for issue in &r.issues {
+                println!("    ⚠️  {}", issue);
             }
         }
     }

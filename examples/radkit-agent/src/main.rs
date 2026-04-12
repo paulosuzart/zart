@@ -318,44 +318,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initial execution status: {:?}\n", initial_status.status);
 
     println!("Waiting for execution to complete...\n");
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(120), None)
+    let output: AgentOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(120), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: AgentOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("Execution completed!");
-            println!("  Query:       {}", output.query);
-            println!(
-                "  Location:    {}, {}",
-                output.location.city, output.location.state
-            );
-            println!("  Breweries:   {}", output.breweries.len());
-            println!("\n  Summary:");
-            println!("    {}", output.summary);
+    println!("Execution completed!");
+    println!("  Query:       {}", output.query);
+    println!(
+        "  Location:    {}, {}",
+        output.location.city, output.location.state
+    );
+    println!("  Breweries:   {}", output.breweries.len());
+    println!("\n  Summary:");
+    println!("    {}", output.summary);
 
-            if !output.breweries.is_empty() {
-                println!("\n  Breweries found:");
-                for (i, b) in output.breweries.iter().enumerate() {
-                    println!(
-                        "    {}. {} ({}) — {}, {}",
-                        i + 1,
-                        b.name,
-                        b.brewery_type,
-                        b.city,
-                        b.state,
-                    );
-                }
-            }
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
-            }
+    if !output.breweries.is_empty() {
+        println!("\n  Breweries found:");
+        for (i, b) in output.breweries.iter().enumerate() {
+            println!(
+                "    {}. {} ({}) — {}, {}",
+                i + 1,
+                b.name,
+                b.brewery_type,
+                b.city,
+                b.state,
+            );
         }
     }
 

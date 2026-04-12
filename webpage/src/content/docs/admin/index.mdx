@@ -1,0 +1,216 @@
+---
+title: Admin Operations
+description: Retry failed steps, restart executions, selective reruns, and pause/resume — manage running workflows from code, CLI, or HTTP.
+---
+
+import { Aside, Steps, CardGrid, Card } from '@astrojs/starlight/components';
+
+Zart provides administrative operations for managing durable executions after they've started. These operations let you retry failed steps, restart entire executions, selectively rerun specific steps, and pause/resume execution flow — all without losing history.
+
+<Aside type="caution">
+Admin operations are **non-destructive**. Every action preserves history via append-only run records in `zart_execution_runs`. You can always see what happened before.
+</Aside>
+
+## Overview
+
+| Operation | What it does | Use when |
+|---|---|---|
+| **Retry step** | Retries a single dead step within the current run | A step exhausted all retries but you want to try again |
+| **Restart** | Archives current run, starts a fresh run from scratch | You need to re-run the entire workflow with new or same input |
+| **Selective rerun** | Reruns specific steps, preserves others | Some step results are stale but others are still valid |
+| **Pause** | Stops step dispatch via a rule | External system is down, maintenance window, pre-inspection |
+| **Resume** | Removes pause rules, continues execution | External system is back, maintenance complete |
+
+## Embedded Rust API
+
+All admin operations are methods on `DurableScheduler`. You need a scheduler with pause storage configured for pause/resume:
+
+```rust
+use zart::DurableScheduler;
+use zart::admin::{RerunSpec, PauseScope};
+
+let durable = DurableScheduler::with_pause(sched.clone(), sched.clone());
+```
+
+### Retry a Dead Step
+
+Retries a single step that reached `Dead` status (all retries exhausted). No new run is started — the retry is scoped to the current run.
+
+```rust
+// Simplest: automatically uses the current run
+let new_task_id = durable
+    .retry_step_current_run("exec-001", "charge-card", Some("ops-team"))
+    .await?;
+```
+
+If you already have the run ID, you can skip the lookup:
+
+```rust
+let run_id = durable.get_current_run_id("exec-001").await?.unwrap();
+let new_task_id = durable
+    .retry_step(&run_id, "charge-card", Some("ops-team"))
+    .await?;
+```
+
+### Full Restart
+
+Archives the current run and starts a completely new one. History is preserved.
+
+```rust
+let new_run_id = durable
+    .restart("exec-001", Some(new_payload), Some("ops-team"))
+    .await?;
+
+println!("Restarted: new run = {}", new_run_id);
+```
+
+### Selective Rerun
+
+Rerun a subset of steps while preserving others. Failed/dead steps are **always** rerun regardless of the spec.
+
+```rust
+let result = durable
+    .rerun_steps(
+        "exec-001",
+        RerunSpec {
+            force_rerun: vec!["enrich-data".into()],
+            preserve: vec!["lookup-user".into()],
+            triggered_by: Some("ops-team"),
+        },
+    )
+    .await?;
+
+println!("New run: {}", result.new_run_number);
+println!("Rerunning: {}", result.effective_rerun.join(", "));
+```
+
+It's your responsibility to decide which steps can be safely preserved. If a preserved step depends on the output of a rerun step, its result may be stale.
+
+### Pause / Resume
+
+Create pause rules to temporarily stop step dispatch. Pause is enforced at **scheduling time** — no tasks are created while a rule is active.
+
+```rust
+// Pause all executions of a task, targeting specific steps
+let rule = durable
+    .pause(PauseScope {
+        task_name: Some("brewery-finder".into()),
+        step_pattern: Some("find-breweries".into()),
+        triggered_by: Some("ops-team"),
+        ..Default::default()
+    })
+    .await?;
+
+// List active pause rules
+let rules = durable.list_pause_rules(None).await?;
+
+// Resume — soft-delete pause rules matching the scope.
+// An empty scope matches ALL rules. Be specific to target only what you want.
+let result = durable.resume(PauseScope {
+    task_name: Some("brewery-finder".into()),
+    step_pattern: Some("find-breweries".into()),
+    ..Default::default()
+}).await?;
+println!("Deleted {} pause rules", result.rules_deleted);
+
+// Or resume a specific rule by ID (more precise):
+let deleted = durable.resume_rule_by_id(&rule.rule_id, Some("ops-team")).await?;
+```
+
+**Glob patterns**: `step_pattern` supports glob matching. `"send-*"` matches `send-email`, `send-sms`, etc.
+
+## CLI Commands
+
+The `zart` CLI exposes all admin operations:
+
+```bash
+# Retry a dead step
+zart retry-step <execution_id> <step_name> [--triggered-by ops]
+
+# Restart entire execution
+zart restart <execution_id> [--payload '{"key":"val"}'] [--triggered-by ops]
+
+# Selective rerun
+zart rerun <execution_id> \
+    --rerun step-a,step-b \
+    --preserve step-c \
+    [--triggered-by ops]
+
+# Pause
+zart pause [--execution-id X] [--task-name Y] [--step 'send-*']
+
+# Resume
+zart resume [--execution-id X] [--task-name Y] [--step 'send-*']
+
+# List pause rules
+zart pause-list [--include-deleted]
+
+# List runs for an execution
+zart runs <execution_id>
+```
+
+## HTTP Admin API
+
+When using `zart-api`, mount the admin router alongside your API:
+
+```rust
+use zart_api::{admin_router, AppState};
+
+let app = Router::new()
+    .nest("/api",   zart_api::api_router(AppState::new(durable)))
+    .nest("/admin", admin_router(scheduler.clone()));
+```
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/v1/executions/:id/retry-step` | Retry a dead step |
+| `POST` | `/admin/v1/executions/:id/restart` | Full restart |
+| `POST` | `/admin/v1/executions/:id/rerun` | Selective rerun |
+| `GET` | `/admin/v1/executions/:id/runs` | List all runs |
+| `POST` | `/admin/v1/pause` | Create a pause rule |
+| `GET` | `/admin/v1/pause` | List pause rules |
+| `POST` | `/admin/v1/pause/:rule_id` | Soft-delete a pause rule |
+
+### Example: retry-step via HTTP
+
+```bash
+curl -X POST http://localhost:8080/admin/v1/executions/exec-001/retry-step \
+  -H "Content-Type: application/json" \
+  -d '{"stepName": "charge-card", "triggeredBy": "ops-team"}'
+```
+
+### Example: pause via HTTP
+
+```bash
+curl -X POST http://localhost:8080/admin/v1/pause \
+  -H "Content-Type: application/json" \
+  -d '{"taskName": "brewery-finder", "stepPattern": "find-breweries"}'
+```
+
+## Data Model
+
+### Run History
+
+Every restart and rerun creates a new run record in `zart_execution_runs`. The `trigger` field tells you what caused each run:
+
+| Trigger | Meaning |
+|---|---|
+| `initial` | First run of the execution |
+| `restart` | Full restart via `restart()` |
+| `selective_rerun` | Selective rerun via `rerun_steps()` |
+
+Run history is **append-only** — old runs are never modified or deleted.
+
+### Pause Rules
+
+Pause rules are soft-deleted on resume. The `deleted_at` column keeps an audit trail of when and by whom each rule was removed.
+
+<Aside type="tip">
+The `triggered_by` field is optional but recommended for audit purposes. It flows through to the `zart_execution_runs` table so you can trace who initiated each admin operation.
+</Aside>
+
+## Next Steps
+
+- [**HTTP API Endpoints**](/admin/endpoints/) — full HTTP API reference
+- [**Execution Management**](/api/execution-management/) — `DurableScheduler` API
+- [**Deployment Options**](/deployment/options/) — running workers and admin endpoints in production

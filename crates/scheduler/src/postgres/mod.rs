@@ -9,6 +9,7 @@
 //! Call `PostgresScheduler::run_migrations` (or `just migrate`) once before
 //! starting workers. It applies the embedded SQL files under `migrations/`.
 
+mod pause_storage_impl;
 mod scheduler_impl;
 mod storage_impl;
 

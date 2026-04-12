@@ -33,9 +33,9 @@ use std::sync::Arc;
 #[async_trait]
 pub trait DurableExecution: Send + Sync + 'static {
     /// The deserialized input type this task expects.
-    type Data: serde::de::DeserializeOwned + Send + Sync;
+    type Data: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
     /// The serialized output type this task produces.
-    type Output: serde::Serialize + Send + Sync;
+    type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
 
     /// Execute the task.
     ///

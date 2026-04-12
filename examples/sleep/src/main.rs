@@ -86,27 +86,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(30), None)
+    let output: SleepOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(30), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: SleepOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\n=== Execution Completed ===");
-            println!("  Task:       {}", output.task_name);
-            println!("  Started:    {}", output.started_at);
-            println!("  Resumed:    {}", output.resumed_at);
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
-            }
-        }
-    }
+    println!("\n=== Execution Completed ===");
+    println!("  Task:       {}", output.task_name);
+    println!("  Started:    {}", output.started_at);
+    println!("  Resumed:    {}", output.resumed_at);
 
     Ok(())
 }

@@ -207,27 +207,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _handle = tokio::spawn(async move { w.run().await });
 
     println!("Processing reports:\n");
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(60), None)
+    let output: BatchOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(60), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: BatchOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\n=== Batch Complete ===");
-            println!("  Batch:   {}", output.batch_name);
-            println!("  Total:   {}", output.total);
-            println!("  Flagged: {}", output.flagged);
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
-            }
-        }
-    }
+    println!("\n=== Batch Complete ===");
+    println!("  Batch:   {}", output.batch_name);
+    println!("  Total:   {}", output.total);
+    println!("  Flagged: {}", output.flagged);
 
     Ok(())
 }

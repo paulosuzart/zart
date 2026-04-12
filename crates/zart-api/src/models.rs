@@ -100,3 +100,120 @@ pub struct StartExecutionResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+// ── Admin Requests ────────────────────────────────────────────────────────────
+
+/// Body for `POST /admin/v1/executions/:id/retry-step`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryStepRequest {
+    pub step_name: String,
+    #[serde(default)]
+    pub triggered_by: Option<String>,
+}
+
+/// Body for `POST /admin/v1/executions/:id/restart`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartRequest {
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub triggered_by: Option<String>,
+}
+
+/// Body for `POST /admin/v1/executions/:id/rerun`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunRequest {
+    #[serde(default)]
+    pub rerun_steps: Vec<String>,
+    #[serde(default)]
+    pub preserve_steps: Vec<String>,
+    #[serde(default)]
+    pub triggered_by: Option<String>,
+}
+
+// ── Admin Responses ───────────────────────────────────────────────────────────
+
+/// Body returned for a successful retry-step.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryStepResponse {
+    pub new_task_id: String,
+}
+
+/// Body returned for a successful restart.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartResponse {
+    pub new_run_id: String,
+}
+
+/// Body returned for a successful rerun.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunResponse {
+    pub new_run_number: u32,
+    pub effective_rerun: Vec<String>,
+}
+
+/// A single run record returned from the runs list.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunRecordResponse {
+    pub run_id: String,
+    pub execution_id: String,
+    pub run_index: i32,
+    pub payload: serde_json::Value,
+    pub status: String,
+    pub result: Option<serde_json::Value>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub trigger: String,
+}
+
+// ── Pause / Resume Types ──────────────────────────────────────────────────────
+
+/// Body for `POST /admin/v1/pause`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseRequest {
+    #[serde(default)]
+    pub execution_id: Option<String>,
+    #[serde(default)]
+    pub task_name: Option<String>,
+    #[serde(default)]
+    pub step_pattern: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub triggered_by: Option<String>,
+}
+
+/// Response for a single pause rule.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseRuleResponse {
+    pub rule_id: String,
+    #[serde(default)]
+    pub execution_id: Option<String>,
+    #[serde(default)]
+    pub task_name: Option<String>,
+    #[serde(default)]
+    pub step_pattern: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// Response for a resume operation.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeResponse {
+    pub rules_deleted: usize,
+}

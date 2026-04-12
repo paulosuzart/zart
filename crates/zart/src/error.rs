@@ -38,6 +38,14 @@ pub enum SchedulerError {
     /// `wait` / `wait_with_timeout` exceeded the maximum wait duration.
     #[error("Timed out waiting for execution '{0}'")]
     WaitTimedOut(String),
+
+    /// Deserialization of an execution result to the expected type failed.
+    #[error("Failed to deserialize execution result: {0}")]
+    Deserialization(String),
+
+    /// Pause storage is not configured on this scheduler.
+    #[error("Pause storage not configured")]
+    PauseStorageNotConfigured,
 }
 
 /// Errors that can occur during task execution.

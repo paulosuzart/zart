@@ -147,3 +147,43 @@ CREATE INDEX IF NOT EXISTS idx_zart_steps_run ON zart_steps (run_id);
 
 -- Step lookup by task_id (for finding step responsible for a task)
 CREATE INDEX IF NOT EXISTS idx_zart_steps_task_id ON zart_steps (task_id) WHERE task_id IS NOT NULL;
+
+-- ── Pause/Resume Rules ───────────────────────────────────────────────────────
+
+-- Operational controls that temporarily stop step dispatch.
+-- Soft-deleted for audit history (resume = soft delete).
+CREATE TABLE IF NOT EXISTS zart_pause_rules (
+    rule_id       TEXT PRIMARY KEY,
+    -- Scope: at least one of execution_id or task_name should be non-null.
+    execution_id  TEXT,        -- NULL = applies to all executions of task_name
+    task_name     TEXT,        -- NULL = only applies to the specific execution_id
+    step_pattern  TEXT,        -- NULL = pause all steps; glob pattern e.g. 'send-*'
+    -- Lifecycle
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at    TIMESTAMPTZ, -- optional auto-expiry
+    created_by    TEXT,        -- optional operator identifier
+    -- Soft delete — keeps audit history
+    deleted_at    TIMESTAMPTZ,
+    deleted_by    TEXT
+);
+
+-- Only active rules are queried at scheduling time.
+CREATE INDEX IF NOT EXISTS idx_zart_pause_rules_active
+    ON zart_pause_rules (execution_id, task_name)
+    WHERE deleted_at IS NULL;
+
+-- Denormalized snapshot of execution state at pause time.
+-- Read-only history — not used for resume logic (zart_steps is authoritative).
+CREATE TABLE IF NOT EXISTS zart_pause_snapshots (
+    snapshot_id     TEXT PRIMARY KEY,
+    rule_id         TEXT NOT NULL REFERENCES zart_pause_rules(rule_id),
+    execution_id    TEXT NOT NULL,
+    run_number      INTEGER NOT NULL,
+    completed_steps JSONB NOT NULL,    -- [{step_name, status, result_kind}, ...]
+    current_data    JSONB,             -- execution-level data bag
+    next_step       TEXT,              -- step that was about to be scheduled
+    captured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_zart_pause_snapshots_exec
+    ON zart_pause_snapshots (execution_id, captured_at DESC);

@@ -1346,4 +1346,239 @@ mod integration {
             record.status
         );
     }
+
+    // ── Typed completion API tests ────────────────────────────────────────────
+
+    /// Typed input/output for testing the typed completion API.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TypedInput {
+        pub multiplier: i32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    struct TypedOutput {
+        pub result: i32,
+    }
+
+    struct TypedTask;
+
+    #[async_trait::async_trait]
+    impl DurableExecution for TypedTask {
+        type Data = TypedInput;
+        type Output = TypedOutput;
+
+        async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+            let val: i32 = zart::require(MultiplyStep {
+                multiplier: data.multiplier,
+            })
+            .await?;
+            Ok(TypedOutput { result: val })
+        }
+    }
+
+    struct MultiplyStep {
+        multiplier: i32,
+    }
+
+    #[async_trait::async_trait]
+    impl ZartStep for MultiplyStep {
+        type Output = i32;
+        type Error = TestStepError;
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("multiply")
+        }
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
+            Ok(self.multiplier * 2)
+        }
+    }
+
+    /// Tests `wait_completion` — typed deserialization of execution result.
+    #[tokio::test]
+    #[ignore]
+    async fn wait_completion_returns_typed_result() {
+        let scheduler = setup().await;
+        let mut registry = TaskRegistry::new();
+        registry.register("zart::tests::integration::TypedTask", TypedTask);
+        let registry = Arc::new(registry);
+
+        let (worker, handle) = spawn_worker(scheduler.clone(), registry);
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("typed-wait-{}", Uuid::new_v4());
+        let input = TypedInput { multiplier: 21 };
+        durable
+            .start_typed(&execution_id, "zart::tests::integration::TypedTask", &input)
+            .await
+            .expect("start failed");
+
+        let output: TypedOutput = durable
+            .wait_completion(&execution_id, Duration::from_secs(10), None)
+            .await
+            .expect("wait_completion failed");
+
+        assert_eq!(output.result, 42);
+
+        worker.stop();
+        let _ = handle.await;
+    }
+
+    /// Tests `wait_completion_with_timeout` — caps at 30 seconds.
+    #[tokio::test]
+    #[ignore]
+    async fn wait_completion_with_timeout_returns_typed_result() {
+        let scheduler = setup().await;
+        let mut registry = TaskRegistry::new();
+        registry.register("zart::tests::integration::TypedTask", TypedTask);
+        let registry = Arc::new(registry);
+
+        let (worker, handle) = spawn_worker(scheduler.clone(), registry);
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("typed-wait-timeout-{}", Uuid::new_v4());
+        let input = TypedInput { multiplier: 10 };
+        durable
+            .start_typed(&execution_id, "zart::tests::integration::TypedTask", &input)
+            .await
+            .expect("start failed");
+
+        let output: TypedOutput = durable
+            .wait_completion_with_timeout(&execution_id, Duration::from_secs(10))
+            .await
+            .expect("wait_completion_with_timeout failed");
+
+        assert_eq!(output.result, 20);
+
+        worker.stop();
+        let _ = handle.await;
+    }
+
+    /// Tests `start_and_wait` — explicit type parameters.
+    #[tokio::test]
+    #[ignore]
+    async fn start_and_wait_returns_typed_result() {
+        let scheduler = setup().await;
+        let mut registry = TaskRegistry::new();
+        registry.register("zart::tests::integration::TypedTask", TypedTask);
+        let registry = Arc::new(registry);
+
+        let (worker, handle) = spawn_worker(scheduler.clone(), registry);
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("typed-start-and-wait-{}", Uuid::new_v4());
+        let input = TypedInput { multiplier: 7 };
+
+        let output: TypedOutput = durable
+            .start_and_wait(
+                &execution_id,
+                "zart::tests::integration::TypedTask",
+                &input,
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("start_and_wait failed");
+
+        assert_eq!(output.result, 14);
+
+        worker.stop();
+        let _ = handle.await;
+    }
+
+    /// Tests `start_and_wait_for` — handler type inference for input/output,
+    /// while the task name is provided explicitly.
+    #[tokio::test]
+    #[ignore]
+    async fn start_and_wait_for_infers_types_from_handler() {
+        let scheduler = setup().await;
+        let mut registry = TaskRegistry::new();
+        registry.register("zart::tests::integration::TypedTask", TypedTask);
+        let registry = Arc::new(registry);
+
+        let (worker, handle) = spawn_worker(scheduler.clone(), registry);
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("typed-start-for-{}", Uuid::new_v4());
+        let input = TypedInput { multiplier: 5 };
+
+        // start_and_wait_for uses H::Data and H::Output but task_name is explicit
+        let output = durable
+            .start_and_wait_for::<TypedTask>(
+                &execution_id,
+                "zart::tests::integration::TypedTask",
+                &input,
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("start_and_wait_for failed");
+
+        assert_eq!(output.result, 10);
+
+        worker.stop();
+        let _ = handle.await;
+    }
+
+    /// Tests `wait_completion` fails with Deserialization error when result is missing.
+    #[tokio::test]
+    #[ignore]
+    async fn wait_completion_fails_when_no_result() {
+        let scheduler = setup().await;
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("typed-wait-no-result-{}", Uuid::new_v4());
+
+        // Manually create a completed execution with no result
+        scheduler
+            .start_execution(&execution_id, "test-task", serde_json::json!({}))
+            .await
+            .expect("start_execution failed");
+
+        // Set to completed without a result
+        let result = durable
+            .wait_completion::<TypedOutput>(&execution_id, Duration::from_secs(2), None)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "expected error when execution has no result"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("no result"),
+            "expected 'no result' error but got: {err}"
+        );
+    }
+
+    /// Tests `wait_completion` fails with Deserialization error when type doesn't match.
+    #[tokio::test]
+    #[ignore]
+    async fn wait_completion_fails_on_type_mismatch() {
+        let scheduler = setup().await;
+        let mut registry = TaskRegistry::new();
+        registry.register("zart::tests::integration::TypedTask", TypedTask);
+        let registry = Arc::new(registry);
+
+        let (worker, handle) = spawn_worker(scheduler.clone(), registry);
+        let durable = DurableScheduler::new(scheduler.clone());
+
+        let execution_id = format!("typed-wait-mismatch-{}", Uuid::new_v4());
+        let input = TypedInput { multiplier: 21 };
+        durable
+            .start_typed(&execution_id, "zart::tests::integration::TypedTask", &input)
+            .await
+            .expect("start failed");
+
+        // Try to deserialize to wrong type
+        let result = durable
+            .wait_completion::<String>(&execution_id, Duration::from_secs(10), None)
+            .await;
+
+        assert!(result.is_err(), "expected error when type doesn't match");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("deserialize"),
+            "expected deserialization error but got: {err}"
+        );
+
+        worker.stop();
+        let _ = handle.await;
+    }
 }

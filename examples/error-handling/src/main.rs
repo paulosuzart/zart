@@ -348,32 +348,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(30), None)
+    let output: OrderOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(30), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: OrderOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\n=== Execution Completed ===");
-            println!("  Status:       {}", output.status);
-            println!("  Transaction:  {:?}", output.transaction_id);
-            println!("  Balance:      {:?}", output.balance);
-            println!("  Inventory:    {:?}", output.inventory_item);
-            println!("  Message:      {}", output.message);
-        }
-        scheduler::ExecutionStatus::Failed => {
-            eprintln!("\n=== Execution Failed ===");
-            if let Some(result) = record.result {
-                eprintln!("Result: {result}");
-            }
-        }
-        other => {
-            eprintln!("\n=== Execution ended with status: {:?} ===", other);
-        }
-    }
+    println!("\n=== Execution Completed ===");
+    println!("  Status:       {}", output.status);
+    println!("  Transaction:  {:?}", output.transaction_id);
+    println!("  Balance:      {:?}", output.balance);
+    println!("  Inventory:    {:?}", output.inventory_item);
+    println!("  Message:      {}", output.message);
 
     Ok(())
 }

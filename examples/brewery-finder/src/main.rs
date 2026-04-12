@@ -234,40 +234,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initial execution status: {:?}\n", initial_status.status);
 
     println!("Waiting for execution to complete...\n");
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(60), None)
+    let output: FinderOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(60), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: FinderOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("Execution completed!");
-            println!("  ZIP:         {}", output.zip_code);
-            println!("  City:        {}", output.city);
-            println!("  State:       {}", output.state);
-            println!("  Breweries:   {}", output.breweries.len());
+    println!("Execution completed!");
+    println!("  ZIP:         {}", output.zip_code);
+    println!("  City:        {}", output.city);
+    println!("  State:       {}", output.state);
+    println!("  Breweries:   {}", output.breweries.len());
 
-            if !output.breweries.is_empty() {
-                println!();
-                for (i, b) in output.breweries.iter().enumerate() {
-                    println!(
-                        "  {}. {} ({}) — {}, {}",
-                        i + 1,
-                        b.name,
-                        b.brewery_type,
-                        b.city,
-                        b.state,
-                    );
-                }
-            }
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
-            }
+    if !output.breweries.is_empty() {
+        println!();
+        for (i, b) in output.breweries.iter().enumerate() {
+            println!(
+                "  {}. {} ({}) — {}, {}",
+                i + 1,
+                b.name,
+                b.brewery_type,
+                b.city,
+                b.state,
+            );
         }
     }
 

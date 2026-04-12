@@ -206,30 +206,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nInitial execution status: {:?}\n", initial_status.status);
 
     println!("Waiting for execution to complete (watch the retries)...\n");
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(60), None)
+    let output: RetrySimulationOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(60), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: RetrySimulationOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\n=== Execution Completed ===");
-            println!("  Name:            {}", output.name);
-            println!("  Total attempts:  {}", output.total_attempts);
-            println!("  Message:         {}", output.message);
-            println!("\nAttempts log:");
-            for (i, entry) in output.attempts_log.iter().enumerate() {
-                println!("  {}. {}", i + 1, entry);
-            }
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-            if let Some(result) = &record.result {
-                eprintln!("Result: {}", result);
-            }
-        }
+    println!("\n=== Execution Completed ===");
+    println!("  Name:            {}", output.name);
+    println!("  Total attempts:  {}", output.total_attempts);
+    println!("  Message:         {}", output.message);
+    println!("\nAttempts log:");
+    for (i, entry) in output.attempts_log.iter().enumerate() {
+        println!("  {}. {}", i + 1, entry);
     }
 
     Ok(())

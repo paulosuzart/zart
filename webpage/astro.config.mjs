@@ -61,6 +61,12 @@ export default defineConfig({
           ],
         },
 
+        // ── Operations ─────────────────────────────────────────
+        {
+          label: "Operations",
+          autogenerate: { directory: "admin" },
+        },
+
         // ── Examples ───────────────────────────────────────────
         {
           label: "Examples",

@@ -128,15 +128,38 @@ durable
 
 ## Step 5: Wait for Completion (Optional)
 
+The simplest approach is `wait_completion`, which blocks until the execution completes and **automatically deserializes** the result to your output type:
+
 ```rust
-let record = durable
-    .wait("signup-user-42", Duration::from_secs(60), None)
+let output: MyOutput = durable
+    .wait_completion("signup-user-42", Duration::from_secs(60), None)
     .await?;
 
-if record.status == scheduler::ExecutionStatus::Completed {
-    println!("Onboarding completed!");
-}
+println!("Workflow completed with output: {:?}", output);
 ```
+
+No manual `serde_json::from_value` needed — the type parameter tells Zart exactly what to expect.
+
+You can also combine start and wait into a single call:
+
+```rust
+let output: MyOutput = durable
+    .start_and_wait("signup-user-42", "onboarding", &input, Duration::from_secs(60))
+    .await?;
+```
+
+Or use the handler type to infer both input and output:
+
+```rust
+let output = durable
+    .start_and_wait_for::<Onboarding>("signup-user-42", &input, Duration::from_secs(60))
+    .await?;
+// output: () — inferred from Onboarding::Output
+```
+
+<Aside type="tip">
+`wait_completion` is the recommended way to wait for results. It eliminates the manual deserialization step and gives you a type-safe result directly.
+</Aside>
 
 ## Run the Examples
 

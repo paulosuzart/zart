@@ -179,26 +179,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    let record = durable
-        .wait(&execution_id, Duration::from_secs(30), None)
+    let output: ApprovalOutput = durable
+        .wait_completion(&execution_id, Duration::from_secs(30), None)
         .await?;
 
     worker.stop();
 
-    match record.status {
-        scheduler::ExecutionStatus::Completed => {
-            let output: ApprovalOutput = serde_json::from_value(record.result.unwrap())?;
-            println!("\n=== Execution Completed ===");
-            println!("  Decision:  {}", output.decision);
-            println!("  Requester: {}", output.requester);
-            println!("  Resource:  {}", output.resource);
-            println!("  Reviewer:  {}", output.reviewer);
-            println!("  Comment:   {}", output.comment);
-        }
-        _ => {
-            eprintln!("Execution ended with status: {:?}", record.status);
-        }
-    }
+    println!("\n=== Execution Completed ===");
+    println!("  Decision:  {}", output.decision);
+    println!("  Requester: {}", output.requester);
+    println!("  Resource:  {}", output.resource);
+    println!("  Reviewer:  {}", output.reviewer);
+    println!("  Comment:   {}", output.comment);
 
     Ok(())
 }

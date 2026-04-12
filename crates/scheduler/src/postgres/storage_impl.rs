@@ -10,6 +10,7 @@ use crate::{
     FailWaitGroupChildParams, RescheduleStepForRetryParams, ScheduleStepParams, StepKind,
     StepLookup, StepResultKind, StepStatus, StorageError, TaskStatus, UpsertWaitGroupStepParams,
 };
+use std::collections::{HashMap, HashSet};
 
 #[async_trait]
 impl DurableStorage for PostgresScheduler {
@@ -841,6 +842,75 @@ impl DurableStorage for PostgresScheduler {
         }
     }
 
+    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
+        let run_id: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT current_run_id FROM zart_executions WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(run_id)
+    }
+
+    async fn list_runs(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<crate::ExecutionRunRecord>, StorageError> {
+        let rows: Vec<(
+            String,
+            String,
+            i32,
+            serde_json::Value,
+            ExecutionStatus,
+            Option<serde_json::Value>,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            crate::ExecutionTrigger,
+        )> = sqlx::query_as(
+            r#"
+            SELECT run_id, execution_id, run_index, payload, status,
+                   result, started_at, completed_at, trigger
+            FROM zart_execution_runs
+            WHERE execution_id = $1
+            ORDER BY run_index ASC
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    run_id,
+                    execution_id,
+                    run_index,
+                    payload,
+                    status,
+                    result,
+                    started_at,
+                    completed_at,
+                    trigger,
+                )| crate::ExecutionRunRecord {
+                    run_id,
+                    execution_id,
+                    run_index,
+                    payload,
+                    status,
+                    result,
+                    started_at,
+                    completed_at,
+                    trigger,
+                },
+            )
+            .collect())
+    }
+
     async fn check_wait_all_children(
         &self,
         wait_for_task_ids: &[String],
@@ -1324,5 +1394,499 @@ impl DurableStorage for PostgresScheduler {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
+    }
+
+    async fn admin_retry_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+        _triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 1. Find the dead step by run_id + step_name.
+        let step_row: Option<(String, StepStatus, String)> = sqlx::query_as(
+            r#"
+            SELECT step_id, status, COALESCE(task_id, '')
+            FROM zart_steps
+            WHERE run_id = $1 AND step_name = $2
+            "#,
+        )
+        .bind(run_id)
+        .bind(step_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let (step_id, current_status, old_task_id) = match step_row {
+            None => {
+                return Err(StorageError::StepNotFound(step_name.to_string()));
+            }
+            Some(row) => row,
+        };
+
+        if current_status != StepStatus::Dead {
+            return Err(StorageError::StepStatusMismatch {
+                step: step_name.to_string(),
+                actual: format!("{current_status:?}"),
+                expected: "Dead".to_string(),
+            });
+        }
+
+        // 2. Extract metadata from the old task for reuse.
+        let task_metadata: serde_json::Value = if old_task_id.is_empty() {
+            serde_json::json!({})
+        } else {
+            let meta_opt: Option<Option<serde_json::Value>> = sqlx::query_scalar(
+                r#"
+                SELECT metadata FROM zart_tasks WHERE task_id = $1
+                "#,
+            )
+            .bind(&old_task_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+            meta_opt.flatten().unwrap_or_else(|| serde_json::json!({}))
+        };
+
+        // 3. Create a new task for the retry.
+        let new_task_id = format!(
+            "{run_id}:step:retry:{step_name}:{}",
+            Utc::now().timestamp_millis()
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata, status, attempt)
+            SELECT $1, t.task_name, NOW(), t.data, $2, 'scheduled', 0
+            FROM zart_tasks t
+            WHERE t.task_id = $3
+            "#,
+        )
+        .bind(&new_task_id)
+        .bind(&task_metadata)
+        .bind(&old_task_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 4. Update the step to scheduled with the new task.
+        sqlx::query(
+            r#"
+            UPDATE zart_steps
+            SET status = 'scheduled', task_id = $1, retry_attempt = 0, last_error = NULL, completed_at = NULL
+            WHERE step_id = $2
+            "#,
+        )
+        .bind(&new_task_id)
+        .bind(&step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 5. Set the run status back to running.
+        sqlx::query(
+            r#"
+            UPDATE zart_execution_runs
+            SET status = 'running', completed_at = NULL
+            WHERE run_id = $1
+            "#,
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(new_task_id)
+    }
+
+    async fn admin_restart_execution(
+        &self,
+        execution_id: &str,
+        new_payload: Option<serde_json::Value>,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 1. Get the current run info.
+        let current_run: Option<(String, ExecutionStatus, serde_json::Value)> = sqlx::query_as(
+            r#"
+            SELECT r.run_id, r.status, r.payload
+            FROM zart_executions e
+            JOIN zart_execution_runs r ON e.current_run_id = r.run_id
+            WHERE e.execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let (current_run_id, current_status, current_payload) = match current_run {
+            None => {
+                // No run exists yet — this is a fresh execution.
+                // Just create run 0 and schedule body.
+                let run_id = format!("{execution_id}:run:0");
+                let payload = new_payload.unwrap_or(serde_json::json!({}));
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO zart_executions (execution_id, task_name)
+                    VALUES ($1, $2)
+                    ON CONFLICT (execution_id) DO NOTHING
+                    "#,
+                )
+                .bind(execution_id)
+                .bind("") // task_name gets set below
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+                // Get task_name
+                let task_name: Option<String> = sqlx::query_scalar(
+                    r#"
+                    SELECT task_name FROM zart_executions WHERE execution_id = $1
+                    "#,
+                )
+                .bind(execution_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+                let task_name = task_name.unwrap_or_default();
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO zart_execution_runs
+                        (run_id, execution_id, run_index, payload, trigger, triggered_by)
+                    VALUES ($1, $2, 0, $3, 'restart', $5)
+                    "#,
+                )
+                .bind(&run_id)
+                .bind(execution_id)
+                .bind(&payload)
+                .bind(triggered_by)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+                sqlx::query(
+                    r#"
+                    UPDATE zart_executions
+                    SET current_run_id = $1
+                    WHERE execution_id = $2
+                    "#,
+                )
+                .bind(&run_id)
+                .bind(execution_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+                // Schedule body
+                let body_task_id = format!("{run_id}:body:start");
+                let body_metadata = serde_json::json!({
+                    "mode": "body",
+                    "run_id": run_id,
+                    "execution_id": execution_id,
+                });
+                sqlx::query(
+                    r#"
+                    INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
+                    VALUES ($1, $2, NOW(), $3, $4)
+                    "#,
+                )
+                .bind(&body_task_id)
+                .bind(&task_name)
+                .bind(&payload)
+                .bind(&body_metadata)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+                tx.commit()
+                    .await
+                    .map_err(|e| StorageError::Database(Box::new(e)))?;
+                return Ok(run_id);
+            }
+            Some(row) => row,
+        };
+
+        // Archive the current run — keep actual status so restarts of running
+        // executions are distinguishable from natural completions.
+        sqlx::query(
+            r#"
+            UPDATE zart_execution_runs
+            SET status = $1, completed_at = COALESCE(completed_at, NOW())
+            WHERE run_id = $2 AND completed_at IS NULL
+            "#,
+        )
+        .bind(current_status)
+        .bind(&current_run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 2. Get the max run_index to compute the next one.
+        let max_index: i32 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(MAX(run_index), -1)
+            FROM zart_execution_runs
+            WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let next_index = max_index + 1;
+        let new_run_id = format!("{execution_id}:run:{next_index}");
+
+        // 3. Determine payload: use new_payload if provided, else keep existing.
+        let payload = new_payload.unwrap_or(current_payload);
+
+        // 4. Get task_name from execution record.
+        let task_name: String = sqlx::query_scalar(
+            r#"
+            SELECT task_name FROM zart_executions WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 5. Insert new run with trigger = 'restart'.
+        sqlx::query(
+            r#"
+            INSERT INTO zart_execution_runs
+                (run_id, execution_id, run_index, payload, trigger, triggered_by)
+            VALUES ($1, $2, $3, $4, 'restart', $5)
+            "#,
+        )
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .bind(next_index)
+        .bind(&payload)
+        .bind(triggered_by)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 6. Update execution to point to the new run.
+        sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET current_run_id = $1
+            WHERE execution_id = $2
+            "#,
+        )
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 7. Schedule a fresh body task at segment 0.
+        let body_task_id = format!("{new_run_id}:body:start");
+        let body_metadata = serde_json::json!({
+            "mode": "body",
+            "run_id": new_run_id,
+            "execution_id": execution_id,
+        });
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
+            VALUES ($1, $2, NOW(), $3, $4)
+            "#,
+        )
+        .bind(&body_task_id)
+        .bind(&task_name)
+        .bind(&payload)
+        .bind(&body_metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(new_run_id)
+    }
+
+    async fn admin_rerun_steps(
+        &self,
+        execution_id: &str,
+        force_rerun: &[String],
+        preserve: &[String],
+        triggered_by: Option<&str>,
+    ) -> Result<(String, Vec<String>), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 1. Get the current run.
+        let current_run: Option<(String, serde_json::Value, String)> = sqlx::query_as(
+            r#"
+            SELECT r.run_id, r.payload, e.task_name
+            FROM zart_executions e
+            JOIN zart_execution_runs r ON e.current_run_id = r.run_id
+            WHERE e.execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let (current_run_id, payload, task_name) = match current_run {
+            None => {
+                return Err(StorageError::NotFound(format!(
+                    "No run found for execution {execution_id}"
+                )));
+            }
+            Some(row) => row,
+        };
+
+        // 2. Archive the current run.
+        sqlx::query(
+            r#"
+            UPDATE zart_execution_runs
+            SET status = COALESCE(NULLIF(status, 'running'), 'running'),
+                completed_at = COALESCE(completed_at, NOW())
+            WHERE run_id = $1 AND completed_at IS NULL
+            "#,
+        )
+        .bind(&current_run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 3. Fetch all steps in the current run with their status.
+        let steps: Vec<(String, StepStatus)> = sqlx::query_as(
+            r#"
+            SELECT step_name, status
+            FROM zart_steps
+            WHERE run_id = $1
+            ORDER BY scheduled_at ASC
+            "#,
+        )
+        .bind(&current_run_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 4. Compute the effective rerun set:
+        //    - All force_rerun steps (even if completed)
+        //    - All dead steps (always rerun)
+        let mut effective_rerun: HashSet<String> = force_rerun.iter().cloned().collect();
+        for (name, status) in &steps {
+            if matches!(status, StepStatus::Dead) {
+                effective_rerun.insert(name.clone());
+            }
+        }
+
+        // Remove preserved steps that are NOT failed/dead from the rerun set.
+        let preserve_set: HashSet<&str> = preserve.iter().map(|s| s.as_str()).collect();
+        let step_status_map: HashMap<&str, StepStatus> = steps
+            .iter()
+            .map(|(name, status)| (name.as_str(), status.clone()))
+            .collect();
+        for p in &preserve_set {
+            if let Some(status) = step_status_map.get(p)
+                && matches!(status, StepStatus::Completed)
+            {
+                effective_rerun.remove(*p);
+            }
+        }
+
+        // 5. Compute the new run index.
+        let max_index: i32 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(MAX(run_index), -1)
+            FROM zart_execution_runs
+            WHERE execution_id = $1
+            "#,
+        )
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let next_index = max_index + 1;
+        let new_run_id = format!("{execution_id}:run:{next_index}");
+
+        // 6. Insert new run.
+        sqlx::query(
+            r#"
+            INSERT INTO zart_execution_runs
+                (run_id, execution_id, run_index, payload, trigger, triggered_by)
+            VALUES ($1, $2, $3, $4, 'selective_rerun', $5)
+            "#,
+        )
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .bind(next_index)
+        .bind(&payload)
+        .bind(triggered_by)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 7. Update execution pointer.
+        sqlx::query(
+            r#"
+            UPDATE zart_executions
+            SET current_run_id = $1
+            WHERE execution_id = $2
+            "#,
+        )
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        // 8. Schedule fresh body task.
+        let body_task_id = format!("{new_run_id}:body:start");
+        let body_metadata = serde_json::json!({
+            "mode": "body",
+            "run_id": new_run_id,
+            "execution_id": execution_id,
+        });
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
+            VALUES ($1, $2, NOW(), $3, $4)
+            "#,
+        )
+        .bind(&body_task_id)
+        .bind(&task_name)
+        .bind(&payload)
+        .bind(&body_metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok((new_run_id, effective_rerun.into_iter().collect()))
     }
 }

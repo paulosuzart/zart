@@ -34,6 +34,7 @@
 //! }
 //! ```
 
+pub mod admin;
 pub mod api;
 pub mod api_trait;
 pub mod context;
@@ -52,6 +53,10 @@ pub mod worker;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
+pub use admin::{
+    AdminOperation, AdminOperationContext, PauseRule, PauseScope, RerunResult, RerunSpec,
+    ResumeResult,
+};
 pub use api::{
     ExecutionInfo, capture, context, now, require, schedule, sleep, sleep_until, step, step_or,
     step_or_else, wait, wait_for_event,
@@ -75,7 +80,8 @@ pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
     pub use crate::{
-        ExecutionInfo,
+        AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope, RerunResult,
+        RerunSpec, ResumeResult,
         api_trait::DurableApi,
         capture, context,
         context::{StepHandle, ZartStep},
