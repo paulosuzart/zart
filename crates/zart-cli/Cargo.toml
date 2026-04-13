@@ -9,6 +9,7 @@ license.workspace = true
 [[bin]]
 name = "zart"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 zart.workspace = true

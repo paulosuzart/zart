@@ -6,27 +6,69 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// A user-defined durable execution handler.
+/// The top-level workflow definition for a durable execution.
 ///
-/// Implement this trait to define durable work. The framework calls [`run`](DurableExecution::run)
-/// whenever a task is picked up from the scheduler. Steps inside `run` drive the
-/// durable execution through the control-flow error model.
+/// Implement this trait to define a multi-step workflow. The framework
+/// persists every step result to the database. When a worker restarts,
+/// `run()` is called again but completed steps short-circuit — their cached
+/// output is returned instantly rather than re-executing the step body.
+///
+/// # Re-entry contract
+///
+/// `run()` **will be called more than once** for the same execution:
+///
+/// - after each step schedules the next one, the body task exits and a new
+///   body task is enqueued;
+/// - on worker restart, incomplete executions resume from the last committed
+///   step.
+///
+/// As a result, code in `run()` that sits *outside* a `zart::require()` /
+/// `zart::step()` call will execute on every re-entry. Keep such code
+/// side-effect free or guard it with a step.
+///
+/// # Associated types
+///
+/// - [`Data`](DurableExecution::Data) — the input payload. Deserialized from
+///   JSON when the execution is picked up; must be [`serde::Deserialize`].
+/// - [`Output`](DurableExecution::Output) — the final result written to
+///   `zart_executions.result` on success; must be [`serde::Serialize`].
+///
+/// # Failure handling
+///
+/// When `run()` returns `Err`, the default behaviour marks the execution as
+/// failed. Override [`on_failure`](DurableExecution::on_failure) to intercept
+/// failures and produce a synthetic success result (e.g. to emit a
+/// compensating event before completing).
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// use zart::prelude::*;
-/// use async_trait::async_trait;
 ///
-/// struct GreetTask;
+/// struct FulfillOrder;
 ///
-/// #[async_trait]
-/// impl DurableExecution for GreetTask {
-///     type Data = String;
-///     type Output = String;
+/// #[async_trait::async_trait]
+/// impl DurableExecution for FulfillOrder {
+///     type Data   = OrderId;
+///     type Output = TrackingNumber;
 ///
-///     async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
-///         Ok(format!("Hello, {}!", data))
+///     async fn run(&self, order_id: OrderId) -> Result<TrackingNumber, TaskError> {
+///         // Each step is executed once and its result cached.
+///         // On re-entry the cached value is returned without calling the step body.
+///         let _reserved = zart::require(ReserveInventory { order_id }).await?;
+///         let _charged   = zart::require(ChargePayment    { order_id }).await?;
+///         let tracking   = zart::require(ShipOrder        { order_id }).await?;
+///         Ok(tracking)
+///     }
+///
+///     async fn on_failure(
+///         &self,
+///         order_id: OrderId,
+///         failure: ExecutionFailure,
+///     ) -> Result<TrackingNumber, TaskError> {
+///         // Emit a compensating event before marking the execution failed.
+///         notify_ops_team(order_id, &failure).await;
+///         Err(TaskError::Cancelled)
 ///     }
 /// }
 /// ```
@@ -154,9 +196,34 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
     }
 }
 
-/// A registry that maps task names to their concrete handlers.
+/// Maps task-name strings to their [`DurableExecution`] handlers.
 ///
-/// Built once at startup and shared (via [`Arc`]) across all workers.
+/// The registry is built once at application startup, then wrapped in an
+/// [`Arc`] and shared across all workers. It cannot be modified after that
+/// point — there is no hot-reload mechanism.
+///
+/// The **task name** is the string key used both when registering a handler
+/// here and when starting an execution via
+/// [`DurableScheduler::start`](crate::durable::DurableScheduler::start) /
+/// [`DurableScheduler::start_for`](crate::durable::DurableScheduler::start_for).
+/// The names must match exactly.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use zart::{TaskRegistry, Worker, WorkerConfig};
+///
+/// let mut registry = TaskRegistry::new();
+/// registry.register("fulfill-order",  FulfillOrder);
+/// registry.register("onboard-user",   OnboardUser);
+/// registry.register("send-invoice",   SendInvoice);
+///
+/// // Wrap once; clone the Arc for each worker.
+/// let registry = Arc::new(registry);
+///
+/// let worker = Worker::new(scheduler.clone(), Arc::clone(&registry), WorkerConfig::default());
+/// ```
 pub struct TaskRegistry {
     handlers: HashMap<String, Box<dyn RegisteredTask>>,
 }

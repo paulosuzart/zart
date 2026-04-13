@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-scheduler.workspace = true
+scheduler = { workspace = true, features = ["postgres"] }
 zart-macros.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -21,6 +21,7 @@ tokio.workspace = true
 prometheus = { workspace = true, optional = true }
 lazy_static = { workspace = true, optional = true }
 tokio-util.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
 
 [features]
 metrics = ["dep:prometheus", "dep:lazy_static"]

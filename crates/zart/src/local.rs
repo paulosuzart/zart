@@ -56,3 +56,12 @@ pub(crate) fn body_ctx() -> Arc<TaskContext> {
     });
     ZART_CTX.with(Arc::clone)
 }
+
+/// Returns `true` if the current phase is `Phase::Step`.
+///
+/// Used by `zart::trx` to guard against being called outside a step.
+pub(crate) fn is_step_phase() -> bool {
+    ZART_PHASE
+        .try_with(|phase| matches!(phase, Phase::Step(_)))
+        .unwrap_or(false)
+}

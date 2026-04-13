@@ -20,12 +20,62 @@ use std::time::Duration;
 // Maximum duration for `wait_with_timeout` as per the spec.
 const MAX_WAIT_SECS: u64 = 30;
 
-/// High-level entry point for durable executions.
+/// Starts, queries, and awaits durable executions.
 ///
-/// Wraps the underlying scheduler backend and coordinates:
-/// - inserting an execution record in `zart_executions`
-/// - scheduling the root task in `zart_tasks`
-/// - querying and waiting for execution completion
+/// `DurableScheduler` is the public interface your application uses to trigger
+/// workflows and read their status. Workers pick up and execute the work;
+/// `DurableScheduler` is only the control plane.
+///
+/// # Execution IDs and idempotency
+///
+/// Every execution is identified by a caller-chosen string ID. Calling
+/// [`start`](Self::start) with an ID that already exists in a non-terminal
+/// state returns [`SchedulerError::ExecutionAlreadyExists`]. If the existing
+/// execution is in a terminal state (completed / failed / cancelled), it is
+/// reset and re-queued — useful for manual retries without changing the ID.
+///
+/// Choose IDs that are meaningful and stable: `"onboard-{user_id}"`,
+/// `"invoice-{invoice_id}"`. This makes deduplication free — calling `start`
+/// twice with the same ID from two concurrent request handlers is safe.
+///
+/// # Starting executions
+///
+/// | Method | Payload | Type-safe? |
+/// |---|---|---|
+/// | [`start`](Self::start) | `serde_json::Value` | No |
+/// | [`start_for::<H>`](Self::start_for) | `H::Data` | Yes |
+/// | [`start_in_tx`](Self::start_in_tx) | `serde_json::Value` | No, but atomic with caller tx |
+/// | [`start_for_in_tx::<H>`](Self::start_for_in_tx) | `H::Data` | Yes, atomic with caller tx |
+///
+/// # Waiting for results
+///
+/// | Method | Returns |
+/// |---|---|
+/// | [`wait`](Self::wait) | Raw [`ExecutionRecord`] |
+/// | [`wait_for::<H>`](Self::wait_for) | `H::Output` (typed) |
+/// | [`wait_completion::<T>`](Self::wait_completion) | `T` (generic) |
+///
+/// Waiting polls the database on a short interval up to the specified
+/// timeout. For production use, prefer event-driven notification (webhooks,
+/// SSE) over long-polling `wait`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use zart::{DurableScheduler, prelude::*};
+///
+/// let sched = DurableScheduler::new(scheduler.clone());
+///
+/// // Fire and forget.
+/// sched
+///     .start_for::<OnboardUser>("onboard-alice", "onboard-user", &user_id)
+///     .await?;
+///
+/// // Fire and wait (e.g., in a background job that needs the result).
+/// let workspace_id = sched
+///     .wait_for::<OnboardUser>("onboard-alice", Duration::from_secs(30), None)
+///     .await?;
+/// ```
 pub struct DurableScheduler {
     scheduler: Arc<dyn StorageBackend>,
     pause_storage: Option<Arc<dyn PauseStorage>>,
@@ -57,44 +107,55 @@ impl DurableScheduler {
     /// (completed, failed, cancelled), it will be reset to "scheduled" so it
     /// can be retried. If it exists and is **not** in a terminal state,
     /// [`SchedulerError::ExecutionAlreadyExists`] is returned.
+    ///
+    /// For first-time executions, the execution record and root body task are
+    /// inserted in a single database transaction so that a crash between the
+    /// two operations cannot leave an execution record with no scheduled task.
+    ///
+    /// To include the execution in your own caller-owned transaction, use
+    /// [`Self::start_in_tx`] instead.
     pub async fn start(
         &self,
         execution_id: &str,
         task_name: &str,
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
-        // Check if execution already exists.
+        // Check if execution already exists (read-only, outside the transaction).
+        let existing = self.scheduler.get_execution(execution_id).await?;
         let run_id: String;
+        let reset_mode;
 
-        if let Some(existing) = self.scheduler.get_execution(execution_id).await? {
-            match existing.status {
-                // Still running — don't create a duplicate.
-                ExecutionStatus::Scheduled | ExecutionStatus::Running => {
-                    return Err(SchedulerError::ExecutionAlreadyExists(
-                        execution_id.to_string(),
-                        existing.status,
-                    ));
-                }
-                // Terminal state — reset so we can retry.
-                ExecutionStatus::Completed
-                | ExecutionStatus::Failed
-                | ExecutionStatus::Cancelled => {
-                    // reset_execution returns the new run_id directly.
-                    run_id = self
-                        .scheduler
-                        .reset_execution(execution_id, payload.clone())
-                        .await?;
+        match existing {
+            Some(ref record) => {
+                match record.status {
+                    // Still running — don't create a duplicate.
+                    ExecutionStatus::Scheduled | ExecutionStatus::Running => {
+                        return Err(SchedulerError::ExecutionAlreadyExists(
+                            execution_id.to_string(),
+                            record.status.clone(),
+                        ));
+                    }
+                    // Terminal state — reset so we can retry.
+                    ExecutionStatus::Completed
+                    | ExecutionStatus::Failed
+                    | ExecutionStatus::Cancelled => {
+                        // reset_execution returns the new run_id directly.
+                        run_id = self
+                            .scheduler
+                            .reset_execution(execution_id, payload.clone())
+                            .await?;
+                        reset_mode = true;
+                    }
                 }
             }
-        } else {
-            // First time — insert the record.
-            self.scheduler
-                .start_execution(execution_id, task_name, payload.clone())
-                .await?;
-            run_id = format!("{execution_id}:run:0");
+            None => {
+                run_id = format!("{execution_id}:run:0");
+                reset_mode = false;
+            }
         }
 
-        // Schedule the root task that drives the execution.
+        // Schedule the root task. For first-time executions, the execution
+        // record and body task are created in a single transaction.
         // The task_id is "{run_id}:body:start" — deterministic and debuggable.
         let task_id = format!("{run_id}:body:start");
         let metadata = serde_json::json!({
@@ -102,18 +163,38 @@ impl DurableScheduler {
             "run_id": run_id,
             "execution_id": execution_id.to_string(),
         });
-        let result = self
-            .scheduler
-            .schedule_at(ScheduleAtParams {
-                task_id: task_id.clone(),
-                task_name: task_name.to_string(),
-                execution_time: chrono::Utc::now(),
-                data: payload,
-                recurrence: None,
-                metadata,
-            })
-            .await
-            .map_err(SchedulerError::Database)?;
+
+        let params = ScheduleAtParams {
+            task_id: task_id.clone(),
+            task_name: task_name.to_string(),
+            execution_time: chrono::Utc::now(),
+            data: payload.clone(),
+            recurrence: None,
+            metadata,
+        };
+
+        if reset_mode {
+            // For reset (retried) executions, just schedule the task.
+            return self
+                .scheduler
+                .schedule_at(params)
+                .await
+                .map_err(SchedulerError::Database);
+        }
+
+        // First-time execution: use a single transaction to atomically
+        // create the execution record and schedule the root task.
+        let mut conn = self.scheduler.begin().await?;
+
+        self.scheduler
+            .start_execution_in_tx(&mut conn, execution_id, task_name, payload)
+            .await?;
+
+        let result = self.scheduler.schedule_at_in_tx(&mut conn, params).await?;
+
+        conn.commit().await.map_err(|e| {
+            SchedulerError::Database(scheduler::StorageError::Database(Box::new(e)))
+        })?;
 
         Ok(result)
     }
@@ -288,6 +369,109 @@ impl DurableScheduler {
     ) -> Result<ScheduleResult, SchedulerError> {
         let payload = serde_json::to_value(input)?;
         self.start(execution_id, task_name, payload).await
+    }
+
+    // ── Transactional scheduling ──────────────────────────────────────────────
+
+    /// Start a durable execution within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    /// If the transaction rolls back, no execution record or body task will exist.
+    ///
+    /// This enables atomic coordination between user database writes and
+    /// durable execution scheduling. For example, inserting a user row and
+    /// starting an onboarding execution in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// - [`SchedulerError::NotSupported`] if the execution already exists (reset-in-tx
+    ///   is not supported in V1; use the non-transactional `start` for resets).
+    /// - [`SchedulerError::Database`] if the storage backend fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut tx = pool.begin().await?;
+    ///
+    /// sqlx::query("INSERT INTO users (id, email) VALUES ($1, $2)")
+    ///     .bind(user_id).bind(&email)
+    ///     .execute(&mut *tx)
+    ///     .await?;
+    ///
+    /// sched.start_in_tx(
+    ///     &mut tx,
+    ///     &format!("onboard-{user_id}"),
+    ///     "onboarding",
+    ///     json!({ "user_id": user_id }),
+    /// ).await?;
+    ///
+    /// tx.commit().await?; // both operations commit atomically
+    /// ```
+    pub async fn start_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<ScheduleResult, SchedulerError> {
+        // Check if execution already exists — if so, we don't support reset-in-tx in V1.
+        if let Some(_existing) = self.scheduler.get_execution(execution_id).await? {
+            return Err(SchedulerError::NotSupported(
+                "start_in_tx does not support resetting existing executions; use start() instead",
+            ));
+        }
+
+        let run_id = format!("{execution_id}:run:0");
+        let task_id = format!("{run_id}:body:start");
+        let metadata = serde_json::json!({
+            "mode": "body",
+            "run_id": run_id,
+            "execution_id": execution_id.to_string(),
+        });
+
+        let params = ScheduleAtParams {
+            task_id: task_id.clone(),
+            task_name: task_name.to_string(),
+            execution_time: chrono::Utc::now(),
+            data: payload.clone(),
+            recurrence: None,
+            metadata,
+        };
+
+        self.scheduler
+            .start_execution_in_tx(tx, execution_id, task_name, payload)
+            .await?;
+
+        self.scheduler
+            .schedule_at_in_tx(tx, params)
+            .await
+            .map_err(SchedulerError::Database)
+    }
+
+    /// Typed wrapper around [`Self::start_in_tx`].
+    ///
+    /// Infers the input type from `H::Data`. See [`Self::start_in_tx`] for
+    /// the transaction ownership contract and error semantics.
+    ///
+    /// # Why no `start_and_wait_for_in_tx`?
+    ///
+    /// The transaction must be committed before waiting for completion makes
+    /// sense (the worker can't poll an uncommitted task). The pattern is:
+    ///
+    /// ```rust,ignore
+    /// sched.start_for_in_tx::<MyHandler>(&mut tx, id, task, &input).await?;
+    /// tx.commit().await?;
+    /// let result = sched.wait_for::<MyHandler>(id, timeout).await?;
+    /// ```
+    pub async fn start_for_in_tx<H: DurableExecution>(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        execution_id: &str,
+        task_name: &str,
+        input: &H::Data,
+    ) -> Result<ScheduleResult, SchedulerError> {
+        let payload = serde_json::to_value(input)?;
+        self.start_in_tx(tx, execution_id, task_name, payload).await
     }
 
     /// Block until the execution reaches a terminal state, then deserialize

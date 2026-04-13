@@ -11,6 +11,7 @@
 
 mod pause_storage_impl;
 mod scheduler_impl;
+mod sql_helpers;
 mod storage_impl;
 
 use sqlx::PgPool;
@@ -28,5 +29,10 @@ impl PostgresScheduler {
     /// Create a new scheduler wrapping the given connection pool.
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Returns a reference to the underlying connection pool.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 }

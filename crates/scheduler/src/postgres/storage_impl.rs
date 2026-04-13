@@ -2,8 +2,10 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+use sqlx::PgConnection;
 
 use super::PostgresScheduler;
+use super::sql_helpers::{complete_step_and_schedule_body_sql, start_execution_sql};
 use crate::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
     DurableStorage, EventDeliveryResult, ExecutionRecord, ExecutionStatus,
@@ -26,71 +28,26 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        // Insert execution record
-        sqlx::query(
-            r#"
-            INSERT INTO zart_executions (execution_id, task_name)
-            VALUES ($1, $2)
-            ON CONFLICT (execution_id) DO NOTHING
-            "#,
-        )
-        .bind(execution_id)
-        .bind(task_name)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        // Check if a run already exists at index 0
-        let run_exists: bool = sqlx::query_scalar(
-            r#"
-            SELECT EXISTS(
-                SELECT 1 FROM zart_execution_runs
-                WHERE execution_id = $1 AND run_index = 0
-            )
-            "#,
-        )
-        .bind(execution_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        // Create run row if it doesn't exist
-        if !run_exists {
-            let run_id = format!("{execution_id}:run:0");
-            sqlx::query(
-                r#"
-                INSERT INTO zart_execution_runs
-                    (run_id, execution_id, run_index, payload, trigger)
-                VALUES ($1, $2, 0, $3, 'initial')
-                ON CONFLICT DO NOTHING
-                "#,
-            )
-            .bind(&run_id)
-            .bind(execution_id)
-            .bind(&payload)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-            // Set current_run_id pointer
-            sqlx::query(
-                r#"
-                UPDATE zart_executions
-                SET current_run_id = $1
-                WHERE execution_id = $2 AND current_run_id IS NULL
-                "#,
-            )
-            .bind(&run_id)
-            .bind(execution_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
-        }
+        start_execution_sql(&mut tx, execution_id, task_name, &payload).await?;
 
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
+    }
+
+    /// Start a durable execution within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    /// If the transaction rolls back, no execution record or body task will exist.
+    async fn start_execution_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        start_execution_sql(conn, execution_id, task_name, &payload).await
     }
 
     async fn complete_execution(
@@ -1162,80 +1119,23 @@ impl DurableStorage for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
-        sqlx::query(
-            r#"
-            INSERT INTO zart_step_attempts (attempt_id, step_id, attempt_number, status, completed_at, result, error)
-            VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
-            ON CONFLICT (attempt_id) DO NOTHING
-            "#,
-        )
-        .bind(&attempt_id)
-        .bind(&params.step_id)
-        .bind(params.attempt_number as i32)
-        .bind(&params.result)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        sqlx::query(
-            r#"
-            UPDATE zart_steps SET status = 'completed', result = $1, result_kind = $2, completed_at = $3 WHERE step_id = $4
-            "#,
-        )
-        .bind(&params.result)
-        .bind(params.result_kind)
-        .bind(Utc::now())
-        .bind(&params.step_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        let rows_affected = sqlx::query(
-            r#"
-            UPDATE zart_tasks SET status = 'completed', result = $1, completed_at = NOW(), updated_at = NOW(), locked_at = NULL, worker_id = NULL
-            WHERE task_id = $2 AND worker_id = $3
-            "#,
-        )
-        .bind(&params.result)
-        .bind(&params.step_task_id)
-        .bind(&params.lock_token)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?
-        .rows_affected();
-
-        if rows_affected == 0 {
-            tx.rollback()
-                .await
-                .map_err(|e| StorageError::Database(Box::new(e)))?;
-            return Err(StorageError::LockMismatch(params.step_task_id.clone()));
-        }
-
-        let body_metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": params.run_id,
-            "execution_id": params.run_id.split(":run:").next().unwrap_or(&params.run_id),
-        });
-        sqlx::query(
-            r#"
-            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, NOW(), $3, $4)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-        )
-        .bind(&params.next_body_task_id)
-        .bind(&params.task_name)
-        .bind(&params.data)
-        .bind(&body_metadata)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        complete_step_and_schedule_body_sql(&mut tx, &params).await?;
 
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
+    }
+
+    /// Complete a step and schedule the next body task within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    async fn complete_step_and_schedule_body_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        params: CompleteStepAndScheduleBodyParams,
+    ) -> Result<(), StorageError> {
+        complete_step_and_schedule_body_sql(conn, &params).await
     }
 
     async fn complete_step_no_resume(

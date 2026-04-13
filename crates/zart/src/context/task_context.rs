@@ -363,14 +363,12 @@ impl TaskContext {
                     |ctx: &TaskContext, timeout_dur: std::time::Duration, scope: TimeoutScope| {
                         match scope {
                             TimeoutScope::Global => {
-                                // Use the stored step deadline to compute remaining time.
                                 if let Some(deadline) = ctx.step_deadline {
                                     let now = chrono::Utc::now();
                                     if now >= deadline {
-                                        return None; // Already past deadline — no lambda execution.
+                                        return None;
                                     }
                                     let remaining = deadline - now;
-                                    // Cap by execution deadline if present.
                                     let capped = if let Some(exec_deadline) = ctx.execution_deadline
                                     {
                                         if exec_deadline < deadline {
@@ -383,47 +381,63 @@ impl TaskContext {
                                     };
                                     capped.filter(|d| !d.is_zero())
                                 } else {
-                                    // No deadline stored — fall back to raw duration (backward compat).
                                     Some(timeout_dur)
                                 }
                             }
-                            TimeoutScope::PerAttempt => {
-                                // Each attempt gets a fresh countdown.
-                                Some(timeout_dur)
-                            }
+                            TimeoutScope::PerAttempt => Some(timeout_dur),
                         }
                     };
 
-                let (json, kind) = if let Some(timeout_dur) = timeout_duration {
-                    // Check for expired deadline before running the lambda.
-                    if matches!(timeout_scope, TimeoutScope::Global) {
-                        if let Some(deadline) = self.step_deadline {
-                            if chrono::Utc::now() >= deadline {
-                                // Deadline already passed — immediate TimedOut, no lambda.
-                                let dummy =
-                                    serde_json::Value::String("step deadline reached".to_string());
-                                (dummy, RK::TimedOut)
-                            } else {
-                                // Compute remaining time, capped by execution deadline.
-                                let remaining = effective_timeout(self, timeout_dur, timeout_scope);
-                                if let Some(dur) = remaining {
-                                    match tokio::time::timeout(dur, run_with_serialization()).await
-                                    {
-                                        Ok(result) => result?,
-                                        Err(_) => {
-                                            let dummy = serde_json::Value::String(format!(
-                                                "step timed out after {:?}",
-                                                dur
-                                            ));
-                                            (dummy, RK::TimedOut)
-                                        }
-                                    }
+                // Transactional step completion (Scenario 2): wrap the step execution
+                // AND completion with the STEP_TRX task-local so `zart::trx()` can
+                // register a transaction for atomic completion.
+                crate::trx_impl::with_step_trx::<
+                    _,
+                    Result<crate::error::StepOutcome<S::Output, S::Error>, StepError>,
+                >(async {
+                    let (json, kind) = if let Some(timeout_dur) = timeout_duration {
+                        if matches!(timeout_scope, TimeoutScope::Global) {
+                            if let Some(deadline) = self.step_deadline {
+                                if chrono::Utc::now() >= deadline {
+                                    let dummy = serde_json::Value::String(
+                                        "step deadline reached".to_string(),
+                                    );
+                                    (dummy, RK::TimedOut)
                                 } else {
-                                    run_with_serialization().await?
+                                    let remaining =
+                                        effective_timeout(self, timeout_dur, timeout_scope);
+                                    if let Some(dur) = remaining {
+                                        match tokio::time::timeout(dur, run_with_serialization())
+                                            .await
+                                        {
+                                            Ok(result) => result?,
+                                            Err(_) => {
+                                                let dummy = serde_json::Value::String(format!(
+                                                    "step timed out after {:?}",
+                                                    dur
+                                                ));
+                                                (dummy, RK::TimedOut)
+                                            }
+                                        }
+                                    } else {
+                                        run_with_serialization().await?
+                                    }
+                                }
+                            } else {
+                                match tokio::time::timeout(timeout_dur, run_with_serialization())
+                                    .await
+                                {
+                                    Ok(result) => result?,
+                                    Err(_) => {
+                                        let dummy = serde_json::Value::String(format!(
+                                            "step timed out after {:?}",
+                                            timeout_dur
+                                        ));
+                                        (dummy, RK::TimedOut)
+                                    }
                                 }
                             }
                         } else {
-                            // No deadline stored — fall back to raw duration (backward compat / PerAttempt).
                             match tokio::time::timeout(timeout_dur, run_with_serialization()).await
                             {
                                 Ok(result) => result?,
@@ -437,84 +451,82 @@ impl TaskContext {
                             }
                         }
                     } else {
-                        // PerAttempt scope: fresh countdown.
-                        match tokio::time::timeout(timeout_dur, run_with_serialization()).await {
-                            Ok(result) => result?,
-                            Err(_) => {
-                                let dummy = serde_json::Value::String(format!(
-                                    "step timed out after {:?}",
-                                    timeout_dur
-                                ));
-                                (dummy, RK::TimedOut)
-                            }
+                        run_with_serialization().await?
+                    };
+
+                    let (retry_attempt, _) = match &self.execution_mode {
+                        ExecutionMode::Step {
+                            retry_attempt,
+                            retry_config,
+                            ..
+                        } => (*retry_attempt, retry_config.clone()),
+                        _ => (0, None),
+                    };
+
+                    if matches!(kind, RK::Err) {
+                        crate::trx_impl::rollback_trx()
+                            .await
+                            .map_err(|e| StepError::Failed {
+                                step: step_name_owned.clone(),
+                                reason: format!("failed to rollback step transaction: {e}"),
+                            })?;
+
+                        if let Some(next) = crate::step_types::dispatch::next_retry_time(
+                            &retry_config,
+                            retry_attempt,
+                        ) {
+                            step_ops::reschedule_step_for_retry(
+                                &*self.scheduler,
+                                &self.task_id,
+                                retry_attempt + 1,
+                                "business error",
+                                next,
+                                &self.lock_token,
+                            )
+                            .await
+                            .map_err(|e| StepError::Failed {
+                                step: step_name_owned.clone(),
+                                reason: format!("failed to schedule retry: {e}"),
+                            })?;
+                            return Err(StepError::StepExecuted {
+                                step: step_name_owned,
+                            });
                         }
-                    }
-                } else {
-                    run_with_serialization().await?
-                };
 
-                let (retry_attempt, _) = match &self.execution_mode {
-                    ExecutionMode::Step {
-                        retry_attempt,
-                        retry_config,
-                        ..
-                    } => (*retry_attempt, retry_config.clone()),
-                    _ => (0, None),
-                };
-
-                if matches!(kind, RK::Err) {
-                    // Business error — handle retry or complete with err kind.
-                    if let Some(next) =
-                        crate::step_types::dispatch::next_retry_time(&retry_config, retry_attempt)
-                    {
-                        step_ops::reschedule_step_for_retry(
-                            &*self.scheduler,
-                            &self.task_id,
-                            retry_attempt + 1,
-                            "business error",
-                            next,
-                            &self.lock_token,
-                        )
-                        .await
-                        .map_err(|e| StepError::Failed {
-                            step: step_name_owned.clone(),
-                            reason: format!("failed to schedule retry: {e}"),
-                        })?;
+                        let outcome_kind =
+                            if retry_config.as_ref().is_some_and(|rc| rc.max_attempts > 0) {
+                                RK::RetryExhausted
+                            } else {
+                                RK::Err
+                            };
+                        self.complete_step_and_schedule_body(json, outcome_kind, retry_attempt + 1)
+                            .await?;
                         return Err(StepError::StepExecuted {
                             step: step_name_owned,
                         });
                     }
 
-                    // No retries remaining. If retries were never configured (max_attempts == 0),
-                    // store as business error ('err'). If retries were configured but exhausted,
-                    // store as 'rx'.
-                    let outcome_kind =
-                        if retry_config.as_ref().is_some_and(|rc| rc.max_attempts > 0) {
-                            RK::RetryExhausted
-                        } else {
-                            RK::Err
-                        };
-                    self.complete_step_and_schedule_body(json, outcome_kind, retry_attempt + 1)
-                        .await?;
-                    return Err(StepError::StepExecuted {
-                        step: step_name_owned,
-                    });
-                }
+                    if matches!(kind, RK::TimedOut) {
+                        crate::trx_impl::rollback_trx()
+                            .await
+                            .map_err(|e| StepError::Failed {
+                                step: step_name_owned.clone(),
+                                reason: format!("failed to rollback step transaction: {e}"),
+                            })?;
+                        self.complete_step_and_schedule_body(json, RK::TimedOut, retry_attempt + 1)
+                            .await?;
+                        return Err(StepError::StepExecuted {
+                            step: step_name_owned,
+                        });
+                    }
 
-                if matches!(kind, RK::TimedOut) {
-                    self.complete_step_and_schedule_body(json, RK::TimedOut, retry_attempt + 1)
+                    self.complete_step_and_schedule_body(json, kind, retry_attempt + 1)
                         .await?;
-                    return Err(StepError::StepExecuted {
+                    Err(StepError::StepExecuted {
                         step: step_name_owned,
-                    });
-                }
-
-                // Success path.
-                self.complete_step_and_schedule_body(json, kind, retry_attempt + 1)
-                    .await?;
-                Err(StepError::StepExecuted {
-                    step: step_name_owned,
+                    })
                 })
+                .await
             }
         }
     }
@@ -522,6 +534,10 @@ impl TaskContext {
     /// Complete a step row and schedule the next body segment in one transaction.
     ///
     /// Used in step mode when the target step lambda completes (success or error).
+    ///
+    /// If a transaction was registered via `zart::trx()`, it will be used for
+    /// the completion writes and then committed. Otherwise, a new transaction
+    /// is created.
     async fn complete_step_and_schedule_body(
         &self,
         result: serde_json::Value,
@@ -552,6 +568,29 @@ impl TaskContext {
             data: self.data().clone(),
         };
 
+        // Check if a transaction was registered via zart::trx().
+        // SAFETY: contention-free — ZartTrx (which held the lock) was dropped
+        // when the step lambda returned, before this function is called.
+        if let Some(mut tx) = crate::trx_impl::take_step_trx().await {
+            self.scheduler
+                .complete_step_and_schedule_body_in_tx(&mut tx, spec)
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: self.task_id.clone(),
+                    reason: e.to_string(),
+                })?;
+
+            // Commit the user-registered transaction.
+            crate::trx_impl::commit_trx(tx)
+                .await
+                .map_err(|e| StepError::Failed {
+                    step: self.task_id.clone(),
+                    reason: format!("failed to commit step transaction: {e}"),
+                })?;
+            return Ok(());
+        }
+
+        // Default path: framework opens its own transaction.
         self.scheduler
             .complete_step_and_schedule_body(spec)
             .await

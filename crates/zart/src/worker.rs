@@ -18,7 +18,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, instrument, warn};
 use uuid::Uuid;
 
-/// Configuration for a polling worker.
+/// Tuning parameters for a [`Worker`].
+///
+/// All fields have production-ready defaults via [`WorkerConfig::default`].
+/// Override only what you need:
+///
+/// ```rust,ignore
+/// let config = WorkerConfig {
+///     poll_interval:        Duration::from_secs(2),
+///     max_concurrent_tasks: 32,
+///     ..WorkerConfig::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     /// How often the worker polls the database for due tasks.
@@ -58,11 +69,53 @@ impl Default for WorkerConfig {
     }
 }
 
-/// A polling worker that continuously fetches due tasks from the scheduler
-/// and dispatches them to their registered handlers.
+/// Polls the database for due tasks and dispatches them to registered handlers.
 ///
-/// Multiple `Worker` instances can run concurrently (even across processes)
-/// — the database-level skip-lock prevents duplicate task execution.
+/// Workers are the execution engine of Zart. Each worker runs an async loop
+/// that fetches tasks with a `SELECT … FOR UPDATE SKIP LOCKED` query, so
+/// multiple workers — across threads or processes — can run without
+/// coordination and without double-executing the same task.
+///
+/// # Concurrency model
+///
+/// Each poll cycle fetches up to [`WorkerConfig::max_tasks_per_poll`] tasks.
+/// Each task is spawned as an independent Tokio task, bounded by a semaphore
+/// at [`WorkerConfig::max_concurrent_tasks`]. The worker itself never blocks
+/// waiting for a handler to finish.
+///
+/// # Heartbeating and orphan recovery
+///
+/// While a handler runs, a background loop renews the task's database lease
+/// at `orphan_timeout / 3` intervals (configurable via
+/// [`WorkerConfig::heartbeat_interval`]). If the process crashes the lease
+/// expires and the next orphan-recovery scan (every 10 poll cycles) resets
+/// the task to `scheduled` so another worker can pick it up.
+///
+/// # Graceful shutdown
+///
+/// Call [`stop`](Self::stop) to signal the worker to exit after the current
+/// poll cycle. In-flight handlers are given [`WorkerConfig::shutdown_timeout`]
+/// to finish. For integration with external shutdown coordinators, build the
+/// worker with [`Worker::with_cancellation`] and cancel the shared token.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use zart::{Worker, WorkerConfig, TaskRegistry};
+///
+/// let mut registry = TaskRegistry::new();
+/// registry.register("onboard-user", OnboardUser);
+/// let registry = Arc::new(registry);
+///
+/// let worker = Worker::new(scheduler.clone(), Arc::clone(&registry), WorkerConfig::default());
+///
+/// // Run until a signal is received, then shut down cleanly.
+/// tokio::select! {
+///     _ = worker.run()          => {}
+///     _ = tokio::signal::ctrl_c() => { worker.stop(); }
+/// }
+/// ```
 pub struct Worker {
     scheduler: Arc<dyn StorageBackend>,
     registry: Arc<TaskRegistry>,
@@ -338,7 +391,7 @@ async fn dispatch_task(
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
         None => {
-            warn!("No handler registered for task");
+            warn!("No handler registered for task {}", &task.task_name);
             let _ = scheduler
                 .mark_failed(
                     &task.task_id,

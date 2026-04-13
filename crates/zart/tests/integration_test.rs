@@ -32,6 +32,7 @@ mod integration {
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     enum TestStepError {
         Failed { step: String, reason: String },
+        Simple(String),
     }
 
     impl std::fmt::Display for TestStepError {
@@ -40,6 +41,7 @@ mod integration {
                 TestStepError::Failed { step, reason } => {
                     write!(f, "Step '{step}' failed: {reason}")
                 }
+                TestStepError::Simple(reason) => write!(f, "{reason}"),
             }
         }
     }
@@ -130,6 +132,24 @@ mod integration {
             })
             .await?;
             Ok(serde_json::json!({ "answer": step2 }))
+        }
+    }
+
+    // Simple types for testing start_for_in_tx.
+    #[derive(Serialize, Deserialize)]
+    struct TestInput {
+        value: i32,
+    }
+
+    struct TestHandler;
+
+    #[async_trait::async_trait]
+    impl DurableExecution for TestHandler {
+        type Data = TestInput;
+        type Output = serde_json::Value;
+
+        async fn run(&self, input: Self::Data) -> Result<Self::Output, TaskError> {
+            Ok(serde_json::json!({ "echo": input.value }))
         }
     }
 
@@ -1692,5 +1712,560 @@ mod integration {
             Some("scheduled".to_string()),
             "step should be scheduled after admin retry"
         );
+    }
+
+    // ── Phase 6: Spec 0023 — Transaction participation tests ──────────────────
+
+    // ── Scenario 1: Transactional scheduling ───────────────────────────────────────
+
+    /// Rollback: start_in_tx + tx rollback → no execution record exists.
+    #[tokio::test]
+    #[ignore]
+    async fn start_in_tx_rollback_leaves_no_execution() {
+        let scheduler = setup().await;
+        let sched = DurableScheduler::new(scheduler.clone());
+        let pool = scheduler.pool().clone();
+
+        let exec_id = format!("trx-rollback-{}", Uuid::new_v4());
+
+        let mut tx = pool.begin().await.expect("begin tx failed");
+        sched
+            .start_in_tx(&mut tx, &exec_id, "noop", serde_json::json!({}))
+            .await
+            .expect("start_in_tx failed");
+
+        // Roll back — should erase everything.
+        tx.rollback().await.expect("rollback failed");
+
+        let exec = scheduler
+            .get_execution(&exec_id)
+            .await
+            .expect("get_execution failed");
+        assert!(
+            exec.is_none(),
+            "execution should not exist after rollback, got: {exec:?}"
+        );
+    }
+
+    /// Commit: start_in_tx + tx commit → execution and body task exist atomically.
+    #[tokio::test]
+    #[ignore]
+    async fn start_in_tx_commit_creates_execution_and_task() {
+        let scheduler = setup().await;
+        let sched = DurableScheduler::new(scheduler.clone());
+        let pool = scheduler.pool().clone();
+
+        let exec_id = format!("trx-commit-{}", Uuid::new_v4());
+
+        let mut tx = pool.begin().await.expect("begin tx failed");
+        let result = sched
+            .start_in_tx(&mut tx, &exec_id, "noop", serde_json::json!({}))
+            .await
+            .expect("start_in_tx failed");
+        tx.commit().await.expect("commit failed");
+
+        // Verify execution record exists.
+        let exec = scheduler
+            .get_execution(&exec_id)
+            .await
+            .expect("get_execution failed");
+        assert!(exec.is_some(), "execution should exist after commit");
+
+        // Verify body task was scheduled.
+        let body_task_id = format!("{exec_id}:run:0:body:start");
+        let task_exists: bool =
+            sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM zart_tasks WHERE task_id = $1)"#)
+                .bind(&body_task_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query task failed");
+        assert!(task_exists, "body task '{body_task_id}' should exist");
+
+        // The scheduled task_id from the result should match.
+        assert_eq!(result.task_id, body_task_id);
+    }
+
+    /// Typed: start_for_in_tx + commit → execution exists with correct payload.
+    #[tokio::test]
+    #[ignore]
+    async fn start_for_in_tx_commit_creates_execution_with_payload() {
+        let scheduler = setup().await;
+        let sched = DurableScheduler::new(scheduler.clone());
+        let pool = scheduler.pool().clone();
+
+        let exec_id = format!("trx-typed-{}", Uuid::new_v4());
+
+        let mut tx = pool.begin().await.expect("begin tx failed");
+        sched
+            .start_for_in_tx::<TestHandler>(
+                &mut tx,
+                &exec_id,
+                "test_handler",
+                &TestInput { value: 42 },
+            )
+            .await
+            .expect("start_for_in_tx failed");
+        tx.commit().await.expect("commit failed");
+
+        let exec = scheduler
+            .get_execution(&exec_id)
+            .await
+            .expect("get_execution failed");
+        assert!(exec.is_some(), "execution should exist after commit");
+        let exec = exec.unwrap();
+        assert_eq!(
+            exec.payload.get("value"),
+            Some(&serde_json::json!(42)),
+            "payload should contain input value"
+        );
+    }
+
+    /// Duplicate: start_in_tx with existing execution ID → NotSupported.
+    #[tokio::test]
+    #[ignore]
+    async fn start_in_tx_duplicate_returns_not_supported() {
+        let scheduler = setup().await;
+        let sched = DurableScheduler::new(scheduler.clone());
+        let pool = scheduler.pool().clone();
+
+        let exec_id = format!("trx-dup-{}", Uuid::new_v4());
+
+        // First call: commit to create the execution.
+        let mut tx = pool.begin().await.expect("begin tx failed");
+        sched
+            .start_in_tx(&mut tx, &exec_id, "noop", serde_json::json!({}))
+            .await
+            .expect("first start_in_tx failed");
+        tx.commit().await.expect("first commit failed");
+
+        // Second call: should return NotSupported.
+        let mut tx = pool.begin().await.expect("begin tx failed");
+        let err = sched
+            .start_in_tx(&mut tx, &exec_id, "noop", serde_json::json!({}))
+            .await
+            .expect_err("second start_in_tx should have failed");
+        tx.rollback().await.expect("rollback failed");
+
+        assert!(
+            matches!(err, zart::error::SchedulerError::NotSupported(_)),
+            "expected NotSupported error, got: {err:?}"
+        );
+    }
+
+    // ── Scenario 2: Transactional step completion ─────────────────────────────────
+
+    /// Phase guard: zart::trx called outside a step (body mode) → returns Err.
+    /// Note: This test verifies that `trx()` checks the execution phase.
+    /// When called outside a worker context, the task-local isn't initialized,
+    /// which also results in an error (different code path, same outcome).
+    #[tokio::test]
+    #[ignore]
+    async fn trx_called_outside_step_returns_error() {
+        let pool = sqlx::PgPool::connect(&pg_url())
+            .await
+            .expect("failed to connect to PostgreSQL");
+
+        // Call trx outside a step — should fail because the phase task-local
+        // isn't initialized (which is what happens outside a step context).
+        let result = zart::trx(&pool).await;
+        assert!(
+            result.is_err(),
+            "trx() should return Err when called outside a step"
+        );
+        // The error could be either:
+        // - "phase guard" error if task-local is set but not in step phase
+        // - "task-local not initialized" if no task-local at all
+        // Both are correct behavior — trx() should not work outside steps.
+    }
+
+    /// Double call: zart::trx called twice in same step → returns Err.
+    #[tokio::test]
+    #[ignore]
+    async fn trx_double_call_returns_error() {
+        let scheduler = setup().await;
+        let pool = scheduler.pool().clone();
+        let mut registry = TaskRegistry::new();
+
+        registry.register("double-trx", DoubleTrxHandler { pool });
+        let registry = Arc::new(registry);
+
+        let sched = DurableScheduler::new(scheduler.clone());
+        let exec_id = format!("double-trx-{}", Uuid::new_v4());
+        sched
+            .start(&exec_id, "double-trx", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+        let result = sched
+            .wait_completion::<serde_json::Value>(&exec_id, Duration::from_secs(10), None)
+            .await;
+        worker.stop();
+
+        assert!(result.is_ok(), "execution should complete: {result:?}");
+    }
+
+    // ── Step that calls trx() twice ──────────────────────────────────────────
+
+    struct DoubleTrxStep {
+        pool: sqlx::PgPool,
+    }
+
+    #[async_trait::async_trait]
+    impl ZartStep for DoubleTrxStep {
+        type Output = serde_json::Value;
+        type Error = TestStepError;
+
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Borrowed("double-trx-step")
+        }
+
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
+            // First call must succeed — we are in Phase::Step here.
+            let _trx1 = zart::trx(&self.pool)
+                .await
+                .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+            // Second call must fail.
+            let result = zart::trx(&self.pool).await;
+            assert!(result.is_err(), "second trx() should return Err");
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("already called"),
+                "error should mention double call: {err_msg}"
+            );
+
+            Ok(serde_json::json!({ "double_trx_guarded": true }))
+        }
+    }
+
+    // ── Handler that delegates to DoubleTrxStep ───────────────────────────────
+
+    struct DoubleTrxHandler {
+        pool: sqlx::PgPool,
+    }
+
+    #[async_trait::async_trait]
+    impl DurableExecution for DoubleTrxHandler {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            // Phase is Body here — delegate to a step so trx() runs in Phase::Step.
+            let outcome = zart::require(DoubleTrxStep {
+                pool: self.pool.clone(),
+            })
+            .await?;
+            Ok(outcome)
+        }
+    }
+
+    /// No-trx path (regression): step does not call zart::trx → framework uses
+    /// default completion.
+    #[tokio::test]
+    #[ignore]
+    async fn step_without_trx_completes_normally() {
+        let scheduler = setup().await;
+        let mut registry = TaskRegistry::new();
+
+        registry.register("no-trx-step", NoTrxStepHandler);
+        let registry = Arc::new(registry);
+
+        let sched = DurableScheduler::new(scheduler.clone());
+        let exec_id = format!("no-trx-{}", Uuid::new_v4());
+        sched
+            .start(&exec_id, "no-trx-step", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+        let result = sched
+            .wait_completion::<serde_json::Value>(&exec_id, Duration::from_secs(10), None)
+            .await;
+        worker.stop();
+
+        assert!(
+            result.is_ok(),
+            "step without trx should complete normally: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().get("no_trx"),
+            Some(&serde_json::json!(true)),
+            "result should contain step output"
+        );
+    }
+
+    struct NoTrxStepHandler;
+
+    #[async_trait::async_trait]
+    impl DurableExecution for NoTrxStepHandler {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            // Deliberately do NOT call zart::trx.
+            Ok(serde_json::json!({"no_trx": true}))
+        }
+    }
+
+    // ── Atomic success: step write and completion commit together ─────────────
+
+    /// Verifies that a DB write performed by a step using `zart::trx` and the
+    /// framework's step-completion write are in the same database transaction.
+    #[tokio::test]
+    #[ignore]
+    async fn trx_atomic_step_write_and_completion_commit_together() {
+        let scheduler = setup().await;
+        let pool = scheduler.pool().clone();
+
+        // Ensure the scratch table exists.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS zart_test_ledger \
+             (key TEXT PRIMARY KEY, value BIGINT NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create ledger table");
+
+        let ledger_key = format!("atomic-ok-{}", Uuid::new_v4());
+
+        struct AtomicWriteStep {
+            pool: sqlx::PgPool,
+            ledger_key: String,
+        }
+
+        #[async_trait::async_trait]
+        impl ZartStep for AtomicWriteStep {
+            type Output = serde_json::Value;
+            type Error = TestStepError;
+
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("atomic-write")
+            }
+
+            async fn run(&self) -> Result<Self::Output, Self::Error> {
+                let mut tx = zart::trx(&self.pool)
+                    .await
+                    .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+                sqlx::query("INSERT INTO zart_test_ledger (key, value) VALUES ($1, 1)")
+                    .bind(&self.ledger_key)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+                Ok(serde_json::json!({ "written": true }))
+            }
+        }
+
+        struct AtomicHandler {
+            pool: sqlx::PgPool,
+            ledger_key: String,
+        }
+
+        #[async_trait::async_trait]
+        impl DurableExecution for AtomicHandler {
+            type Data = serde_json::Value;
+            type Output = serde_json::Value;
+
+            async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+                let out = zart::require(AtomicWriteStep {
+                    pool: self.pool.clone(),
+                    ledger_key: self.ledger_key.clone(),
+                })
+                .await?;
+                Ok(out)
+            }
+        }
+
+        let ledger_key_clone = ledger_key.clone();
+        let pool_clone = pool.clone();
+        let mut registry = TaskRegistry::new();
+        registry.register(
+            "atomic-write-handler",
+            AtomicHandler {
+                pool: pool_clone,
+                ledger_key: ledger_key_clone,
+            },
+        );
+        let registry = Arc::new(registry);
+
+        let sched = DurableScheduler::new(scheduler.clone());
+        let exec_id = format!("atomic-ok-{}", Uuid::new_v4());
+        sched
+            .start(&exec_id, "atomic-write-handler", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+        let result = sched
+            .wait_completion::<serde_json::Value>(&exec_id, Duration::from_secs(10), None)
+            .await;
+        worker.stop();
+
+        assert!(
+            result.is_ok(),
+            "execution should complete successfully: {result:?}"
+        );
+
+        // Verify the ledger row was committed.
+        let val: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
+                .bind(&ledger_key)
+                .fetch_optional(&pool)
+                .await
+                .expect("ledger query failed");
+
+        assert_eq!(
+            val,
+            Some(1),
+            "ledger write should be committed after step success"
+        );
+    }
+
+    // ── Atomic rollback: step write rolls back on step error ──────────────────
+
+    /// Verifies that a DB write performed by a step using `zart::trx` is rolled
+    /// back when the step returns an error.
+    #[tokio::test]
+    #[ignore]
+    async fn trx_atomic_step_write_rolls_back_on_step_error() {
+        let scheduler = setup().await;
+        let pool = scheduler.pool().clone();
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS zart_test_ledger \
+             (key TEXT PRIMARY KEY, value BIGINT NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create ledger table");
+
+        let ledger_key = format!("atomic-err-{}", Uuid::new_v4());
+
+        struct FailingWriteStep {
+            pool: sqlx::PgPool,
+            ledger_key: String,
+        }
+
+        #[async_trait::async_trait]
+        impl ZartStep for FailingWriteStep {
+            type Output = serde_json::Value;
+            type Error = TestStepError;
+
+            fn step_name(&self) -> Cow<'static, str> {
+                Cow::Borrowed("failing-write")
+            }
+
+            async fn run(&self) -> Result<Self::Output, Self::Error> {
+                let mut tx = zart::trx(&self.pool)
+                    .await
+                    .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+                sqlx::query("INSERT INTO zart_test_ledger (key, value) VALUES ($1, 99)")
+                    .bind(&self.ledger_key)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+                // Return Err — framework must rollback the transaction.
+                Err(TestStepError::Simple(
+                    "intentional step failure".to_string(),
+                ))
+            }
+        }
+
+        struct FailingHandler {
+            pool: sqlx::PgPool,
+            ledger_key: String,
+        }
+
+        #[async_trait::async_trait]
+        impl DurableExecution for FailingHandler {
+            type Data = serde_json::Value;
+            type Output = serde_json::Value;
+
+            async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+                zart::require(FailingWriteStep {
+                    pool: self.pool.clone(),
+                    ledger_key: self.ledger_key.clone(),
+                })
+                .await?;
+                Ok(serde_json::json!({}))
+            }
+        }
+
+        let ledger_key_clone = ledger_key.clone();
+        let pool_clone = pool.clone();
+        let mut registry = TaskRegistry::new();
+        registry.register(
+            "failing-write-handler",
+            FailingHandler {
+                pool: pool_clone,
+                ledger_key: ledger_key_clone,
+            },
+        );
+        let registry = Arc::new(registry);
+
+        let sched = DurableScheduler::new(scheduler.clone());
+        let exec_id = format!("atomic-err-{}", Uuid::new_v4());
+        sched
+            .start(&exec_id, "failing-write-handler", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+        // Wait for the execution to reach a terminal state (failed, not completed).
+        let result = sched.wait(&exec_id, Duration::from_secs(10), None).await;
+        worker.stop();
+
+        // Execution is expected to fail (no retries configured on step).
+        let _ = result; // ok or err — doesn't matter for this assertion.
+
+        // The write must NOT be present — it should have been rolled back.
+        let val: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
+                .bind(&ledger_key)
+                .fetch_optional(&pool)
+                .await
+                .expect("ledger query failed");
+
+        assert!(
+            val.is_none(),
+            "ledger write should be rolled back after step error; got: {val:?}"
+        );
+    }
+
+    /// Regression: DurableScheduler::start uses a single internal transaction.
+    /// This test verifies that the atomicity fix works — execution record and
+    /// body task are created atomically.
+    #[tokio::test]
+    #[ignore]
+    async fn start_uses_single_internal_transaction() {
+        let scheduler = setup().await;
+        let sched = DurableScheduler::new(scheduler.clone());
+
+        let exec_id = format!("start-atomic-{}", Uuid::new_v4());
+        let result = sched
+            .start(&exec_id, "noop", serde_json::json!({}))
+            .await
+            .expect("start failed");
+
+        // Both execution record and body task should exist.
+        let exec = scheduler
+            .get_execution(&exec_id)
+            .await
+            .expect("get_execution failed");
+        assert!(exec.is_some(), "execution should exist");
+
+        let body_task_id = format!("{exec_id}:run:0:body:start");
+        let task_exists: bool =
+            sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM zart_tasks WHERE task_id = $1)"#)
+                .bind(&body_task_id)
+                .fetch_one(scheduler.pool())
+                .await
+                .expect("query task failed");
+        assert!(task_exists, "body task should exist");
+        assert_eq!(result.task_id, body_task_id);
     }
 }

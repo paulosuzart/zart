@@ -26,15 +26,13 @@ test:
     cargo test --workspace
 
 # Run all tests including those that require a running PostgreSQL instance.
-# Uses --test-threads=1 so integration tests don't race each other via SKIP LOCKED.
+# Excludes example tests that call external APIs.
 test-integration:
-    cargo test --workspace --features scheduler/postgres -- --include-ignored --test-threads=1
+    just test-integration-core
 
-# Run integration tests (PostgreSQL required, internet NOT required)
-# Excludes example tests that call external APIs
 test-integration-core:
     cargo test -p scheduler --test integration_test --features postgres -- --include-ignored --test-threads=1
-    cargo test -p zart --test integration_test -- --include-ignored --test-threads=1
+    cargo test -p zart --test integration_test --features postgres -- --include-ignored --test-threads=1
 
 # Run tests for a specific crate only
 test-crate crate:
@@ -193,6 +191,12 @@ example-error-handling db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-error-handling
 
+# Run the transactions example (start_in_tx + zart::trx for atomic step completion)
+# Usage: just example-transactions [DATABASE_URL]
+example-transactions db_url='postgres://zart:zart@localhost:5432/zart':
+    just migrate
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-transactions
+
 # Run the admin-demo example (wait_completion, start_and_wait_for, restart, retry_step, rerun, pause/resume)
 # Usage: just example-admin-demo [DATABASE_URL]
 example-admin-demo db_url='postgres://zart:zart@localhost:5432/zart':
@@ -209,6 +213,7 @@ run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
     just example-durable-loops {{db_url}}
     just example-sleep {{db_url}}
     just example-error-handling {{db_url}}
+    just example-transactions {{db_url}}
     just example-admin-demo {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)

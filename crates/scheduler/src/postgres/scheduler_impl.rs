@@ -2,9 +2,11 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::PostgresScheduler;
+use super::sql_helpers::schedule_at_sql;
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler,
     StorageError, TaskStatus,
@@ -30,35 +32,29 @@ impl Scheduler for PostgresScheduler {
     }
 
     async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError> {
-        let recurrence_json = params
-            .recurrence
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
+        let mut tx = self
+            .pool
+            .begin()
+            .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(
-            r#"
-            INSERT INTO zart_tasks
-                (task_id, task_name, execution_time, data, recurrence, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-        )
-        .bind(&params.task_id)
-        .bind(&params.task_name)
-        .bind(params.execution_time)
-        .bind(&params.data)
-        .bind(&recurrence_json)
-        .bind(&params.metadata)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        let result = schedule_at_sql(&mut tx, &params).await?;
 
-        Ok(ScheduleResult {
-            task_id: params.task_id,
-            execution_time: params.execution_time,
-        })
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(result)
+    }
+
+    /// Schedule a task within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    async fn schedule_at_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        params: ScheduleAtParams,
+    ) -> Result<ScheduleResult, StorageError> {
+        schedule_at_sql(conn, &params).await
     }
 
     async fn poll_due(
@@ -421,5 +417,12 @@ impl Scheduler for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
+    }
+
+    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
+        self.pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))
     }
 }

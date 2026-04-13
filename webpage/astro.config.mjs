@@ -44,6 +44,7 @@ export default defineConfig({
             { label: "Flow Control", link: "/concepts/flow-control" },
             { label: "Error Handling", link: "/concepts/error-handling" },
             { label: "Timeouts & Cancellation", link: "/concepts/timeouts" },
+            { label: "Transactions", link: "/concepts/transactions" },
           ],
         },
 

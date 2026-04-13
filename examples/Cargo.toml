@@ -36,6 +36,10 @@ path = "sleep/src/main.rs"
 name = "example-error-handling"
 path = "error-handling/src/main.rs"
 
+[[bin]]
+name = "example-transactions"
+path = "transactions/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }

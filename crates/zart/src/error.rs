@@ -46,6 +46,10 @@ pub enum SchedulerError {
     /// Pause storage is not configured on this scheduler.
     #[error("Pause storage not configured")]
     PauseStorageNotConfigured,
+
+    /// The requested operation is not supported.
+    #[error("Not supported: {0}")]
+    NotSupported(&'static str),
 }
 
 /// Errors that can occur during task execution.

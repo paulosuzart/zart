@@ -1,36 +1,124 @@
-//! Zart — Durable Execution Framework
+//! Durable multi-step workflows that survive process restarts.
 //!
-//! A high-level framework for durable execution built on top of a
-//! database-backed scheduler. Tasks are persisted, polled with skip-lock
-//! for concurrent workers, and support multi-step workflows with automatic
-//! state recovery across process restarts and failures.
+//! Zart persists every step result to a database. When a worker crashes and
+//! restarts, execution resumes from the last completed step — no work is
+//! repeated. Concurrency is handled automatically via skip-locked polling.
 //!
-//! # Architecture
+//! # Example
 //!
-//! Zart operates on three layers:
+//! A handler is any type that implements [`DurableExecution`]. Steps inside
+//! `run()` are individually persisted: on replay their cached result is
+//! returned without re-executing.
 //!
-//! - **Layer 1 — Scheduler**: individual tasks persisted in a database
-//!   (provided by the [`scheduler`] crate).
-//! - **Layer 2 — Durable Execution**: multi-step workflows composed of
-//!   individually scheduled tasks, with result persistence and re-entry.
-//! - **Layer 3 — Attempts**: retry history for both executions and steps.
-//!
-//! # Quick Start
-//!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use zart::prelude::*;
-//! use async_trait::async_trait;
 //!
-//! struct MyTask;
+//! // ── Steps ────────────────────────────────────────────────────────────────
 //!
-//! #[async_trait]
-//! impl DurableExecution for MyTask {
-//!     type Data = serde_json::Value;
-//!     type Output = serde_json::Value;
+//! struct SendWelcomeEmail { user_id: Uuid }
 //!
-//!     async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
-//!         Ok(data)
+//! #[async_trait::async_trait]
+//! impl ZartStep for SendWelcomeEmail {
+//!     type Output = ();
+//!     type Error  = MyError;
+//!     fn step_name(&self) -> std::borrow::Cow<'static, str> { "send-welcome".into() }
+//!
+//!     async fn run(&self) -> Result<(), MyError> {
+//!         email::send_welcome(self.user_id).await
 //!     }
+//! }
+//!
+//! struct CreateWorkspace { user_id: Uuid }
+//!
+//! #[async_trait::async_trait]
+//! impl ZartStep for CreateWorkspace {
+//!     type Output = Uuid;
+//!     type Error  = MyError;
+//!     fn step_name(&self) -> std::borrow::Cow<'static, str> { "create-workspace".into() }
+//!
+//!     async fn run(&self) -> Result<Uuid, MyError> {
+//!         workspace::create(self.user_id).await
+//!     }
+//! }
+//!
+//! // ── Handler ───────────────────────────────────────────────────────────────
+//!
+//! struct OnboardUser;
+//!
+//! #[async_trait::async_trait]
+//! impl DurableExecution for OnboardUser {
+//!     type Data   = Uuid;          // passed in on start()
+//!     type Output = Uuid;          // returned when the execution completes
+//!
+//!     async fn run(&self, user_id: Uuid) -> Result<Uuid, TaskError> {
+//!         zart::require(SendWelcomeEmail { user_id }).await?;
+//!         let workspace_id = zart::require(CreateWorkspace { user_id }).await?;
+//!         Ok(workspace_id)
+//!     }
+//! }
+//! ```
+//!
+//! Register the handler, start a worker, and fire an execution:
+//!
+//! ```rust,ignore
+//! let mut registry = TaskRegistry::new();
+//! registry.register("onboard-user", OnboardUser);
+//!
+//! let scheduler = /* connect to postgres */;
+//! let sched     = DurableScheduler::new(scheduler.clone());
+//! let worker    = Worker::new(scheduler, Arc::new(registry), WorkerConfig::default());
+//!
+//! // Start the execution from anywhere in your application.
+//! sched.start_for::<OnboardUser>("onboard-alice", "onboard-user", &user_id).await?;
+//!
+//! // Optionally wait for the result.
+//! let workspace_id = sched.wait_for::<OnboardUser>("onboard-alice", timeout, None).await?;
+//! ```
+//!
+//! # Core concepts
+//!
+//! | Concept | Description |
+//! |---|---|
+//! | [`DurableExecution`] | Trait for workflow handlers — implement `run()`. |
+//! | [`ZartStep`] | Trait for individual steps; results are cached across retries. |
+//! | [`DurableScheduler`] | Starts executions, queries status, and waits for results. |
+//! | [`Worker`] | Polls the database and dispatches handlers on a configurable thread pool. |
+//! | [`TaskRegistry`] | Maps task-name strings to handler instances. |
+//!
+//! # Step helpers
+//!
+//! Inside `DurableExecution::run()` the following free functions are available:
+//!
+//! | Function | Description |
+//! |---|---|
+//! | [`require`] | Execute a step; re-entry returns the cached result. |
+//! | [`step`] / [`step_or`] | Variants of `require` with different error-handling shapes. |
+//! | [`schedule`] | Fire-and-forget: schedule a child execution without waiting. |
+//! | [`sleep`] / [`sleep_until`] | Durable sleep — survives restarts. |
+//! | [`wait`] / [`wait_for_event`] | Suspend until another execution completes or an event arrives. |
+//!
+//! # Optional: atomic transaction participation
+//!
+//! Both features below are opt-in; all existing APIs work without them.
+//!
+//! **Start inside a caller transaction** — use [`DurableScheduler::start_in_tx`]
+//! so your business write and the execution record commit atomically:
+//!
+//! ```rust,ignore
+//! let mut tx = pool.begin().await?;
+//! sqlx::query("INSERT INTO users …").execute(&mut *tx).await?;
+//! sched.start_in_tx(&mut tx, "onboard-alice", "onboard-user", payload).await?;
+//! tx.commit().await?;
+//! ```
+//!
+//! **Step-level atomicity** — call [`trx`] inside `ZartStep::run()` to make
+//! your DB write and the framework's step-completion record commit together:
+//!
+//! ```rust,ignore
+//! async fn run(&self) -> Result<(), MyError> {
+//!     let mut tx = zart::trx(&self.pool).await?;
+//!     sqlx::query("UPDATE accounts …").execute(&mut **tx).await?;
+//!     Ok(()) // framework commits tx; rolls back automatically on Err
 //! }
 //! ```
 
@@ -49,6 +137,7 @@ pub mod retry;
 pub mod step_ops;
 pub mod step_types;
 pub mod timeout;
+mod trx_impl;
 pub mod worker;
 
 #[cfg(test)]
@@ -72,6 +161,7 @@ pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
 pub use timeout::TimeoutScope;
+pub use trx_impl::{ZartTrx, trx};
 pub use worker::{Worker, WorkerConfig};
 
 // Re-export proc macros from zart-macros
@@ -83,7 +173,7 @@ pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 pub mod prelude {
     pub use crate::{
         AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope, RerunResult,
-        RerunSpec, ResumeResult,
+        RerunSpec, ResumeResult, ZartTrx,
         api_trait::DurableApi,
         capture, context,
         context::{StepHandle, ZartStep},
@@ -95,7 +185,7 @@ pub mod prelude {
         registry::{DurableExecution, TaskRegistry},
         require,
         retry::RetryConfig,
-        schedule, sleep, sleep_until, step, step_or, step_or_else, wait, wait_for_event,
+        schedule, sleep, sleep_until, step, step_or, step_or_else, trx, wait, wait_for_event,
         worker::{Worker, WorkerConfig},
     };
     pub use scheduler::{

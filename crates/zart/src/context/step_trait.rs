@@ -6,23 +6,81 @@ use std::borrow::Cow;
 
 // ── ZartStep trait (raw step definition without macros) ────────────────────────
 
-/// A durable step definition — the trait that `#[zart_step]` implements under the hood.
+/// A single durable step inside a [`DurableExecution`] workflow.
 ///
-/// Implement this trait to define a step without using the `#[zart_step]` macro.
-/// The macro generates a struct and implements this trait automatically.
+/// The framework executes `run()` once and persists the result. On every
+/// subsequent re-entry of the parent handler, `run()` is **not called again**
+/// — the stored result is deserialized and returned immediately. This
+/// makes steps the unit of idempotency in Zart.
 ///
-/// # Usage
+/// # Defining a step
+///
+/// The preferred way is the `#[zart_step]` proc-macro, which generates the
+/// struct, impl, and an `IntoFuture` so the step can be `.await`-ed directly:
 ///
 /// ```rust,ignore
-/// struct LookupZipStep<'a> { /* fields */ }
+/// #[zart_step("charge-payment")]
+/// async fn charge_payment(
+///     &self,
+///     client: &PaymentClient,
+///     order_id: OrderId,
+/// ) -> Result<ChargeReceipt, PaymentError> {
+///     client.charge(order_id).await
+/// }
 ///
-/// impl ZartStep for LookupZipStep<'_> { /* ... */ }
-///
-/// // Execute via free function:
-/// let (city, state) = zart::step(LookupZipStep { client: &client, zip_code: &data.zip_code }).await?;
-/// // Or simply .await (requires IntoFuture, which #[zart_step] generates):
-/// let (city, state) = lookup_zip(&client, &data.zip_code).await?;
+/// // Inside a DurableExecution::run():
+/// let receipt = charge_payment(&client, order_id).await?;
 /// ```
+///
+/// Implement the trait directly when you need finer control — for example,
+/// when step input carries references or when you want the step struct to own
+/// a connection pool:
+///
+/// ```rust,ignore
+/// struct ChargePayment {
+///     client: PaymentClient, // owned
+///     order_id: OrderId,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl ZartStep for ChargePayment {
+///     type Output = ChargeReceipt;
+///     type Error  = PaymentError;
+///
+///     fn step_name(&self) -> std::borrow::Cow<'static, str> {
+///         "charge-payment".into()
+///     }
+///
+///     async fn run(&self) -> Result<ChargeReceipt, PaymentError> {
+///         self.client.charge(self.order_id).await
+///     }
+/// }
+///
+/// // Inside DurableExecution::run():
+/// let receipt = zart::require(ChargePayment { client: client.clone(), order_id }).await?;
+/// ```
+///
+/// # Step identity and loops
+///
+/// Each step is identified in the database by the string returned from
+/// [`step_name`](ZartStep::step_name). When the same step type is called
+/// multiple times in a loop, each call must have a unique name — otherwise
+/// the second call will return the cached result of the first:
+///
+/// ```rust,ignore
+/// for (i, chunk) in chunks.iter().enumerate() {
+///     zart::require(ProcessChunk { chunk }.named(format!("process-chunk-{i}"))).await?;
+/// }
+/// ```
+///
+/// # Retries and timeouts
+///
+/// Override [`retry_config`](ZartStep::retry_config) to enable per-step retry
+/// with exponential back-off, and [`timeout`](ZartStep::timeout) to cap the
+/// wall-clock time per attempt. The framework handles scheduling retries
+/// automatically; `run()` always sees a clean call with no prior state.
+///
+/// [`DurableExecution`]: crate::registry::DurableExecution
 #[async_trait::async_trait]
 pub trait ZartStep {
     /// The output type this step produces.

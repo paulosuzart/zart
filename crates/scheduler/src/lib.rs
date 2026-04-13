@@ -59,6 +59,19 @@ pub trait Scheduler: Send + Sync {
     /// Schedule a task for execution at a specific point in time.
     async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError>;
 
+    /// Schedule a task within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn schedule_at_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        params: ScheduleAtParams,
+    ) -> Result<ScheduleResult, StorageError> {
+        Err(StorageError::NotImplemented("schedule_at_in_tx"))
+    }
+
     /// Poll for tasks that are due for execution.
     ///
     /// Uses `SELECT ... FOR UPDATE SKIP LOCKED` semantics so that multiple workers
@@ -107,6 +120,22 @@ pub trait Scheduler: Send + Sync {
 
     /// Run database migrations required by this backend.
     async fn run_migrations(&self) -> Result<(), StorageError>;
+
+    /// Begin a new database transaction.
+    ///
+    /// Used by internal methods that need to coordinate multiple writes
+    /// in a single transaction.
+    ///
+    /// # Lifetime note
+    ///
+    /// The returned `Transaction<'_, Postgres>` borrows from `&self`. Callers
+    /// must commit or roll back the transaction before dropping the borrow.
+    /// This method is intended only for short-lived internal coordination
+    /// (e.g. `DurableScheduler::start`). Do not store the transaction beyond
+    /// the calling scope.
+    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
+        Err(StorageError::NotImplemented("begin"))
+    }
 
     /// Reset tasks that have been stuck in `picked_up` state longer than `stale_timeout`.
     ///
@@ -167,6 +196,21 @@ pub trait DurableStorage: Send + Sync {
     ) -> Result<(), StorageError> {
         let _ = (execution_id, task_name, payload);
         Err(StorageError::NotImplemented("start_execution"))
+    }
+
+    /// Insert a new durable execution record within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn start_execution_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotImplemented("start_execution_in_tx"))
     }
 
     /// Mark a durable execution as successfully completed.
@@ -367,6 +411,21 @@ pub trait DurableStorage: Send + Sync {
         let _ = params;
         Err(StorageError::NotImplemented(
             "complete_step_and_schedule_body",
+        ))
+    }
+
+    /// Complete a step and schedule the next body task within the caller's transaction.
+    ///
+    /// The caller is responsible for committing or rolling back the transaction.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn complete_step_and_schedule_body_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        params: CompleteStepAndScheduleBodyParams,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotImplemented(
+            "complete_step_and_schedule_body_in_tx",
         ))
     }
 
