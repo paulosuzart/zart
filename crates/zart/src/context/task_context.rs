@@ -388,6 +388,16 @@ impl TaskContext {
                         }
                     };
 
+                // Wrap run_with_serialization so the step body executes in Phase::Step.
+                // This allows `zart::trx()` to detect it is inside a step invocation.
+                let step_ctx_for_phase = self.step_context();
+                let run_with_serialization = move || {
+                    crate::local::ZART_PHASE.scope(
+                        crate::local::Phase::Step(step_ctx_for_phase),
+                        run_with_serialization(),
+                    )
+                };
+
                 // Transactional step completion (Scenario 2): wrap the step execution
                 // AND completion with the STEP_TRX task-local so `zart::trx()` can
                 // register a transaction for atomic completion.
