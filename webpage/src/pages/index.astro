@@ -381,51 +381,95 @@
     .lit { color: oklch(78% 0.18 55);  }   /* literals */
 
     /* ────────────────────────────────────────
-       DIVIDER STRIP
+       PILLARS
     ──────────────────────────────────────── */
-    .strip {
+    .pillars {
       border-top: 1px solid var(--border-dim);
       border-bottom: 1px solid var(--border-dim);
-      padding: 1.25rem 0;
       background: var(--bg-card);
     }
-
-    .strip-inner {
+    .pillars-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .pillar {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      padding: 1.75rem 2rem;
+      border-right: 1px solid var(--border-dim);
+      transition: background 0.2s;
+    }
+    .pillar:last-child { border-right: none; }
+    .pillar:hover { background: oklch(14% 0.024 285 / 0.6); }
+    .pillar-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      background: var(--brand-low);
       display: flex;
       align-items: center;
-      gap: 1.5rem;
-      flex-wrap: wrap;
+      justify-content: center;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      transition: transform 0.25s cubic-bezier(0.25, 1, 0.5, 1);
     }
-
-    .strip-label {
-      font-size: 0.8rem;
+    .pillar:hover .pillar-icon { transform: scale(1.12) rotate(-6deg); }
+    .pillar-title {
+      font-size: 0.9rem;
       font-weight: 600;
-      color: var(--text-faint);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      white-space: nowrap;
+      color: var(--text);
+      margin-bottom: 0.3rem;
+      letter-spacing: -0.01em;
     }
-
-    .strip-divider {
-      width: 1px;
-      height: 20px;
-      background: var(--border);
-    }
-
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      color: var(--text-muted);
+    .pillar-desc {
       font-size: 0.8rem;
-      font-weight: 500;
-      padding: 0.3rem 0.7rem;
-      border-radius: 100px;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+    @media (max-width: 640px) {
+      .pillars-grid { grid-template-columns: 1fr; }
+      .pillar { border-right: none; border-bottom: 1px solid var(--border-dim); }
+      .pillar:last-child { border-bottom: none; }
+    }
+    @media (min-width: 641px) and (max-width: 900px) {
+      .pillar { padding: 1.25rem 1.25rem; }
     }
 
-    .pill svg { width: 14px; height: 14px; opacity: 0.7; }
+    /* ── Pill color variants + hover ───────────────────────── */
+    .pill {
+      transition: all 0.2s ease;
+      cursor: default;
+    }
+    .pill:hover {
+      border-color: oklch(63% 0.26 285 / 0.5);
+      background: oklch(20% 0.09 285);
+      color: var(--brand-high);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px oklch(63% 0.26 285 / 0.15);
+    }
+    .pill-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-faint);
+      flex-shrink: 0;
+      transition: box-shadow 0.2s;
+    }
+    .pill-rust { border-color: oklch(70% 0.18 35 / 0.3); }
+    .pill-rust .pill-dot { background: oklch(70% 0.18 35); box-shadow: 0 0 4px oklch(70% 0.18 35 / 0.5); }
+    .pill-rust:hover { background: oklch(15% 0.06 35); border-color: oklch(70% 0.18 35 / 0.6); color: oklch(88% 0.14 35); box-shadow: 0 4px 14px oklch(70% 0.18 35 / 0.2); }
+    .pill-rust:hover .pill-dot { box-shadow: 0 0 8px oklch(70% 0.18 35); }
+
+    .pill-tokio { border-color: oklch(70% 0.2 175 / 0.3); }
+    .pill-tokio .pill-dot { background: oklch(70% 0.2 175); box-shadow: 0 0 4px oklch(70% 0.2 175 / 0.5); }
+    .pill-tokio:hover { background: oklch(15% 0.06 175); border-color: oklch(70% 0.2 175 / 0.6); color: oklch(88% 0.15 175); box-shadow: 0 4px 14px oklch(70% 0.2 175 / 0.2); }
+    .pill-tokio:hover .pill-dot { box-shadow: 0 0 8px oklch(70% 0.2 175); }
+
+    .pill-pg { border-color: oklch(65% 0.18 245 / 0.3); }
+    .pill-pg .pill-dot { background: oklch(65% 0.18 245); box-shadow: 0 0 4px oklch(65% 0.18 245 / 0.5); }
+    .pill-pg:hover { background: oklch(15% 0.06 245); border-color: oklch(65% 0.18 245 / 0.6); color: oklch(85% 0.14 245); box-shadow: 0 4px 14px oklch(65% 0.18 245 / 0.2); }
+    .pill-pg:hover .pill-dot { box-shadow: 0 0 8px oklch(65% 0.18 245); }
 
     /* ────────────────────────────────────────
        FEATURES
@@ -694,6 +738,59 @@
       pointer-events: auto;
     }
 
+    /* ── Scroll reveal ──────────────────────────────────────── */
+    @media (prefers-reduced-motion: no-preference) {
+      .reveal {
+        opacity: 0;
+        transform: translateY(22px);
+        transition: opacity 0.55s ease, transform 0.55s ease;
+      }
+      .reveal.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .reveal-delay-1 { transition-delay: 0.06s; }
+      .reveal-delay-2 { transition-delay: 0.13s; }
+      .reveal-delay-3 { transition-delay: 0.20s; }
+      .reveal-delay-4 { transition-delay: 0.27s; }
+      .reveal-delay-5 { transition-delay: 0.34s; }
+      .reveal-delay-6 { transition-delay: 0.41s; }
+    }
+
+    /* ── Feature card icon animation ────────────────────────── */
+    .feature-icon {
+      transition: transform 0.25s cubic-bezier(0.25, 1, 0.5, 1), background 0.25s;
+    }
+    .feature-card:hover .feature-icon {
+      transform: scale(1.15) rotate(-5deg);
+      background: oklch(25% 0.11 285);
+    }
+
+    /* ── CTA section aurora ─────────────────────────────────── */
+    .cta-section {
+      position: relative;
+      overflow: hidden;
+      padding: 5rem 0;
+      text-align: center;
+      border-top: 1px solid var(--border-dim);
+    }
+    .cta-section::before {
+      content: '';
+      position: absolute;
+      bottom: -60%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 700px;
+      height: 350px;
+      background: radial-gradient(ellipse, oklch(63% 0.26 285 / 0.11) 0%, transparent 70%);
+      pointer-events: none;
+      animation: cta-glow 5s ease-in-out infinite;
+    }
+    @keyframes cta-glow {
+      0%, 100% { opacity: 0.6; transform: translateX(-50%) scaleX(1); }
+      50% { opacity: 1; transform: translateX(-50%) scaleX(1.25); }
+    }
+
     /* ── Mobile global fixes ── */
     @media (max-width: 640px) {
       :root { --section-gap: 4rem; }
@@ -705,10 +802,7 @@
       .hero-actions { flex-direction: column; align-items: flex-start; }
       .hero-actions .btn { width: 100%; justify-content: center; }
 
-      .strip-inner {
-        gap: 0.75rem;
-      }
-      .strip-divider { display: none; }
+
 
       .code-window pre { font-size: 0.75rem; padding: 1rem; }
 
@@ -930,16 +1024,35 @@
   </div>
 </section>
 
-<!-- ── Divider strip ── -->
-<div class="strip">
-  <div class="container">
-    <div class="strip-inner">
-      <span class="strip-label">Storage backend</span>
-      <div class="strip-divider"></div>
-      <span class="pill">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
-        PostgreSQL
-      </span>
+<!-- ── Pillars ── -->
+<div class="pillars">
+  <div class="container" style="padding:0;">
+    <div class="pillars-grid">
+
+      <div class="pillar">
+        <div class="pillar-icon">🦀</div>
+        <div>
+          <div class="pillar-title">Written in Rust</div>
+          <p class="pillar-desc">Zero-cost abstractions, memory safety, and Tokio's async runtime — no GC pauses, no overhead.</p>
+        </div>
+      </div>
+
+      <div class="pillar">
+        <div class="pillar-icon">📦</div>
+        <div>
+          <div class="pillar-title">Embeddable library</div>
+          <p class="pillar-desc">Add as a crate dependency. No daemon, no sidecar process, no extra infrastructure to operate.</p>
+        </div>
+      </div>
+
+      <div class="pillar">
+        <div class="pillar-icon">🗄️</div>
+        <div>
+          <div class="pillar-title">PostgreSQL-backed</div>
+          <p class="pillar-desc">Durable state in the production database you already run. No new persistence layer to learn.</p>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -956,42 +1069,42 @@
     </div>
 
     <div class="features-grid">
-      <div class="feature-card">
+      <div class="feature-card reveal reveal-delay-1">
         <div class="feature-icon">⚡</div>
         <div class="feature-name">State Recovery</div>
         <p class="feature-desc">
           Each step's result is persisted before moving on. On restart, completed steps are replayed from storage — never re-executed.
         </p>
       </div>
-      <div class="feature-card">
+      <div class="feature-card reveal reveal-delay-2">
         <div class="feature-icon">🔄</div>
         <div class="feature-name">Smart Retries</div>
         <p class="feature-desc">
           Per-step retry policies with fixed, linear, or exponential backoff. Configure max attempts, delay, and jitter independently per step.
         </p>
       </div>
-      <div class="feature-card">
+      <div class="feature-card reveal reveal-delay-3">
         <div class="feature-icon">⚙️</div>
         <div class="feature-name">Concurrent Workers</div>
         <p class="feature-desc">
           Multiple workers compete for tasks using <code>SKIP LOCKED</code> — zero contention, no coordination required, horizontal scaling out of the box.
         </p>
       </div>
-      <div class="feature-card">
-        <div class="feature-icon">🗄️</div>
-        <div class="feature-name">PostgreSQL Storage</div>
+      <div class="feature-card reveal reveal-delay-4">
+        <div class="feature-icon">⏱️</div>
+        <div class="feature-name">Timeouts &amp; Deadlines</div>
         <p class="feature-desc">
-          All workflow state is persisted to PostgreSQL. Production-grade durability with no extra infrastructure — just a database you already have.
+          Set per-workflow timeouts declaratively. A workflow that exceeds its deadline is cancelled cleanly — no stuck tasks, no leaked resources.
         </p>
       </div>
-      <div class="feature-card">
+      <div class="feature-card reveal reveal-delay-5">
         <div class="feature-icon">🔒</div>
         <div class="feature-name">Idempotency Built-in</div>
         <p class="feature-desc">
           Execution IDs prevent duplicate scheduling. A charge step that already succeeded will never fire again — even if the scheduler is called twice.
         </p>
       </div>
-      <div class="feature-card">
+      <div class="feature-card reveal reveal-delay-6">
         <div class="feature-icon">📡</div>
         <div class="feature-name">Events &amp; Async Waits</div>
         <p class="feature-desc">
@@ -1098,8 +1211,8 @@
 </section>
 
 <!-- ── Bottom CTA ── -->
-<section style="padding: 5rem 0; text-align: center; border-top: 1px solid var(--border-dim);">
-  <div class="container">
+<section class="cta-section">
+  <div class="container" style="position:relative;z-index:1;">
     <h2 style="font-family: var(--font-display); font-size: clamp(1.6rem, 3vw, 2.2rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 0.75rem;">Ready to build?</h2>
     <p style="color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; max-width: 44ch; margin-inline: auto;">Everything you need to get your first durable workflow running in minutes.</p>
     <a href="/getting-started/" class="btn btn-primary">Read the docs →</a>
@@ -1211,6 +1324,20 @@
   }
 
   scheduleNext();
+
+  // ── Scroll reveal ────────────────────────────────────────
+  const revealObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+          revealObserver.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.12 }
+  );
+  document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
 </script>
 
 </body>
