@@ -23,7 +23,7 @@ Restart → Step 1 is SKIPPED (cached)
 
 ## How to Trigger a Workflow
 
-Every durable execution is identified by a **unique execution ID** that doubles as an idempotency key. Calling `start_typed` with the same ID twice is safe — the second call returns `ExecutionAlreadyExists` so you can wait on the existing execution instead of creating a duplicate.
+Every durable execution is identified by a **unique execution ID** that doubles as an idempotency key. Calling `start_for` with the same ID twice is safe — the second call returns `ExecutionAlreadyExists` so you can wait on the existing execution instead of creating a duplicate.
 
 ```rust
 use zart::prelude::*;
@@ -33,7 +33,7 @@ let durable = DurableScheduler::new(scheduler.clone());
 
 // Schedule a new execution (idempotent)
 durable
-    .start_typed("signup-user-42", "onboarding", &OnboardingData {
+    .start_for::<OnboardingTask>("signup-user-42", "onboarding", &OnboardingData {
         email: "alice@example.com".into(),
     })
     .await?;
@@ -62,28 +62,26 @@ If the execution doesn't finish within the timeout, `wait_completion` returns `W
 For the common case where you start an execution and immediately wait, use `start_and_wait_for`. It infers input and output types from the handler type:
 
 ```rust
-let output: OnboardingOutput = durable
+let output = durable
     .start_and_wait_for::<OnboardingTask>(
-        "signup-user-42",
-        &OnboardingData { email: "alice@example.com".into() },
-        Duration::from_secs(60),
-    )
-    .await?;
-```
-
-### `start_and_wait<I, O>` — start and wait with explicit types
-
-When you don't have a handler type in scope (dynamic task names, ad-hoc scenarios):
-
-```rust
-let output: OnboardingOutput = durable
-    .start_and_wait::<OnboardingData, OnboardingOutput>(
         "signup-user-42",
         "onboarding",
         &OnboardingData { email: "alice@example.com".into() },
         Duration::from_secs(60),
     )
     .await?;
+// output: OnboardingOutput — inferred from OnboardingTask::Output
+```
+
+### `wait_for<H>` — wait with handler-inferred types
+
+When you started an execution earlier and now want the typed result without manual deserialization:
+
+```rust
+let output = durable
+    .wait_for::<OnboardingTask>("signup-user-42", Duration::from_secs(60))
+    .await?;
+// output: OnboardingOutput — inferred from OnboardingTask::Output
 ```
 
 ### `status` — check without blocking
@@ -106,7 +104,7 @@ A cancelled execution stops at its next scheduling point. Steps currently runnin
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Pending: start_typed
+    [*] --> Pending: start_for
     Pending --> Running: worker picks up
     Running --> Waiting: sleep / wait_for_event
     Waiting --> Running: timer fires / event arrives
@@ -117,7 +115,7 @@ stateDiagram-v2
     Waiting --> Failed: event timeout
 ```
 
-1. **Schedule** — `start_typed` inserts a row in `zart_executions` with status `pending`.
+1. **Schedule** — `start_for` inserts a row in `zart_executions` with status `pending`.
 2. **Claim** — Workers poll PostgreSQL with `SELECT … FOR UPDATE SKIP LOCKED`. Exactly one worker owns one execution.
 3. **Run** — The handler body executes. Each step call checks the database:
    - **Hit** — stored result deserialized and returned; the step logic is never called again.
@@ -127,10 +125,10 @@ stateDiagram-v2
 
 ## Idempotency Guarantee
 
-The execution ID is your idempotency key. If the same user signs up twice due to a double-click, the second `start_typed` call returns `ExecutionAlreadyExists` — you detect this and simply wait on the existing execution.
+The execution ID is your idempotency key. If the same user signs up twice due to a double-click, the second `start_for` call returns `ExecutionAlreadyExists` — you detect this and simply wait on the existing execution.
 
 ```rust
-match durable.start_typed(&exec_id, "onboarding", &input).await {
+match durable.start_for::<OnboardingTask>(&exec_id, "onboarding", &input).await {
     Ok(_) => println!("New execution started"),
     Err(SchedulerError::ExecutionAlreadyExists(_, _)) => {
         println!("Already running, waiting on existing…");

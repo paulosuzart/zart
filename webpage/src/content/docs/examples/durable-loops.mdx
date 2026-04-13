@@ -122,13 +122,12 @@ let registry = Arc::new(registry);
 
 let durable = DurableScheduler::new(sched.clone());
 durable
-    .start_typed(&execution_id, "report-batch", &BatchInput {
+    .start_for::<ReportBatchTask>(&execution_id, "report-batch", &BatchInput {
         batch_name: "2024-annual".into(),
     })
     .await?;
 
-let record = durable.wait(&execution_id, Duration::from_secs(60), None).await?;
-let output: BatchOutput = serde_json::from_value(record.result.unwrap())?;
+let output = durable.wait_for::<ReportBatchTask>(&execution_id, Duration::from_secs(60)).await?;
 println!("Processed {} reports, {} flagged", output.total, output.flagged);
 ```
 

@@ -146,8 +146,8 @@ let registry = Arc::new(registry);
 let durable = DurableScheduler::new(sched.clone());
 
 // Start and wait for typed output — no manual deserialization needed
-let output: FinderOutput = durable
-    .start_and_wait(
+let output = durable
+    .start_and_wait_for::<BreweryFinder>(
         "my-run-1",
         "brewery-finder",
         &FinderInput { zip_code: "97209".to_string() },

@@ -331,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting execution '{}'...\n", execution_id);
     durable
-        .start_typed(&execution_id, "error-handling-demo", &input)
+        .start_for::<ProcessOrder>(&execution_id, "error-handling-demo", &input)
         .await?;
 
     let config = zart::WorkerConfig {

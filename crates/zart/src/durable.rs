@@ -51,21 +51,6 @@ impl DurableScheduler {
         }
     }
 
-    /// Start a new durable execution with a typed input value.
-    ///
-    /// The `execution_id` is an idempotency key: if an execution with that ID
-    /// already exists the call is a no-op (the existing row is unchanged) and
-    /// the same [`ScheduleResult`] shape is returned.
-    pub async fn start_typed<T: serde::Serialize>(
-        &self,
-        execution_id: &str,
-        task_name: &str,
-        data: &T,
-    ) -> Result<ScheduleResult, SchedulerError> {
-        let payload = serde_json::to_value(data)?;
-        self.start(execution_id, task_name, payload).await
-    }
-
     /// Start a new durable execution with a raw JSON payload.
     ///
     /// If an execution with this ID already exists and is in a terminal state
@@ -286,6 +271,25 @@ impl DurableScheduler {
 
     // ── Typed completion API ──────────────────────────────────────────────────
 
+    /// Start execution for a specific `DurableExecution` handler.
+    ///
+    /// Infers the input type from `H::Data`. The `task_name` must match the
+    /// name used when registering the handler in the `TaskRegistry`.
+    ///
+    /// # Errors
+    ///
+    /// - [`SchedulerError::ExecutionAlreadyExists`] if the execution is already running
+    /// - [`SchedulerError::Database`] if the storage backend fails
+    pub async fn start_for<H: DurableExecution>(
+        &self,
+        execution_id: &str,
+        task_name: &str,
+        input: &H::Data,
+    ) -> Result<ScheduleResult, SchedulerError> {
+        let payload = serde_json::to_value(input)?;
+        self.start(execution_id, task_name, payload).await
+    }
+
     /// Block until the execution reaches a terminal state, then deserialize
     /// the result to `T`.
     ///
@@ -321,31 +325,31 @@ impl DurableScheduler {
         self.wait_completion(execution_id, capped, None).await
     }
 
-    /// Start execution with typed input, then block until completion and
-    /// deserialize the result to `O`.
+    /// Wait for completion of an execution started for handler `H`,
+    /// then deserialize the result to `H::Output`.
     ///
-    /// Convenience for [`Self::start_typed`] + [`Self::wait_completion`].
+    /// This is the typed counterpart of [`Self::wait`] — use when you started
+    /// an execution earlier and now want the typed result without manual
+    /// deserialization.
     ///
     /// # Errors
     ///
-    /// - [`SchedulerError::ExecutionAlreadyExists`] if the execution is already running
+    /// - [`SchedulerError::ExecutionNotFound`] if the execution doesn't exist
     /// - [`SchedulerError::WaitTimedOut`] if the timeout elapses
     /// - [`SchedulerError::Deserialization`] if the result can't be deserialized
-    ///   to `O`, or if the execution completed with no result
-    pub async fn start_and_wait<I: serde::Serialize, O: serde::de::DeserializeOwned>(
+    ///   to `H::Output`, or if the execution completed with no result
+    pub async fn wait_for<H: DurableExecution>(
         &self,
         execution_id: &str,
-        task_name: &str,
-        input: &I,
         timeout: Duration,
-    ) -> Result<O, SchedulerError> {
-        self.start_typed(execution_id, task_name, input).await?;
+    ) -> Result<H::Output, SchedulerError> {
         self.wait_completion(execution_id, timeout, None).await
     }
 
     /// Start execution for a specific `DurableExecution` handler, then block
     /// until completion and deserialize the result.
     ///
+    /// Convenience for [`Self::start_for`] + [`Self::wait_for`].
     /// Infers input and output types from the handler's associated types.
     /// The `task_name` must match the name used when registering the handler
     /// in the `TaskRegistry`.
@@ -363,8 +367,8 @@ impl DurableScheduler {
         input: &H::Data,
         timeout: Duration,
     ) -> Result<H::Output, SchedulerError> {
-        self.start_typed(execution_id, task_name, input).await?;
-        self.wait_completion(execution_id, timeout, None).await
+        self.start_for::<H>(execution_id, task_name, input).await?;
+        self.wait_for::<H>(execution_id, timeout).await
     }
 
     // ── Admin operations ──────────────────────────────────────────────────────

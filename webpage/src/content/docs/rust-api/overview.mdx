@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let worker = Worker::new(scheduler.clone(), registry, WorkerConfig::default());
 
     // Schedule an execution
-    DurableScheduler::start_typed(&scheduler, "run-1", "onboarding", &OnboardingData { /* ... */ }).await?;
+    DurableScheduler::start_for::<Onboarding>(&scheduler, "run-1", "onboarding", &OnboardingData { /* ... */ }).await?;
 
     // Run the worker (blocks until shutdown signal)
     worker.run().await
@@ -123,7 +123,7 @@ All functions are available in the `zart` crate and work from within any durable
 
 ## Execution Lifecycle
 
-1. **Schedule** — `DurableScheduler::start_typed()` inserts a row into `zart_executions` with status `pending`.
+1. **Schedule** — `DurableScheduler::start_for()` inserts a row into `zart_executions` with status `pending`.
 2. **Claim** — Worker polls with `SELECT … FOR UPDATE SKIP LOCKED`. One worker owns one execution at a time.
 3. **Run** — `DurableExecution::run()` is called. Each `zart::step()` call (or direct `.await` on a step) checks `zart_tasks` for an existing result.
    - **Step hit** — stored result deserialized and returned without calling the step logic.

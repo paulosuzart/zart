@@ -2,7 +2,7 @@
 //!
 //! Demonstrates:
 //! 1. `wait_completion<T>` — typed result deserialization
-//! 2. `start_and_wait<I, O>` — start + wait in one call
+//! 2. `start_and_wait_for` — start + wait in one call with handler type inference
 //! 3. `restart` — full restart with history preservation
 //! 4. `retry_step` — retry a dead step
 //! 5. `rerun_steps` — selective rerun with dependency warnings
@@ -132,13 +132,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 1. Typed wait_completion ──────────────────────────────────────────────
 
-    println!("=== 1. Typed wait_completion<T> ===\n");
+    println!("=== 1. start_for + wait_completion ===\n");
     {
         let execution_id = format!("admin-typed-wait-{}", Uuid::new_v4());
 
         // Start execution normally
         durable
-            .start_typed(
+            .start_for::<AdminDemoTask>(
                 &execution_id,
                 "zart::admin_demo::AdminDemoTask",
                 &AdminDemoInput { fail_step: false },
@@ -160,16 +160,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  result:    {}\n", output.final_result);
     }
 
-    // ── 2. start_and_wait (explicit types) ────────────────────────────────────
+    // ── 2. start_and_wait_for ─────────────────────────────────────────────────
 
-    println!("=== 2. start_and_wait<I, O> ===\n");
+    println!("=== 2. start_and_wait_for ===\n");
     {
         let execution_id = format!("admin-start-and-wait-{}", Uuid::new_v4());
         let worker = spawn_worker(&sched);
 
-        // Start + wait in one call
-        let output: AdminDemoOutput = durable
-            .start_and_wait::<AdminDemoInput, AdminDemoOutput>(
+        // Start + wait in one call — types inferred from handler
+        let output = durable
+            .start_and_wait_for::<AdminDemoTask>(
                 &execution_id,
                 "zart::admin_demo::AdminDemoTask",
                 &AdminDemoInput { fail_step: false },
@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Run to completion first
         durable
-            .start_typed(
+            .start_for::<AdminDemoTask>(
                 &execution_id,
                 "zart::admin_demo::AdminDemoTask",
                 &AdminDemoInput { fail_step: false },
@@ -243,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Start with a failing step — it will go dead (no retries)
         durable
-            .start_typed(
+            .start_for::<AdminDemoTask>(
                 &execution_id,
                 "zart::admin_demo::AdminDemoTask",
                 &AdminDemoInput { fail_step: true },
@@ -293,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Run to completion
         durable
-            .start_typed(
+            .start_for::<AdminDemoTask>(
                 &execution_id,
                 "zart::admin_demo::AdminDemoTask",
                 &AdminDemoInput { fail_step: false },

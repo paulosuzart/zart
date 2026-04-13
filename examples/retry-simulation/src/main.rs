@@ -185,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting execution '{}'...", execution_id);
     durable
-        .start_typed(&execution_id, "retry-simulation", &input)
+        .start_for::<RetrySimulationTask>(&execution_id, "retry-simulation", &input)
         .await?;
 
     let config = zart::WorkerConfig {

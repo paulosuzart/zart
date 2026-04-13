@@ -22,7 +22,7 @@ Transforms an `async fn` into a durable execution handler. The generated code im
 
 | Parameter | Required | Description |
 |---|---|---|
-| `"task-name"` | Yes | Registered name of the handler. Used by `DurableScheduler::start_typed` to look up the handler. |
+| `"task-name"` | Yes | Registered name of the handler. Used by `DurableScheduler::start_for` to look up the handler. |
 | `timeout` | No | Execution-level deadline. Duration string: `30s`, `5m`, `2h`, `3d`. |
 | `on_failure` | No | Name of an `async fn` that handles execution-level failures. |
 

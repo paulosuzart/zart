@@ -17,29 +17,6 @@ The `scheduler` is typically an `Arc<PostgresScheduler>`. The `DurableScheduler`
 
 ## Starting an Execution
 
-### `start_typed`
-
-Start a new durable execution with typed input data.
-
-```rust
-async fn start_typed<T: Serialize>(
-    &self,
-    execution_id: &str,
-    task_name: &str,
-    data: &T,
-) -> Result<ScheduleResult, SchedulerError>
-```
-
-The `execution_id` serves as an **idempotency key**. If an execution with that ID already exists (and is not terminal), returns `SchedulerError::ExecutionAlreadyExists`.
-
-```rust
-durable
-    .start_typed("signup-user-42", "onboarding", &OnboardingData {
-        email: "alice@example.com".into(),
-    })
-    .await?;
-```
-
 ### `start`
 
 Start a new durable execution with raw JSON data.
@@ -54,6 +31,29 @@ async fn start(
 ```
 
 Use this when the input is already a `serde_json::Value` or when you're building tooling on top of Zart.
+
+### `start_for` (Recommended)
+
+Start a new durable execution with typed input data, inferred from the handler.
+
+```rust
+async fn start_for<H: DurableExecution>(
+    &self,
+    execution_id: &str,
+    task_name: &str,
+    input: &H::Data,
+) -> Result<ScheduleResult, SchedulerError>
+```
+
+The `execution_id` serves as an **idempotency key**. If an execution with that ID already exists (and is not terminal), returns `SchedulerError::ExecutionAlreadyExists`.
+
+```rust
+durable
+    .start_for::<OnboardingTask>("signup-user-42", "onboarding", &OnboardingData {
+        email: "alice@example.com".into(),
+    })
+    .await?;
+```
 
 ## Checking Status
 
@@ -125,25 +125,34 @@ let output: OnboardingOutput = durable
     .await?;
 ```
 
-### `start_and_wait`
+### `wait_for`
 
-Start an execution and wait for completion in a single call, with explicit input and output types.
+Wait for completion and **automatically deserialize** the result to the handler's output type. Use when you started an execution earlier and now want the typed result.
 
 ```rust
-let output: OnboardingOutput = durable
-    .start_and_wait("signup-user-42", "onboarding", &input, Duration::from_secs(60))
+async fn wait_for<H: DurableExecution>(
+    &self,
+    execution_id: &str,
+    timeout: Duration,
+) -> Result<H::Output, SchedulerError>
+```
+
+```rust
+let output = durable
+    .wait_for::<OnboardingTask>("signup-user-42", Duration::from_secs(60))
     .await?;
+// output: OnboardingOutput — inferred from OnboardingTask::Output
 ```
 
 ### `start_and_wait_for`
 
-Start and wait using a handler type to infer both input and output.
+Start an execution and wait for completion in a single call. Types are inferred from the handler.
 
 ```rust
 let output = durable
-    .start_and_wait_for::<Onboarding>("signup-user-42", &input, Duration::from_secs(60))
+    .start_and_wait_for::<OnboardingTask>("signup-user-42", "onboarding", &input, Duration::from_secs(60))
     .await?;
-// output: OnboardingOutput — inferred from Onboarding::Output
+// output: OnboardingOutput — inferred from OnboardingTask::Output
 ```
 
 ## Cancelling

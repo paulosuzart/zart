@@ -137,7 +137,7 @@ pub enum SchedulerError {
 
 | Variant | When it appears |
 |---|---|
-| `ExecutionAlreadyExists(id, status)` | `start_typed` was called with an ID that already exists. `status` is the current status of the existing execution. |
+| `ExecutionAlreadyExists(id, status)` | `start` or `start_for` was called with an ID that already exists. `status` is the current status of the existing execution. |
 | `WaitTimedOut(id)` | `wait` or `wait_with_timeout` exceeded its timeout without the execution completing. |
 
 ## Next Steps

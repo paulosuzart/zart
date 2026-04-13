@@ -100,8 +100,8 @@ registry.register("health-check", HealthCheckTask);
 let registry = Arc::new(registry);
 
 let durable = DurableScheduler::new(sched.clone());
-let output: HealthCheckOutput = durable
-    .start_and_wait(
+let output = durable
+    .start_and_wait_for::<HealthCheckTask>(
         "health-check-run-1",
         "health-check",
         &HealthCheckInput {

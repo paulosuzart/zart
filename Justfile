@@ -193,7 +193,7 @@ example-error-handling db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-error-handling
 
-# Run the admin-demo example (wait_completion, start_and_wait, restart, retry_step, rerun, pause/resume)
+# Run the admin-demo example (wait_completion, start_and_wait_for, restart, retry_step, rerun, pause/resume)
 # Usage: just example-admin-demo [DATABASE_URL]
 example-admin-demo db_url='postgres://zart:zart@localhost:5432/zart':
     just migrate

@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         input.services.len()
     );
     durable
-        .start_typed(&execution_id, "health-check", &input)
+        .start_for::<HealthCheckTask>(&execution_id, "health-check", &input)
         .await?;
 
     let config = zart::WorkerConfig {

@@ -118,7 +118,7 @@ Call this from anywhere — a web handler, a background task, a test:
 let durable = DurableScheduler::new(sched.clone());
 
 durable
-    .start_typed(
+    .start_for::<OnboardingTask>(
         "signup-user-42",   // idempotency key — safe to call twice
         "onboarding",
         &OnboardingData { email: "alice@example.com".into() },
@@ -143,18 +143,9 @@ No manual `serde_json::from_value` needed — the type parameter tells Zart exac
 You can also combine start and wait into a single call:
 
 ```rust
-let output: MyOutput = durable
-    .start_and_wait("signup-user-42", "onboarding", &input, Duration::from_secs(60))
-    .await?;
-```
-
-Or use the handler type to infer both input and output:
-
-```rust
 let output = durable
-    .start_and_wait_for::<Onboarding>("signup-user-42", &input, Duration::from_secs(60))
+    .start_and_wait_for::<OnboardingTask>("signup-user-42", "onboarding", &input, Duration::from_secs(60))
     .await?;
-// output: () — inferred from Onboarding::Output
 ```
 
 <Aside type="tip">

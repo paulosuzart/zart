@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Resource:  {}", request.resource);
     println!("  Reason:    {}", request.reason);
     durable
-        .start_typed(&execution_id, "approval-task", &request)
+        .start_for::<ApprovalTask>(&execution_id, "approval-task", &request)
         .await?;
 
     let config = zart::WorkerConfig {

@@ -214,7 +214,7 @@ let registry = Arc::new(registry);
 
 let durable = DurableScheduler::new(sched.clone());
 durable
-    .start_typed(&execution_id, "radkit-agent", &AgentInput {
+    .start_for::<RadkitAgent>(&execution_id, "radkit-agent", &AgentInput {
         query: "Find breweries in Portland, Oregon".to_string(),
     })
     .await?;

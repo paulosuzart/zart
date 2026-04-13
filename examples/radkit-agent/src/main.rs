@@ -297,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting execution '{}'...", execution_id);
     println!("  Query: {}\n", input.query);
     durable
-        .start_typed(&execution_id, "radkit-agent", &input)
+        .start_for::<RadkitAgent>(&execution_id, "radkit-agent", &input)
         .await?;
 
     let config = zart::WorkerConfig {

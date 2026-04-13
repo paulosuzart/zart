@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         input.zip_code
     );
     durable
-        .start_typed(&execution_id, "brewery-finder", &input)
+        .start_for::<BreweryFinder>(&execution_id, "brewery-finder", &input)
         .await?;
 
     let config = zart::WorkerConfig {

@@ -1407,7 +1407,7 @@ mod integration {
         let execution_id = format!("typed-wait-{}", Uuid::new_v4());
         let input = TypedInput { multiplier: 21 };
         durable
-            .start_typed(&execution_id, "zart::tests::integration::TypedTask", &input)
+            .start_for::<TypedTask>(&execution_id, "zart::tests::integration::TypedTask", &input)
             .await
             .expect("start failed");
 
@@ -1437,7 +1437,7 @@ mod integration {
         let execution_id = format!("typed-wait-timeout-{}", Uuid::new_v4());
         let input = TypedInput { multiplier: 10 };
         durable
-            .start_typed(&execution_id, "zart::tests::integration::TypedTask", &input)
+            .start_for::<TypedTask>(&execution_id, "zart::tests::integration::TypedTask", &input)
             .await
             .expect("start failed");
 
@@ -1452,10 +1452,10 @@ mod integration {
         let _ = handle.await;
     }
 
-    /// Tests `start_and_wait` — explicit type parameters.
+    /// Tests `start_and_wait_for` — handler type inference for input/output.
     #[tokio::test]
     #[ignore]
-    async fn start_and_wait_returns_typed_result() {
+    async fn start_and_wait_for_returns_typed_result() {
         let scheduler = setup().await;
         let mut registry = TaskRegistry::new();
         registry.register("zart::tests::integration::TypedTask", TypedTask);
@@ -1467,15 +1467,15 @@ mod integration {
         let execution_id = format!("typed-start-and-wait-{}", Uuid::new_v4());
         let input = TypedInput { multiplier: 7 };
 
-        let output: TypedOutput = durable
-            .start_and_wait(
+        let output = durable
+            .start_and_wait_for::<TypedTask>(
                 &execution_id,
                 "zart::tests::integration::TypedTask",
                 &input,
                 Duration::from_secs(10),
             )
             .await
-            .expect("start_and_wait failed");
+            .expect("start_and_wait_for failed");
 
         assert_eq!(output.result, 14);
 
@@ -1484,7 +1484,7 @@ mod integration {
     }
 
     /// Tests `start_and_wait_for` — handler type inference for input/output,
-    /// while the task name is provided explicitly.
+    /// verifying a different multiplier.
     #[tokio::test]
     #[ignore]
     async fn start_and_wait_for_infers_types_from_handler() {
@@ -1566,7 +1566,7 @@ mod integration {
         let execution_id = format!("typed-wait-mismatch-{}", Uuid::new_v4());
         let input = TypedInput { multiplier: 21 };
         durable
-            .start_typed(&execution_id, "zart::tests::integration::TypedTask", &input)
+            .start_for::<TypedTask>(&execution_id, "zart::tests::integration::TypedTask", &input)
             .await
             .expect("start failed");
 
