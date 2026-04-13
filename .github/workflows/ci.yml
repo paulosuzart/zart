@@ -16,6 +16,10 @@ on:
           - full-integration (with examples)
           - all
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -91,13 +95,11 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Always run on push to main/master and PRs, or when manually triggered
+    # Run on all PRs and pushes to main/master, or when manually triggered
     if: >-
+      github.event_name == 'pull_request' ||
       (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
-      github.event_name == 'pull_request' || 
-      (github.event_name == 'workflow_dispatch' && 
-       (github.event.inputs.test_type == 'integration' || 
-        github.event.inputs.test_type == 'all'))
+      github.event_name == 'workflow_dispatch'
 
     services:
       postgres:
@@ -153,13 +155,11 @@ jobs:
     name: Full Integration Tests (with Examples)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Run on main branch, or when manually triggered with 'full-integration' or 'all'
+    # Run on all PRs and pushes to main/master, or when manually triggered
     if: >-
-      github.ref == 'refs/heads/main' || 
-      github.ref == 'refs/heads/master' || 
-      (github.event_name == 'workflow_dispatch' && 
-       (github.event.inputs.test_type == 'full-integration (with examples)' || 
-        github.event.inputs.test_type == 'all'))
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
 
     services:
       postgres:
