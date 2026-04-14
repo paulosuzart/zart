@@ -449,6 +449,89 @@ pub struct StepRow {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// Lifecycle status of a step attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "postgres",
+    sqlx(type_name = "step_attempt_status", rename_all = "snake_case")
+)]
+pub enum StepAttemptStatus {
+    Completed,
+    Failed,
+}
+
+/// A single attempt record from the `zart_step_attempts` table.
+#[derive(Debug, Clone)]
+pub struct StepAttemptRow {
+    pub attempt_id: String,
+    pub step_id: String,
+    pub attempt_number: i32,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub status: StepAttemptStatus,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// Execution count statistics grouped by status.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionStats {
+    pub scheduled: i64,
+    pub running: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub cancelled: i64,
+}
+
+/// Field to sort execution listings by.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ExecutionSortField {
+    #[default]
+    ScheduledAt,
+    Status,
+    TaskName,
+}
+
+/// Sort direction for execution listings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SortOrder {
+    #[default]
+    Desc,
+    Asc,
+}
+
+/// Parameters for filtered, paginated execution listing.
+#[derive(Debug, Clone)]
+pub struct ListExecutionsParams {
+    pub status: Option<ExecutionStatus>,
+    pub task_name: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+    pub sort_by: ExecutionSortField,
+    pub sort_order: SortOrder,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+impl Default for ListExecutionsParams {
+    fn default() -> Self {
+        Self {
+            status: None,
+            task_name: None,
+            from: None,
+            to: None,
+            search: None,
+            sort_by: ExecutionSortField::default(),
+            sort_order: SortOrder::default(),
+            limit: 20,
+            offset: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

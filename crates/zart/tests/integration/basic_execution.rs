@@ -1,6 +1,6 @@
 /// Basic execution tests: sequential steps, failures, retries, and recurring tasks.
 use super::helpers::*;
-use scheduler::Recurrence;
+use scheduler::{ListExecutionsParams, Recurrence};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use uuid::Uuid;
@@ -125,7 +125,11 @@ async fn list_executions_returns_started_executions() {
         .expect("start b failed");
 
     let all = durable
-        .list_executions(None, Some("no-op-task".to_string()), 100, 0)
+        .list_executions(ListExecutionsParams {
+            task_name: Some("no-op-task".to_string()),
+            limit: 100,
+            ..Default::default()
+        })
         .await
         .expect("list failed");
 

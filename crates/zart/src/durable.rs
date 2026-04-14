@@ -4,7 +4,7 @@
 //! execution-aware operations: starting executions with idempotency keys,
 //! querying status, and waiting for completion.
 
-use crate::admin::{PauseRule, PauseScope, ResumeResult};
+use crate::admin::{ExecutionDetail, PauseRule, PauseScope, ResumeResult, StepWithAttempts};
 use crate::emit_metric;
 use crate::error::SchedulerError;
 #[cfg(feature = "metrics")]
@@ -12,7 +12,8 @@ use crate::metrics::EVENTS_DELIVERED_TOTAL;
 use crate::registry::DurableExecution;
 use scheduler::pause_storage::{PauseRule as StoragePauseRule, PauseRuleFilter, PauseStorage};
 use scheduler::{
-    ExecutionRecord, ExecutionStatus, ScheduleAtParams, ScheduleResult, StorageBackend,
+    ExecutionRecord, ExecutionStatus, ListExecutionsParams, ScheduleAtParams, ScheduleResult,
+    StorageBackend,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -339,15 +340,9 @@ impl DurableScheduler {
     /// Results are ordered by `scheduled_at DESC`.
     pub async fn list_executions(
         &self,
-        status: Option<ExecutionStatus>,
-        task_name: Option<String>,
-        limit: usize,
-        offset: usize,
+        params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
-        Ok(self
-            .scheduler
-            .list_executions(status, task_name.as_deref(), limit, offset)
-            .await?)
+        Ok(self.scheduler.list_executions(params).await?)
     }
 
     // ── Typed completion API ──────────────────────────────────────────────────
@@ -553,6 +548,62 @@ impl DurableScheduler {
     ) -> Result<H::Output, SchedulerError> {
         self.start_for::<H>(execution_id, task_name, input).await?;
         self.wait_for::<H>(execution_id, timeout).await
+    }
+
+    // ── Stats ────────────────────────────────────────────────────────────────
+
+    /// Return aggregate execution counts grouped by status.
+    pub async fn stats(&self) -> Result<scheduler::ExecutionStats, SchedulerError> {
+        Ok(self.scheduler.execution_stats().await?)
+    }
+
+    /// Return full detail for an execution: the record, all runs, and the
+    /// current run's steps with their attempt history.
+    pub async fn execution_detail(
+        &self,
+        execution_id: &str,
+    ) -> Result<ExecutionDetail, SchedulerError> {
+        let execution = self.status(execution_id).await?;
+
+        let runs = self.list_runs(execution_id).await?;
+
+        let current_run_id = match self.get_current_run_id(execution_id).await? {
+            Some(id) => id,
+            None => {
+                return Ok(ExecutionDetail {
+                    execution,
+                    runs,
+                    steps: vec![],
+                });
+            }
+        };
+
+        let step_rows = self.scheduler.list_steps(&current_run_id).await?;
+
+        let attempts = self.scheduler.list_step_attempts(&current_run_id).await?;
+
+        let steps: Vec<StepWithAttempts> = step_rows
+            .into_iter()
+            .map(|step| {
+                let step_attempts: Vec<_> = attempts
+                    .iter()
+                    .filter(|a| a.step_id == step.step_id)
+                    .cloned()
+                    .collect();
+                let retryable = step.status == scheduler::StepStatus::Dead;
+                StepWithAttempts {
+                    step,
+                    attempts: step_attempts,
+                    retryable,
+                }
+            })
+            .collect();
+
+        Ok(ExecutionDetail {
+            execution,
+            runs,
+            steps,
+        })
     }
 
     // ── Admin operations ──────────────────────────────────────────────────────

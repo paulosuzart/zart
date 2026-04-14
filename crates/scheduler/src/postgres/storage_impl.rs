@@ -8,9 +8,10 @@ use super::PostgresScheduler;
 use super::sql_helpers::{complete_step_and_schedule_body_sql, start_execution_sql};
 use crate::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
-    DurableStorage, EventDeliveryResult, ExecutionRecord, ExecutionStatus,
-    FailWaitGroupChildParams, RescheduleStepForRetryParams, ScheduleStepParams, StepKind,
-    StepLookup, StepResultKind, StepStatus, StorageError, TaskStatus, UpsertWaitGroupStepParams,
+    DurableStorage, EventDeliveryResult, ExecutionRecord, ExecutionSortField, ExecutionStats,
+    ExecutionStatus, FailWaitGroupChildParams, ListExecutionsParams, RescheduleStepForRetryParams,
+    ScheduleStepParams, SortOrder, StepAttemptRow, StepAttemptStatus, StepKind, StepLookup,
+    StepResultKind, StepStatus, StorageError, TaskStatus, UpsertWaitGroupStepParams,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -203,11 +204,33 @@ impl DurableStorage for PostgresScheduler {
 
     async fn list_executions(
         &self,
-        status: Option<ExecutionStatus>,
-        task_name: Option<&str>,
-        limit: usize,
-        offset: usize,
+        params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, StorageError> {
+        let order_clause = match (params.sort_by, &params.sort_order) {
+            (ExecutionSortField::ScheduledAt, SortOrder::Desc) => "r.started_at DESC",
+            (ExecutionSortField::ScheduledAt, SortOrder::Asc) => "r.started_at ASC",
+            (ExecutionSortField::Status, SortOrder::Desc) => "r.status::TEXT DESC",
+            (ExecutionSortField::Status, SortOrder::Asc) => "r.status::TEXT ASC",
+            (ExecutionSortField::TaskName, SortOrder::Desc) => "e.task_name DESC",
+            (ExecutionSortField::TaskName, SortOrder::Asc) => "e.task_name ASC",
+        };
+
+        let sql = format!(
+            r#"
+            SELECT e.execution_id, e.task_name, r.payload, r.result, r.status,
+                   r.started_at, r.completed_at, 1
+            FROM zart_executions e
+            JOIN zart_execution_runs r ON e.current_run_id = r.run_id
+            WHERE ($1::execution_status IS NULL OR r.status = $1)
+              AND ($2::TEXT IS NULL OR e.task_name = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR r.started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR r.started_at <= $4)
+              AND ($5::TEXT IS NULL OR e.execution_id LIKE $5 || '%')
+            ORDER BY {order_clause}
+            LIMIT $6 OFFSET $7
+            "#
+        );
+
         let rows: Vec<(
             String,
             String,
@@ -217,25 +240,17 @@ impl DurableStorage for PostgresScheduler {
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             i32,
-        )> = sqlx::query_as(
-            r#"
-            SELECT e.execution_id, e.task_name, r.payload, r.result, r.status,
-                   r.started_at, r.completed_at, 1
-            FROM zart_executions e
-            JOIN zart_execution_runs r ON e.current_run_id = r.run_id
-            WHERE ($1::execution_status IS NULL OR r.status = $1)
-              AND ($2::TEXT IS NULL OR e.task_name = $2)
-            ORDER BY r.started_at DESC
-            LIMIT $3 OFFSET $4
-            "#,
-        )
-        .bind(status)
-        .bind(task_name)
-        .bind(limit as i64)
-        .bind(offset as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        )> = sqlx::query_as(&sql)
+            .bind(params.status)
+            .bind(params.task_name.as_deref())
+            .bind(params.from)
+            .bind(params.to)
+            .bind(params.search.as_deref())
+            .bind(params.limit as i64)
+            .bind(params.offset as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         rows.into_iter()
             .map(
@@ -1798,5 +1813,84 @@ impl DurableStorage for PostgresScheduler {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         Ok((new_run_id, effective_rerun.into_iter().collect()))
+    }
+
+    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+        let row: (i64, i64, i64, i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                COALESCE(SUM(CASE WHEN r.status = 'scheduled' THEN 1 END), 0),
+                COALESCE(SUM(CASE WHEN r.status = 'running' THEN 1 END), 0),
+                COALESCE(SUM(CASE WHEN r.status = 'completed' THEN 1 END), 0),
+                COALESCE(SUM(CASE WHEN r.status = 'failed' THEN 1 END), 0),
+                COALESCE(SUM(CASE WHEN r.status = 'cancelled' THEN 1 END), 0)
+            FROM zart_executions e
+            JOIN zart_execution_runs r ON e.current_run_id = r.run_id
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(ExecutionStats {
+            scheduled: row.0,
+            running: row.1,
+            completed: row.2,
+            failed: row.3,
+            cancelled: row.4,
+        })
+    }
+
+    async fn list_step_attempts(&self, run_id: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
+        let rows: Vec<(
+            String,
+            String,
+            i32,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            StepAttemptStatus,
+            Option<serde_json::Value>,
+            Option<String>,
+        )> = sqlx::query_as(
+            r#"
+            SELECT a.attempt_id, a.step_id, a.attempt_number,
+                   a.started_at, a.completed_at, a.status, a.result, a.error
+            FROM zart_step_attempts a
+            JOIN zart_steps s ON a.step_id = s.step_id
+            WHERE s.run_id = $1
+            ORDER BY s.scheduled_at ASC, a.attempt_number ASC
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    attempt_id,
+                    step_id,
+                    attempt_number,
+                    started_at,
+                    completed_at,
+                    status,
+                    result,
+                    error,
+                )| {
+                    StepAttemptRow {
+                        attempt_id,
+                        step_id,
+                        attempt_number,
+                        started_at,
+                        completed_at,
+                        status,
+                        result,
+                        error,
+                    }
+                },
+            )
+            .collect())
     }
 }

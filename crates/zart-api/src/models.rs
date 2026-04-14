@@ -1,7 +1,7 @@
 //! Request and response types for the Zart HTTP API.
 
 use chrono::{DateTime, Utc};
-use scheduler::ExecutionRecord;
+use scheduler::{ExecutionRecord, ExecutionSortField, ListExecutionsParams, SortOrder};
 use serde::{Deserialize, Serialize};
 
 // ── Requests ──────────────────────────────────────────────────────────────────
@@ -24,16 +24,46 @@ pub struct StartExecutionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListQuery {
-    /// Filter by lifecycle status (scheduled, running, completed, failed, cancelled).
     pub status: Option<String>,
-    /// Filter by registered task name.
     pub task_name: Option<String>,
-    /// Maximum number of results to return (default: 20).
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: usize,
-    /// Number of results to skip for pagination (default: 0).
     #[serde(default)]
     pub offset: usize,
+}
+
+impl ListQuery {
+    pub fn into_params(self) -> ListExecutionsParams {
+        let status = self
+            .status
+            .as_deref()
+            .and_then(|s| s.parse::<scheduler::ExecutionStatus>().ok());
+        let sort_by = match self.sort_by.as_deref() {
+            Some("status") => ExecutionSortField::Status,
+            Some("taskName") => ExecutionSortField::TaskName,
+            _ => ExecutionSortField::ScheduledAt,
+        };
+        let sort_order = match self.sort_order.as_deref() {
+            Some("asc") => SortOrder::Asc,
+            _ => SortOrder::Desc,
+        };
+        ListExecutionsParams {
+            status,
+            task_name: self.task_name,
+            from: self.from,
+            to: self.to,
+            search: self.search,
+            sort_by,
+            sort_order,
+            limit: self.limit,
+            offset: self.offset,
+        }
+    }
 }
 
 fn default_limit() -> usize {
@@ -216,4 +246,65 @@ pub struct PauseRuleResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ResumeResponse {
     pub rules_deleted: usize,
+}
+
+/// Response for `GET /api/v1/stats`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsResponse {
+    pub scheduled: i64,
+    pub running: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub cancelled: i64,
+}
+
+impl From<scheduler::ExecutionStats> for StatsResponse {
+    fn from(s: scheduler::ExecutionStats) -> Self {
+        Self {
+            scheduled: s.scheduled,
+            running: s.running,
+            completed: s.completed,
+            failed: s.failed,
+            cancelled: s.cancelled,
+        }
+    }
+}
+
+/// Response for `GET /admin/v1/executions/:id/detail`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionDetailResponse {
+    pub execution: ExecutionResponse,
+    pub runs: Vec<RunRecordResponse>,
+    pub steps: Vec<StepDetailResponse>,
+}
+
+/// A step with its attempt history.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepDetailResponse {
+    pub step_id: String,
+    pub name: String,
+    pub kind: String,
+    pub status: String,
+    pub retry_attempt: i32,
+    pub result: Option<serde_json::Value>,
+    pub last_error: Option<String>,
+    pub retryable: bool,
+    pub scheduled_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub attempts: Vec<StepAttemptResponse>,
+}
+
+/// A single step attempt in the detail response.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepAttemptResponse {
+    pub attempt_number: i32,
+    pub status: String,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }

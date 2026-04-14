@@ -330,10 +330,7 @@ mod tests {
 
         async fn list_executions(
             &self,
-            _status: Option<scheduler::ExecutionStatus>,
-            _task_name: Option<&str>,
-            _limit: usize,
-            _offset: usize,
+            _params: scheduler::ListExecutionsParams,
         ) -> Result<Vec<scheduler::ExecutionRecord>, StorageError> {
             Ok(vec![])
         }

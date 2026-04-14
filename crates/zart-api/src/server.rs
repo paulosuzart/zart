@@ -83,7 +83,8 @@ impl ApiServer {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult};
+    use scheduler::ListExecutionsParams;
+    use scheduler::{ExecutionRecord, ExecutionStats, ScheduleResult};
     use std::time::Duration;
     use zart::error::SchedulerError;
 
@@ -123,12 +124,12 @@ mod tests {
         }
         async fn list_executions(
             &self,
-            _: Option<ExecutionStatus>,
-            _: Option<String>,
-            _: usize,
-            _: usize,
+            _: ListExecutionsParams,
         ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
             unimplemented!()
+        }
+        async fn stats(&self) -> Result<ExecutionStats, SchedulerError> {
+            Ok(ExecutionStats::default())
         }
     }
 

@@ -7,7 +7,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use scheduler::ExecutionStatus;
 use std::time::Duration;
 use zart::error::SchedulerError;
 #[cfg(feature = "metrics")]
@@ -16,7 +15,7 @@ use zart::metrics::gather_metrics;
 use crate::{
     models::{
         ErrorResponse, ExecutionResponse, ListQuery, StartExecutionRequest, StartExecutionResponse,
-        WaitQuery,
+        StatsResponse, WaitQuery,
     },
     state::AppState,
 };
@@ -39,6 +38,8 @@ pub fn api_router(state: AppState) -> Router {
             "/api/v1/executions/{execution_id}/wait",
             get(wait_execution),
         )
+        // Stats
+        .route("/api/v1/stats", get(get_stats))
         // Event delivery
         .route(
             "/api/v1/events/{execution_id}/{event_name}",
@@ -83,16 +84,9 @@ async fn metrics_handler() -> impl IntoResponse {
 
 /// `GET /api/v1/executions` — list executions with optional filters.
 async fn list_executions(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Response {
-    let status = q
-        .status
-        .as_deref()
-        .and_then(|s| s.parse::<ExecutionStatus>().ok());
+    let params = q.into_params();
 
-    match state
-        .durable
-        .list_executions(status, q.task_name, q.limit, q.offset)
-        .await
-    {
+    match state.durable.list_executions(params).await {
         Ok(records) => {
             let body: Vec<ExecutionResponse> = records.into_iter().map(Into::into).collect();
             (StatusCode::OK, Json(body)).into_response()
@@ -194,6 +188,19 @@ async fn offer_event(
     }
 }
 
+// ── Stats ──────────────────────────────────────────────────────────────────
+
+/// `GET /api/v1/stats` — aggregate execution counts by status.
+async fn get_stats(State(state): State<AppState>) -> Response {
+    match state.durable.stats().await {
+        Ok(stats) => {
+            let body: StatsResponse = stats.into();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => scheduler_error_response(e),
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn not_found(execution_id: &str) -> Response {
@@ -224,7 +231,7 @@ mod tests {
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult};
+    use scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
     use std::sync::Arc;
     use tower::ServiceExt;
     use zart::{DurableApi, error::SchedulerError};
@@ -265,12 +272,12 @@ mod tests {
         }
         async fn list_executions(
             &self,
-            _: Option<ExecutionStatus>,
-            _: Option<String>,
-            _: usize,
-            _: usize,
+            _: ListExecutionsParams,
         ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
             unimplemented!()
+        }
+        async fn stats(&self) -> Result<ExecutionStats, SchedulerError> {
+            Ok(ExecutionStats::default())
         }
     }
 

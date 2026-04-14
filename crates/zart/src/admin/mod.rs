@@ -111,3 +111,19 @@ pub struct ResumeResult {
     /// Number of pause rules that were soft-deleted.
     pub rules_deleted: usize,
 }
+
+/// Full execution detail for the admin detail endpoint.
+#[derive(Debug, Clone)]
+pub struct ExecutionDetail {
+    pub execution: scheduler::ExecutionRecord,
+    pub runs: Vec<scheduler::ExecutionRunRecord>,
+    pub steps: Vec<StepWithAttempts>,
+}
+
+/// A step with its attempts and retryability flag.
+#[derive(Debug, Clone)]
+pub struct StepWithAttempts {
+    pub step: scheduler::StepRow,
+    pub attempts: Vec<scheduler::StepAttemptRow>,
+    pub retryable: bool,
+}
