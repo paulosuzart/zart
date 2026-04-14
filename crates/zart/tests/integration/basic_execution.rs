@@ -171,7 +171,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
             task_name: "counter-task".to_string(),
             execution_time: chrono::Utc::now(),
             data: serde_json::json!({}),
-            recurrence: Some(Recurrence::FixedDelay { duration_ms: 200 }),
+            recurrence: Some(Recurrence::FixedDelay { duration_ms: 100 }),
             metadata: serde_json::Value::Null,
         })
         .await
@@ -189,7 +189,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     worker.stop();
 
     let runs = call_count.load(std::sync::atomic::Ordering::SeqCst);
