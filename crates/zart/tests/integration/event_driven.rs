@@ -1,5 +1,4 @@
-//! Event-driven execution tests.
-
+/// Event-driven execution tests.
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;

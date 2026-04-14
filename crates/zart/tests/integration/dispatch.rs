@@ -1,11 +1,13 @@
-//! Declarative dispatch and step_internal integration tests.
-
+/// Declarative dispatch and step_internal integration tests.
 use super::helpers::*;
-use scheduler::{CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind, UpsertWaitGroupStepParams};
+use scheduler::{
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
+    UpsertWaitGroupStepParams,
+};
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
 use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
+use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]

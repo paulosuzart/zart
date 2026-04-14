@@ -1,10 +1,11 @@
-//! Phase 6: Spec 0023 — Transaction participation tests.
-
+/// Phase 6: Spec 0023 — Transaction participation tests.
 use super::helpers::*;
 use std::borrow::Cow;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableScheduler, TaskRegistry, context::ZartStep, error::TaskError, registry::DurableExecution};
+use zart::{
+    DurableScheduler, TaskRegistry, context::ZartStep, error::TaskError, registry::DurableExecution,
+};
 
 // ── Scenario 1: Transactional scheduling ───────────────────────────────
 
@@ -80,12 +81,7 @@ async fn start_for_in_tx_commit_creates_execution_with_payload() {
 
     let mut tx = pool.begin().await.expect("begin tx failed");
     sched
-        .start_for_in_tx::<TestHandler>(
-            &mut tx,
-            &exec_id,
-            "test_handler",
-            &TestInput { value: 42 },
-        )
+        .start_for_in_tx::<TestHandler>(&mut tx, &exec_id, "test_handler", &TestInput { value: 42 })
         .await
         .expect("start_for_in_tx failed");
     tx.commit().await.expect("commit failed");
@@ -362,12 +358,11 @@ async fn trx_atomic_step_write_and_completion_commit_together() {
         "execution should complete successfully: {result:?}"
     );
 
-    let val: Option<i64> =
-        sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
-            .bind(&ledger_key)
-            .fetch_optional(&pool)
-            .await
-            .expect("ledger query failed");
+    let val: Option<i64> = sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
+        .bind(&ledger_key)
+        .fetch_optional(&pool)
+        .await
+        .expect("ledger query failed");
 
     assert_eq!(
         val,
@@ -466,12 +461,11 @@ async fn trx_atomic_step_write_rolls_back_on_step_error() {
     let _ = sched.wait(&exec_id, Duration::from_secs(10), None).await;
     worker.stop();
 
-    let val: Option<i64> =
-        sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
-            .bind(&ledger_key)
-            .fetch_optional(&pool)
-            .await
-            .expect("ledger query failed");
+    let val: Option<i64> = sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
+        .bind(&ledger_key)
+        .fetch_optional(&pool)
+        .await
+        .expect("ledger query failed");
 
     assert!(
         val.is_none(),

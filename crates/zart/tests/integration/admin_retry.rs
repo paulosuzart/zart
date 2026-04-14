@@ -1,5 +1,4 @@
-//! Admin retry step tests.
-
+/// Admin retry step tests.
 use super::helpers::*;
 use uuid::Uuid;
 

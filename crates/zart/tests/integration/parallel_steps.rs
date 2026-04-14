@@ -1,5 +1,4 @@
-//! Parallel steps tests.
-
+/// Parallel steps tests.
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;

@@ -26,6 +26,10 @@ sqlx = { workspace = true, features = ["postgres"] }
 [features]
 metrics = ["dep:prometheus", "dep:lazy_static"]
 
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+
 [dev-dependencies]
 tokio.workspace = true
 tokio-test.workspace = true

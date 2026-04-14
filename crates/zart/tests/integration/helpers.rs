@@ -1,20 +1,16 @@
-//! Shared helpers and test step definitions for integration tests.
-
-use scheduler::{
+/// Shared helpers and test step definitions for integration tests.
+pub use scheduler::{
     DurableStorage as _, EventDeliveryResult, ExecutionStatus, PostgresScheduler, Scheduler as _,
-    StepKind,
 };
-use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
-use std::sync::{
+pub use serde::{Deserialize, Serialize};
+pub use std::borrow::Cow;
+pub use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::Duration;
-use zart::{
-    DurableScheduler, RetryConfig, TaskRegistry, Worker, WorkerConfig,
-    context::ZartStep,
-    error::TaskError,
+pub use std::time::Duration;
+pub use zart::{
+    RetryConfig, TaskRegistry, Worker, WorkerConfig, context::ZartStep, error::TaskError,
     registry::DurableExecution,
 };
 
@@ -409,9 +405,3 @@ impl ZartStep for MultiplyStep {
         Ok(self.multiplier * 2)
     }
 }
-
-// ── Re-exports for test modules ──────────────────────────────────────────
-
-pub use scheduler::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams,
-};

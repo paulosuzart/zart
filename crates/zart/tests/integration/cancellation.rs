@@ -1,8 +1,7 @@
-//! Cancellation-during-execution tests.
-//!
-//! These tests cover the race condition where a durable execution is cancelled
-//! while its task is already `picked_up` by a worker.
-
+/// Cancellation-during-execution tests.
+///
+/// These tests cover the race condition where a durable execution is cancelled
+/// while its task is already `picked_up` by a worker.
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;

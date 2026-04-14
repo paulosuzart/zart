@@ -1,5 +1,4 @@
-//! Typed completion API tests.
-
+/// Typed completion API tests.
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;

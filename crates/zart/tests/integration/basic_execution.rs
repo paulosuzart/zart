@@ -1,5 +1,4 @@
-//! Basic execution tests: sequential steps, failures, retries, and recurring tasks.
-
+/// Basic execution tests: sequential steps, failures, retries, and recurring tasks.
 use super::helpers::*;
 use scheduler::Recurrence;
 use std::sync::atomic::Ordering;
