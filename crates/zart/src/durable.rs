@@ -558,29 +558,35 @@ impl DurableScheduler {
     }
 
     /// Return full detail for an execution: the record, all runs, and the
-    /// current run's steps with their attempt history.
+    /// steps (with attempt history) for the specified run.
+    ///
+    /// If `run_id` is `None` the current (latest) run is used.
     pub async fn execution_detail(
         &self,
         execution_id: &str,
+        run_id: Option<&str>,
     ) -> Result<ExecutionDetail, SchedulerError> {
         let execution = self.status(execution_id).await?;
 
         let runs = self.list_runs(execution_id).await?;
 
-        let current_run_id = match self.get_current_run_id(execution_id).await? {
-            Some(id) => id,
-            None => {
-                return Ok(ExecutionDetail {
-                    execution,
-                    runs,
-                    steps: vec![],
-                });
-            }
+        let effective_run_id = match run_id {
+            Some(id) => id.to_string(),
+            None => match self.get_current_run_id(execution_id).await? {
+                Some(id) => id,
+                None => {
+                    return Ok(ExecutionDetail {
+                        execution,
+                        runs,
+                        steps: vec![],
+                    });
+                }
+            },
         };
 
-        let step_rows = self.scheduler.list_steps(&current_run_id).await?;
+        let step_rows = self.scheduler.list_steps(&effective_run_id).await?;
 
-        let attempts = self.scheduler.list_step_attempts(&current_run_id).await?;
+        let attempts = self.scheduler.list_step_attempts(&effective_run_id).await?;
 
         let steps: Vec<StepWithAttempts> = step_rows
             .into_iter()

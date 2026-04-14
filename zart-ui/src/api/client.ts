@@ -6,7 +6,21 @@ import type {
   StatsResponse,
 } from "./types";
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const STORAGE_KEY = "zart_api_base_url";
+
+function getBaseUrl(): string {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored) return stored;
+  return import.meta.env.VITE_API_BASE_URL ?? window.location.origin;
+}
+
+export function getCurrentBaseUrl(): string {
+  return getBaseUrl();
+}
+
+export function setBaseUrl(url: string) {
+  localStorage.setItem(STORAGE_KEY, url);
+}
 
 function qs(params: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -19,7 +33,7 @@ function qs(params: Record<string, unknown>): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
   });
@@ -49,9 +63,10 @@ export function cancelExecution(id: string) {
   return request<void>(`/api/v1/executions/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 }
 
-export function getExecutionDetail(id: string) {
+export function getExecutionDetail(id: string, runId?: string) {
+  const q = runId ? `?runId=${encodeURIComponent(runId)}` : "";
   return request<ExecutionDetailResponse>(
-    `/admin/v1/executions/${encodeURIComponent(id)}/detail`,
+    `/admin/v1/executions/${encodeURIComponent(id)}/detail${q}`,
   );
 }
 
@@ -86,6 +101,17 @@ export function offerEvent(executionId: string, eventName: string, payload: unkn
     `/api/v1/events/${encodeURIComponent(executionId)}/${encodeURIComponent(eventName)}`,
     { method: "POST", body: JSON.stringify(payload) },
   );
+}
+
+export function startExecution(body: {
+  executionId?: string;
+  taskName: string;
+  payload: unknown;
+}) {
+  return request<ExecutionResponse>("/api/v1/executions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function listPauseRules() {

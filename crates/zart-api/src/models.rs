@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartExecutionRequest {
-    /// Idempotency key. If an execution with this ID already exists the call
-    /// is a no-op and the existing record is returned.
-    pub execution_id: String,
+    /// Idempotency key. Generated as a UUID v4 when omitted.
+    #[serde(default)]
+    pub execution_id: Option<String>,
     /// Registered task handler name.
     pub task_name: String,
     /// Arbitrary JSON payload forwarded to the task handler.

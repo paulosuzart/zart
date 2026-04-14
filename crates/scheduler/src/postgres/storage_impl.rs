@@ -222,7 +222,7 @@ impl DurableStorage for PostgresScheduler {
             FROM zart_executions e
             JOIN zart_execution_runs r ON e.current_run_id = r.run_id
             WHERE ($1::execution_status IS NULL OR r.status = $1)
-              AND ($2::TEXT IS NULL OR e.task_name = $2)
+              AND ($2::TEXT IS NULL OR e.task_name ILIKE '%' || $2 || '%')
               AND ($3::TIMESTAMPTZ IS NULL OR r.started_at >= $3)
               AND ($4::TIMESTAMPTZ IS NULL OR r.started_at <= $4)
               AND ($5::TEXT IS NULL OR e.execution_id LIKE $5 || '%')

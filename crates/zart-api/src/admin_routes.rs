@@ -11,7 +11,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -230,12 +230,25 @@ async fn delete_pause_rule(
     }
 }
 
+/// Query parameters for the detail endpoint.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailQuery {
+    /// Load steps from this specific run instead of the current run.
+    run_id: Option<String>,
+}
+
 /// `GET /admin/v1/executions/:id/detail` — full execution detail with steps and attempts.
 async fn execution_detail(
     State(state): State<AdminState>,
     Path(execution_id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Response {
-    match state.scheduler.execution_detail(&execution_id).await {
+    match state
+        .scheduler
+        .execution_detail(&execution_id, query.run_id.as_deref())
+        .await
+    {
         Ok(detail) => {
             let execution: ExecutionResponse = detail.execution.into();
             let runs: Vec<RunRecordResponse> = detail

@@ -14,7 +14,7 @@ use zart::metrics::gather_metrics;
 
 use crate::{
     models::{
-        ErrorResponse, ExecutionResponse, ListQuery, StartExecutionRequest, StartExecutionResponse,
+        ErrorResponse, ExecutionResponse, ListQuery, StartExecutionRequest,
         StatsResponse, WaitQuery,
     },
     state::AppState,
@@ -100,18 +100,22 @@ async fn start_execution(
     State(state): State<AppState>,
     Json(req): Json<StartExecutionRequest>,
 ) -> Response {
+    let execution_id = req
+        .execution_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     match state
         .durable
-        .start(&req.execution_id, &req.task_name, req.payload)
+        .start(&execution_id, &req.task_name, req.payload)
         .await
     {
-        Ok(result) => {
-            let body = StartExecutionResponse {
-                execution_id: req.execution_id,
-                task_id: result.task_id,
-            };
-            (StatusCode::CREATED, Json(body)).into_response()
-        }
+        Ok(_) => match state.durable.status(&execution_id).await {
+            Ok(record) => {
+                let body: ExecutionResponse = record.into();
+                (StatusCode::CREATED, Json(body)).into_response()
+            }
+            Err(e) => scheduler_error_response(e),
+        },
         Err(e) => scheduler_error_response(e),
     }
 }
