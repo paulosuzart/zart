@@ -60,7 +60,7 @@
 //!
 //! Register the handler, start a worker, and fire an execution:
 //!
-//! ```rust,ignore
+//! ```text
 //! let mut registry = TaskRegistry::new();
 //! registry.register("onboard-user", OnboardUser);
 //!
