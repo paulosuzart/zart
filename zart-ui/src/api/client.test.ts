@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cancelExecution, getExecution, getStats, listExecutions, startExecution } from "./client";
 
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+globalThis.fetch = mockFetch;
 
 function okJson(body: unknown, status = 200) {
   return Promise.resolve({
@@ -15,7 +15,7 @@ function okJson(body: unknown, status = 200) {
 
 beforeEach(() => {
   mockFetch.mockReset();
-  localStorage.getItem?.mockReturnValue(null);
+  vi.mocked(localStorage.getItem).mockReturnValue(null);
 });
 
 describe("getStats", () => {

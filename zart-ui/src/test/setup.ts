@@ -4,16 +4,15 @@ import { afterEach, expect } from "vitest";
 
 expect.extend(matchers);
 
-// Mock localStorage for API client tests (jsdom doesn't have it)
 const localStorageMock = {
-  getItem: vi.fn(),
+  getItem: vi.fn().mockReturnValue(null),
   setItem: vi.fn(),
   removeItem: vi.fn(),
   clear: vi.fn(),
   key: vi.fn(),
   length: 0,
-};
-Object.defineProperty(global, "localStorage", { value: localStorageMock });
+} as Storage;
+(globalThis as typeof globalThis & { localStorage: typeof localStorageMock }).localStorage = localStorageMock;
 
 afterEach(() => {
   vi.clearAllMocks();
