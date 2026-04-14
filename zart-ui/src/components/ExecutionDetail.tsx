@@ -205,16 +205,12 @@ function PauseDialog({
           onChange={(e) => setStepPattern(e.target.value)}
           placeholder="e.g. charge-* or send-email"
         />
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12 }}>
-          <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 0 }}>
-            Expires at (optional)
-          </label>
-          <input
-            type="datetime-local"
-            value={expiresAt}
-            onChange={(e) => setExpiresAt(e.target.value)}
-          />
-        </div>
+        <label>Expires at (optional)</label>
+        <input
+          type="datetime-local"
+          value={expiresAt}
+          onChange={(e) => setExpiresAt(e.target.value)}
+        />
         <div className="dialog-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" disabled={acting} onClick={submit}>
@@ -248,7 +244,10 @@ function StepsTable({
   }
 
   if (steps.length === 0) {
-    return <div className="empty-state"><p>No steps recorded yet</p></div>;
+    return <div className="empty-state">
+      <p>No steps recorded yet</p>
+      <p className="empty-state-hint">Steps will appear as the execution progresses</p>
+    </div>;
   }
 
   return (
@@ -422,7 +421,7 @@ export function ExecutionDetail() {
   }
 
   if (loading && !detail) {
-    return <div className="empty-state"><p>Loading…</p></div>;
+    return <div className="empty-state"><p>Loading execution...</p></div>;
   }
 
   if (!detail) {

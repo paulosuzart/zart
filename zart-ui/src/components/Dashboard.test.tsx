@@ -48,7 +48,7 @@ describe("Dashboard", () => {
   it("shows empty-state message when there are no recent executions", async () => {
     render(<Dashboard />);
     await waitFor(() => {
-      expect(screen.getByText("No executions found")).toBeInTheDocument();
+      expect(screen.getByText("No executions yet")).toBeInTheDocument();
     });
   });
 });

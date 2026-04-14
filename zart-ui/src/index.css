@@ -1,17 +1,19 @@
-@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap");
 
 :root {
-  --bg: #0a0a0b;
-  --bg-elevated: #141416;
-  --bg-surface: #1a1a1e;
-  --bg-hover: #222228;
-  --border: #2a2a30;
-  --border-light: #333339;
-  --text: #e4e4e7;
-  --text-secondary: #8b8b94;
-  --text-muted: #5a5a63;
-  --accent: #f97316;
-  --accent-dim: #c2410c;
+  --bg: #0c0a14;
+  --bg-elevated: #110f1b;
+  --bg-surface: #171524;
+  --bg-hover: #1e1c2e;
+  --border: #28263a;
+  --border-light: #34314a;
+  --text: #e4e2f0;
+  --text-secondary: #9490ab;
+  --text-muted: #665e80;
+  --accent: #6366f1;
+  --accent-dim: #4f46e5;
+  --accent-bright: #818cf8;
+  --accent-glow: rgba(99, 102, 241, 0.12);
   --status-scheduled: #60a5fa;
   --status-running: #a78bfa;
   --status-completed: #34d399;
@@ -20,7 +22,7 @@
   --status-paused: #fb923c;
   --status-dead: #ef4444;
   --radius: 6px;
-  --font-body: "DM Sans", system-ui, sans-serif;
+  --font-body: "Instrument Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
@@ -39,7 +41,7 @@ body {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-bright);
   text-decoration: none;
 }
 
@@ -67,18 +69,33 @@ a:hover {
   padding: 0 20px 24px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sidebar-brand img {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.sidebar-brand-text {
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-brand h1 {
   font-family: var(--font-mono);
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-bright);
   letter-spacing: -0.5px;
+  line-height: 1.2;
 }
 
 .sidebar-brand span {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -107,8 +124,8 @@ a:hover {
 }
 
 .sidebar a.active {
-  background: rgba(249, 115, 22, 0.1);
-  color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--accent-bright);
 }
 
 .sidebar-server {
@@ -146,6 +163,7 @@ a:hover {
 .sidebar-server input:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .main {
@@ -184,6 +202,7 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 20px;
+  border-left: 3px solid var(--border);
 }
 
 .stat-card .stat-label {
@@ -217,9 +236,10 @@ th {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: var(--text-muted);
+  color: var(--accent-bright);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
+  background: rgba(99, 102, 241, 0.06);
 }
 
 td {
@@ -344,6 +364,7 @@ tr:hover td {
 .filters select:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 /* Monospace IDs */
@@ -371,7 +392,7 @@ tr:hover td {
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: var(--text-muted);
+  color: var(--accent-bright);
   margin-bottom: 12px;
 }
 
@@ -386,7 +407,7 @@ tr:hover td {
   flex-wrap: wrap;
   margin-bottom: 16px;
   padding: 10px 16px;
-  background: var(--surface);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 6px;
 }
@@ -432,7 +453,8 @@ tr:hover td {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(12, 10, 20, 0.75);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -442,10 +464,11 @@ tr:hover td {
 .dialog {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 24px;
   min-width: 360px;
   max-width: 480px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 .dialog h3 {
@@ -488,13 +511,20 @@ tr:hover td {
 /* Empty state */
 .empty-state {
   text-align: center;
-  padding: 48px 24px;
+  padding: 60px 24px;
   color: var(--text-muted);
 }
 
 .empty-state p {
   font-size: 14px;
   margin-bottom: 4px;
+}
+
+.empty-state-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-top: 4px;
 }
 
 /* Tabs */
@@ -515,6 +545,7 @@ tr:hover td {
   color: var(--text-secondary);
   cursor: pointer;
   font-family: var(--font-body);
+  transition: color 0.15s;
 }
 
 .tabs button:hover {
@@ -522,7 +553,7 @@ tr:hover td {
 }
 
 .tabs button.active {
-  color: var(--accent);
+  color: var(--accent-bright);
   border-bottom-color: var(--accent);
 }
 
@@ -590,7 +621,6 @@ tr:hover td {
   flex-shrink: 0;
 }
 
-/* A column groups all nodes that share a step name */
 .step-column {
   display: flex;
   flex-direction: column;
@@ -598,7 +628,6 @@ tr:hover td {
   align-items: stretch;
 }
 
-/* Nodes are now buttons for click-to-select */
 .step-node {
   width: 180px;
   padding: 12px 14px;
@@ -803,6 +832,7 @@ tr:hover td {
 .dialog textarea:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .dialog input[type="text"],
@@ -821,6 +851,7 @@ tr:hover td {
 .dialog input:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .dialog label {

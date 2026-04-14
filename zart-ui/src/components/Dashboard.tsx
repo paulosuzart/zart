@@ -50,7 +50,8 @@ function ExecTable({ executions }: { executions: import("../api/types").Executio
   if (executions.length === 0) {
     return (
       <div className="empty-state">
-        <p>No executions found</p>
+        <p>No executions yet</p>
+        <p className="empty-state-hint">Start your first execution to see it here</p>
       </div>
     );
   }

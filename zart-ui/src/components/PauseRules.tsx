@@ -80,16 +80,12 @@ export function PauseRules() {
               value={form.stepPattern}
               onChange={(e) => setForm({ ...form, stepPattern: e.target.value })}
             />
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 0 }}>
-                Expires at (optional)
-              </label>
-              <input
-                type="datetime-local"
-                value={form.expiresAt}
-                onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
-              />
-            </div>
+            <input
+              type="datetime-local"
+              value={form.expiresAt}
+              onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
+              title="Expires at (optional)"
+            />
             <button className="btn btn-primary" type="submit" disabled={submitting}>
               Create
             </button>
@@ -100,6 +96,7 @@ export function PauseRules() {
       {activeRules.length === 0 ? (
         <div className="empty-state">
           <p>No active pause rules</p>
+          <p className="empty-state-hint">Create a rule to pause specific steps or executions</p>
         </div>
       ) : (
         <div className="table-wrap">

@@ -49,8 +49,11 @@ function Layout() {
     <div className="layout">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <h1>zart</h1>
-          <span>admin</span>
+          <img src="/logo.svg" alt="Zart" />
+          <div className="sidebar-brand-text">
+            <h1>zart</h1>
+            <span>admin</span>
+          </div>
         </div>
         <nav>
           <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>

@@ -133,7 +133,12 @@ export function StepGraph({ steps }: { steps: StepDetailResponse[] }) {
   const [selected, setSelected] = useState<StepDetailResponse | null>(null);
 
   if (steps.length === 0) {
-    return <div className="empty-state"><p>No steps recorded yet</p></div>;
+    return (
+      <div className="empty-state">
+        <p>No steps recorded yet</p>
+        <p className="empty-state-hint">The graph will render as steps execute</p>
+      </div>
+    );
   }
 
   // Build columns: one column per unique name, preserving first-appearance order.

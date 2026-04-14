@@ -125,9 +125,13 @@ export function createPauseRule(rule: {
   expiresAt?: string;
   triggeredBy?: string;
 }) {
+  const body: Record<string, unknown> = { ...rule };
+  if (body.expiresAt) {
+    body.expiresAt = new Date(body.expiresAt as string).toISOString();
+  }
   return request<PauseRuleResponse>("/admin/v1/pause", {
     method: "POST",
-    body: JSON.stringify(rule),
+    body: JSON.stringify(body),
   });
 }
 

@@ -148,6 +148,18 @@ async fn list_runs(State(state): State<AdminState>, Path(execution_id): Path<Str
 
 /// `POST /admin/v1/pause` — create a pause rule.
 async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequest>) -> Response {
+    if let Some(ref expires_at) = req.expires_at
+        && *expires_at <= chrono::Utc::now()
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "expiresAt must be in the future".into(),
+            }),
+        )
+            .into_response();
+    }
+
     let scope = PauseScope {
         execution_id: req.execution_id,
         task_name: req.task_name,

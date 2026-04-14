@@ -121,9 +121,12 @@ export function ExecutionList() {
       </div>
 
       {loading && !executions ? (
-        <div className="empty-state"><p>Loading…</p></div>
+        <div className="empty-state"><p>Loading executions...</p></div>
       ) : executions && executions.length === 0 ? (
-        <div className="empty-state"><p>No executions match your filters</p></div>
+        <div className="empty-state">
+          <p>No executions match your filters</p>
+          <p className="empty-state-hint">Try adjusting your search or status filter</p>
+        </div>
       ) : (
         <div className="table-wrap">
           <table>
