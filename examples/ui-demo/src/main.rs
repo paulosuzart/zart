@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zart::error::TaskError;
 use zart::prelude::*;
-use zart_api::{admin_router, AppState};
+use zart_api::{AppState, admin_router};
 
 // ── Order Processing Task ─────────────────────────────────────────────────────
 
@@ -274,8 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
-    let bind_addr =
-        std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
 
     tracing::info!("Connecting to database…");
     let pool = sqlx::PgPool::connect(&db_url).await?;

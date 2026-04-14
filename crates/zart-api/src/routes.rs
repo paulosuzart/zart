@@ -14,8 +14,8 @@ use zart::metrics::gather_metrics;
 
 use crate::{
     models::{
-        ErrorResponse, ExecutionResponse, ListQuery, StartExecutionRequest,
-        StatsResponse, WaitQuery,
+        ErrorResponse, ExecutionResponse, ListQuery, StartExecutionRequest, StatsResponse,
+        WaitQuery,
     },
     state::AppState,
 };
