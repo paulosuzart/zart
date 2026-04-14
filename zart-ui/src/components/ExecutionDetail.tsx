@@ -7,10 +7,15 @@ import {
   rerunSteps,
   cancelExecution,
   offerEvent,
+  createPauseRule,
+  listPauseRules,
+  deletePauseRule,
 } from "../api/client";
+import type { PauseRuleResponse } from "../api/types";
 import type { StepDetailResponse } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { StepGraph } from "./StepGraph";
+import { StartExecutionDialog } from "./StartExecutionDialog";
 import { statusBadge, formatTs } from "./shared";
 
 // ── Confirm dialog ────────────────────────────────────────────────────────────
@@ -151,6 +156,69 @@ function EventDialog({
             onClick={submit}
           >
             Deliver
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Pause dialog ──────────────────────────────────────────────────────────────
+
+function PauseDialog({
+  executionId,
+  onClose,
+}: {
+  executionId: string;
+  onClose: () => void;
+}) {
+  const [stepPattern, setStepPattern] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [acting, setActing] = useState(false);
+
+  async function submit() {
+    setActing(true);
+    try {
+      await createPauseRule({
+        executionId,
+        stepPattern: stepPattern.trim() || undefined,
+        expiresAt: expiresAt || undefined,
+        triggeredBy: "admin",
+      });
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActing(false);
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>Pause execution</h3>
+        <p>Create a pause rule scoped to this execution. Steps matching the pattern will be paused before running.</p>
+        <label>Step pattern (optional glob — leave blank to pause all steps)</label>
+        <input
+          type="text"
+          value={stepPattern}
+          onChange={(e) => setStepPattern(e.target.value)}
+          placeholder="e.g. charge-* or send-email"
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 0 }}>
+            Expires at (optional)
+          </label>
+          <input
+            type="datetime-local"
+            value={expiresAt}
+            onChange={(e) => setExpiresAt(e.target.value)}
+          />
+        </div>
+        <div className="dialog-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={acting} onClick={submit}>
+            Pause
           </button>
         </div>
       </div>
@@ -320,6 +388,8 @@ export function ExecutionDetail() {
   const [acting, setActing] = useState(false);
   const [showRerun, setShowRerun] = useState(false);
   const [showEvent, setShowEvent] = useState(false);
+  const [showStart, setShowStart] = useState(false);
+  const [showPause, setShowPause] = useState(false);
 
   const { data: detail, loading, refresh } = usePolling(
     () => getExecutionDetail(id!, selectedRunId),
@@ -327,6 +397,15 @@ export function ExecutionDetail() {
     !!id,
     // Re-fetch immediately when the selected run changes
     selectedRunId ?? "__current__",
+  );
+
+  const { data: allPauseRules, refresh: refreshPauseRules } = usePolling(
+    listPauseRules,
+    15000,
+    !!id,
+  );
+  const activePauseRules: PauseRuleResponse[] = (allPauseRules ?? []).filter(
+    (r) => r.executionId === id,
   );
 
   async function doAction(action: () => Promise<void>) {
@@ -365,6 +444,37 @@ export function ExecutionDetail() {
         <p>
           {execution.name} &middot; scheduled {formatTs(execution.scheduledAt)}
         </p>
+      </div>
+
+      {/* Metadata strip */}
+      <div className="exec-meta-strip">
+        {execution.completedAt && (() => {
+          const durationMs = new Date(execution.completedAt).getTime() - new Date(execution.scheduledAt).getTime();
+          const secs = Math.floor(durationMs / 1000);
+          const duration = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+          return (
+            <span className="exec-meta-item">
+              <span className="exec-meta-label">Duration</span>
+              <span className="exec-meta-value">{duration}</span>
+            </span>
+          );
+        })()}
+        {execution.completedAt && (
+          <span className="exec-meta-item">
+            <span className="exec-meta-label">Completed</span>
+            <span className="exec-meta-value">{formatTs(execution.completedAt)}</span>
+          </span>
+        )}
+        <span className="exec-meta-item">
+          <span className="exec-meta-label">Steps</span>
+          <span className="exec-meta-value">{steps.length}</span>
+        </span>
+        {runs.length > 0 && (
+          <span className="exec-meta-item">
+            <span className="exec-meta-label">Runs</span>
+            <span className="exec-meta-value">{runs.length}</span>
+          </span>
+        )}
       </div>
 
       {/* Action bar */}
@@ -438,6 +548,46 @@ export function ExecutionDetail() {
             Cancel
           </button>
         )}
+
+        {!isTerminal && activePauseRules.length === 0 && (
+          <button
+            className="btn"
+            disabled={acting}
+            onClick={() => setShowPause(true)}
+          >
+            Pause
+          </button>
+        )}
+
+        {activePauseRules.length > 0 && (
+          <button
+            className="btn"
+            disabled={acting}
+            style={{ color: "var(--status-paused)", borderColor: "var(--status-paused)" }}
+            onClick={() =>
+              setConfirm({
+                title: "Resume execution",
+                body: `Delete ${activePauseRules.length} active pause rule(s) for this execution?`,
+                action: async () => {
+                  for (const r of activePauseRules) {
+                    await deletePauseRule(r.ruleId);
+                  }
+                  await refreshPauseRules();
+                },
+              })
+            }
+          >
+            Resume ({activePauseRules.length})
+          </button>
+        )}
+
+        <button
+          className="btn btn-primary"
+          style={{ marginLeft: "auto" }}
+          onClick={() => setShowStart(true)}
+        >
+          + Start new
+        </button>
       </div>
 
       {/* Payload + Result */}
@@ -513,11 +663,31 @@ export function ExecutionDetail() {
         />
       )}
 
+      {/* Start new execution (pre-filled from this execution) */}
+      {showStart && (
+        <StartExecutionDialog
+          onClose={() => setShowStart(false)}
+          initial={{
+            taskName: execution.name,
+            executionId: crypto.randomUUID(),
+            payload: execution.payload,
+          }}
+        />
+      )}
+
       {/* Deliver event dialog */}
       {showEvent && (
         <EventDialog
           executionId={execution.durableExecutionId}
           onClose={() => { setShowEvent(false); refresh(); }}
+        />
+      )}
+
+      {/* Pause dialog */}
+      {showPause && (
+        <PauseDialog
+          executionId={execution.durableExecutionId}
+          onClose={() => { setShowPause(false); refreshPauseRules(); }}
         />
       )}
 

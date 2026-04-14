@@ -17,6 +17,7 @@
   --status-completed: #34d399;
   --status-failed: #f87171;
   --status-cancelled: #9ca3af;
+  --status-paused: #fb923c;
   --status-dead: #ef4444;
   --radius: 6px;
   --font-body: "DM Sans", system-ui, sans-serif;
@@ -376,6 +377,37 @@ tr:hover td {
 
 .detail-section.full-width {
   grid-column: 1 / -1;
+}
+
+/* Execution metadata strip */
+.exec-meta-strip {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.exec-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.exec-meta-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.exec-meta-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
 }
 
 /* Action bar */

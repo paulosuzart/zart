@@ -80,12 +80,16 @@ export function PauseRules() {
               value={form.stepPattern}
               onChange={(e) => setForm({ ...form, stepPattern: e.target.value })}
             />
-            <input
-              type="datetime-local"
-              value={form.expiresAt}
-              onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
-              title="Expires at"
-            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 0 }}>
+                Expires at (optional)
+              </label>
+              <input
+                type="datetime-local"
+                value={form.expiresAt}
+                onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
+              />
+            </div>
             <button className="btn btn-primary" type="submit" disabled={submitting}>
               Create
             </button>

@@ -1,9 +1,10 @@
-import { getStats, listExecutions } from "../api/client";
+import { getStats, listExecutions, listPauseRules } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import { statusBadge } from "./shared";
 
 export function Dashboard() {
   const { data: stats } = usePolling(getStats, 15000);
+  const { data: pauseRules } = usePolling(listPauseRules, 15000);
   const { data: recent } = usePolling(
     () => listExecutions({ limit: 10, sortOrder: "desc" }),
     15000,
@@ -22,6 +23,7 @@ export function Dashboard() {
         <StatCard label="Completed" value={stats?.completed ?? "-"} status="completed" />
         <StatCard label="Failed" value={stats?.failed ?? "-"} status="failed" />
         <StatCard label="Cancelled" value={stats?.cancelled ?? "-"} status="cancelled" />
+        <StatCard label="Active Pause Rules" value={pauseRules?.length ?? "-"} status="paused" />
       </div>
 
       <div className="page-header">
