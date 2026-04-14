@@ -32,7 +32,7 @@ test-integration:
 
 test-integration-core:
     cargo test -p scheduler --test integration_test --features postgres -- --include-ignored --test-threads=1
-    cargo test -p zart --test integration_test --features postgres -- --include-ignored --test-threads=1
+    cargo test -p zart --test integration --features postgres -- --include-ignored --test-threads=1
 
 # Run tests for a specific crate only
 test-crate crate:
