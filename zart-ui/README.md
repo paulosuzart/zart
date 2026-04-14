@@ -13,7 +13,7 @@ docker run -d \
   --name zart-ui \
   -p 8080:80 \
   -e API_URL=http://localhost:3000 \
-  pauloscertificados/zart-ui:latest
+  paulosuzart/zart-ui:latest
 ```
 
 Then open http://localhost:8080
