@@ -148,7 +148,7 @@ jobs:
           # - zart integration tests
           # Examples with external API calls are tested separately
           cargo test -p scheduler --test integration_test --features postgres -- --include-ignored --test-threads=1
-          cargo test -p zart --test integration_test -- --include-ignored --test-threads=1
+          cargo test -p zart --test integration -- --include-ignored --test-threads=1
 
   # ── Full integration tests (with PostgreSQL + internet for examples) ──────────
   test-integration-full:
