@@ -691,10 +691,21 @@ impl TaskContext {
     {
         match &self.execution_mode {
             ExecutionMode::Body => {
-                let group_step_name = format!("__wg__all__{}", uuid::Uuid::new_v4());
-
                 // Extract names before awaits; avoid borrowing non-Sync handles across await points.
                 let step_names: Vec<String> = handles.iter().map(|h| h.step_name.clone()).collect();
+
+                // Generate a deterministic group step name based on the sorted child step names.
+                // This ensures the same wait_group is used across body task replays, preventing
+                // orphaned children and lost completion counts.
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut sorted_names = step_names.clone();
+                sorted_names.sort();
+                let names_joined = sorted_names.join("|");
+                let mut hasher = DefaultHasher::new();
+                names_joined.hash(&mut hasher);
+                let hash_value = hasher.finish();
+                let group_step_name = format!("__wg__all__{:x}", hash_value);
 
                 let req = StepRequest::new_wait_group_barrier(&group_step_name, &step_names, 0);
 

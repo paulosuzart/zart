@@ -327,6 +327,29 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
             }
         };
 
+        let total = i32::try_from(child_names.len()).map_err(|_| StepError::Failed {
+            step: group_step_name.to_string(),
+            reason: "too many wait-group handles to fit i32".to_string(),
+        })?;
+
+        // Upsert the wait-group row BEFORE scheduling any child tasks so that
+        // `complete_wait_group_child` always finds a row to decrement.  If the
+        // row were created after the children are committed a fast worker could
+        // pick up and complete a child before the row exists, turning the
+        // decrement into a no-op and permanently losing that count.
+        ctx.scheduler
+            .upsert_wait_group_step(UpsertWaitGroupStepParams {
+                run_id: ctx.run_id().to_string(),
+                group_step_name: group_step_name.to_string(),
+                total,
+                threshold,
+            })
+            .await
+            .map_err(|e| StepError::Failed {
+                step: group_step_name.to_string(),
+                reason: e.to_string(),
+            })?;
+
         let mut all_completed = true;
 
         for child_name in child_names {
@@ -368,24 +391,6 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
                 }
             }
         }
-
-        let total = i32::try_from(child_names.len()).map_err(|_| StepError::Failed {
-            step: group_step_name.to_string(),
-            reason: "too many wait-group handles to fit i32".to_string(),
-        })?;
-
-        ctx.scheduler
-            .upsert_wait_group_step(UpsertWaitGroupStepParams {
-                run_id: ctx.run_id().to_string(),
-                group_step_name: group_step_name.to_string(),
-                total,
-                threshold,
-            })
-            .await
-            .map_err(|e| StepError::Failed {
-                step: group_step_name.to_string(),
-                reason: e.to_string(),
-            })?;
 
         if all_completed {
             let mut results = Vec::with_capacity(child_names.len());
