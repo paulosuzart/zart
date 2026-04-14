@@ -251,6 +251,11 @@ impl TaskRegistry {
         self.handlers.get(task_name).map(|h| h.as_ref())
     }
 
+    /// Returns the names of all registered handlers (for diagnostics).
+    pub(crate) fn handler_names(&self) -> Vec<&str> {
+        self.handlers.keys().map(|s| s.as_str()).collect()
+    }
+
     /// Execute a registered handler with the given raw JSON data.
     ///
     /// This sets up task-local scoping and delegates to the internal adapter.

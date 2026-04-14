@@ -391,7 +391,11 @@ async fn dispatch_task(
     let handler = match registry.get_handler(&task.task_name) {
         Some(h) => h,
         None => {
-            warn!("No handler registered for task {}", &task.task_name);
+            warn!(
+                "No handler registered for task '{}'; registered handlers: [{}]",
+                &task.task_name,
+                registry.handler_names().join(", ")
+            );
             let _ = scheduler
                 .mark_failed(
                     &task.task_id,
