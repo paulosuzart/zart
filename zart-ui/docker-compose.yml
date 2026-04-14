@@ -3,12 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        API_URL: ${API_URL:-http://host.docker.internal:3000}
     container_name: zart-ui
     restart: unless-stopped
     ports:
       - "8080:80"
-    # host.docker.internal → host machine (macOS native; extra_hosts makes it
-    # work on Linux too). nginx proxies /api and /admin to the Zart backend
-    # running on the host at port 3000.
     extra_hosts:
       - "host.docker.internal:host-gateway"

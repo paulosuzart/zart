@@ -14,8 +14,13 @@ RUN npm run build
 # Stage 2 — serve with nginx
 FROM nginx:alpine
 
+ARG API_URL=http://host.docker.internal:3000
+ENV API_URL=${API_URL}
+
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+RUN sed -i 's|\${API_URL}|'"${API_URL}"'|g' /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
