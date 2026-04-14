@@ -8,10 +8,21 @@
 //! GET    /api/v1/executions/:execution_id          — Get execution status
 //! POST   /api/v1/executions/:execution_id/cancel   — Cancel an execution
 //! GET    /api/v1/executions/:execution_id/wait     — Long-poll until completion
+//! GET    /api/v1/stats                             — Aggregate execution counts by status
 //! POST   /api/v1/events/:execution_id/:event_name  — Deliver an event
 //! GET    /healthz                                  — Liveness probe
 //! GET    /readyz                                   — Readiness probe
 //! GET    /metrics                                  — Prometheus metrics
+//!
+//! GET    /admin/v1/executions/:id/detail           — Full execution detail with steps & attempts
+//! POST   /admin/v1/executions/:id/retry-step       — Retry a dead step
+//! POST   /admin/v1/executions/:id/restart          — Restart an execution
+//! POST   /admin/v1/executions/:id/rerun            — Selective step rerun
+//! GET    /admin/v1/executions/:id/runs             — List runs for an execution
+//! POST   /admin/v1/pause                           — Create a pause rule
+//! GET    /admin/v1/pause                           — List pause rules
+//! POST   /admin/v1/pause/:rule_id                  — Resume (soft-delete) a pause rule
+//! DELETE /admin/v1/pause/:rule_id                  — Delete a pause rule
 //! ```
 //!
 //! # Usage

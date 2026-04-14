@@ -28,9 +28,11 @@ pub use recurrence::Recurrence;
 pub use types::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
     CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
-    ExecutionStatus, ExecutionTrigger, FailWaitGroupChildParams, FetchedTask,
-    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepKind,
-    StepLookup, StepResultKind, StepRow, StepStatus, TaskStatus, UpsertWaitGroupStepParams,
+    ExecutionSortField, ExecutionStats, ExecutionStatus, ExecutionTrigger,
+    FailWaitGroupChildParams, FetchedTask, ListExecutionsParams, RescheduleStepForRetryParams,
+    ScheduleAtParams, ScheduleResult, ScheduleStepParams, SortOrder, StepAttemptRow,
+    StepAttemptStatus, StepKind, StepLookup, StepResultKind, StepRow, StepStatus, TaskStatus,
+    UpsertWaitGroupStepParams,
 };
 
 #[cfg(feature = "postgres")]
@@ -247,12 +249,9 @@ pub trait DurableStorage: Send + Sync {
     /// List durable execution records with optional filters.
     async fn list_executions(
         &self,
-        status: Option<ExecutionStatus>,
-        task_name: Option<&str>,
-        limit: usize,
-        offset: usize,
+        params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, StorageError> {
-        let _ = (status, task_name, limit, offset);
+        let _ = params;
         Err(StorageError::NotImplemented("list_executions"))
     }
 
@@ -521,6 +520,17 @@ pub trait DurableStorage: Send + Sync {
     ) -> Result<(String, Vec<String>), StorageError> {
         let _ = (execution_id, force_rerun, preserve, triggered_by);
         Err(StorageError::NotImplemented("admin_rerun_steps"))
+    }
+
+    /// Count executions grouped by status.
+    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+        Err(StorageError::NotImplemented("execution_stats"))
+    }
+
+    /// List all step attempts for a run.
+    async fn list_step_attempts(&self, run_id: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
+        let _ = run_id;
+        Err(StorageError::NotImplemented("list_step_attempts"))
     }
 }
 

@@ -1,0 +1,13 @@
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        API_URL: ${API_URL:-http://host.docker.internal:3000}
+    container_name: zart-ui
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

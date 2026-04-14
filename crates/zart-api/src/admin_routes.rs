@@ -11,18 +11,19 @@
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use std::sync::Arc;
 use zart::{DurableScheduler, admin::PauseScope, admin::RerunSpec};
 
 use crate::{
     models::{
-        ErrorResponse, PauseRequest, PauseRuleResponse, RerunRequest, RerunResponse,
-        RestartRequest, RestartResponse, RetryStepRequest, RetryStepResponse, RunRecordResponse,
+        ErrorResponse, ExecutionDetailResponse, ExecutionResponse, PauseRequest, PauseRuleResponse,
+        RerunRequest, RerunResponse, RestartRequest, RestartResponse, RetryStepRequest,
+        RetryStepResponse, RunRecordResponse, StepAttemptResponse, StepDetailResponse,
     },
     state::AdminState,
 };
@@ -40,9 +41,14 @@ pub fn admin_router(scheduler: Arc<DurableScheduler>) -> Router {
         .route("/admin/v1/executions/{execution_id}/restart", post(restart))
         .route("/admin/v1/executions/{execution_id}/rerun", post(rerun))
         .route("/admin/v1/executions/{execution_id}/runs", get(list_runs))
+        .route(
+            "/admin/v1/executions/{execution_id}/detail",
+            get(execution_detail),
+        )
         .route("/admin/v1/pause", post(create_pause))
         .route("/admin/v1/pause", get(list_pauses))
         .route("/admin/v1/pause/{rule_id}", post(resume_rule))
+        .route("/admin/v1/pause/{rule_id}", delete(delete_pause_rule))
         .with_state(AdminState { scheduler })
 }
 
@@ -142,6 +148,18 @@ async fn list_runs(State(state): State<AdminState>, Path(execution_id): Path<Str
 
 /// `POST /admin/v1/pause` — create a pause rule.
 async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequest>) -> Response {
+    if let Some(ref expires_at) = req.expires_at
+        && *expires_at <= chrono::Utc::now()
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "expiresAt must be in the future".into(),
+            }),
+        )
+            .into_response();
+    }
+
     let scope = PauseScope {
         execution_id: req.execution_id,
         task_name: req.task_name,
@@ -202,6 +220,103 @@ async fn resume_rule(State(state): State<AdminState>, Path(rule_id): Path<String
             }),
         )
             .into_response(),
+        Err(e) => scheduler_error_response(e),
+    }
+}
+
+/// `DELETE /admin/v1/pause/:rule_id` — semantically correct DELETE for pause rules.
+async fn delete_pause_rule(
+    State(state): State<AdminState>,
+    Path(rule_id): Path<String>,
+) -> Response {
+    match state.scheduler.resume_rule_by_id(&rule_id, None).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("pause rule '{rule_id}' not found"),
+            }),
+        )
+            .into_response(),
+        Err(e) => scheduler_error_response(e),
+    }
+}
+
+/// Query parameters for the detail endpoint.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailQuery {
+    /// Load steps from this specific run instead of the current run.
+    run_id: Option<String>,
+}
+
+/// `GET /admin/v1/executions/:id/detail` — full execution detail with steps and attempts.
+async fn execution_detail(
+    State(state): State<AdminState>,
+    Path(execution_id): Path<String>,
+    Query(query): Query<DetailQuery>,
+) -> Response {
+    match state
+        .scheduler
+        .execution_detail(&execution_id, query.run_id.as_deref())
+        .await
+    {
+        Ok(detail) => {
+            let execution: ExecutionResponse = detail.execution.into();
+            let runs: Vec<RunRecordResponse> = detail
+                .runs
+                .into_iter()
+                .map(|r| RunRecordResponse {
+                    run_id: r.run_id,
+                    execution_id: r.execution_id,
+                    run_index: r.run_index,
+                    payload: r.payload,
+                    status: r.status.to_string(),
+                    result: r.result,
+                    started_at: r.started_at,
+                    completed_at: r.completed_at,
+                    trigger: format!("{:?}", r.trigger).to_lowercase(),
+                })
+                .collect();
+            let steps: Vec<StepDetailResponse> = detail
+                .steps
+                .into_iter()
+                .map(|s| {
+                    let attempts: Vec<StepAttemptResponse> = s
+                        .attempts
+                        .into_iter()
+                        .map(|a| StepAttemptResponse {
+                            attempt_number: a.attempt_number,
+                            status: format!("{:?}", a.status).to_lowercase(),
+                            result: a.result,
+                            error: a.error,
+                            started_at: a.started_at,
+                            completed_at: a.completed_at,
+                        })
+                        .collect();
+                    StepDetailResponse {
+                        step_id: s.step.step_id,
+                        name: s.step.step_name,
+                        kind: format!("{:?}", s.step.step_kind).to_lowercase(),
+                        status: format!("{:?}", s.step.status).to_lowercase(),
+                        retry_attempt: s.step.retry_attempt,
+                        result: s.step.result,
+                        last_error: s.step.last_error,
+                        retryable: s.retryable,
+                        scheduled_at: s.step.scheduled_at,
+                        completed_at: s.step.completed_at,
+                        attempts,
+                    }
+                })
+                .collect();
+            let body = ExecutionDetailResponse {
+                execution,
+                runs,
+                steps,
+            };
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(zart::error::SchedulerError::ExecutionNotFound(_)) => not_found(&execution_id),
         Err(e) => scheduler_error_response(e),
     }
 }

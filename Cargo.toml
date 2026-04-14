@@ -8,6 +8,7 @@ members = [
     "examples",
     "examples/admin-demo",
     "examples/cli-demo",
+    "examples/ui-demo",
 ]
 resolver = "2"
 

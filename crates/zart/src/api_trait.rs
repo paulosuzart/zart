@@ -8,7 +8,7 @@
 use crate::durable::DurableScheduler;
 use crate::error::SchedulerError;
 use async_trait::async_trait;
-use scheduler::{ExecutionRecord, ExecutionStatus, ScheduleResult};
+use scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,11 +53,11 @@ pub trait DurableApi: Send + Sync {
     /// List durable execution records with optional filters.
     async fn list_executions(
         &self,
-        status: Option<ExecutionStatus>,
-        task_name: Option<String>,
-        limit: usize,
-        offset: usize,
+        params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, SchedulerError>;
+
+    /// Return aggregate execution counts by status.
+    async fn stats(&self) -> Result<ExecutionStats, SchedulerError>;
 
     /// Check if the API is ready to serve requests.
     /// Default implementation always returns `true`.
@@ -105,12 +105,13 @@ impl DurableApi for DurableScheduler {
 
     async fn list_executions(
         &self,
-        status: Option<ExecutionStatus>,
-        task_name: Option<String>,
-        limit: usize,
-        offset: usize,
+        params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
-        DurableScheduler::list_executions(self, status, task_name, limit, offset).await
+        DurableScheduler::list_executions(self, params).await
+    }
+
+    async fn stats(&self) -> Result<ExecutionStats, SchedulerError> {
+        DurableScheduler::stats(self).await
     }
 }
 
