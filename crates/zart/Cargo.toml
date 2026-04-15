@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-scheduler = { workspace = true, features = ["postgres"] }
+scheduler.workspace = true
 zart-macros.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -34,6 +34,6 @@ path = "tests/integration/mod.rs"
 tokio.workspace = true
 tokio-test.workspace = true
 tracing-subscriber.workspace = true
-scheduler = { workspace = true, features = ["postgres"] }
+scheduler.workspace = true
 sqlx.workspace = true
 uuid.workspace = true

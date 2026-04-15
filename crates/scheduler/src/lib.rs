@@ -20,7 +20,6 @@ pub mod pause_storage;
 pub mod recurrence;
 pub mod types;
 
-#[cfg(feature = "postgres")]
 pub mod postgres;
 
 pub use error::StorageError;
@@ -35,7 +34,6 @@ pub use types::{
     UpsertWaitGroupStepParams,
 };
 
-#[cfg(feature = "postgres")]
 pub use postgres::PostgresScheduler;
 
 use async_trait::async_trait;
