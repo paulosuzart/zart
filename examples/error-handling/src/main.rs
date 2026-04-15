@@ -11,13 +11,13 @@
 //! and the framework distinguishes business errors (the step's own failure) from
 //! framework errors (retry exhausted, timeout, deadline exceeded).
 
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
 use zart::error::{ExecutionFailure, StepOutcome, TaskError};
 use zart::prelude::*;
 use zart::{zart_durable, zart_step};
+use zart_scheduler::PostgresScheduler;
 
 // ── Step error types ──────────────────────────────────────────────────────────
 

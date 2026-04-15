@@ -24,11 +24,11 @@
 //! - `ZART_CONFIG` — path to a TOML config file (optional)
 
 use clap::{Parser, Subcommand};
-use scheduler::Scheduler as _;
-use scheduler::pause_storage::PauseRuleFilter;
 use std::sync::Arc;
 use zart::DurableScheduler;
 use zart::admin::{PauseScope, RerunSpec};
+use zart_scheduler::Scheduler as _;
+use zart_scheduler::pause_storage::PauseRuleFilter;
 
 /// Zart — Durable Execution Framework CLI
 #[derive(Parser)]
@@ -212,7 +212,7 @@ async fn main() {
         Commands::Migrate => {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
-            let scheduler = scheduler::PostgresScheduler::new(pool);
+            let scheduler = zart_scheduler::PostgresScheduler::new(pool);
             scheduler.run_migrations().await.unwrap_or_else(|e| {
                 eprintln!("error: migrations failed: {e}");
                 std::process::exit(1);
@@ -234,7 +234,7 @@ async fn main() {
 
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
-            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
             let durable = DurableScheduler::new(scheduler);
 
             durable
@@ -251,7 +251,7 @@ async fn main() {
         Commands::Status { execution_id } => {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
-            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
             let durable = DurableScheduler::new(scheduler);
 
             let record = durable.status(&execution_id).await.unwrap_or_else(|e| {
@@ -274,7 +274,7 @@ async fn main() {
         Commands::Cancel { execution_id } => {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
-            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
             let durable = DurableScheduler::new(scheduler);
 
             let cancelled = durable.cancel(&execution_id).await.unwrap_or_else(|e| {
@@ -296,7 +296,7 @@ async fn main() {
         } => {
             let url = require_db_url(cli.database_url);
             let pool = connect(&url).await;
-            let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
             let durable = DurableScheduler::new(scheduler);
 
             let record = durable
@@ -405,7 +405,7 @@ async fn main() {
 
             println!("Runs for execution '{execution_id}':");
             for r in &runs {
-                let marker = if r.status == scheduler::ExecutionStatus::Completed {
+                let marker = if r.status == zart_scheduler::ExecutionStatus::Completed {
                     "✓"
                 } else {
                     ""
@@ -530,7 +530,7 @@ async fn connect(url: &str) -> sqlx::PgPool {
 async fn connect_pause_enabled(db_url: &Option<String>) -> DurableScheduler {
     let url = require_db_url(db_url.clone());
     let pool = connect(&url).await;
-    let scheduler = Arc::new(scheduler::PostgresScheduler::new(pool));
+    let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
     DurableScheduler::with_pause(scheduler.clone(), scheduler)
 }
 

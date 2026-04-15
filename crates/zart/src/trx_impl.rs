@@ -38,8 +38,8 @@
 //! }
 //! ```
 
-use scheduler::StorageError;
 use std::sync::Arc;
+use zart_scheduler::StorageError;
 
 use crate::error::StepError;
 

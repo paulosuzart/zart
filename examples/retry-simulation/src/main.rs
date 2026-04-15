@@ -9,7 +9,6 @@
 //! - Using `#[zart_step]` with retry configuration for automatic retry handling
 //! - Observing the retry behavior in real-time with logging
 
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,6 +17,7 @@ use uuid::Uuid;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::zart_step;
+use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 

@@ -7,7 +7,7 @@
 //! Keeping this logic here means `PostgresScheduler` remains a clean,
 //! generic storage backend with no execution-model knowledge.
 
-use scheduler::{
+use zart_scheduler::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
     ScheduleResult, ScheduleStepParams, StepKind, StepResultKind, StorageBackend, StorageError,
 };
@@ -317,13 +317,13 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use chrono::Utc;
-    use scheduler::{
+    use std::sync::{Arc, Mutex};
+    use zart_scheduler::{
         CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
         CompleteWaitGroupChildParams, DurableStorage, EventDeliveryResult,
         FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams, ScheduleAtParams,
         Scheduler, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
-    use std::sync::{Arc, Mutex};
 
     struct CapturingStorage {
         last_metadata: Arc<Mutex<Option<serde_json::Value>>>,

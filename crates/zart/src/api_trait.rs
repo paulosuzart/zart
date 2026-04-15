@@ -8,10 +8,10 @@
 use crate::durable::DurableScheduler;
 use crate::error::SchedulerError;
 use async_trait::async_trait;
-use scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use zart_scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
 
 /// Object-safe interface for durable execution management.
 ///

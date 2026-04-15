@@ -8,7 +8,6 @@
 //!
 //! Run with: `just example-transactions`
 
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -18,6 +17,7 @@ use zart::context::ZartStep;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::trx;
+use zart_scheduler::PostgresScheduler;
 
 // ── Schema (created on first run) ────────────────────────────────────────────
 

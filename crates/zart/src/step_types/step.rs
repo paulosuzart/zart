@@ -4,7 +4,7 @@
 //! in `completion.rs` and is intentionally not called from here.
 
 use async_trait::async_trait;
-use scheduler::{StepLookup, TaskStatus};
+use zart_scheduler::{StepLookup, TaskStatus};
 
 use crate::context::{PendingFn, TaskContext};
 use crate::error::StepError;

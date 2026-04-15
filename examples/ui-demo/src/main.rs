@@ -17,7 +17,6 @@
 //! #    Set the API Server to http://localhost:3000 if running the UI elsewhere
 //! ```
 
-use scheduler::{PostgresScheduler, Scheduler as _};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +25,7 @@ use uuid::Uuid;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart_api::{AppState, admin_router};
+use zart_scheduler::PostgresScheduler;
 
 // ── Order Processing Task ─────────────────────────────────────────────────────
 

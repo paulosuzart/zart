@@ -1,8 +1,8 @@
 //! Request and response types for the Zart HTTP API.
 
 use chrono::{DateTime, Utc};
-use scheduler::{ExecutionRecord, ExecutionSortField, ListExecutionsParams, SortOrder};
 use serde::{Deserialize, Serialize};
+use zart_scheduler::{ExecutionRecord, ExecutionSortField, ListExecutionsParams, SortOrder};
 
 // ── Requests ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ impl ListQuery {
         let status = self
             .status
             .as_deref()
-            .and_then(|s| s.parse::<scheduler::ExecutionStatus>().ok());
+            .and_then(|s| s.parse::<zart_scheduler::ExecutionStatus>().ok());
         let sort_by = match self.sort_by.as_deref() {
             Some("status") => ExecutionSortField::Status,
             Some("taskName") => ExecutionSortField::TaskName,
@@ -259,8 +259,8 @@ pub struct StatsResponse {
     pub cancelled: i64,
 }
 
-impl From<scheduler::ExecutionStats> for StatsResponse {
-    fn from(s: scheduler::ExecutionStats) -> Self {
+impl From<zart_scheduler::ExecutionStats> for StatsResponse {
+    fn from(s: zart_scheduler::ExecutionStats) -> Self {
         Self {
             scheduled: s.scheduled,
             running: s.running,

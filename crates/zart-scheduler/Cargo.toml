@@ -1,5 +1,5 @@
 [package]
-name = "scheduler"
+name = "zart-scheduler"
 description = "Core scheduling primitives for Zart — task polling, skip-lock, and storage backend abstraction"
 version.workspace = true
 edition.workspace = true

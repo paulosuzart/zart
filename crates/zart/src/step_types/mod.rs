@@ -5,7 +5,7 @@
 //! dispatch layer; `TaskContext` only expresses intent.
 
 use async_trait::async_trait;
-use scheduler::{StorageBackend, StorageError};
+use zart_scheduler::{StorageBackend, StorageError};
 
 use crate::context::{PendingFn, TaskContext};
 use crate::error::StepError;
@@ -172,7 +172,7 @@ impl ResultKind {
     }
 }
 
-impl From<ResultKind> for scheduler::StepResultKind {
+impl From<ResultKind> for zart_scheduler::StepResultKind {
     fn from(k: ResultKind) -> Self {
         match k {
             ResultKind::Ok => Self::Ok,
@@ -184,14 +184,14 @@ impl From<ResultKind> for scheduler::StepResultKind {
     }
 }
 
-impl From<scheduler::StepResultKind> for ResultKind {
-    fn from(k: scheduler::StepResultKind) -> Self {
+impl From<zart_scheduler::StepResultKind> for ResultKind {
+    fn from(k: zart_scheduler::StepResultKind) -> Self {
         match k {
-            scheduler::StepResultKind::Ok => Self::Ok,
-            scheduler::StepResultKind::Err => Self::Err,
-            scheduler::StepResultKind::Rx => Self::RetryExhausted,
-            scheduler::StepResultKind::Timeout => Self::TimedOut,
-            scheduler::StepResultKind::Dl => Self::DeadlineExceeded,
+            zart_scheduler::StepResultKind::Ok => Self::Ok,
+            zart_scheduler::StepResultKind::Err => Self::Err,
+            zart_scheduler::StepResultKind::Rx => Self::RetryExhausted,
+            zart_scheduler::StepResultKind::Timeout => Self::TimedOut,
+            zart_scheduler::StepResultKind::Dl => Self::DeadlineExceeded,
         }
     }
 }

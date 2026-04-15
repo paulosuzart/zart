@@ -7,7 +7,6 @@
 //! Features: zart::schedule, zart::wait, structured output, #[zart_step].
 
 use async_trait::async_trait;
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +14,7 @@ use zart::error::TaskError;
 use zart::prelude::*;
 use zart::registry::DurableExecution;
 use zart::zart_step;
+use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 

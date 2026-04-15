@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-scheduler.workspace = true
+zart-scheduler.workspace = true
 zart-macros.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
@@ -39,6 +39,6 @@ path = "tests/macros.rs"
 tokio.workspace = true
 tokio-test.workspace = true
 tracing-subscriber.workspace = true
-scheduler.workspace = true
+zart-scheduler.workspace = true
 sqlx.workspace = true
 uuid.workspace = true

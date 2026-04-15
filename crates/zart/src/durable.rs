@@ -10,13 +10,13 @@ use crate::error::SchedulerError;
 #[cfg(feature = "metrics")]
 use crate::metrics::EVENTS_DELIVERED_TOTAL;
 use crate::registry::DurableExecution;
-use scheduler::pause_storage::{PauseRule as StoragePauseRule, PauseRuleFilter, PauseStorage};
-use scheduler::{
+use std::sync::Arc;
+use std::time::Duration;
+use zart_scheduler::pause_storage::{PauseRule as StoragePauseRule, PauseRuleFilter, PauseStorage};
+use zart_scheduler::{
     ExecutionRecord, ExecutionStatus, ListExecutionsParams, ScheduleAtParams, ScheduleResult,
     StorageBackend,
 };
-use std::sync::Arc;
-use std::time::Duration;
 
 // Maximum duration for `wait_with_timeout` as per the spec.
 const MAX_WAIT_SECS: u64 = 30;
@@ -194,7 +194,7 @@ impl DurableScheduler {
         let result = self.scheduler.schedule_at_in_tx(&mut conn, params).await?;
 
         conn.commit().await.map_err(|e| {
-            SchedulerError::Database(scheduler::StorageError::Database(Box::new(e)))
+            SchedulerError::Database(zart_scheduler::StorageError::Database(Box::new(e)))
         })?;
 
         Ok(result)
@@ -227,7 +227,7 @@ impl DurableScheduler {
     pub async fn list_runs(
         &self,
         execution_id: &str,
-    ) -> Result<Vec<scheduler::ExecutionRunRecord>, SchedulerError> {
+    ) -> Result<Vec<zart_scheduler::ExecutionRunRecord>, SchedulerError> {
         Ok(self.scheduler.list_runs(execution_id).await?)
     }
 
@@ -553,7 +553,7 @@ impl DurableScheduler {
     // ── Stats ────────────────────────────────────────────────────────────────
 
     /// Return aggregate execution counts grouped by status.
-    pub async fn stats(&self) -> Result<scheduler::ExecutionStats, SchedulerError> {
+    pub async fn stats(&self) -> Result<zart_scheduler::ExecutionStats, SchedulerError> {
         Ok(self.scheduler.execution_stats().await?)
     }
 
@@ -596,7 +596,7 @@ impl DurableScheduler {
                     .filter(|a| a.step_id == step.step_id)
                     .cloned()
                     .collect();
-                let retryable = step.status == scheduler::StepStatus::Dead;
+                let retryable = step.status == zart_scheduler::StepStatus::Dead;
                 StepWithAttempts {
                     step,
                     attempts: step_attempts,

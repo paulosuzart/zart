@@ -1,7 +1,3 @@
-/// Shared helpers and test step definitions for integration tests.
-pub use scheduler::{
-    DurableStorage as _, EventDeliveryResult, ExecutionStatus, PostgresScheduler, Scheduler as _,
-};
 pub use serde::{Deserialize, Serialize};
 pub use std::borrow::Cow;
 pub use std::sync::{
@@ -12,6 +8,10 @@ pub use std::time::Duration;
 pub use zart::{
     RetryConfig, TaskRegistry, Worker, WorkerConfig, context::ZartStep, error::TaskError,
     registry::DurableExecution,
+};
+/// Shared helpers and test step definitions for integration tests.
+pub use zart_scheduler::{
+    DurableStorage as _, EventDeliveryResult, ExecutionStatus, PostgresScheduler, Scheduler as _,
 };
 
 // ── Local step error for test steps ───────────────────────────────────────

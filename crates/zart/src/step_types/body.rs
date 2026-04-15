@@ -5,7 +5,7 @@
 //! schedule a new row if absent, or signal in-flight if already scheduled.
 
 use async_trait::async_trait;
-use scheduler::{StepLookup, TaskStatus, UpsertWaitGroupStepParams};
+use zart_scheduler::{StepLookup, TaskStatus, UpsertWaitGroupStepParams};
 
 use crate::TaskContext;
 use crate::emit_metric;

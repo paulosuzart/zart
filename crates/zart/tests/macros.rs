@@ -6,11 +6,6 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use scheduler::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, DurableStorage, FetchedTask,
-    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler,
-    StepLookup, StorageError,
-};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -22,6 +17,11 @@ use zart::error::TaskError;
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
 use zart_macros::zart_durable;
+use zart_scheduler::{
+    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, DurableStorage, FetchedTask,
+    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler,
+    StepLookup, StorageError,
+};
 
 // ── Local step error for test steps ───────────────────────────────────────
 

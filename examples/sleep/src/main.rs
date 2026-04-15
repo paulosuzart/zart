@@ -1,10 +1,10 @@
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::error::TaskError;
 use zart::prelude::*;
+use zart_scheduler::PostgresScheduler;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SleepInput {

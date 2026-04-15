@@ -12,7 +12,7 @@
 //! # Examples
 //!
 //! ```rust
-//! use scheduler::{Scheduler, ScheduleResult};
+//! use zart_scheduler::{Scheduler, ScheduleResult};
 //! ```
 
 pub mod error;
