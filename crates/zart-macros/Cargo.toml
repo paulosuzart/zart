@@ -15,11 +15,3 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
 
-[dev-dependencies]
-zart.workspace = true
-scheduler.workspace = true
-tokio.workspace = true
-async-trait.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-chrono.workspace = true
