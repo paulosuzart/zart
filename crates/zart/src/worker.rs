@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, instrument, warn};
 use uuid::Uuid;
 use zart_scheduler::StorageBackend;
+use zart_scheduler::TaskMetadata;
 
 /// Tuning parameters for a [`Worker`].
 ///
@@ -356,7 +357,7 @@ async fn heartbeat_loop(
     fields(
         task_id = %task.task_id,
         task_name = %task.task_name,
-        execution_id = task.metadata.get("execution_id").and_then(|v| v.as_str()).unwrap_or("-"),
+        execution_id = tracing::field::Empty,
         attempt = task.attempt,
     ),
 )]
@@ -367,7 +368,49 @@ async fn dispatch_task(
     heartbeat_interval: Option<Duration>,
     orphan_timeout: Duration,
 ) {
-    let exec_mode = ExecutionMode::from_metadata(&task.metadata);
+    // Parse typed metadata once. Tasks with a "mode" key are durable executions;
+    // a parse error on those is fatal — we mark the task failed rather than
+    // risk replaying in an unknown state.
+    let typed_meta: Option<TaskMetadata> = match task.metadata.get("mode") {
+        Some(_) => match TaskMetadata::from_json_value(task.metadata.clone()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                error!(error = %e, task_id = %task.task_id, "Failed to parse task metadata");
+                let _ = scheduler
+                    .mark_failed(&task.task_id, "invalid metadata", None, &task.lock_token)
+                    .await;
+                return;
+            }
+        },
+        None => None,
+    };
+
+    let has_execution = typed_meta.is_some();
+    let execution_id = typed_meta
+        .as_ref()
+        .map(|m| m.execution_id().to_string())
+        .unwrap_or_else(|| task.task_id.clone());
+
+    tracing::Span::current().record("execution_id", execution_id.as_str());
+
+    // run_id is the FK into zart_execution_runs; carried in metadata by body/step tasks.
+    // Falls back to execution_id for non-durable tasks (which don't use zart_steps).
+    let run_id = typed_meta
+        .as_ref()
+        .map(|m| m.run_id().to_string())
+        .unwrap_or_else(|| execution_id.clone());
+
+    // Step deadline is only present on Step-variant metadata.
+    let step_deadline = typed_meta
+        .as_ref()
+        .and_then(|m| m.deadline())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+
+    let exec_mode = match &typed_meta {
+        Some(m) => ExecutionMode::from_task_metadata(m),
+        None => ExecutionMode::Body,
+    };
     // Override retry_attempt with the scheduler's own attempt counter so it
     // accurately reflects how many times this step has been attempted.
     // task.attempt is 1-indexed; retry_attempt is 0-indexed.
@@ -407,31 +450,6 @@ async fn dispatch_task(
             return;
         }
     };
-
-    let has_execution = task.metadata.get("execution_id").is_some();
-    let execution_id = task
-        .metadata
-        .get("execution_id")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| task.task_id.clone());
-
-    // run_id is the FK into zart_execution_runs; carried in metadata["run_id"] by body/step tasks.
-    // Falls back to execution_id for non-durable tasks (which don't use zart_steps).
-    let run_id = task
-        .metadata
-        .get("run_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&execution_id)
-        .to_string();
-
-    // Parse step deadline from task metadata (set when timeout_scope == Global).
-    let step_deadline = task
-        .metadata
-        .get("deadline")
-        .and_then(|v| v.as_str())
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc));
 
     // Compute execution deadline from handler timeout + execution scheduled_at.
     let execution_deadline = if has_execution {
@@ -623,9 +641,8 @@ async fn dispatch_task(
                             execution_time: next_time,
                             data: task_data,
                             recurrence: Some(recurrence.clone()),
-                            metadata: serde_json::json!({
-                                "execution_id": task.metadata.get("execution_id"),
-                            }),
+                            metadata: TaskMetadata::body(run_id.clone(), execution_id.clone())
+                                .to_json_value(),
                         })
                         .await
                     {

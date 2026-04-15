@@ -15,7 +15,7 @@ use std::time::Duration;
 use zart_scheduler::pause_storage::{PauseRule as StoragePauseRule, PauseRuleFilter, PauseStorage};
 use zart_scheduler::{
     ExecutionRecord, ExecutionStatus, ListExecutionsParams, ScheduleAtParams, ScheduleResult,
-    StorageBackend,
+    StorageBackend, TaskMetadata,
 };
 
 // Maximum duration for `wait_with_timeout` as per the spec.
@@ -159,11 +159,7 @@ impl DurableScheduler {
         // record and body task are created in a single transaction.
         // The task_id is "{run_id}:body:start" — deterministic and debuggable.
         let task_id = format!("{run_id}:body:start");
-        let metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": run_id,
-            "execution_id": execution_id.to_string(),
-        });
+        let metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         let params = ScheduleAtParams {
             task_id: task_id.clone(),
@@ -418,11 +414,7 @@ impl DurableScheduler {
 
         let run_id = format!("{execution_id}:run:0");
         let task_id = format!("{run_id}:body:start");
-        let metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": run_id,
-            "execution_id": execution_id.to_string(),
-        });
+        let metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         let params = ScheduleAtParams {
             task_id: task_id.clone(),

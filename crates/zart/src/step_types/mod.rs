@@ -5,7 +5,7 @@
 //! dispatch layer; `TaskContext` only expresses intent.
 
 use async_trait::async_trait;
-use zart_scheduler::{StorageBackend, StorageError};
+use zart_scheduler::{StepMetaType, StorageBackend, StorageError, TaskMetadata};
 
 use crate::context::{PendingFn, TaskContext};
 use crate::error::StepError;
@@ -349,34 +349,37 @@ impl StepDefId {
         }
     }
 
-    /// Resolve step definition id from task metadata.
+    /// Resolve step definition id from a typed [`TaskMetadata`].
+    pub fn from_task_metadata(meta: &TaskMetadata) -> Self {
+        match meta {
+            TaskMetadata::Body { .. } => Self::Step, // body tasks don't dispatch through StepDefId
+            TaskMetadata::Step {
+                wg_step_name,
+                is_wait_all_child,
+                step_type,
+                ..
+            } => {
+                if wg_step_name.is_some() || is_wait_all_child.unwrap_or(false) {
+                    return Self::WaitGroupChild;
+                }
+                match step_type {
+                    StepMetaType::Sleep => Self::Sleep,
+                    StepMetaType::WaitForEvent => Self::WaitForEvent,
+                    StepMetaType::Step => Self::Step,
+                }
+            }
+        }
+    }
+
+    /// Resolve step definition id from raw metadata JSON.
     ///
-    /// Backward-compat:
-    /// - accepts new `wg_step_name`
-    /// - accepts old `is_wait_all_child`
+    /// Thin wrapper around [`from_task_metadata`] for call sites that receive
+    /// a `serde_json::Value`. Defaults to `Step` if the value does not
+    /// conform to the [`TaskMetadata`] schema.
     pub fn from_metadata(metadata: &serde_json::Value) -> Self {
-        let is_wait_group_child = metadata
-            .get("wg_step_name")
-            .and_then(|v| v.as_str())
-            .is_some()
-            || metadata
-                .get("is_wait_all_child")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-        if is_wait_group_child {
-            return Self::WaitGroupChild;
-        }
-
-        match metadata
-            .get("step_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("step")
-        {
-            "sleep" => Self::Sleep,
-            "wait_for_event" => Self::WaitForEvent,
-            _ => Self::Step,
-        }
+        TaskMetadata::from_json_value(metadata.clone())
+            .map(|m| Self::from_task_metadata(&m))
+            .unwrap_or(Self::Step)
     }
 
     pub fn body_behavior(self) -> &'static dyn BodyBehavior {
@@ -426,62 +429,85 @@ pub mod step;
 #[cfg(test)]
 mod tests {
     use super::StepDefId;
-    use serde_json::json;
+    use zart_scheduler::{StepMetaType, TaskMetadata};
 
-    #[test]
-    fn stepdefid_from_metadata_recognizes_wait_group_child_new_field() {
-        let meta = json!({
-            "mode": "step",
-            "step_name": "child-a",
-            "wg_step_name": "__wg__all__abc"
-        });
-
-        assert_eq!(StepDefId::from_metadata(&meta), StepDefId::WaitGroupChild);
+    fn step_meta(
+        step_type: StepMetaType,
+        step_name: &str,
+        wg_step_name: Option<&str>,
+        is_wait_all_child: Option<bool>,
+    ) -> TaskMetadata {
+        TaskMetadata::Step {
+            step_type,
+            run_id: "exec-1:run:0".into(),
+            execution_id: "exec-1".into(),
+            step_name: step_name.into(),
+            retry_attempt: 0,
+            retry_config: None,
+            deadline: None,
+            is_wait_all_child,
+            wg_step_name: wg_step_name.map(str::to_string),
+        }
     }
 
     #[test]
-    fn stepdefid_from_metadata_recognizes_wait_group_child_legacy_flag() {
-        let meta = json!({
+    fn from_task_metadata_recognizes_wg_step_name() {
+        let meta = step_meta(StepMetaType::Step, "child-a", Some("__wg__all__abc"), None);
+        assert_eq!(
+            StepDefId::from_task_metadata(&meta),
+            StepDefId::WaitGroupChild
+        );
+    }
+
+    #[test]
+    fn from_task_metadata_recognizes_is_wait_all_child_flag() {
+        let meta = step_meta(StepMetaType::Step, "child-b", None, Some(true));
+        assert_eq!(
+            StepDefId::from_task_metadata(&meta),
+            StepDefId::WaitGroupChild
+        );
+    }
+
+    #[test]
+    fn from_task_metadata_parses_step_types() {
+        let sleep = step_meta(StepMetaType::Sleep, "__sleep", None, None);
+        let event = step_meta(StepMetaType::WaitForEvent, "approval", None, None);
+        let regular = step_meta(StepMetaType::Step, "step-one", None, None);
+
+        assert_eq!(StepDefId::from_task_metadata(&sleep), StepDefId::Sleep);
+        assert_eq!(
+            StepDefId::from_task_metadata(&event),
+            StepDefId::WaitForEvent
+        );
+        assert_eq!(StepDefId::from_task_metadata(&regular), StepDefId::Step);
+    }
+
+    #[test]
+    fn from_task_metadata_prefers_wg_over_step_type() {
+        let meta = step_meta(
+            StepMetaType::WaitForEvent,
+            "child-c",
+            Some("__wg__all__xyz"),
+            None,
+        );
+        assert_eq!(
+            StepDefId::from_task_metadata(&meta),
+            StepDefId::WaitGroupChild
+        );
+    }
+
+    // from_metadata wrapper delegates correctly to from_task_metadata.
+    #[test]
+    fn from_metadata_wrapper_recognizes_wait_group_child() {
+        let meta = serde_json::json!({
             "mode": "step",
+            "step_type": "step",
+            "run_id": "exec-1:run:0",
+            "execution_id": "exec-1",
             "step_name": "child-b",
+            "retry_attempt": 0,
             "is_wait_all_child": true
         });
-
-        assert_eq!(StepDefId::from_metadata(&meta), StepDefId::WaitGroupChild);
-    }
-
-    #[test]
-    fn stepdefid_from_metadata_parses_specialized_and_regular_step_types() {
-        let sleep = json!({
-            "mode": "step",
-            "step_name": "__sleep",
-            "step_type": "sleep"
-        });
-        let event = json!({
-            "mode": "step",
-            "step_name": "approval",
-            "step_type": "wait_for_event"
-        });
-        let regular = json!({
-            "mode": "step",
-            "step_name": "step-one",
-            "step_type": "step"
-        });
-
-        assert_eq!(StepDefId::from_metadata(&sleep), StepDefId::Sleep);
-        assert_eq!(StepDefId::from_metadata(&event), StepDefId::WaitForEvent);
-        assert_eq!(StepDefId::from_metadata(&regular), StepDefId::Step);
-    }
-
-    #[test]
-    fn stepdefid_from_metadata_prefers_wait_group_child_over_step_type() {
-        let meta = json!({
-            "mode": "step",
-            "step_name": "child-c",
-            "step_type": "wait_for_event",
-            "wg_step_name": "__wg__all__xyz"
-        });
-
         assert_eq!(StepDefId::from_metadata(&meta), StepDefId::WaitGroupChild);
     }
 }

@@ -42,6 +42,7 @@ impl CompletionBehavior for ScheduleNextBody {
                 next_body_task_id: &next_body_task_id,
                 task_name: &spec.task_name,
                 run_id: &spec.run_id,
+                execution_id: &spec.execution_id,
                 data: spec.data,
                 attempt_number: spec.attempt_number,
             },
@@ -83,6 +84,7 @@ impl CompletionBehavior for DecrementAndMaybeResume {
         let _triggered = scheduler
             .complete_wait_group_child(CompleteWaitGroupChildParams {
                 run_id: spec.run_id,
+                execution_id: spec.execution_id,
                 group_step_name,
                 child_step_task_id: spec.step_task_id,
                 child_step_id: canonical_child_step_id,

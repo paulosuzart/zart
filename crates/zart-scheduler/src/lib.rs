@@ -18,12 +18,14 @@
 pub mod error;
 pub mod pause_storage;
 pub mod recurrence;
+pub mod task_metadata;
 pub mod types;
 
 pub mod postgres;
 
 pub use error::StorageError;
 pub use recurrence::Recurrence;
+pub use task_metadata::{StepMetaType, TaskMetadata};
 pub use types::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
     CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,

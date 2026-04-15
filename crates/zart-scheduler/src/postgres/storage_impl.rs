@@ -11,7 +11,7 @@ use crate::{
     DurableStorage, EventDeliveryResult, ExecutionRecord, ExecutionSortField, ExecutionStats,
     ExecutionStatus, FailWaitGroupChildParams, ListExecutionsParams, RescheduleStepForRetryParams,
     ScheduleStepParams, SortOrder, StepAttemptRow, StepAttemptStatus, StepKind, StepLookup,
-    StepResultKind, StepStatus, StorageError, TaskStatus, UpsertWaitGroupStepParams,
+    StepResultKind, StepStatus, StorageError, TaskMetadata, TaskStatus, UpsertWaitGroupStepParams,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -379,11 +379,7 @@ impl DurableStorage for PostgresScheduler {
         }
 
         let next_body_task_id = format!("{execution_id}:body:after:{event_name}");
-        let body_metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": run_id,
-            "execution_id": execution_id,
-        });
+        let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         sqlx::query(
             r#"
@@ -536,11 +532,8 @@ impl DurableStorage for PostgresScheduler {
         };
 
         if triggered {
-            let body_metadata = serde_json::json!({
-                "mode": "body",
-                "run_id": params.run_id,
-                "execution_id": params.run_id.split(":run:").next().unwrap_or(&params.run_id),
-            });
+            let body_metadata =
+                TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
             sqlx::query(
                 r#"
                 INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
@@ -651,12 +644,13 @@ impl DurableStorage for PostgresScheduler {
     }
 
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
             r#"
             SELECT
                 s.run_id,
                 s.step_name,
-                e.task_name
+                e.task_name,
+                r.execution_id
             FROM zart_steps s
             JOIN zart_execution_runs r ON r.run_id = s.run_id
             JOIN zart_executions e ON e.execution_id = r.execution_id
@@ -671,13 +665,9 @@ impl DurableStorage for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let mut recovered = 0usize;
-        for (run_id, step_name, task_name) in rows {
+        for (run_id, step_name, task_name, execution_id) in rows {
             let next_body_task_id = format!("{run_id}:body:after:{step_name}");
-            let body_metadata = serde_json::json!({
-                "mode": "body",
-                "run_id": run_id,
-                "execution_id": run_id.split(":run:").next().unwrap_or(&run_id),
-            });
+            let body_metadata = TaskMetadata::body(&run_id, &execution_id).to_json_value();
 
             let inserted = sqlx::query(
                 r#"
@@ -1521,11 +1511,7 @@ impl DurableStorage for PostgresScheduler {
 
                 // Schedule body
                 let body_task_id = format!("{run_id}:body:start");
-                let body_metadata = serde_json::json!({
-                    "mode": "body",
-                    "run_id": run_id,
-                    "execution_id": execution_id,
-                });
+                let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
                 sqlx::query(
                     r#"
                     INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
@@ -1626,11 +1612,7 @@ impl DurableStorage for PostgresScheduler {
 
         // 7. Schedule a fresh body task at segment 0.
         let body_task_id = format!("{new_run_id}:body:start");
-        let body_metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": new_run_id,
-            "execution_id": execution_id,
-        });
+        let body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
         sqlx::query(
             r#"
             INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)
@@ -1789,11 +1771,7 @@ impl DurableStorage for PostgresScheduler {
 
         // 8. Schedule fresh body task.
         let body_task_id = format!("{new_run_id}:body:start");
-        let body_metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": new_run_id,
-            "execution_id": execution_id,
-        });
+        let body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
         sqlx::query(
             r#"
             INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)

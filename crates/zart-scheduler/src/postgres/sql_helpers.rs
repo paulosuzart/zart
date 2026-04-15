@@ -4,7 +4,9 @@
 //! either against a fresh transaction (for the standalone `DurableStorage`
 //! methods) or against a caller-owned transaction (for the `_in_tx` variants).
 
-use crate::{CompleteStepAndScheduleBodyParams, ScheduleAtParams, ScheduleResult, StorageError};
+use crate::{
+    CompleteStepAndScheduleBodyParams, ScheduleAtParams, ScheduleResult, StorageError, TaskMetadata,
+};
 use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -177,11 +179,7 @@ pub async fn complete_step_and_schedule_body_sql(
         return Err(StorageError::LockMismatch(params.step_task_id.clone()));
     }
 
-    let body_metadata = serde_json::json!({
-        "mode": "body",
-        "run_id": params.run_id,
-        "execution_id": params.run_id.split(":run:").next().unwrap_or(&params.run_id),
-    });
+    let body_metadata = TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
     sqlx::query(
         r#"
         INSERT INTO zart_tasks (task_id, task_name, execution_time, data, metadata)

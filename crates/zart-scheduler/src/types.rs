@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::Recurrence;
+use crate::task_metadata::TaskMetadata;
 
 /// Parameters for durable storage step scheduling.
 #[derive(Debug, Clone)]
@@ -32,6 +33,7 @@ pub struct CompleteStepAndScheduleBodyParams {
     pub next_body_task_id: String,
     pub task_name: String,
     pub run_id: String,
+    pub execution_id: String,
     pub data: serde_json::Value,
 }
 
@@ -68,6 +70,7 @@ pub struct UpsertWaitGroupStepParams {
 #[derive(Debug, Clone)]
 pub struct CompleteWaitGroupChildParams {
     pub run_id: String,
+    pub execution_id: String,
     pub group_step_name: String,
     pub child_step_task_id: String,
     pub child_step_id: String,
@@ -142,11 +145,10 @@ pub struct StepLookup {
 
 impl std::fmt::Display for FetchedTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let exec_id = self
-            .metadata
-            .get("execution_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let exec_id = TaskMetadata::from_json_value(self.metadata.clone())
+            .ok()
+            .map(|m| m.execution_id().to_string());
+        let exec_id = exec_id.as_deref().unwrap_or("-");
         write!(
             f,
             "task={} exec={} attempt={}",
