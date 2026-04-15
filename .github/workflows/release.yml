@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build and validate without publishing, tagging, or creating a release'
+        type: boolean
+        default: false
+      create_tag:
+        description: 'Create and push git tag'
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Validate ──────────────────────────────────────────────────────────────────
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version output
+        id: version
+        run: echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Assert version matches Cargo.toml
+        run: |
+          workspace_version=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Workspace version: $workspace_version"
+          echo "Input version:     ${{ inputs.version }}"
+          if [ "$workspace_version" != "${{ inputs.version }}" ]; then
+            echo "::error::Version mismatch: Cargo.toml has '$workspace_version' but input is '${{ inputs.version }}'"
+            exit 1
+          fi
+
+      - name: Assert CI passed on current commit
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="${{ github.sha }}"
+          echo "Checking CI status for commit $sha"
+          status=$(gh api \
+            "repos/${{ github.repository }}/commits/$sha/check-suites" \
+            --jq '[.check_suites[] | select(.app.slug == "github-actions") | select(.name == "CI" or (.check_runs_url | test("CI")))] | length')
+          # Query check-runs for the CI workflow
+          result=$(gh api \
+            "repos/${{ github.repository }}/commits/$sha/check-runs" \
+            --jq '[.check_runs[] | select(.name | test("CI|Format|Lint|Build|Test|Documentation"; "i"))]')
+          conclusion=$(echo "$result" | jq -r '[.[] | .conclusion] | unique | join(",")')
+          status_vals=$(echo "$result" | jq -r '[.[] | .status] | unique | join(",")')
+          echo "Check conclusions: $conclusion"
+          echo "Check statuses:    $status_vals"
+          incomplete=$(echo "$result" | jq '[.[] | select(.status != "completed")] | length')
+          failures=$(echo "$result" | jq '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null)] | length')
+          if [ "$incomplete" -gt 0 ]; then
+            echo "::error::CI has $incomplete incomplete check(s) on commit $sha"
+            exit 1
+          fi
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::CI has $failures failing check(s) on commit $sha"
+            exit 1
+          fi
+          echo "CI passed on $sha"
+
+  # ── Create Tag ────────────────────────────────────────────────────────────────
+  create-tag:
+    name: Create Tag
+    needs: validate
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_tag && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create and push annotated tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+  # ── Create Release ────────────────────────────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [validate, create-tag]
+    if: >-
+      always() &&
+      !inputs.dry_run &&
+      needs.validate.result == 'success' &&
+      (needs.create-tag.result == 'success' || needs.create-tag.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ contains(inputs.version, '-') }}
+
+  # ── Publish ───────────────────────────────────────────────────────────────────
+  publish:
+    name: Publish to crates.io
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: crates
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Package validation (leaf crates)
+        run: |
+          cargo package -p zart-macros --allow-dirty --no-verify
+          cargo package -p scheduler --allow-dirty --no-verify
+
+      - name: Dry-run publish
+        if: ${{ inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p zart-macros --dry-run --allow-dirty
+          cargo publish -p scheduler --dry-run --allow-dirty
+          cargo publish -p zart --dry-run --allow-dirty
+          cargo publish -p zart-api --dry-run --allow-dirty
+          cargo publish -p zart-cli --dry-run --allow-dirty
+
+      - name: Publish crates
+        if: ${{ !inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          publish_crate() {
+            local crate=$1
+            local output
+            output=$(cargo publish -p "$crate" 2>&1) && echo "$output" && return 0
+            echo "$output"
+            echo "$output" | grep -q "already exists" && echo "Skipping $crate: already published" && return 0
+            return 1
+          }
+          publish_crate zart-macros
+          sleep 30
+          publish_crate scheduler
+          sleep 30
+          publish_crate zart
+          sleep 30
+          publish_crate zart-api
+          sleep 30
+          publish_crate zart-cli
