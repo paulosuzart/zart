@@ -5,12 +5,11 @@ description: Ergonomic proc-macros for writing durable workflows as plain async 
 
 import { Aside } from '@astrojs/starlight/components';
 
-The `zart-macros` crate provides proc-macros that transform ordinary Rust async functions into full `DurableExecution` implementations and `ZartStep` step definitions — no trait boilerplate required.
+The proc-macros transform ordinary Rust async functions into full `DurableExecution` implementations and `ZartStep` step definitions — no trait boilerplate required. They are bundled with `zart` and re-exported directly, so no separate dependency is needed.
 
 ```toml
 [dependencies]
-zart        = "0.1"
-zart-macros = "0.1"
+zart = "0.1"   # macros are included — use zart::zart_durable, zart::zart_step, etc.
 ```
 
 ## `#[zart_durable]`
