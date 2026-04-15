@@ -167,11 +167,8 @@ pub struct ScheduleResult {
 /// The lifecycle status of a task row in the database.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "task_status", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "task_status", rename_all = "snake_case")]
 pub enum TaskStatus {
     /// Waiting to be picked up by a worker.
     Scheduled,
@@ -205,11 +202,8 @@ impl std::str::FromStr for TaskStatus {
 /// The lifecycle status of a durable execution record in `zart_executions`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "execution_status", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "execution_status", rename_all = "snake_case")]
 pub enum ExecutionStatus {
     Scheduled,
     Running,
@@ -247,11 +241,8 @@ impl std::str::FromStr for ExecutionStatus {
 /// The kind of step stored in `zart_steps.step_kind`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "step_kind", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "step_kind", rename_all = "snake_case")]
 pub enum StepKind {
     /// A user-defined step with a lambda.
     Step,
@@ -270,11 +261,8 @@ pub enum StepKind {
 /// The lifecycle status of a step row in `zart_steps`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "step_status", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "step_status", rename_all = "snake_case")]
 pub enum StepStatus {
     /// Waiting to be picked up by a worker.
     Scheduled,
@@ -289,11 +277,8 @@ pub enum StepStatus {
 /// What triggered a run of a durable execution (`zart_execution_runs.trigger`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "execution_trigger", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "execution_trigger", rename_all = "snake_case")]
 pub enum ExecutionTrigger {
     /// First ever run of this execution.
     Initial,
@@ -309,11 +294,8 @@ pub enum ExecutionTrigger {
 /// `step_result_kind` enum labels introduced in the initial schema migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "step_result_kind", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "step_result_kind", rename_all = "snake_case")]
 pub enum StepResultKind {
     /// Step succeeded — `result` holds the serialized output.
     Ok,
@@ -452,11 +434,8 @@ pub struct StepRow {
 /// Lifecycle status of a step attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(
-    feature = "postgres",
-    sqlx(type_name = "step_attempt_status", rename_all = "snake_case")
-)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "step_attempt_status", rename_all = "snake_case")]
 pub enum StepAttemptStatus {
     Completed,
     Failed,
@@ -716,7 +695,6 @@ mod tests {
     // "wrong type" errors at runtime when sqlx tries to bind a typed parameter
     // to a $N placeholder — exactly the class of bug that caused the mark_failed
     // runtime failure where `&str` was bound where `task_status` was expected.
-    #[cfg(feature = "postgres")]
     mod pg_type_names {
         use super::*;
         use sqlx::{Type, TypeInfo};

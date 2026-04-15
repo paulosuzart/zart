@@ -4,7 +4,6 @@
 //! Run them with: `cargo test -- --include-ignored`
 //! or via: `just test-integration`
 
-#[cfg(feature = "postgres")]
 mod postgres_tests {
     use scheduler::{PostgresScheduler, Scheduler};
     use sqlx::PgPool;

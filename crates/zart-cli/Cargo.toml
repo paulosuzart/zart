@@ -13,7 +13,7 @@ doc = false
 
 [dependencies]
 zart.workspace = true
-scheduler = { workspace = true, features = ["postgres"] }
+scheduler.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde.workspace = true

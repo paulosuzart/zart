@@ -43,7 +43,7 @@ path = "transactions/src/main.rs"
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }
-scheduler = { path = "../crates/scheduler", features = ["postgres"] }
+scheduler = { path = "../crates/scheduler" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
