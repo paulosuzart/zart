@@ -31,8 +31,12 @@ test-integration:
     just test-integration-core
 
 test-integration-core:
-    cargo test -p scheduler --test integration_test -- --include-ignored --test-threads=1
+    cargo test -p zart-scheduler --test integration_test -- --include-ignored --test-threads=1
     cargo test -p zart --test integration -- --include-ignored --test-threads=1
+
+# Run all tests including ignored ones and examples (requires PostgreSQL + internet)
+test-integration-full:
+    cargo test --workspace -- --include-ignored --test-threads=1
 
 # Run tests for a specific crate only
 test-crate crate:
@@ -40,7 +44,7 @@ test-crate crate:
 
 # Run macro tests only (no PostgreSQL required)
 test-macros:
-    cargo test -p zart-macros
+    cargo test -p zart --test macros
 
 # Run observability-specific tests (metrics, tracing, logging)
 test-observability:
@@ -141,76 +145,77 @@ generate-grafana-dashboard:
     @echo "  - zart_executions_total"
     @echo "  - zart_events_delivered_total"
 
-# ── Examples (M9) ─────────────────────────────────────────────────────────────
+# ── Examples ─────────────────────────────────────────────────────────────
+example_db_url := 'postgres://zart:zart@localhost:5432/zart'
 
 # Run the brewery-finder example (sequential steps, macros, structured output)
 # Usage: just example-brewery-finder [DATABASE_URL]
-example-brewery-finder db_url='postgres://zart:zart@localhost:5432/zart':
+example-brewery-finder db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-brewery-finder
 
 # Run the approval-workflow example (human-in-the-loop with wait_for_event)
 # Usage: just example-approval [DATABASE_URL]
-example-approval db_url='postgres://zart:zart@localhost:5432/zart':
+example-approval db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-approval-workflow
 
 # Run the parallel-steps example (schedule_step + wait_all)
 # Usage: just example-parallel [DATABASE_URL]
-example-parallel db_url='postgres://zart:zart@localhost:5432/zart':
+example-parallel db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-parallel-steps
 
 # Run the radkit-agent example (AI-powered workflow with LLM integration)
 # Usage: just example-radkit-agent [DATABASE_URL]
-example-radkit-agent db_url='postgres://zart:zart@localhost:5432/zart':
+example-radkit-agent db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-radkit-agent
 
 # Run the retry-simulation example (demonstrates intentional failure and automatic retry)
 # Usage: just example-retry-simulation [DATABASE_URL]
-example-retry-simulation db_url='postgres://zart:zart@localhost:5432/zart':
+example-retry-simulation db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-retry-simulation
 
 # Run the durable-loops example (demonstrates durable iteration with unique step names)
 # Usage: just example-durable-loops [DATABASE_URL]
-example-durable-loops db_url='postgres://zart:zart@localhost:5432/zart':
+example-durable-loops db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-durable-loops
 
 # Run the sleep example (demonstrates ctx.sleep for durable pauses)
 # Usage: just example-sleep [DATABASE_URL]
-example-sleep db_url='postgres://zart:zart@localhost:5432/zart':
+example-sleep db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-sleep
 
 # Run the error-handling example (typed errors, StepOutcome, step_or_else, on_failure)
 # Usage: just example-error-handling [DATABASE_URL]
-example-error-handling db_url='postgres://zart:zart@localhost:5432/zart':
+example-error-handling db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-error-handling
 
 # Run the transactions example (start_in_tx + zart::trx for atomic step completion)
 # Usage: just example-transactions [DATABASE_URL]
-example-transactions db_url='postgres://zart:zart@localhost:5432/zart':
+example-transactions db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-transactions
 
 # Run the cli-demo example (long-running execution + interactive CLI admin commands)
 # Usage: just example-cli-demo [DATABASE_URL]
-example-cli-demo db_url='postgres://zart:zart@localhost:5432/zart':
+example-cli-demo db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} bash examples/cli-demo/demo.sh
 
 # Run the admin-demo example (wait_completion, start_and_wait_for, restart, retry_step, rerun, pause/resume)
 # Usage: just example-admin-demo [DATABASE_URL]
-example-admin-demo db_url='postgres://zart:zart@localhost:5432/zart':
+example-admin-demo db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p example-admin-demo
 
 # Run all examples sequentially (requires PostgreSQL and internet)
-run-all-examples db_url='postgres://zart:zart@localhost:5432/zart':
+run-all-examples db_url=example_db_url:
     just example-brewery-finder {{db_url}}
     just example-approval {{db_url}}
     just example-parallel {{db_url}}

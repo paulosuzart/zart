@@ -37,8 +37,11 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: just fmt-check
 
   # ── Clippy (lint) ─────────────────────────────────────────────────────────────
   clippy:
@@ -55,8 +58,11 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: just lint
 
   # ── Build ─────────────────────────────────────────────────────────────────────
   build:
@@ -71,8 +77,11 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Build workspace (debug)
-        run: cargo build --workspace
+        run: just build
 
   # ── Unit tests ────────────────────────────────────────────────────────────────
   test:
@@ -87,15 +96,17 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Run unit tests (no PostgreSQL required)
-        run: cargo test --workspace
+        run: just test
 
   # ── Integration tests (with PostgreSQL) ───────────────────────────────────────
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Run on all PRs and pushes to main/master, or when manually triggered
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
@@ -128,6 +139,9 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Wait for PostgreSQL to be ready
         run: |
           for i in $(seq 1 30); do
@@ -141,21 +155,14 @@ jobs:
           echo "PostgreSQL failed to become ready"
           exit 1
 
-      - name: Run integration tests (with PostgreSQL, single-threaded)
-        run: |
-          # Run core integration tests (PostgreSQL required, no internet needed)
-          # - scheduler integration tests
-          # - zart integration tests
-          # Examples with external API calls are tested separately
-          cargo test -p zart-scheduler --test integration_test -- --include-ignored --test-threads=1
-          cargo test -p zart --test integration -- --include-ignored --test-threads=1
+      - name: Run integration tests
+        run: just test-integration-core
 
   # ── Full integration tests (with PostgreSQL + internet for examples) ──────────
   test-integration-full:
     name: Full Integration Tests (with Examples)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Run on all PRs and pushes to main/master, or when manually triggered
     if: >-
       github.event_name == 'pull_request' ||
       github.event_name == 'push' ||
@@ -188,6 +195,9 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Wait for PostgreSQL to be ready
         run: |
           for i in $(seq 1 30); do
@@ -202,9 +212,7 @@ jobs:
           exit 1
 
       - name: Run full integration tests (including examples with external APIs)
-        run: |
-          # Run all integration tests including example tests that call external APIs
-          cargo test --workspace -- --include-ignored --test-threads=1
+        run: just test-integration-full
 
   # ── UI (zart-ui) ──────────────────────────────────────────────────────────────
   ui:
@@ -256,7 +264,10 @@ jobs:
       - name: Cache Cargo registry and build artefacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install just
+        uses: extractions/setup-just@v4
+
       - name: Build documentation
-        run: cargo doc --workspace --no-deps
+        run: just doc-check
         env:
           RUSTDOCFLAGS: "-D warnings"
