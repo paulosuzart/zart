@@ -21,9 +21,9 @@ repository = "https://github.com/zart-rs/zart"
 
 [workspace.dependencies]
 # Internal crates
-scheduler = { path = "crates/scheduler" }
-zart = { path = "crates/zart" }
-zart-macros = { path = "crates/zart-macros" }
+scheduler = { path = "crates/scheduler", version = "0.1.0" }
+zart = { path = "crates/zart", version = "0.1.0" }
+zart-macros = { path = "crates/zart-macros", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
