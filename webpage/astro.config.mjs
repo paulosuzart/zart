@@ -23,6 +23,11 @@ export default defineConfig({
           label: "GitHub",
           href: "https://github.com/paulosuzart/zart",
         },
+        {
+          icon: "twitter",
+          label: "X",
+          href: "https://x.com/RunZart",
+        },
       ],
       customCss: ["./src/styles/custom.css"],
       sidebar: [
