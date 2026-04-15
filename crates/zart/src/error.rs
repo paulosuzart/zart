@@ -5,8 +5,8 @@
 //! - **Control-flow signals** used internally to drive the execution engine
 //!   (e.g., [`StepError::Scheduled`])
 
-use scheduler::StorageError;
 use thiserror::Error;
+use zart_scheduler::StorageError;
 
 /// Top-level errors from the scheduler / durable execution API.
 #[derive(Debug, Error)]
@@ -29,7 +29,7 @@ pub enum SchedulerError {
 
     /// An execution with this ID already exists and is not in a terminal state.
     #[error("Execution '{0}' already exists (status: {1})")]
-    ExecutionAlreadyExists(String, scheduler::ExecutionStatus),
+    ExecutionAlreadyExists(String, zart_scheduler::ExecutionStatus),
 
     /// Serialization or deserialization of task data failed.
     #[error("Serialization error: {0}")]

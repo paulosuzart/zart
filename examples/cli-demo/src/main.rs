@@ -18,11 +18,11 @@
 //! - `zart restart <execution_id>` — restart from scratch
 //! - `zart runs <execution_id>` — list all runs
 
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use zart::prelude::*;
+use zart_scheduler::PostgresScheduler;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 

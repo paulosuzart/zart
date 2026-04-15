@@ -1,13 +1,13 @@
 /// Declarative dispatch and step_internal integration tests.
 use super::helpers::*;
-use scheduler::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
-    UpsertWaitGroupStepParams,
-};
 use std::time::Duration;
 use uuid::Uuid;
 use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
 use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
+use zart_scheduler::{
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
+    UpsertWaitGroupStepParams,
+};
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
@@ -176,8 +176,8 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .await
     });
 
-    let r1: Result<bool, scheduler::StorageError> = child1.await.expect("join child1 failed");
-    let r2: Result<bool, scheduler::StorageError> = child2.await.expect("join child2 failed");
+    let r1: Result<bool, zart_scheduler::StorageError> = child1.await.expect("join child1 failed");
+    let r2: Result<bool, zart_scheduler::StorageError> = child2.await.expect("join child2 failed");
     let t1 = r1.expect("complete_wait_group_child #1 failed");
     let t2 = r2.expect("complete_wait_group_child #2 failed");
 

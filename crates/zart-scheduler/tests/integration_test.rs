@@ -5,9 +5,9 @@
 //! or via: `just test-integration`
 
 mod postgres_tests {
-    use scheduler::{PostgresScheduler, Scheduler};
     use sqlx::PgPool;
     use uuid::Uuid;
+    use zart_scheduler::{PostgresScheduler, Scheduler};
 
     /// Returns a PostgreSQL connection string from the environment.
     /// Defaults to the local Docker Compose instance.
@@ -188,7 +188,7 @@ mod postgres_tests {
         let far_future = chrono::Utc::now() + chrono::Duration::hours(24);
 
         scheduler
-            .schedule_at(scheduler::ScheduleAtParams {
+            .schedule_at(zart_scheduler::ScheduleAtParams {
                 task_id: task_id.clone(),
                 task_name: "test-task".to_string(),
                 execution_time: far_future,
@@ -220,12 +220,12 @@ mod postgres_tests {
         // Full recurring task logic is implemented in M4.
         let (pool, scheduler) = setup().await;
         let task_id = format!("test-recurring-{}", Uuid::new_v4());
-        let recurrence = scheduler::Recurrence::FixedDelay {
+        let recurrence = zart_scheduler::Recurrence::FixedDelay {
             duration_ms: 60_000,
         };
 
         scheduler
-            .schedule_at(scheduler::ScheduleAtParams {
+            .schedule_at(zart_scheduler::ScheduleAtParams {
                 task_id: task_id.clone(),
                 task_name: "recurring-task".to_string(),
                 execution_time: chrono::Utc::now(),

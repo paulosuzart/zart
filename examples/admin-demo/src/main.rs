@@ -8,7 +8,6 @@
 //! 5. `rerun_steps` — selective rerun with dependency warnings
 //! 6. `pause` / `resume` / `list_pause_rules` — pause lifecycle
 
-use scheduler::{ExecutionStatus, PostgresScheduler, Scheduler as _};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +15,7 @@ use uuid::Uuid;
 use zart::admin::{PauseScope, RerunSpec};
 use zart::error::{SchedulerError, TaskError};
 use zart::prelude::*;
+use zart_scheduler::{ExecutionStatus, PostgresScheduler};
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 

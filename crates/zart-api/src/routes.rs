@@ -235,10 +235,10 @@ mod tests {
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
     use std::sync::Arc;
     use tower::ServiceExt;
     use zart::{DurableApi, error::SchedulerError};
+    use zart_scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
 
     struct NullApi;
 

@@ -10,13 +10,13 @@ use crate::metrics::{
     TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
 use crate::registry::TaskRegistry;
-use scheduler::StorageBackend;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, instrument, warn};
 use uuid::Uuid;
+use zart_scheduler::StorageBackend;
 
 /// Tuning parameters for a [`Worker`].
 ///
@@ -363,7 +363,7 @@ async fn heartbeat_loop(
 async fn dispatch_task(
     scheduler: Arc<dyn StorageBackend>,
     registry: Arc<TaskRegistry>,
-    task: scheduler::FetchedTask,
+    task: zart_scheduler::FetchedTask,
     heartbeat_interval: Option<Duration>,
     orphan_timeout: Duration,
 ) {
@@ -563,7 +563,7 @@ async fn dispatch_task(
     // ── Cancellation guard ────────────────────────────────────────────────────
     if has_execution {
         match ctx_cleanup.scheduler.get_execution(&execution_id).await {
-            Ok(Some(exec)) if exec.status == scheduler::ExecutionStatus::Cancelled => {
+            Ok(Some(exec)) if exec.status == zart_scheduler::ExecutionStatus::Cancelled => {
                 info!("Execution cancelled while task was running; discarding result");
                 let _ = ctx_cleanup
                     .scheduler
@@ -617,7 +617,7 @@ async fn dispatch_task(
                     let task_data = ctx_cleanup.data().clone();
                     if let Err(e) = ctx_cleanup
                         .scheduler
-                        .schedule_at(scheduler::ScheduleAtParams {
+                        .schedule_at(zart_scheduler::ScheduleAtParams {
                             task_id: new_task_id.clone(),
                             task_name: task.task_name.clone(),
                             execution_time: next_time,
@@ -773,7 +773,10 @@ async fn dispatch_task(
 }
 
 /// Build an [`ExecutionFailure`] from a [`TaskError`] for `on_failure` invocation.
-fn build_execution_failure(err: &TaskError, task: &scheduler::FetchedTask) -> ExecutionFailure {
+fn build_execution_failure(
+    err: &TaskError,
+    task: &zart_scheduler::FetchedTask,
+) -> ExecutionFailure {
     match err {
         TaskError::StepFailed { step, source } => {
             // Serialize the inner error for the failure envelope.

@@ -9,12 +9,12 @@
 //! structured output (no file I/O).
 
 use chrono::Utc;
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::prelude::*;
+use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 

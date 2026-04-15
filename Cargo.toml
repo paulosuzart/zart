@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/scheduler",
+    "crates/zart-scheduler",
     "crates/zart",
     "crates/zart-cli",
     "crates/zart-api",
@@ -21,7 +21,7 @@ repository = "https://github.com/zart-rs/zart"
 
 [workspace.dependencies]
 # Internal crates
-scheduler = { path = "crates/scheduler", version = "0.1.0" }
+zart-scheduler = { path = "crates/zart-scheduler", version = "0.1.0" }
 zart = { path = "crates/zart", version = "0.1.0" }
 zart-macros = { path = "crates/zart-macros", version = "0.1.0" }
 

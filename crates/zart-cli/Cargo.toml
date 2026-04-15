@@ -14,7 +14,7 @@ doc = false
 
 [dependencies]
 zart.workspace = true
-scheduler.workspace = true
+zart-scheduler.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde.workspace = true

@@ -139,18 +139,19 @@ jobs:
 
       - name: Package validation (leaf crates)
         run: |
-          cargo package -p scheduler --allow-dirty --no-verify
+          cargo package -p zart-scheduler --allow-dirty --no-verify
 
       - name: Dry-run publish
         if: ${{ inputs.dry_run }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # Only leaf crates (no internal workspace deps) can be dry-run validated
+          # before their dependencies are published. zart, zart-api, zart-cli depend
+          # on zart-macros/zart-scheduler which don't exist on crates.io yet — they are
+          # validated implicitly when published in order during a real release.
           cargo publish -p zart-macros --dry-run --allow-dirty --no-verify
-          cargo publish -p scheduler --dry-run --allow-dirty
-          cargo publish -p zart --dry-run --allow-dirty
-          cargo publish -p zart-api --dry-run --allow-dirty
-          cargo publish -p zart-cli --dry-run --allow-dirty
+          cargo publish -p zart-scheduler --dry-run --allow-dirty
 
       - name: Publish crates
         if: ${{ !inputs.dry_run }}
@@ -168,7 +169,7 @@ jobs:
           }
           publish_crate zart-macros --no-verify
           sleep 30
-          publish_crate scheduler
+          publish_crate zart-scheduler
           sleep 30
           publish_crate zart
           sleep 30

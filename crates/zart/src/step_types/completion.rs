@@ -4,7 +4,7 @@
 //! scaffold that can be wired in during phased cutover.
 
 use async_trait::async_trait;
-use scheduler::{
+use zart_scheduler::{
     CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageBackend, StorageError,
 };
 
@@ -178,12 +178,12 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
-    use scheduler::{
+    use std::sync::{Arc, Mutex};
+    use zart_scheduler::{
         CompleteAndScheduleParams, DurableStorage, EventDeliveryResult, FetchedTask,
         RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
         Scheduler, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
-    use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Recorded {
@@ -320,7 +320,7 @@ mod tests {
         async fn get_execution(
             &self,
             _execution_id: &str,
-        ) -> Result<Option<scheduler::ExecutionRecord>, StorageError> {
+        ) -> Result<Option<zart_scheduler::ExecutionRecord>, StorageError> {
             Ok(None)
         }
 
@@ -330,8 +330,8 @@ mod tests {
 
         async fn list_executions(
             &self,
-            _params: scheduler::ListExecutionsParams,
-        ) -> Result<Vec<scheduler::ExecutionRecord>, StorageError> {
+            _params: zart_scheduler::ListExecutionsParams,
+        ) -> Result<Vec<zart_scheduler::ExecutionRecord>, StorageError> {
             Ok(vec![])
         }
 
@@ -420,14 +420,14 @@ mod tests {
 
         async fn complete_step_and_schedule_body(
             &self,
-            _params: scheduler::CompleteStepAndScheduleBodyParams,
+            _params: zart_scheduler::CompleteStepAndScheduleBodyParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }
 
         async fn complete_step_no_resume(
             &self,
-            _params: scheduler::CompleteStepNoResumeParams,
+            _params: zart_scheduler::CompleteStepNoResumeParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }

@@ -115,15 +115,15 @@ pub struct ResumeResult {
 /// Full execution detail for the admin detail endpoint.
 #[derive(Debug, Clone)]
 pub struct ExecutionDetail {
-    pub execution: scheduler::ExecutionRecord,
-    pub runs: Vec<scheduler::ExecutionRunRecord>,
+    pub execution: zart_scheduler::ExecutionRecord,
+    pub runs: Vec<zart_scheduler::ExecutionRunRecord>,
     pub steps: Vec<StepWithAttempts>,
 }
 
 /// A step with its attempts and retryability flag.
 #[derive(Debug, Clone)]
 pub struct StepWithAttempts {
-    pub step: scheduler::StepRow,
-    pub attempts: Vec<scheduler::StepAttemptRow>,
+    pub step: zart_scheduler::StepRow,
+    pub attempts: Vec<zart_scheduler::StepAttemptRow>,
     pub retryable: bool,
 }

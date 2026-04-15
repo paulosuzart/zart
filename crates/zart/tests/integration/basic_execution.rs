@@ -1,10 +1,10 @@
 /// Basic execution tests: sequential steps, failures, retries, and recurring tasks.
 use super::helpers::*;
-use scheduler::{ListExecutionsParams, Recurrence};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::{DurableScheduler, TaskRegistry};
+use zart_scheduler::{ListExecutionsParams, Recurrence};
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
@@ -170,7 +170,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
 
     let task_id = format!("recurring-{}", Uuid::new_v4());
     scheduler
-        .schedule_at(scheduler::ScheduleAtParams {
+        .schedule_at(zart_scheduler::ScheduleAtParams {
             task_id: task_id.clone(),
             task_name: "counter-task".to_string(),
             execution_time: chrono::Utc::now(),

@@ -15,7 +15,6 @@ use radkit::agent::LlmFunction;
 use radkit::macros::LLMOutput;
 use radkit::models::providers::OpenAILlm;
 use radkit::models::{BaseLlm, Thread};
-use scheduler::PostgresScheduler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,6 +23,7 @@ use zart::error::TaskError;
 use zart::prelude::*;
 use zart::registry::DurableExecution;
 use zart::zart_step;
+use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 

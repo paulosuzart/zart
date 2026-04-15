@@ -18,8 +18,8 @@ use crate::step_ops;
 use crate::step_types::{
     CompletionOutcome, CompletionSpec, ResultKind, StepDefId, StepRequest, StepResult,
 };
-use scheduler::{StepKind, TaskStatus};
 use serde::{Deserialize, Serialize};
+use zart_scheduler::{StepKind, TaskStatus};
 
 /// TaskContext step internal entry point for declarative step handling.
 ///
@@ -277,7 +277,7 @@ where
             reason: e.to_string(),
         })?;
 
-    if let Some(scheduler::StepLookup {
+    if let Some(zart_scheduler::StepLookup {
         status: TaskStatus::Completed,
         result: Some(json),
         ..

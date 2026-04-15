@@ -188,7 +188,7 @@ pub mod prelude {
         schedule, sleep, sleep_until, step, step_or, step_or_else, trx, wait, wait_for_event,
         worker::{Worker, WorkerConfig},
     };
-    pub use scheduler::{
+    pub use zart_scheduler::{
         DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler, StorageBackend,
     };
 }
