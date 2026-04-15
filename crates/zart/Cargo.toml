@@ -31,6 +31,10 @@ metrics = ["dep:prometheus", "dep:lazy_static"]
 name = "integration"
 path = "tests/integration/mod.rs"
 
+[[test]]
+name = "macros"
+path = "tests/macros.rs"
+
 [dev-dependencies]
 tokio.workspace = true
 tokio-test.workspace = true
