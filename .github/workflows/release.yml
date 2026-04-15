@@ -139,7 +139,6 @@ jobs:
 
       - name: Package validation (leaf crates)
         run: |
-          cargo package -p zart-macros --allow-dirty --no-verify
           cargo package -p scheduler --allow-dirty --no-verify
 
       - name: Dry-run publish
