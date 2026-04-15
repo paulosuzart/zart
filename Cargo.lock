@@ -3962,7 +3962,7 @@ dependencies = [
 
 [[package]]
 name = "zart"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3984,7 +3984,7 @@ dependencies = [
 
 [[package]]
 name = "zart-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -4004,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "zart-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "serde",
@@ -4020,7 +4020,7 @@ dependencies = [
 
 [[package]]
 name = "zart-examples"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4043,7 +4043,7 @@ dependencies = [
 
 [[package]]
 name = "zart-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4052,7 +4052,7 @@ dependencies = [
 
 [[package]]
 name = "zart-scheduler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",

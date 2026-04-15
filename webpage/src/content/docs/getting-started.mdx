@@ -48,8 +48,7 @@ Unlike message queues or job frameworks, Zart persists the **result** of each st
 ```toml
 # Cargo.toml
 [dependencies]
-zart          = "0.1"
-zart-macros   = "0.1"   # optional — ergonomic proc-macro layer
+zart          = "0.1"   # includes zart-macros — #[zart_durable] and #[zart_step] are ready to use
 async-trait   = "0.1"
 tokio         = { version = "1", features = ["full"] }
 serde         = { version = "1", features = ["derive"] }
