@@ -142,8 +142,8 @@ zart pause [--execution-id X] [--task-name Y] [--step 'send-*']
 # Resume by scope (bulk soft-delete matching rules)
 zart resume [--execution-id X] [--task-name Y] [--step 'send-*']
 
-# Resume a single pause rule by ID
-zart resume-rule <rule_id> [--triggered-by ops]
+# Delete a pause rule by ID
+zart delete-pause-rule <rule_id> [--triggered-by ops]
 
 # List pause rules
 zart pause-list [--include-deleted]

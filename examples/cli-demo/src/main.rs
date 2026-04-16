@@ -12,6 +12,7 @@
 //!
 //! Run this example, then in another terminal use the zart CLI to:
 //! - `zart status <execution_id>` — check execution status
+//! - `zart detail <execution_id>` — inspect runs, steps, and attempt history
 //! - `zart pause --execution-id <id>` — pause the execution
 //! - `zart resume --execution-id <id>` — resume it
 //! - `zart pause-list` — list pause rules
@@ -197,6 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This execution will run for ~2 minutes with sleeps between steps.");
     println!("During the sleeps, you can use the zart CLI to interact:");
     println!("  zart status {}", execution_id);
+    println!("  zart detail {}", execution_id);
     println!("  zart pause --execution-id {}", execution_id);
     println!("  zart resume --execution-id {}", execution_id);
     println!("  zart pause-list");
