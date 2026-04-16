@@ -16,7 +16,8 @@ use zart_scheduler::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
     CompleteWaitGroupChildParams, DurableStorage, FailWaitGroupChildParams, FetchedTask,
     RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler,
-    StepKind, StepLookup, StepResultKind, StorageError, TaskStatus, UpsertWaitGroupStepParams,
+    StepKind, StepLookup, StepResultKind, StorageError, TaskMetadata, TaskStatus,
+    UpsertWaitGroupStepParams,
 };
 
 // ── Recorded call enum ─────────────────────────────────────────────────────────
@@ -300,10 +301,8 @@ impl DurableStorage for RecordingScheduler {
         calls.push(Call::MarkCompleted {
             task_id: params.step_task_id,
         });
-        let body_metadata = serde_json::json!({
-            "mode": "body",
-            "run_id": params.run_id,
-        });
+        let body_metadata =
+            TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
         calls.push(Call::ScheduleAt {
             task_id: params.next_body_task_id,
             execution_time: Utc::now(),

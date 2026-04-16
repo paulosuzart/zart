@@ -6,43 +6,52 @@ use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, St
 use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
 use zart_scheduler::{
     CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
-    UpsertWaitGroupStepParams,
+    TaskMetadata, UpsertWaitGroupStepParams,
 };
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
-async fn stepdefid_from_metadata_backward_compatible() {
-    let wg_new = serde_json::json!({
-        "mode": "step",
-        "step_name": "child-a",
-        "wg_step_name": "__wg__all__abc"
-    });
-    let wg_old = serde_json::json!({
-        "mode": "step",
-        "step_name": "child-b",
-        "is_wait_all_child": true
-    });
-    let sleep = serde_json::json!({
-        "mode": "step",
-        "step_name": "__sleep",
-        "step_type": "sleep"
-    });
-    let event = serde_json::json!({
-        "mode": "step",
-        "step_name": "approval",
-        "step_type": "wait_for_event"
-    });
-    let regular = serde_json::json!({
-        "mode": "step",
-        "step_name": "step-one",
-        "step_type": "step"
-    });
+async fn stepdefid_from_task_metadata_correct() {
+    use zart_scheduler::{StepMetaType, TaskMetadata};
 
-    assert_eq!(StepDefId::from_metadata(&wg_new), StepDefId::WaitGroupChild);
-    assert_eq!(StepDefId::from_metadata(&wg_old), StepDefId::WaitGroupChild);
-    assert_eq!(StepDefId::from_metadata(&sleep), StepDefId::Sleep);
-    assert_eq!(StepDefId::from_metadata(&event), StepDefId::WaitForEvent);
-    assert_eq!(StepDefId::from_metadata(&regular), StepDefId::Step);
+    let make = |step_type: StepMetaType,
+                step_name: &str,
+                wg_step_name: Option<&str>,
+                is_wait_all_child: Option<bool>|
+     -> TaskMetadata {
+        TaskMetadata::Step {
+            step_type,
+            run_id: "exec-1:run:0".into(),
+            execution_id: "exec-1".into(),
+            step_name: step_name.into(),
+            retry_attempt: 0,
+            retry_config: None,
+            deadline: None,
+            is_wait_all_child,
+            wg_step_name: wg_step_name.map(str::to_string),
+        }
+    };
+
+    let wg_new = make(StepMetaType::Step, "child-a", Some("__wg__all__abc"), None);
+    let wg_old = make(StepMetaType::Step, "child-b", None, Some(true));
+    let sleep = make(StepMetaType::Sleep, "__sleep", None, None);
+    let event = make(StepMetaType::WaitForEvent, "approval", None, None);
+    let regular = make(StepMetaType::Step, "step-one", None, None);
+
+    assert_eq!(
+        StepDefId::from_task_metadata(&wg_new),
+        StepDefId::WaitGroupChild
+    );
+    assert_eq!(
+        StepDefId::from_task_metadata(&wg_old),
+        StepDefId::WaitGroupChild
+    );
+    assert_eq!(StepDefId::from_task_metadata(&sleep), StepDefId::Sleep);
+    assert_eq!(
+        StepDefId::from_task_metadata(&event),
+        StepDefId::WaitForEvent
+    );
+    assert_eq!(StepDefId::from_task_metadata(&regular), StepDefId::Step);
 }
 
 #[tokio::test]
@@ -140,9 +149,11 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
     let run_id_1 = run_id.clone();
     let child1_task_id_clone = child1_task_id.clone();
     let next_body_task_id_1 = next_body_task_id.clone();
+    let execution_id_1 = execution_id.clone();
     let child1 = tokio::spawn(async move {
         s1.complete_wait_group_child(CompleteWaitGroupChildParams {
             run_id: run_id_1,
+            execution_id: execution_id_1,
             group_step_name: "__wg__all__concurrent".to_string(),
             child_step_task_id: child1_task_id_clone.clone(),
             child_step_id: child1_task_id_clone,
@@ -158,11 +169,13 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
 
     let s2 = scheduler.clone();
     let run_id_2 = run_id.clone();
+    let execution_id_2 = execution_id.clone();
     let child2_task_id_clone = child2_task_id.clone();
     let next_body_task_id_2 = next_body_task_id.clone();
     let child2 = tokio::spawn(async move {
         s2.complete_wait_group_child(CompleteWaitGroupChildParams {
             run_id: run_id_2,
+            execution_id: execution_id_2,
             group_step_name: "__wg__all__concurrent".to_string(),
             child_step_task_id: child2_task_id_clone.clone(),
             child_step_id: child2_task_id_clone,
@@ -449,8 +462,10 @@ async fn completion_behaviors_execute_with_real_backend() {
         .expect("poll_due failed");
 
     let body_scheduled = due.iter().any(|t| {
-        t.metadata.get("mode").and_then(|v| v.as_str()) == Some("body")
-            && t.task_id.contains(":body:after:comp-step")
+        matches!(
+            TaskMetadata::from_json_value(t.metadata.clone()),
+            Ok(TaskMetadata::Body { .. })
+        ) && t.task_id.contains(":body:after:comp-step")
     });
     assert!(body_scheduled, "expected body continuation task");
 }

@@ -567,6 +567,7 @@ impl TaskContext {
 
         let spec = CompleteStepAndScheduleBodyParams {
             run_id: self.run_id().to_string(),
+            execution_id: self.execution_id().to_string(),
             step_task_id,
             step_id,
             result,

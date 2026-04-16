@@ -10,6 +10,7 @@
 
 use crate::retry::RetryConfig;
 use serde::{Deserialize, Serialize};
+use zart_scheduler::{StepMetaType, TaskMetadata};
 
 /// How a task should be dispatched by the worker.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,51 +48,44 @@ pub enum StepKind {
 }
 
 impl ExecutionMode {
-    /// Parse an `ExecutionMode` from the task's `metadata` JSON.
-    ///
-    /// Returns `ExecutionMode::Body` if the metadata is empty
-    /// or the `mode` key is absent.
-    pub fn from_metadata(metadata: &serde_json::Value) -> Self {
-        let mode = metadata.get("mode").and_then(|v| v.as_str()).unwrap_or("");
-
-        match mode {
-            "body" => ExecutionMode::Body,
-
-            "step" => {
-                let step_type_str = metadata
-                    .get("step_type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("step");
-
-                let target_step = metadata
-                    .get("step_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let retry_attempt = metadata
-                    .get("retry_attempt")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
-                let step_type = match step_type_str {
-                    "sleep" => StepKind::Sleep,
-                    "wait_for_event" => StepKind::WaitForEvent,
-                    _ => StepKind::Step,
+    /// Parse an `ExecutionMode` from a typed [`TaskMetadata`].
+    pub fn from_task_metadata(meta: &TaskMetadata) -> Self {
+        match meta {
+            TaskMetadata::Body { .. } => ExecutionMode::Body,
+            TaskMetadata::Step {
+                step_type,
+                step_name,
+                retry_attempt,
+                retry_config,
+                ..
+            } => {
+                let kind = match step_type {
+                    StepMetaType::Sleep => StepKind::Sleep,
+                    StepMetaType::WaitForEvent => StepKind::WaitForEvent,
+                    StepMetaType::Step => StepKind::Step,
                 };
-
-                let retry_config = metadata
-                    .get("retry_config")
+                let retry_config = retry_config
+                    .as_ref()
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
-
                 ExecutionMode::Step {
-                    target_step,
-                    step_type,
-                    retry_attempt,
+                    target_step: step_name.clone(),
+                    step_type: kind,
+                    retry_attempt: *retry_attempt as usize,
                     retry_config,
                 }
             }
-
-            _ => ExecutionMode::Body,
         }
+    }
+
+    /// Parse an `ExecutionMode` from the task's raw `metadata` JSON.
+    ///
+    /// Thin wrapper around [`Self::from_task_metadata`] for call sites that receive
+    /// a `serde_json::Value`. Returns `ExecutionMode::Body` if the value does
+    /// not conform to the [`TaskMetadata`] schema.
+    pub fn from_metadata(metadata: &serde_json::Value) -> Self {
+        TaskMetadata::from_json_value(metadata.clone())
+            .map(|m| Self::from_task_metadata(&m))
+            .unwrap_or(ExecutionMode::Body)
     }
 }
 
@@ -106,28 +100,33 @@ pub fn is_wait_all_child(metadata: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use zart_scheduler::{StepMetaType, TaskMetadata};
+
+    // ── Typed API (from_task_metadata) ────────────────────────────────────────
 
     #[test]
-    fn from_metadata_body() {
-        let meta = json!({ "mode": "body" });
-        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body);
+    fn from_task_metadata_body() {
+        let meta = TaskMetadata::body("exec-1:run:0", "exec-1");
+        assert_eq!(
+            ExecutionMode::from_task_metadata(&meta),
+            ExecutionMode::Body
+        );
     }
 
     #[test]
-    fn from_metadata_body_empty() {
-        let meta = json!({});
-        assert_eq!(ExecutionMode::from_metadata(&meta), ExecutionMode::Body);
-    }
-
-    #[test]
-    fn from_metadata_step_parses_name_and_retry_attempt() {
-        let meta = json!({
-            "mode": "step",
-            "step_type": "step",
-            "step_name": "charge-card",
-            "retry_attempt": 1,
-        });
-        let mode = ExecutionMode::from_metadata(&meta);
+    fn from_task_metadata_step_parses_name_and_retry_attempt() {
+        let meta = TaskMetadata::Step {
+            step_type: StepMetaType::Step,
+            run_id: "exec-1:run:0".into(),
+            execution_id: "exec-1".into(),
+            step_name: "charge-card".into(),
+            retry_attempt: 1,
+            retry_config: None,
+            deadline: None,
+            is_wait_all_child: None,
+            wg_step_name: None,
+        };
+        let mode = ExecutionMode::from_task_metadata(&meta);
         assert!(matches!(
             mode,
             ExecutionMode::Step {
@@ -140,9 +139,19 @@ mod tests {
     }
 
     #[test]
-    fn from_metadata_step_defaults_retry_to_zero() {
-        let meta = json!({ "mode": "step", "step_name": "send-email" });
-        let mode = ExecutionMode::from_metadata(&meta);
+    fn from_task_metadata_step_defaults_retry_to_zero() {
+        let meta = TaskMetadata::Step {
+            step_type: StepMetaType::Step,
+            run_id: "exec-1:run:0".into(),
+            execution_id: "exec-1".into(),
+            step_name: "send-email".into(),
+            retry_attempt: 0,
+            retry_config: None,
+            deadline: None,
+            is_wait_all_child: None,
+            wg_step_name: None,
+        };
+        let mode = ExecutionMode::from_task_metadata(&meta);
         assert!(matches!(
             mode,
             ExecutionMode::Step {
@@ -153,14 +162,20 @@ mod tests {
     }
 
     #[test]
-    fn from_metadata_step_type_sleep() {
-        let meta = json!({
-            "mode": "step",
-            "step_type": "sleep",
-            "step_name": "__sleep",
-        });
+    fn from_task_metadata_step_type_sleep() {
+        let meta = TaskMetadata::Step {
+            step_type: StepMetaType::Sleep,
+            run_id: "exec-1:run:0".into(),
+            execution_id: "exec-1".into(),
+            step_name: "__sleep".into(),
+            retry_attempt: 0,
+            retry_config: None,
+            deadline: None,
+            is_wait_all_child: None,
+            wg_step_name: None,
+        };
         assert!(matches!(
-            ExecutionMode::from_metadata(&meta),
+            ExecutionMode::from_task_metadata(&meta),
             ExecutionMode::Step {
                 step_type: StepKind::Sleep,
                 ..
@@ -168,36 +183,15 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn from_metadata_wait_all_step_type_becomes_step_kind() {
-        let meta = json!({
-            "mode": "step",
-            "step_type": "wait_all",
-            "wait_for": ["exec-1:step:a", "exec-1:step:b"],
-        });
-        assert!(matches!(
-            ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Step {
-                target_step,
-                step_type: StepKind::Step,
-                retry_attempt: 0,
-                retry_config: None,
-            } if target_step.is_empty()
-        ));
-    }
+    // ── from_metadata wrapper ─────────────────────────────────────────────────
 
     #[test]
-    fn from_metadata_wait_all_without_wait_for_is_still_step_kind() {
-        let meta = json!({ "mode": "step", "step_type": "wait_all" });
-        assert!(matches!(
-            ExecutionMode::from_metadata(&meta),
-            ExecutionMode::Step {
-                target_step,
-                step_type: StepKind::Step,
-                retry_attempt: 0,
-                retry_config: None,
-            } if target_step.is_empty()
-        ));
+    fn from_metadata_body_empty_returns_body() {
+        // Non-durable tasks have {} metadata — should default to Body.
+        assert_eq!(
+            ExecutionMode::from_metadata(&json!({})),
+            ExecutionMode::Body
+        );
     }
 
     #[test]

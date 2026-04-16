@@ -9,7 +9,8 @@
 
 use zart_scheduler::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StepKind, StepResultKind, StorageBackend, StorageError,
+    ScheduleResult, ScheduleStepParams, StepKind, StepMetaType, StepResultKind, StorageBackend,
+    StorageError, TaskMetadata,
 };
 
 /// Parameters for [`schedule_step_task`].
@@ -17,6 +18,7 @@ pub struct StepTaskSpec<'a> {
     pub task_id: &'a str,
     pub task_name: &'a str,
     pub run_id: &'a str,
+    pub execution_id: &'a str,
     pub step_name: &'a str,
     pub data: serde_json::Value,
     pub retry_config: Option<&'a crate::retry::RetryConfig>,
@@ -36,9 +38,21 @@ pub struct ResumeBodySpec<'a> {
     pub next_body_task_id: &'a str,
     pub task_name: &'a str,
     pub run_id: &'a str,
+    pub execution_id: &'a str,
     pub data: serde_json::Value,
     /// 1-indexed attempt number for recording in `zart_step_attempts`.
     pub attempt_number: usize,
+}
+
+/// Parameters for [`schedule_wait_group_child_task`].
+pub struct WaitGroupChildSpec<'a> {
+    pub task_id: &'a str,
+    pub task_name: &'a str,
+    pub run_id: &'a str,
+    pub execution_id: &'a str,
+    pub step_name: &'a str,
+    pub wait_group_step_name: &'a str,
+    pub data: serde_json::Value,
 }
 
 /// Parameters for [`schedule_wait_for_event_task`].
@@ -46,6 +60,7 @@ pub struct EventStepSpec<'a> {
     pub task_id: &'a str,
     pub task_name: &'a str,
     pub run_id: &'a str,
+    pub execution_id: &'a str,
     pub event_name: &'a str,
     pub data: serde_json::Value,
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
@@ -59,27 +74,26 @@ pub async fn schedule_step_task(
     scheduler: &dyn StorageBackend,
     spec: StepTaskSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
-    let execution_id = spec.run_id.split(":run:").next().unwrap_or(spec.run_id);
+    let execution_id = spec.execution_id;
 
-    let mut metadata = serde_json::json!({
-        "mode": "step",
-        "step_type": "step",
-        "run_id": spec.run_id,
-        "execution_id": execution_id,
-        "step_name": spec.step_name,
-        "retry_attempt": 0,
-    });
-    if let Some(rc) = spec.retry_config {
-        metadata["retry_config"] = serde_json::to_value(rc).unwrap_or(serde_json::Value::Null);
-    }
-    if let Some(deadline) = spec.deadline {
-        metadata["deadline"] = serde_json::Value::String(deadline.to_rfc3339());
-    }
     let retry_config_json = spec
         .retry_config
         .map(serde_json::to_value)
         .transpose()
         .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+    let metadata = TaskMetadata::Step {
+        step_type: StepMetaType::Step,
+        run_id: spec.run_id.to_string(),
+        execution_id: execution_id.to_string(),
+        step_name: spec.step_name.to_string(),
+        retry_attempt: 0,
+        retry_config: retry_config_json.clone(),
+        deadline: spec.deadline.map(|d| d.to_rfc3339()),
+        is_wait_all_child: None,
+        wg_step_name: None,
+    }
+    .to_json_value();
 
     scheduler
         .schedule_step(ScheduleStepParams {
@@ -125,41 +139,37 @@ pub async fn reschedule_step_for_retry(
 /// barrier body behavior.
 pub async fn schedule_wait_group_child_task(
     scheduler: &dyn StorageBackend,
-    task_id: &str,
-    task_name: &str,
-    run_id: &str,
-    step_name: &str,
-    wait_group_step_name: &str,
-    data: serde_json::Value,
+    spec: WaitGroupChildSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
-    let execution_id = run_id.split(":run:").next().unwrap_or(run_id);
+    let metadata = TaskMetadata::Step {
+        step_type: StepMetaType::Step,
+        run_id: spec.run_id.to_string(),
+        execution_id: spec.execution_id.to_string(),
+        step_name: spec.step_name.to_string(),
+        retry_attempt: 0,
+        retry_config: None,
+        deadline: None,
+        is_wait_all_child: Some(true),
+        wg_step_name: Some(spec.wait_group_step_name.to_string()),
+    }
+    .to_json_value();
 
-    let metadata = serde_json::json!({
-        "mode": "step",
-        "step_type": "step",
-        "run_id": run_id,
-        "execution_id": execution_id,
-        "step_name": step_name,
-        "is_wait_all_child": true,
-        "wg_step_name": wait_group_step_name,
-    });
-
-    let mut data_obj = match data {
+    let mut data_obj = match spec.data {
         serde_json::Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
     data_obj.insert(
         "wg_step_name".to_string(),
-        serde_json::Value::String(wait_group_step_name.to_string()),
+        serde_json::Value::String(spec.wait_group_step_name.to_string()),
     );
     let data = serde_json::Value::Object(data_obj);
 
     scheduler
         .schedule_step(ScheduleStepParams {
-            task_id: task_id.to_string(),
-            task_name: task_name.to_string(),
-            run_id: run_id.to_string(),
-            step_name: step_name.to_string(),
+            task_id: spec.task_id.to_string(),
+            task_name: spec.task_name.to_string(),
+            run_id: spec.run_id.to_string(),
+            step_name: spec.step_name.to_string(),
             step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data,
@@ -174,23 +184,9 @@ pub async fn schedule_wait_group_child_task(
 /// Prefer [`schedule_wait_group_child_task`] for new code.
 pub async fn schedule_wait_all_child(
     scheduler: &dyn StorageBackend,
-    task_id: &str,
-    task_name: &str,
-    run_id: &str,
-    step_name: &str,
-    wait_group_step_name: &str,
-    data: serde_json::Value,
+    spec: WaitGroupChildSpec<'_>,
 ) -> Result<ScheduleResult, StorageError> {
-    schedule_wait_group_child_task(
-        scheduler,
-        task_id,
-        task_name,
-        run_id,
-        step_name,
-        wait_group_step_name,
-        data,
-    )
-    .await
+    schedule_wait_group_child_task(scheduler, spec).await
 }
 
 /// Atomically complete a step task and schedule the next body segment.
@@ -209,6 +205,7 @@ pub async fn complete_step_and_schedule_body(
             next_body_task_id: spec.next_body_task_id.to_string(),
             task_name: spec.task_name.to_string(),
             run_id: spec.run_id.to_string(),
+            execution_id: spec.execution_id.to_string(),
             data: spec.data,
         })
         .await
@@ -254,14 +251,19 @@ pub async fn schedule_wait_for_event_task(
     let execution_time = spec
         .deadline
         .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
-    let execution_id = spec.run_id.split(":run:").next().unwrap_or(spec.run_id);
-    let metadata = serde_json::json!({
-        "mode":         "step",
-        "step_type":    "wait_for_event",
-        "run_id":       spec.run_id,
-        "execution_id": execution_id,
-        "step_name":    spec.event_name,
-    });
+    let execution_id = spec.execution_id;
+    let metadata = TaskMetadata::Step {
+        step_type: StepMetaType::WaitForEvent,
+        run_id: spec.run_id.to_string(),
+        execution_id: execution_id.to_string(),
+        step_name: spec.event_name.to_string(),
+        retry_attempt: 0,
+        retry_config: None,
+        deadline: None,
+        is_wait_all_child: None,
+        wg_step_name: None,
+    }
+    .to_json_value();
 
     scheduler
         .schedule_step(ScheduleStepParams {
@@ -284,18 +286,22 @@ pub async fn schedule_sleep_task(
     sleep_task_id: &str,
     task_name: &str,
     run_id: &str,
+    execution_id: &str,
     wake_time: chrono::DateTime<chrono::Utc>,
     data: serde_json::Value,
 ) -> Result<ScheduleResult, StorageError> {
-    let execution_id = run_id.split(":run:").next().unwrap_or(run_id);
-
-    let metadata = serde_json::json!({
-        "mode": "step",
-        "step_type": "sleep",
-        "run_id": run_id,
-        "execution_id": execution_id,
-        "step_name": "__sleep",
-    });
+    let metadata = TaskMetadata::Step {
+        step_type: StepMetaType::Sleep,
+        run_id: run_id.to_string(),
+        execution_id: execution_id.to_string(),
+        step_name: "__sleep".to_string(),
+        retry_attempt: 0,
+        retry_config: None,
+        deadline: None,
+        is_wait_all_child: None,
+        wg_step_name: None,
+    }
+    .to_json_value();
 
     scheduler
         .schedule_step(ScheduleStepParams {
@@ -322,7 +328,7 @@ mod tests {
         CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
         CompleteWaitGroupChildParams, DurableStorage, EventDeliveryResult,
         FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams, ScheduleAtParams,
-        Scheduler, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
+        Scheduler, StepKind, StepLookup, StepRow, TaskMetadata, UpsertWaitGroupStepParams,
     };
 
     struct CapturingStorage {
@@ -523,30 +529,31 @@ mod tests {
 
         let result = schedule_wait_group_child_task(
             &storage,
-            "exec-1:step:child-a",
-            "test-task",
-            "exec-1",
-            "child-a",
-            "__wg__all__group-1",
-            serde_json::json!({"x": 1}),
+            WaitGroupChildSpec {
+                task_id: "exec-1:step:child-a",
+                task_name: "test-task",
+                run_id: "exec-1:run:0",
+                execution_id: "exec-1",
+                step_name: "child-a",
+                wait_group_step_name: "__wg__all__group-1",
+                data: serde_json::json!({"x": 1}),
+            },
         )
         .await;
 
         assert!(result.is_ok());
 
-        let metadata = storage
+        let raw = storage
             .captured_metadata()
             .expect("expected schedule_step metadata to be captured");
 
-        assert_eq!(metadata["mode"], "step");
-        assert_eq!(metadata["step_type"], "step");
-        assert_eq!(metadata["run_id"], "exec-1");
-        assert_eq!(metadata["step_name"], "child-a");
-        assert_eq!(metadata["is_wait_all_child"], true);
-        assert_eq!(metadata["wg_step_name"], "__wg__all__group-1");
-        assert!(
-            metadata.get("coordinator_id").is_none(),
-            "legacy coordinator_id metadata should not be written"
-        );
+        let meta = TaskMetadata::from_json_value(raw)
+            .expect("captured metadata must parse as TaskMetadata");
+
+        assert_eq!(meta.run_id(), "exec-1:run:0");
+        assert_eq!(meta.execution_id(), "exec-1");
+        assert_eq!(meta.step_name(), Some("child-a"));
+        assert!(meta.is_wait_all_child(), "is_wait_all_child must be true");
+        assert_eq!(meta.wg_step_name(), Some("__wg__all__group-1"));
     }
 }

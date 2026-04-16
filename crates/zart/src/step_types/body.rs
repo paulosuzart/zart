@@ -97,6 +97,7 @@ impl BodyBehavior for LookupOrSchedule {
                         task_id: &task_id,
                         task_name: ctx.task_name_internal(),
                         run_id: ctx.run_id(),
+                        execution_id: ctx.execution_id(),
                         step_name,
                         data: ctx.data().clone(),
                         retry_config: req.retry_config,
@@ -173,6 +174,7 @@ impl BodyBehavior for LookupOrScheduleSleep {
                     &task_id,
                     ctx.task_name_internal(),
                     ctx.run_id(),
+                    ctx.execution_id(),
                     wake_time,
                     ctx.data().clone(),
                 )
@@ -276,6 +278,7 @@ impl BodyBehavior for LookupOrScheduleEvent {
                         task_id: &task_id,
                         task_name: ctx.task_name_internal(),
                         run_id: ctx.run_id(),
+                        execution_id: ctx.execution_id(),
                         event_name: step_name,
                         data: ctx.data().clone(),
                         deadline,
@@ -376,12 +379,15 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
                     all_completed = false;
                     step_ops::schedule_wait_group_child_task(
                         &*ctx.scheduler,
-                        &child_task_id,
-                        ctx.task_name_internal(),
-                        ctx.run_id(),
-                        child_name,
-                        group_step_name,
-                        ctx.data().clone(),
+                        step_ops::WaitGroupChildSpec {
+                            task_id: &child_task_id,
+                            task_name: ctx.task_name_internal(),
+                            run_id: ctx.run_id(),
+                            execution_id: ctx.execution_id(),
+                            step_name: child_name,
+                            wait_group_step_name: group_step_name,
+                            data: ctx.data().clone(),
+                        },
                     )
                     .await
                     .map_err(|e| StepError::Failed {
