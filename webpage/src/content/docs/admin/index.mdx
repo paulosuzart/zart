@@ -139,14 +139,20 @@ zart rerun <execution_id> \
 # Pause
 zart pause [--execution-id X] [--task-name Y] [--step 'send-*']
 
-# Resume
+# Resume by scope (bulk soft-delete matching rules)
 zart resume [--execution-id X] [--task-name Y] [--step 'send-*']
+
+# Delete a pause rule by ID
+zart delete-pause-rule <rule_id> [--triggered-by ops]
 
 # List pause rules
 zart pause-list [--include-deleted]
 
 # List runs for an execution
 zart runs <execution_id>
+
+# Full detail: runs + steps + attempt history
+zart detail <execution_id> [--run-id <run_id>]
 ```
 
 ## HTTP Admin API

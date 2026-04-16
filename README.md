@@ -213,11 +213,11 @@ All state lives in PostgreSQL tables (`zart_tasks`, `zart_steps`, `zart_step_att
 docker compose up -d
 
 # Run tests
-cargo test --workspace
+just test
 
 # Lint & format
-cargo clippy --workspace -- -D warnings
-cargo fmt --all -- --check
+just lint
+just fmt
 ```
 
 ## License

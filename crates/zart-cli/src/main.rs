@@ -13,8 +13,10 @@
 //! | `zart restart` | Admin | Restart entire execution |
 //! | `zart rerun` | Admin | Selective rerun of steps |
 //! | `zart pause` | Admin | Create a pause rule |
-//! | `zart resume` | Admin | Soft-delete pause rules |
+//! | `zart resume` | Admin | Soft-delete pause rules (by scope) |
+//! | `zart delete-pause-rule` | Admin | Soft-delete a pause rule by ID |
 //! | `zart pause-list` | Admin | List pause rules |
+//! | `zart detail` | Admin | Full execution detail with steps and attempts |
 //!
 //! # Configuration
 //!
@@ -23,12 +25,11 @@
 //! - `DATABASE_URL` — PostgreSQL connection string
 //! - `ZART_CONFIG` — path to a TOML config file (optional)
 
+mod cmd;
+mod db;
+mod fmt;
+
 use clap::{Parser, Subcommand};
-use std::sync::Arc;
-use zart::DurableScheduler;
-use zart::admin::{PauseScope, RerunSpec};
-use zart_scheduler::Scheduler as _;
-use zart_scheduler::pause_storage::PauseRuleFilter;
 
 /// Zart — Durable Execution Framework CLI
 #[derive(Parser)]
@@ -193,13 +194,32 @@ enum Commands {
         #[arg(long)]
         include_deleted: bool,
     },
+
+    /// Delete (soft-delete) a pause rule by its ID.
+    DeletePauseRule {
+        /// The pause rule ID to soft-delete.
+        rule_id: String,
+
+        /// Optional operator identifier for audit.
+        #[arg(long)]
+        triggered_by: Option<String>,
+    },
+
+    /// Show full execution detail: runs, steps, and attempt history.
+    Detail {
+        /// The execution ID to inspect.
+        execution_id: String,
+
+        /// Show steps from this specific run (defaults to current run).
+        #[arg(long)]
+        run_id: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // Initialise logging.
     let log_level = if cli.verbose { "debug" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -210,14 +230,8 @@ async fn main() {
 
     match cli.command {
         Commands::Migrate => {
-            let url = require_db_url(cli.database_url);
-            let pool = connect(&url).await;
-            let scheduler = zart_scheduler::PostgresScheduler::new(pool);
-            scheduler.run_migrations().await.unwrap_or_else(|e| {
-                eprintln!("error: migrations failed: {e}");
-                std::process::exit(1);
-            });
-            println!("Migrations applied successfully.");
+            let pool = db::pool(cli.database_url).await;
+            cmd::exec::migrate(pool).await;
         }
 
         Commands::Schedule {
@@ -225,100 +239,26 @@ async fn main() {
             task_name,
             data,
         } => {
-            let payload: serde_json::Value = serde_json::from_str(&data).unwrap_or_else(|e| {
-                eprintln!("error: invalid JSON payload: {e}");
-                std::process::exit(1);
-            });
-
-            let execution_id = execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-            let url = require_db_url(cli.database_url);
-            let pool = connect(&url).await;
-            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
-            let durable = DurableScheduler::new(scheduler);
-
-            durable
-                .start(&execution_id, &task_name, payload)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: failed to schedule execution: {e}");
-                    std::process::exit(1);
-                });
-
-            println!("Scheduled execution '{execution_id}' for task '{task_name}'.");
+            let durable = db::simple(cli.database_url).await;
+            cmd::exec::schedule(durable, execution_id, task_name, data).await;
         }
 
         Commands::Status { execution_id } => {
-            let url = require_db_url(cli.database_url);
-            let pool = connect(&url).await;
-            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
-            let durable = DurableScheduler::new(scheduler);
-
-            let record = durable.status(&execution_id).await.unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-
-            println!("execution_id : {}", record.execution_id);
-            println!("task_name    : {}", record.task_name);
-            println!("status       : {}", record.status);
-            println!("scheduled_at : {}", record.scheduled_at);
-            if let Some(at) = record.completed_at {
-                println!("completed_at : {at}");
-            }
-            if let Some(result) = record.result {
-                println!("result       : {result}");
-            }
+            let durable = db::simple(cli.database_url).await;
+            cmd::exec::status(durable, execution_id).await;
         }
 
         Commands::Cancel { execution_id } => {
-            let url = require_db_url(cli.database_url);
-            let pool = connect(&url).await;
-            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
-            let durable = DurableScheduler::new(scheduler);
-
-            let cancelled = durable.cancel(&execution_id).await.unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-
-            if cancelled {
-                println!("Execution '{execution_id}' cancelled.");
-            } else {
-                eprintln!("Execution '{execution_id}' not found or already in a terminal state.");
-                std::process::exit(1);
-            }
+            let durable = db::simple(cli.database_url).await;
+            cmd::exec::cancel(durable, execution_id).await;
         }
 
         Commands::Wait {
             execution_id,
             timeout_secs,
         } => {
-            let url = require_db_url(cli.database_url);
-            let pool = connect(&url).await;
-            let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
-            let durable = DurableScheduler::new(scheduler);
-
-            let record = durable
-                .wait(
-                    &execution_id,
-                    std::time::Duration::from_secs(timeout_secs),
-                    None,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            println!("execution_id : {}", record.execution_id);
-            println!("status       : {}", record.status);
-            if let Some(at) = record.completed_at {
-                println!("completed_at : {at}");
-            }
-            if let Some(result) = record.result {
-                println!("result       : {result}");
-            }
+            let durable = db::simple(cli.database_url).await;
+            cmd::exec::wait(durable, execution_id, timeout_secs).await;
         }
 
         Commands::RetryStep {
@@ -326,18 +266,8 @@ async fn main() {
             step_name,
             triggered_by,
         } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
-            let run_id = get_run_id_or_exit(&durable, &execution_id).await;
-
-            let task_id = durable
-                .retry_step(&run_id, &step_name, triggered_by.as_deref())
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            println!("Step '{step_name}' retried (new task: {task_id}).");
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_exec::retry_step(durable, execution_id, step_name, triggered_by).await;
         }
 
         Commands::Restart {
@@ -345,24 +275,8 @@ async fn main() {
             payload,
             triggered_by,
         } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
-
-            let new_payload = payload.map(|p| {
-                serde_json::from_str(&p).unwrap_or_else(|e| {
-                    eprintln!("error: invalid JSON payload: {e}");
-                    std::process::exit(1);
-                })
-            });
-
-            let new_run_id = durable
-                .restart(&execution_id, new_payload, triggered_by.as_deref())
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            println!("Execution '{execution_id}' restarted (new run: {new_run_id}).");
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_exec::restart(durable, execution_id, payload, triggered_by).await;
         }
 
         Commands::Rerun {
@@ -371,59 +285,21 @@ async fn main() {
             preserve,
             triggered_by,
         } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
-
-            let spec = RerunSpec {
-                force_rerun: rerun,
-                preserve,
-                triggered_by,
-            };
-
-            let result = durable
-                .rerun_steps(&execution_id, spec)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            println!("New run number: {}", result.new_run_number);
-            println!("Steps to rerun: {}", result.effective_rerun.join(", "));
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_exec::rerun(durable, execution_id, rerun, preserve, triggered_by).await;
         }
 
         Commands::Runs { execution_id } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
-            let runs = durable.list_runs(&execution_id).await.unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_exec::runs(durable, execution_id).await;
+        }
 
-            if runs.is_empty() {
-                eprintln!("No runs found for execution '{execution_id}'.");
-                std::process::exit(1);
-            }
-
-            println!("Runs for execution '{execution_id}':");
-            for r in &runs {
-                let marker = if r.status == zart_scheduler::ExecutionStatus::Completed {
-                    "✓"
-                } else {
-                    ""
-                };
-                println!(
-                    "  run:{}  status:{}  started:{}  trigger:{}",
-                    r.run_index,
-                    r.status,
-                    r.started_at,
-                    format!("{:?}", r.trigger).to_lowercase(),
-                );
-                if let Some(result) = &r.result {
-                    println!("    result: {result}");
-                }
-                if !marker.is_empty() {
-                    println!("    {marker}");
-                }
-            }
+        Commands::Detail {
+            execution_id,
+            run_id,
+        } => {
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_exec::detail(durable, execution_id, run_id).await;
         }
 
         Commands::Pause {
@@ -432,23 +308,8 @@ async fn main() {
             step,
             triggered_by,
         } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
-
-            let rule = durable
-                .pause(PauseScope {
-                    execution_id,
-                    task_name,
-                    step_pattern: step,
-                    triggered_by,
-                    ..Default::default()
-                })
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            println!("Created pause rule '{}' ({:?}).", rule.rule_id, rule.scope);
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_pause::pause(durable, execution_id, task_name, step, triggered_by).await;
         }
 
         Commands::Resume {
@@ -457,92 +318,21 @@ async fn main() {
             step,
             triggered_by,
         } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
-
-            let result = durable
-                .resume(PauseScope {
-                    execution_id,
-                    task_name,
-                    step_pattern: step,
-                    triggered_by,
-                    ..Default::default()
-                })
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            println!(
-                "Resumed: {} pause rule(s) soft-deleted.",
-                result.rules_deleted
-            );
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_pause::resume(durable, execution_id, task_name, step, triggered_by).await;
         }
 
         Commands::PauseList { include_deleted } => {
-            let durable = connect_pause_enabled(&cli.database_url).await;
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_pause::pause_list(durable, include_deleted).await;
+        }
 
-            let rules = durable
-                .list_pause_rules(Some(PauseRuleFilter {
-                    include_deleted,
-                    ..Default::default()
-                }))
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
-
-            if rules.is_empty() {
-                println!("No pause rules found.");
-            } else {
-                for r in &rules {
-                    let deleted_marker = if r.deleted_at.is_some() {
-                        " [DELETED]"
-                    } else {
-                        ""
-                    };
-                    println!(
-                        "{} {:?} (created: {}){}",
-                        r.rule_id, r.scope, r.created_at, deleted_marker
-                    );
-                }
-            }
+        Commands::DeletePauseRule {
+            rule_id,
+            triggered_by,
+        } => {
+            let durable = db::admin(cli.database_url).await;
+            cmd::admin_pause::delete_pause_rule(durable, rule_id, triggered_by).await;
         }
     }
-}
-
-fn require_db_url(url: Option<String>) -> String {
-    url.unwrap_or_else(|| {
-        eprintln!("error: DATABASE_URL must be set (or pass --database-url)");
-        std::process::exit(1);
-    })
-}
-
-async fn connect(url: &str) -> sqlx::PgPool {
-    sqlx::PgPool::connect(url).await.unwrap_or_else(|e| {
-        eprintln!("error: could not connect to database: {e}");
-        std::process::exit(1);
-    })
-}
-
-/// Connect with pause storage enabled (PostgresScheduler implements PauseStorage).
-async fn connect_pause_enabled(db_url: &Option<String>) -> DurableScheduler {
-    let url = require_db_url(db_url.clone());
-    let pool = connect(&url).await;
-    let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
-    DurableScheduler::with_pause(scheduler.clone(), scheduler)
-}
-
-/// Get the current run_id for an execution or exit with an error.
-async fn get_run_id_or_exit(durable: &DurableScheduler, execution_id: &str) -> String {
-    durable
-        .get_current_run_id(execution_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            eprintln!("error: no run found for execution '{execution_id}'");
-            std::process::exit(1);
-        })
 }

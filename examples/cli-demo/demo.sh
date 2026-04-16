@@ -143,6 +143,10 @@ run_cli "Final status check" \
 run_cli "Final run history" \
     ${ZART} runs "${EXECUTION_ID}"
 
+# ── 11. Full execution detail ─────────────────────────────────────────────────
+run_cli "Full execution detail (runs + steps + attempts)" \
+    ${ZART} detail "${EXECUTION_ID}"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -156,6 +160,7 @@ echo "  • zart resume         — Soft-delete pause rules"
 echo "  • zart pause-list     — List all pause rules"
 echo "  • zart restart        — Full restart with history preservation"
 echo "  • zart runs           — List run history"
+echo "  • zart detail         — Full detail: runs, steps, and attempt history"
 echo ""
 echo -e "${YELLOW}Background process will be cleaned up automatically.${NC}"
 echo ""
