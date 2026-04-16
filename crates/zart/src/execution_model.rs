@@ -79,7 +79,7 @@ impl ExecutionMode {
 
     /// Parse an `ExecutionMode` from the task's raw `metadata` JSON.
     ///
-    /// Thin wrapper around [`from_task_metadata`] for call sites that receive
+    /// Thin wrapper around [`Self::from_task_metadata`] for call sites that receive
     /// a `serde_json::Value`. Returns `ExecutionMode::Body` if the value does
     /// not conform to the [`TaskMetadata`] schema.
     pub fn from_metadata(metadata: &serde_json::Value) -> Self {

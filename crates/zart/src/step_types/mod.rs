@@ -373,7 +373,7 @@ impl StepDefId {
 
     /// Resolve step definition id from raw metadata JSON.
     ///
-    /// Thin wrapper around [`from_task_metadata`] for call sites that receive
+    /// Thin wrapper around [`Self::from_task_metadata`] for call sites that receive
     /// a `serde_json::Value`. Defaults to `Step` if the value does not
     /// conform to the [`TaskMetadata`] schema.
     pub fn from_metadata(metadata: &serde_json::Value) -> Self {
