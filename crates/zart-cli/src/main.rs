@@ -13,8 +13,10 @@
 //! | `zart restart` | Admin | Restart entire execution |
 //! | `zart rerun` | Admin | Selective rerun of steps |
 //! | `zart pause` | Admin | Create a pause rule |
-//! | `zart resume` | Admin | Soft-delete pause rules |
+//! | `zart resume` | Admin | Soft-delete pause rules (by scope) |
+//! | `zart resume-rule` | Admin | Soft-delete a single pause rule by ID |
 //! | `zart pause-list` | Admin | List pause rules |
+//! | `zart detail` | Admin | Full execution detail with steps and attempts |
 //!
 //! # Configuration
 //!
@@ -192,6 +194,26 @@ enum Commands {
         /// Include soft-deleted rules.
         #[arg(long)]
         include_deleted: bool,
+    },
+
+    /// Resume (soft-delete) a pause rule by its ID.
+    ResumeRule {
+        /// The pause rule ID to soft-delete.
+        rule_id: String,
+
+        /// Optional operator identifier for audit.
+        #[arg(long)]
+        triggered_by: Option<String>,
+    },
+
+    /// Show full execution detail: runs, steps, and attempt history.
+    Detail {
+        /// The execution ID to inspect.
+        execution_id: String,
+
+        /// Show steps from this specific run (defaults to current run).
+        #[arg(long)]
+        run_id: Option<String>,
     },
 }
 
@@ -415,7 +437,7 @@ async fn main() {
                     r.run_index,
                     r.status,
                     r.started_at,
-                    format!("{:?}", r.trigger).to_lowercase(),
+                    fmt_lower(&r.trigger),
                 );
                 if let Some(result) = &r.result {
                     println!("    result: {result}");
@@ -509,6 +531,100 @@ async fn main() {
                 }
             }
         }
+
+        Commands::ResumeRule {
+            rule_id,
+            triggered_by,
+        } => {
+            let durable = connect_pause_enabled(&cli.database_url).await;
+
+            let deleted = durable
+                .resume_rule_by_id(&rule_id, triggered_by.as_deref())
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+
+            if deleted {
+                println!("Pause rule '{rule_id}' resumed.");
+            } else {
+                eprintln!("Pause rule '{rule_id}' not found.");
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Detail {
+            execution_id,
+            run_id,
+        } => {
+            let durable = connect_pause_enabled(&cli.database_url).await;
+
+            let detail = durable
+                .execution_detail(&execution_id, run_id.as_deref())
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+
+            let ex = &detail.execution;
+            println!("Execution : {}", ex.execution_id);
+            println!("Task      : {}", ex.task_name);
+            println!("Status    : {}", ex.status);
+            println!("Scheduled : {}", ex.scheduled_at);
+            if let Some(at) = ex.completed_at {
+                println!("Completed : {at}");
+            }
+
+            if !detail.runs.is_empty() {
+                println!("\nRuns:");
+                for r in &detail.runs {
+                    println!(
+                        "  [{}] run_id:{} trigger:{} status:{} started:{} completed:{}",
+                        r.run_index,
+                        r.run_id,
+                        fmt_lower(&r.trigger),
+                        r.status,
+                        r.started_at,
+                        fmt_opt(r.completed_at),
+                    );
+                }
+            }
+
+            if detail.steps.is_empty() {
+                println!("\nNo steps recorded for this run.");
+            } else {
+                println!("\nSteps:");
+                for s in &detail.steps {
+                    let retryable = if s.retryable { " [retryable]" } else { "" };
+                    println!(
+                        "  {:<30} kind:{:<12} status:{:<10} attempt:{} completed:{}{}",
+                        s.step.step_name,
+                        fmt_lower(&s.step.step_kind),
+                        fmt_lower(&s.step.status),
+                        s.step.retry_attempt,
+                        fmt_opt(s.step.completed_at),
+                        retryable,
+                    );
+                    if let Some(ref err) = s.step.last_error {
+                        println!("    error: {err}");
+                    }
+                    for a in &s.attempts {
+                        println!(
+                            "    attempt {} status:{} started:{} completed:{}",
+                            a.attempt_number,
+                            fmt_lower(&a.status),
+                            a.started_at,
+                            fmt_opt(a.completed_at),
+                        );
+                        if let Some(ref err) = a.error {
+                            println!("      error: {err}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -532,6 +648,16 @@ async fn connect_pause_enabled(db_url: &Option<String>) -> DurableScheduler {
     let pool = connect(&url).await;
     let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
     DurableScheduler::with_pause(scheduler.clone(), scheduler)
+}
+
+/// Render a `Debug` value as a lowercase string (e.g. `Running` → `"running"`).
+fn fmt_lower<T: std::fmt::Debug>(v: &T) -> String {
+    format!("{v:?}").to_lowercase()
+}
+
+/// Render an `Option<T>` as its string value or `"-"` when absent.
+fn fmt_opt<T: ToString>(v: Option<T>) -> String {
+    v.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string())
 }
 
 /// Get the current run_id for an execution or exit with an error.
