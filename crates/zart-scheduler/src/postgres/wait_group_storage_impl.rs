@@ -1,35 +1,17 @@
-//! Wait-group coordination operations for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`WaitGroupRepository`] for [`PostgresScheduler`].
 //!
-//! This module handles upserting wait-group steps, completing/failing children,
-//! and recovering orphaned groups. Step-level operations (schedule, complete)
+//! Covers upserting wait-group steps, completing/failing children, and
+//! recovering orphaned groups. Step-level operations (schedule, complete)
 //! live in `step_storage_impl`.
 
 use super::PostgresScheduler;
+use crate::repository::WaitGroupRepository;
 use crate::{
     CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageError, TaskMetadata,
     UpsertWaitGroupStepParams,
 };
 
-pub(crate) trait WaitGroupStorage: Sized {
-    async fn upsert_wait_group_step(
-        &self,
-        params: UpsertWaitGroupStepParams,
-    ) -> Result<(), StorageError>;
-
-    async fn complete_wait_group_child(
-        &self,
-        params: CompleteWaitGroupChildParams,
-    ) -> Result<bool, StorageError>;
-
-    async fn fail_wait_group_child(
-        &self,
-        params: FailWaitGroupChildParams,
-    ) -> Result<bool, StorageError>;
-
-    async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError>;
-}
-
-impl WaitGroupStorage for PostgresScheduler {
+impl WaitGroupRepository for PostgresScheduler {
     async fn upsert_wait_group_step(
         &self,
         params: UpsertWaitGroupStepParams,

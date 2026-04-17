@@ -20,12 +20,6 @@ mod storage_impl;
 mod table_names;
 mod wait_group_storage_impl;
 
-pub(crate) use admin_storage_impl::AdminStorage;
-pub(crate) use event_storage_impl::EventStorage;
-pub(crate) use execution_storage_impl::ExecutionStorage;
-pub(crate) use step_storage_impl::StepStorage;
-pub(crate) use wait_group_storage_impl::WaitGroupStorage;
-
 use sqlx::PgPool;
 
 pub use table_names::{TableNames, TableNamesError};

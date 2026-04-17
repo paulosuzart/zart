@@ -1,23 +1,13 @@
-//! Event delivery and execution statistics for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`EventRepository`] for [`PostgresScheduler`].
 //!
-//! This module handles delivering external events to waiting executions,
-//! and read-only reporting queries (execution stats).
+//! Covers delivering external events to waiting executions and read-only
+//! execution statistics (a reporting aggregate, not an admin mutation).
 
 use super::PostgresScheduler;
+use crate::repository::EventRepository;
 use crate::{EventDeliveryResult, ExecutionStats, StorageError, TaskMetadata};
 
-pub(crate) trait EventStorage: Sized {
-    async fn deliver_event(
-        &self,
-        execution_id: &str,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<EventDeliveryResult, StorageError>;
-
-    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError>;
-}
-
-impl EventStorage for PostgresScheduler {
+impl EventRepository for PostgresScheduler {
     async fn deliver_event(
         &self,
         execution_id: &str,

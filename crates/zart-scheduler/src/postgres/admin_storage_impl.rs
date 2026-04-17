@@ -1,46 +1,21 @@
-//! Admin operations for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`AdminRepository`] for [`PostgresScheduler`].
 //!
-//! This module handles manual intervention operations: retrying dead steps,
-//! restarting executions, selectively rerunning steps, and resetting execution
-//! runs (the programmatic primitive underlying restart/rerun).
+//! Covers manual intervention operations: retrying dead steps, restarting
+//! executions, selectively rerunning steps, and the `reset_execution` primitive
+//! that underlies restart/rerun.
+//!
+//! Note (spec 0034 Phase 2): the business logic in `admin_retry_step`,
+//! `admin_restart_execution`, and `admin_rerun_steps` will move to
+//! `ExecutionService` in the `zart` crate. Only the SQL primitives will remain.
 
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 
 use super::PostgresScheduler;
+use crate::repository::AdminRepository;
 use crate::{ExecutionStatus, StepStatus, StorageError, TaskMetadata};
 
-pub(crate) trait AdminStorage: Sized {
-    async fn admin_retry_step(
-        &self,
-        run_id: &str,
-        step_name: &str,
-        triggered_by: Option<&str>,
-    ) -> Result<String, StorageError>;
-
-    async fn admin_restart_execution(
-        &self,
-        execution_id: &str,
-        new_payload: Option<serde_json::Value>,
-        triggered_by: Option<&str>,
-    ) -> Result<String, StorageError>;
-
-    async fn admin_rerun_steps(
-        &self,
-        execution_id: &str,
-        force_rerun: &[String],
-        preserve: &[String],
-        triggered_by: Option<&str>,
-    ) -> Result<(String, Vec<String>), StorageError>;
-
-    async fn reset_execution(
-        &self,
-        execution_id: &str,
-        payload: serde_json::Value,
-    ) -> Result<String, StorageError>;
-}
-
-impl AdminStorage for PostgresScheduler {
+impl AdminRepository for PostgresScheduler {
     async fn admin_retry_step(
         &self,
         run_id: &str,

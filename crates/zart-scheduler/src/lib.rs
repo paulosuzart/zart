@@ -21,6 +21,8 @@ pub mod recurrence;
 pub mod task_metadata;
 pub mod types;
 
+pub(crate) mod repository;
+
 pub mod postgres;
 
 pub use error::StorageError;

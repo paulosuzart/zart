@@ -1,78 +1,21 @@
-//! Step lifecycle operations for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`StepRepository`] for [`PostgresScheduler`].
 //!
-//! This module handles scheduling, completing, retrying, and looking up
-//! durable execution steps. It does not handle wait-group coordination
-//! (those live in `wait_group_storage_impl`).
+//! Covers step scheduling, completion, retry rescheduling, and step queries.
+//! Wait-group coordination lives in `wait_group_storage_impl`.
 
 use chrono::Utc;
 use sqlx::PgConnection;
 
 use super::PostgresScheduler;
 use super::sql_helpers::complete_step_and_schedule_body_sql;
+use crate::repository::StepRepository;
 use crate::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
     ScheduleResult, ScheduleStepParams, StepAttemptRow, StepAttemptStatus, StepKind, StepLookup,
     StepResultKind, StepRow, StepStatus, StorageError,
 };
 
-pub(crate) trait StepStorage: Sized {
-    async fn get_step_status(
-        &self,
-        run_id: &str,
-        step_name: &str,
-    ) -> Result<Option<StepLookup>, StorageError>;
-
-    async fn get_step(
-        &self,
-        run_id: &str,
-        step_name: &str,
-    ) -> Result<Option<StepRow>, StorageError>;
-
-    async fn list_steps(&self, run_id: &str) -> Result<Vec<StepRow>, StorageError>;
-
-    async fn schedule_step(
-        &self,
-        params: ScheduleStepParams,
-    ) -> Result<ScheduleResult, StorageError>;
-
-    async fn complete_step_and_schedule_body(
-        &self,
-        params: CompleteStepAndScheduleBodyParams,
-    ) -> Result<(), StorageError>;
-
-    async fn complete_step_and_schedule_body_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        params: CompleteStepAndScheduleBodyParams,
-    ) -> Result<(), StorageError>;
-
-    async fn complete_step_no_resume(
-        &self,
-        params: CompleteStepNoResumeParams,
-    ) -> Result<(), StorageError>;
-
-    async fn reschedule_step_for_retry(
-        &self,
-        params: RescheduleStepForRetryParams,
-    ) -> Result<(), StorageError>;
-
-    async fn insert_completed_step(
-        &self,
-        run_id: &str,
-        step_name: &str,
-        step_kind: StepKind,
-        result: serde_json::Value,
-    ) -> Result<(), StorageError>;
-
-    async fn check_wait_all_children(
-        &self,
-        wait_for_task_ids: &[String],
-    ) -> Result<Vec<(String, serde_json::Value)>, StorageError>;
-
-    async fn list_step_attempts(&self, run_id: &str) -> Result<Vec<StepAttemptRow>, StorageError>;
-}
-
-impl StepStorage for PostgresScheduler {
+impl StepRepository for PostgresScheduler {
     async fn get_step_status(
         &self,
         run_id: &str,

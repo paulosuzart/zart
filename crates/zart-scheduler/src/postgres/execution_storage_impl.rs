@@ -1,64 +1,20 @@
-//! Execution lifecycle operations for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`ExecutionRepository`] for [`PostgresScheduler`].
 //!
-//! This module handles starting, completing, failing, canceling, and listing
-//! durable executions and their runs. It does not handle step-level operations
-//! or wait-group coordination — those live in `step_storage_impl` and
-//! `wait_group_storage_impl`. Admin operations (restart, rerun, retry, reset)
-//! live in `admin_storage_impl`.
+//! Covers execution lifecycle (start, complete, fail, cancel) and run queries.
+//! Step-level operations live in `step_storage_impl`.
+//! Admin operations (restart, rerun, retry, reset) live in `admin_storage_impl`.
 
 use sqlx::PgConnection;
 
 use super::PostgresScheduler;
 use super::sql_helpers::start_execution_sql;
+use crate::repository::ExecutionRepository;
 use crate::{
     ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStatus, ExecutionTrigger,
     ListExecutionsParams, SortOrder, StorageError,
 };
 
-/// Internal extension trait for execution lifecycle operations.
-/// Not part of the public API — used to modularize the DurableStorage impl.
-pub(crate) trait ExecutionStorage: Sized {
-    async fn start_execution(
-        &self,
-        execution_id: &str,
-        task_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), StorageError>;
-
-    async fn start_execution_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        execution_id: &str,
-        task_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), StorageError>;
-
-    async fn complete_execution(
-        &self,
-        execution_id: &str,
-        result: serde_json::Value,
-    ) -> Result<(), StorageError>;
-
-    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError>;
-
-    async fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<ExecutionRecord>, StorageError>;
-
-    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError>;
-
-    async fn list_executions(
-        &self,
-        params: ListExecutionsParams,
-    ) -> Result<Vec<ExecutionRecord>, StorageError>;
-
-    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError>;
-
-    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError>;
-}
-
-impl ExecutionStorage for PostgresScheduler {
+impl ExecutionRepository for PostgresScheduler {
     async fn start_execution(
         &self,
         execution_id: &str,
