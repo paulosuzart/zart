@@ -89,6 +89,54 @@ let scheduler = PostgresScheduler::connect_with_pool(
 
 ---
 
+## Custom Table Names
+
+By default Zart uses `zart_tasks`, `zart_executions`, and the other `zart_*` tables created by the bundled migration. If those names collide with existing tables in your database, or you need multiple logical workers sharing one database (e.g. per-environment isolation), you can override them with `TableNames`.
+
+### Custom prefix
+
+```rust
+use zart_scheduler::{TableNames, PostgresScheduler};
+
+let names = TableNames::with_prefix("myapp_")?;  // → myapp_tasks, myapp_executions, …
+let scheduler = PostgresScheduler::with_table_names(pool, names);
+```
+
+### Schema qualifier
+
+```rust
+let names = TableNames::default().with_schema("tenant_a")?;
+// → "tenant_a"."zart_tasks", "tenant_a"."zart_executions", …
+let scheduler = PostgresScheduler::with_table_names(pool, names);
+```
+
+### Prefix + schema
+
+```rust
+let names = TableNames::with_prefix("svc_")?.with_schema("myschema")?;
+// → "myschema"."svc_tasks", …
+let scheduler = PostgresScheduler::with_table_names(pool, names);
+```
+
+### Environment variables
+
+For CLI or container deployments, `TableNames::from_env_or_default()` reads `ZART_TABLE_PREFIX` and `ZART_SCHEMA`:
+
+```bash
+ZART_TABLE_PREFIX=myapp_ ZART_SCHEMA=tenant_a ./my-worker
+```
+
+```rust
+let names = TableNames::from_env_or_default()?;
+let scheduler = PostgresScheduler::with_table_names(pool, names);
+```
+
+<Aside type="note">
+Custom table names require you to provision the tables externally. You can duplicate the bundled migration SQL with your chosen prefix/schema, or use `CREATE TABLE … LIKE zart_tasks INCLUDING ALL` in a setup script.
+</Aside>
+
+---
+
 ## Graceful Shutdown
 
 All deployment modes support graceful shutdown. When a shutdown signal is received:
