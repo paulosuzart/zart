@@ -1,42 +1,38 @@
 //! Repository trait for admin and run-reset operations.
 //!
-//! Contains manual-intervention mutations (retry, restart, rerun) and the
-//! `reset_execution` primitive that underlies them. Business logic for these
-//! operations lives in the service layer (`zart` crate); this trait provides
-//! only the SQL-level primitives.
-//!
-//! Temporary home: in Phase 2 of spec 0034, the business-logic methods
-//! (`admin_retry_step`, `admin_restart_execution`, `admin_rerun_steps`) move
-//! to `ExecutionService` in the `zart` crate, leaving only `reset_execution`
-//! here (or merged into `ExecutionRepository`).
+//! Provides raw SQL primitives for manual-intervention mutations. Business
+//! logic for these operations (step-status validation, effective-rerun
+//! computation) lives in the service layer (`zart` crate); this trait covers
+//! only the atomically-committed SQL mechanics.
 
 use crate::StorageError;
 
 /// Internal repository for admin intervention and run-reset primitives.
 /// Not part of the public API — used to modularize the `DurableStorage` impl.
 pub(crate) trait AdminRepository: Sized {
-    async fn admin_retry_step(
+    /// Atomically validate a step is `dead`, create a retry task, and reset
+    /// the run to `running`. Corresponds to `DurableStorage::retry_dead_step`.
+    async fn retry_dead_step(
         &self,
         run_id: &str,
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError>;
 
-    async fn admin_restart_execution(
+    /// Archive the current run and start a fresh one with `trigger`.
+    /// Corresponds to `DurableStorage::restart_run`.
+    async fn restart_run(
         &self,
         execution_id: &str,
         new_payload: Option<serde_json::Value>,
+        trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError>;
 
-    async fn admin_rerun_steps(
-        &self,
-        execution_id: &str,
-        force_rerun: &[String],
-        preserve: &[String],
-        triggered_by: Option<&str>,
-    ) -> Result<(String, Vec<String>), StorageError>;
-
+    /// Reset a terminal execution so it can be retried.
+    ///
+    /// Creates a new run at run_index+1, updates `current_run_id`, and returns
+    /// the new `run_id`. Does NOT schedule a body task — the caller does that.
     async fn reset_execution(
         &self,
         execution_id: &str,

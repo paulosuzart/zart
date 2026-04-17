@@ -3,7 +3,9 @@
 //! Scoped to the wait-group columns of `zart_steps` and related task rows.
 //! Raw data access only — no business logic.
 
-use crate::{CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageError, UpsertWaitGroupStepParams};
+use crate::{
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageError, UpsertWaitGroupStepParams,
+};
 
 /// Internal repository for wait-group step coordination.
 /// Not part of the public API — used to modularize the `DurableStorage` impl.

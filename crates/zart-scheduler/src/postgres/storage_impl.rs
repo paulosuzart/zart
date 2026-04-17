@@ -40,7 +40,8 @@ impl DurableStorage for PostgresScheduler {
         task_name: &str,
         payload: serde_json::Value,
     ) -> Result<(), StorageError> {
-        ExecutionRepository::start_execution_in_tx(self, conn, execution_id, task_name, payload).await
+        ExecutionRepository::start_execution_in_tx(self, conn, execution_id, task_name, payload)
+            .await
     }
 
     async fn complete_execution(
@@ -196,33 +197,23 @@ impl DurableStorage for PostgresScheduler {
         StepRepository::insert_completed_step(self, run_id, step_name, step_kind, result).await
     }
 
-    async fn admin_retry_step(
+    async fn retry_dead_step(
         &self,
         run_id: &str,
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        AdminRepository::admin_retry_step(self, run_id, step_name, triggered_by).await
+        AdminRepository::retry_dead_step(self, run_id, step_name, triggered_by).await
     }
 
-    async fn admin_restart_execution(
+    async fn restart_run(
         &self,
         execution_id: &str,
         new_payload: Option<serde_json::Value>,
+        trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        AdminRepository::admin_restart_execution(self, execution_id, new_payload, triggered_by).await
-    }
-
-    async fn admin_rerun_steps(
-        &self,
-        execution_id: &str,
-        force_rerun: &[String],
-        preserve: &[String],
-        triggered_by: Option<&str>,
-    ) -> Result<(String, Vec<String>), StorageError> {
-        AdminRepository::admin_rerun_steps(self, execution_id, force_rerun, preserve, triggered_by)
-            .await
+        AdminRepository::restart_run(self, execution_id, new_payload, trigger, triggered_by).await
     }
 
     async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {

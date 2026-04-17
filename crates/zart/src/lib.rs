@@ -134,6 +134,7 @@ pub mod logging;
 pub mod metrics;
 pub mod registry;
 pub mod retry;
+pub mod service;
 pub mod step_ops;
 pub mod step_types;
 pub mod timeout;
@@ -160,6 +161,7 @@ pub use error::{
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
+pub use service::ExecutionService;
 pub use timeout::TimeoutScope;
 pub use trx_impl::{ZartTrx, trx};
 pub use worker::{Worker, WorkerConfig};

@@ -468,60 +468,51 @@ pub trait DurableStorage: Send + Sync {
 
     /// Retry a single dead step within the current run.
     ///
-    /// Finds the dead step by `run_id` + `step_name`, creates a new task for it
-    /// with `retry_attempt = 0`, and sets the run status back to `running`.
-    /// No new run is started — scoped to the current run.
+    /// Atomically validates the step is in `dead` status, creates a new task
+    /// for it with `retry_attempt = 0`, and sets the run status back to
+    /// `running`. No new run is started — scoped to the current run.
+    ///
+    /// Business orchestration (resolving `run_id` from `execution_id`, etc.)
+    /// lives in the service layer (`zart` crate). This method is the raw
+    /// SQL primitive.
     ///
     /// # Errors
     /// - [`StorageError::StepNotFound`] if no step exists for the given name
     /// - [`StorageError::StepStatusMismatch`] if the step is not in `dead` status
-    async fn admin_retry_step(
+    async fn retry_dead_step(
         &self,
         run_id: &str,
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
         let _ = (run_id, step_name, triggered_by);
-        Err(StorageError::NotImplemented("admin_retry_step"))
+        Err(StorageError::NotImplemented("retry_dead_step"))
     }
 
-    /// Restart an entire execution from scratch.
+    /// Archive the current run and start a fresh one, scheduling a new body task.
     ///
-    /// Archives the current run to `zart_execution_runs` (preserving history),
-    /// creates a new run with `trigger = 'restart'`, and schedules a fresh
-    /// body task at segment 0.
+    /// Used for both "restart from scratch" and "selective rerun" operations.
+    /// The `trigger` parameter is stored in `zart_execution_runs.trigger`
+    /// (`'restart'` or `'selective_rerun'`).
     ///
-    /// If `new_payload` is `Some`, it replaces the execution's payload.
-    /// Returns the new `run_id`.
-    async fn admin_restart_execution(
-        &self,
-        execution_id: &str,
-        new_payload: Option<serde_json::Value>,
-        triggered_by: Option<&str>,
-    ) -> Result<String, StorageError> {
-        let _ = (execution_id, new_payload, triggered_by);
-        Err(StorageError::NotImplemented("admin_restart_execution"))
-    }
-
-    /// Selectively rerun a subset of steps while preserving others.
+    /// If `new_payload` is `Some`, it replaces the execution's payload for the
+    /// new run; otherwise the current payload is carried forward.
     ///
-    /// Archives the current run, starts a new run, and schedules a fresh body
-    /// task. Failed/dead steps are always rerun. `force_rerun` steps are
-    /// rerun even if completed. `preserve` steps are carried forward (ignored
-    /// for failed/dead steps).
+    /// Business logic (computing which steps to rerun, validating state)
+    /// lives in the service layer. This method is the raw SQL primitive.
     ///
     /// # Returns
     ///
-    /// A tuple of `(new_run_id, effective_rerun_steps)`.
-    async fn admin_rerun_steps(
+    /// The new `run_id` (e.g. `"{execution_id}:run:1"`).
+    async fn restart_run(
         &self,
         execution_id: &str,
-        force_rerun: &[String],
-        preserve: &[String],
+        new_payload: Option<serde_json::Value>,
+        trigger: &str,
         triggered_by: Option<&str>,
-    ) -> Result<(String, Vec<String>), StorageError> {
-        let _ = (execution_id, force_rerun, preserve, triggered_by);
-        Err(StorageError::NotImplemented("admin_rerun_steps"))
+    ) -> Result<String, StorageError> {
+        let _ = (execution_id, new_payload, trigger, triggered_by);
+        Err(StorageError::NotImplemented("restart_run"))
     }
 
     /// Count executions grouped by status.
