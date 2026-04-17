@@ -1,18 +1,17 @@
 //! Delegation-only implementation of the [`DurableStorage`] trait for [`PostgresScheduler`].
 //!
 //! Every method delegates to a domain-specific extension trait:
-//! - `ExecutionStorage` for execution lifecycle
-//! - `ExecutionReset` for execution reset/restart
+//! - `ExecutionStorage` for execution lifecycle and run queries
+//! - `AdminStorage` for admin operations (restart, rerun, retry, reset)
 //! - `StepStorage` for step operations
 //! - `WaitGroupStorage` for wait-group coordination
-//! - `EventStorage` for event delivery and admin operations
+//! - `EventStorage` for event delivery and execution statistics
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
 
 use super::{
-    EventStorage, ExecutionReset, ExecutionStorage, PostgresScheduler, StepStorage,
-    WaitGroupStorage,
+    AdminStorage, EventStorage, ExecutionStorage, PostgresScheduler, StepStorage, WaitGroupStorage,
 };
 use crate::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
@@ -87,7 +86,7 @@ impl DurableStorage for PostgresScheduler {
         execution_id: &str,
         payload: serde_json::Value,
     ) -> Result<String, StorageError> {
-        ExecutionReset::reset_execution(self, execution_id, payload).await
+        AdminStorage::reset_execution(self, execution_id, payload).await
     }
 
     async fn get_step_status(
@@ -99,11 +98,11 @@ impl DurableStorage for PostgresScheduler {
     }
 
     async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
-        ExecutionReset::get_current_run_id(self, execution_id).await
+        ExecutionStorage::get_current_run_id(self, execution_id).await
     }
 
     async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
-        ExecutionReset::list_runs(self, execution_id).await
+        ExecutionStorage::list_runs(self, execution_id).await
     }
 
     async fn check_wait_all_children(
@@ -202,7 +201,7 @@ impl DurableStorage for PostgresScheduler {
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        EventStorage::admin_retry_step(self, run_id, step_name, triggered_by).await
+        AdminStorage::admin_retry_step(self, run_id, step_name, triggered_by).await
     }
 
     async fn admin_restart_execution(
@@ -211,7 +210,7 @@ impl DurableStorage for PostgresScheduler {
         new_payload: Option<serde_json::Value>,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        ExecutionReset::admin_restart_execution(self, execution_id, new_payload, triggered_by).await
+        AdminStorage::admin_restart_execution(self, execution_id, new_payload, triggered_by).await
     }
 
     async fn admin_rerun_steps(
@@ -221,7 +220,7 @@ impl DurableStorage for PostgresScheduler {
         preserve: &[String],
         triggered_by: Option<&str>,
     ) -> Result<(String, Vec<String>), StorageError> {
-        ExecutionReset::admin_rerun_steps(self, execution_id, force_rerun, preserve, triggered_by)
+        AdminStorage::admin_rerun_steps(self, execution_id, force_rerun, preserve, triggered_by)
             .await
     }
 

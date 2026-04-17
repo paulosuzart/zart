@@ -1,16 +1,18 @@
 //! Execution lifecycle operations for [`PostgresScheduler`].
 //!
 //! This module handles starting, completing, failing, canceling, and listing
-//! durable executions. It does not handle step-level operations or wait-group
-//! coordination — those live in `step_storage_impl` and `wait_group_storage_impl`.
+//! durable executions and their runs. It does not handle step-level operations
+//! or wait-group coordination — those live in `step_storage_impl` and
+//! `wait_group_storage_impl`. Admin operations (restart, rerun, retry, reset)
+//! live in `admin_storage_impl`.
 
 use sqlx::PgConnection;
 
 use super::PostgresScheduler;
 use super::sql_helpers::start_execution_sql;
 use crate::{
-    ExecutionRecord, ExecutionSortField, ExecutionStatus, ListExecutionsParams, SortOrder,
-    StorageError,
+    ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStatus, ExecutionTrigger,
+    ListExecutionsParams, SortOrder, StorageError,
 };
 
 /// Internal extension trait for execution lifecycle operations.
@@ -50,6 +52,10 @@ pub(crate) trait ExecutionStorage: Sized {
         &self,
         params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, StorageError>;
+
+    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError>;
+
+    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError>;
 }
 
 impl ExecutionStorage for PostgresScheduler {
@@ -313,5 +319,74 @@ impl ExecutionStorage for PostgresScheduler {
                 },
             )
             .collect()
+    }
+
+    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
+        let run_id: Option<String> = sqlx::query_scalar(&format!(
+            r#"
+            SELECT current_run_id FROM {executions} WHERE execution_id = $1
+            "#,
+            executions = self.table_names.executions(),
+        ))
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(run_id)
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+        let rows: Vec<(
+            String,
+            String,
+            i32,
+            serde_json::Value,
+            ExecutionStatus,
+            Option<serde_json::Value>,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            ExecutionTrigger,
+        )> = sqlx::query_as(&format!(
+            r#"
+            SELECT run_id, execution_id, run_index, payload, status,
+                   result, started_at, completed_at, trigger
+            FROM {execution_runs}
+            WHERE execution_id = $1
+            ORDER BY run_index ASC
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(execution_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    run_id,
+                    execution_id,
+                    run_index,
+                    payload,
+                    status,
+                    result,
+                    started_at,
+                    completed_at,
+                    trigger,
+                )| ExecutionRunRecord {
+                    run_id,
+                    execution_id,
+                    run_index,
+                    payload,
+                    status,
+                    result,
+                    started_at,
+                    completed_at,
+                    trigger,
+                },
+            )
+            .collect())
     }
 }

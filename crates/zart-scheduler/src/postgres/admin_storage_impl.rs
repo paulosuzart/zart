@@ -1,27 +1,22 @@
-//! Execution reset and restart operations for [`PostgresScheduler`].
+//! Admin operations for [`PostgresScheduler`].
 //!
-//! This module handles resetting, restarting, and rerunning executions.
-//! It includes admin operations for manual intervention.
+//! This module handles manual intervention operations: retrying dead steps,
+//! restarting executions, selectively rerunning steps, and resetting execution
+//! runs (the programmatic primitive underlying restart/rerun).
 
-use std::collections::HashSet;
+use chrono::Utc;
+use std::collections::{HashMap, HashSet};
 
 use super::PostgresScheduler;
-use crate::{
-    ExecutionRunRecord, ExecutionStatus, ExecutionTrigger, StepStatus, StorageError, TaskMetadata,
-};
+use crate::{ExecutionStatus, StepStatus, StorageError, TaskMetadata};
 
-/// Internal extension trait for execution reset/restart operations.
-/// Not part of the public API — used to modularize the DurableStorage impl.
-pub(crate) trait ExecutionReset: Sized {
-    async fn reset_execution(
+pub(crate) trait AdminStorage: Sized {
+    async fn admin_retry_step(
         &self,
-        execution_id: &str,
-        payload: serde_json::Value,
+        run_id: &str,
+        step_name: &str,
+        triggered_by: Option<&str>,
     ) -> Result<String, StorageError>;
-
-    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError>;
-
-    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError>;
 
     async fn admin_restart_execution(
         &self,
@@ -37,13 +32,20 @@ pub(crate) trait ExecutionReset: Sized {
         preserve: &[String],
         triggered_by: Option<&str>,
     ) -> Result<(String, Vec<String>), StorageError>;
-}
 
-impl ExecutionReset for PostgresScheduler {
     async fn reset_execution(
         &self,
         execution_id: &str,
         payload: serde_json::Value,
+    ) -> Result<String, StorageError>;
+}
+
+impl AdminStorage for PostgresScheduler {
+    async fn admin_retry_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+        _triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
         let mut tx = self
             .pool
@@ -51,48 +53,98 @@ impl ExecutionReset for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let max_index: i32 = sqlx::query_scalar(&format!(
+        let step_row: Option<(String, StepStatus, String)> = sqlx::query_as(&format!(
             r#"
-            SELECT COALESCE(MAX(run_index), -1)
-            FROM {execution_runs}
-            WHERE execution_id = $1
+            SELECT step_id, status, COALESCE(task_id, '')
+            FROM {steps}
+            WHERE run_id = $1 AND step_name = $2
             "#,
-            execution_runs = self.table_names.execution_runs(),
+            steps = self.table_names.steps(),
         ))
-        .bind(execution_id)
-        .fetch_one(&mut *tx)
+        .bind(run_id)
+        .bind(step_name)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let next_index = max_index + 1;
-        let new_run_id = format!("{execution_id}:run:{next_index}");
+        let (step_id, current_status, old_task_id) = match step_row {
+            None => {
+                return Err(StorageError::StepNotFound(step_name.to_string()));
+            }
+            Some(row) => row,
+        };
 
+        if current_status != StepStatus::Dead {
+            return Err(StorageError::StepStatusMismatch {
+                step: step_name.to_string(),
+                actual: format!("{current_status:?}"),
+                expected: "Dead".to_string(),
+            });
+        }
+
+        let task_metadata: serde_json::Value = if old_task_id.is_empty() {
+            serde_json::json!({})
+        } else {
+            let meta_opt: Option<Option<serde_json::Value>> = sqlx::query_scalar(&format!(
+                r#"
+                SELECT metadata FROM {tasks} WHERE task_id = $1
+                "#,
+                tasks = self.table_names.tasks(),
+            ))
+            .bind(&old_task_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+            let mut meta = meta_opt.flatten().unwrap_or_else(|| serde_json::json!({}));
+            if let Some(obj) = meta.as_object_mut() {
+                obj.remove("deadline");
+            }
+            meta
+        };
+
+        let new_task_id = format!(
+            "{run_id}:step:retry:{step_name}:{}",
+            Utc::now().timestamp_millis()
+        );
         sqlx::query(&format!(
             r#"
-            INSERT INTO {execution_runs}
-                (run_id, execution_id, run_index, payload, trigger)
-            VALUES ($1, $2, $3, $4, 'restart')
+            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata, status, attempt)
+            SELECT $1, t.task_name, NOW(), t.data, $2, 'scheduled', 0
+            FROM {tasks} t
+            WHERE t.task_id = $3
             "#,
-            execution_runs = self.table_names.execution_runs(),
+            tasks = self.table_names.tasks(),
         ))
-        .bind(&new_run_id)
-        .bind(execution_id)
-        .bind(next_index)
-        .bind(&payload)
+        .bind(&new_task_id)
+        .bind(&task_metadata)
+        .bind(&old_task_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         sqlx::query(&format!(
             r#"
-            UPDATE {executions}
-            SET current_run_id = $1
-            WHERE execution_id = $2
+            UPDATE {steps}
+            SET status = 'scheduled', task_id = $1, retry_attempt = 0, last_error = NULL, completed_at = NULL
+            WHERE step_id = $2
             "#,
-            executions = self.table_names.executions(),
+            steps = self.table_names.steps(),
         ))
-        .bind(&new_run_id)
-        .bind(execution_id)
+        .bind(&new_task_id)
+        .bind(&step_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(&format!(
+            r#"
+            UPDATE {execution_runs}
+            SET status = 'running', completed_at = NULL
+            WHERE run_id = $1
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(run_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
@@ -100,76 +152,8 @@ impl ExecutionReset for PostgresScheduler {
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(new_run_id)
-    }
 
-    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
-        let run_id: Option<String> = sqlx::query_scalar(&format!(
-            r#"
-            SELECT current_run_id FROM {executions} WHERE execution_id = $1
-            "#,
-            executions = self.table_names.executions(),
-        ))
-        .bind(execution_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(run_id)
-    }
-
-    #[allow(clippy::type_complexity)]
-    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
-        let rows: Vec<(
-            String,
-            String,
-            i32,
-            serde_json::Value,
-            ExecutionStatus,
-            Option<serde_json::Value>,
-            chrono::DateTime<chrono::Utc>,
-            Option<chrono::DateTime<chrono::Utc>>,
-            ExecutionTrigger,
-        )> = sqlx::query_as(&format!(
-            r#"
-            SELECT run_id, execution_id, run_index, payload, status,
-                   result, started_at, completed_at, trigger
-            FROM {execution_runs}
-            WHERE execution_id = $1
-            ORDER BY run_index ASC
-            "#,
-            execution_runs = self.table_names.execution_runs(),
-        ))
-        .bind(execution_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    run_id,
-                    execution_id,
-                    run_index,
-                    payload,
-                    status,
-                    result,
-                    started_at,
-                    completed_at,
-                    trigger,
-                )| ExecutionRunRecord {
-                    run_id,
-                    execution_id,
-                    run_index,
-                    payload,
-                    status,
-                    result,
-                    started_at,
-                    completed_at,
-                    trigger,
-                },
-            )
-            .collect())
+        Ok(new_task_id)
     }
 
     async fn admin_restart_execution(
@@ -457,7 +441,6 @@ impl ExecutionReset for PostgresScheduler {
         }
 
         let preserve_set: HashSet<&str> = preserve.iter().map(|s| s.as_str()).collect();
-        use std::collections::HashMap;
         let step_status_map: HashMap<&str, StepStatus> = steps
             .iter()
             .map(|(name, status)| (name.as_str(), status.clone()))
@@ -539,5 +522,68 @@ impl ExecutionReset for PostgresScheduler {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         Ok((new_run_id, effective_rerun.into_iter().collect()))
+    }
+
+    async fn reset_execution(
+        &self,
+        execution_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<String, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let max_index: i32 = sqlx::query_scalar(&format!(
+            r#"
+            SELECT COALESCE(MAX(run_index), -1)
+            FROM {execution_runs}
+            WHERE execution_id = $1
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let next_index = max_index + 1;
+        let new_run_id = format!("{execution_id}:run:{next_index}");
+
+        sqlx::query(&format!(
+            r#"
+            INSERT INTO {execution_runs}
+                (run_id, execution_id, run_index, payload, trigger)
+            VALUES ($1, $2, $3, $4, 'restart')
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .bind(next_index)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(&format!(
+            r#"
+            UPDATE {executions}
+            SET current_run_id = $1
+            WHERE execution_id = $2
+            "#,
+            executions = self.table_names.executions(),
+        ))
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(new_run_id)
     }
 }

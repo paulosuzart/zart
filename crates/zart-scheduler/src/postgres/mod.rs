@@ -9,8 +9,8 @@
 //! Call `PostgresScheduler::run_migrations` (or `just migrate`) once before
 //! starting workers. It applies the embedded SQL files under `migrations/`.
 
+mod admin_storage_impl;
 mod event_storage_impl;
-mod execution_reset_impl;
 mod execution_storage_impl;
 mod pause_storage_impl;
 mod scheduler_impl;
@@ -20,8 +20,8 @@ mod storage_impl;
 mod table_names;
 mod wait_group_storage_impl;
 
+pub(crate) use admin_storage_impl::AdminStorage;
 pub(crate) use event_storage_impl::EventStorage;
-pub(crate) use execution_reset_impl::ExecutionReset;
 pub(crate) use execution_storage_impl::ExecutionStorage;
 pub(crate) use step_storage_impl::StepStorage;
 pub(crate) use wait_group_storage_impl::WaitGroupStorage;
