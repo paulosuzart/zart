@@ -238,4 +238,126 @@ mod postgres_tests {
 
         cleanup(&pool, &[task_id.as_str()]).await;
     }
+
+    /// Create custom-prefixed tables by copying the structure of the default ones.
+    ///
+    /// Always drops then recreates so stale tables from a previous failed run
+    /// can't leave behind an incorrect schema (e.g. missing PK constraints).
+    async fn setup_custom_tables(pool: &PgPool, prefix: &str) {
+        // Drop in FK-safe reverse order first.
+        drop_custom_tables(pool, prefix).await;
+
+        // Create in FK-safe forward order.
+        let tables = [
+            "tasks",
+            "executions",
+            "execution_runs",
+            "steps",
+            "step_attempts",
+        ];
+        for base in &tables {
+            let custom = format!("{prefix}{base}");
+            let zart = format!("zart_{base}");
+            // INCLUDING ALL copies column defaults, check constraints, indexes
+            // (including PK/unique), and storage parameters — but NOT FK constraints,
+            // which is fine since our queries don't rely on cross-table FKs at test time.
+            sqlx::query(&format!(
+                "CREATE TABLE {custom} (LIKE {zart} INCLUDING ALL)"
+            ))
+            .execute(pool)
+            .await
+            .unwrap_or_else(|e| panic!("failed to create table {custom}: {e}"));
+        }
+    }
+
+    async fn drop_custom_tables(pool: &PgPool, prefix: &str) {
+        // Drop in reverse FK order.
+        let tables = [
+            "step_attempts",
+            "steps",
+            "execution_runs",
+            "executions",
+            "tasks",
+        ];
+        for base in &tables {
+            let custom = format!("{prefix}{base}");
+            sqlx::query(&format!("DROP TABLE IF EXISTS {custom} CASCADE"))
+                .execute(pool)
+                .await
+                .ok();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn postgres_custom_prefix_schedule_and_poll() {
+        let pool = PgPool::connect(&pg_url())
+            .await
+            .expect("failed to connect to PostgreSQL");
+
+        // Run default migrations to ensure zart_* tables and ENUMs exist.
+        let default_scheduler = PostgresScheduler::new(pool.clone());
+        default_scheduler
+            .run_migrations()
+            .await
+            .expect("migrations failed");
+
+        // Create custom-prefixed tables for this test.
+        let prefix = "custtest_";
+        setup_custom_tables(&pool, prefix).await;
+
+        let names = zart_scheduler::TableNames::with_prefix(prefix).expect("with_prefix failed");
+        let scheduler = PostgresScheduler::with_table_names(pool.clone(), names);
+
+        let task_id = format!("custom-prefix-{}", Uuid::new_v4());
+
+        // Schedule using the custom-prefixed scheduler.
+        let result = scheduler
+            .schedule_now(&task_id, "custom-test-task", serde_json::json!({"x": 1}))
+            .await
+            .expect("schedule_now failed");
+
+        assert_eq!(result.task_id, task_id);
+
+        // Verify the task is NOT in the default zart_tasks table.
+        let in_default: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM zart_tasks WHERE task_id = $1")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query failed");
+        assert_eq!(in_default, 0, "task should NOT be in zart_tasks");
+
+        // Verify the task IS in the custom table.
+        let in_custom: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {prefix}tasks WHERE task_id = $1"
+        ))
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .expect("query failed");
+        assert_eq!(in_custom, 1, "task should be in {prefix}tasks");
+
+        // Poll and complete.
+        let tasks = scheduler
+            .poll_due(chrono::Utc::now(), 100)
+            .await
+            .expect("poll_due failed");
+
+        let fetched = tasks
+            .iter()
+            .find(|t| t.task_id == task_id)
+            .expect("scheduled task not returned by poll_due");
+
+        scheduler
+            .mark_completed(
+                &task_id,
+                Some(serde_json::json!("done")),
+                &fetched.lock_token,
+            )
+            .await
+            .expect("mark_completed failed");
+
+        drop_custom_tables(&pool, prefix).await;
+    }
 }

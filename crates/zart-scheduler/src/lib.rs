@@ -36,7 +36,7 @@ pub use types::{
     UpsertWaitGroupStepParams,
 };
 
-pub use postgres::PostgresScheduler;
+pub use postgres::{PostgresScheduler, TableNames, TableNamesError};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

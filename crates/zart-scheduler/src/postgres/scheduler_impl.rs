@@ -38,7 +38,7 @@ impl Scheduler for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let result = schedule_at_sql(&mut tx, &params).await?;
+        let result = schedule_at_sql(&mut tx, &params, &self.table_names).await?;
 
         tx.commit()
             .await
@@ -54,7 +54,7 @@ impl Scheduler for PostgresScheduler {
         conn: &mut PgConnection,
         params: ScheduleAtParams,
     ) -> Result<ScheduleResult, StorageError> {
-        schedule_at_sql(conn, &params).await
+        schedule_at_sql(conn, &params, &self.table_names).await
     }
 
     async fn poll_due(
@@ -77,17 +77,18 @@ impl Scheduler for PostgresScheduler {
             i32,
             Option<serde_json::Value>,
             serde_json::Value,
-        )> = sqlx::query_as(
+        )> = sqlx::query_as(&format!(
             r#"
                 SELECT task_id, task_name, data, state, attempt, recurrence, metadata
-                FROM zart_tasks
+                FROM {tasks}
                 WHERE status = 'scheduled'
                   AND execution_time <= $1
                 ORDER BY execution_time ASC
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
                 "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(now)
         .bind(limit as i64)
         .fetch_all(&mut *tx)
@@ -107,9 +108,9 @@ impl Scheduler for PostgresScheduler {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
-            sqlx::query(
+            sqlx::query(&format!(
                 r#"
-                UPDATE zart_tasks
+                UPDATE {tasks}
                 SET status     = 'picked_up',
                     locked_at  = NOW(),
                     worker_id  = $1,
@@ -117,7 +118,8 @@ impl Scheduler for PostgresScheduler {
                     updated_at = NOW()
                 WHERE task_id = $2
                 "#,
-            )
+                tasks = self.table_names.tasks(),
+            ))
             .bind(&lock_token)
             .bind(&task_id)
             .execute(&mut *tx)
@@ -153,9 +155,9 @@ impl Scheduler for PostgresScheduler {
         next_execution_time: DateTime<Utc>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
-        let rows_affected = sqlx::query(
+        let rows_affected = sqlx::query(&format!(
             r#"
-            UPDATE zart_tasks
+            UPDATE {tasks}
             SET state          = $1,
                 execution_time = $2,
                 status         = 'scheduled',
@@ -165,7 +167,8 @@ impl Scheduler for PostgresScheduler {
             WHERE task_id  = $3
               AND worker_id = $4
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(&state)
         .bind(next_execution_time)
         .bind(task_id)
@@ -187,9 +190,9 @@ impl Scheduler for PostgresScheduler {
         result: Option<serde_json::Value>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
-        let rows_affected = sqlx::query(
+        let rows_affected = sqlx::query(&format!(
             r#"
-            UPDATE zart_tasks
+            UPDATE {tasks}
             SET status       = 'completed',
                 result       = $1,
                 completed_at = NOW(),
@@ -199,7 +202,8 @@ impl Scheduler for PostgresScheduler {
             WHERE task_id  = $2
               AND worker_id = $3
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(&result)
         .bind(task_id)
         .bind(lock_token)
@@ -227,9 +231,9 @@ impl Scheduler for PostgresScheduler {
         };
 
         let rows_affected = if let Some(t) = exec_time {
-            sqlx::query(
+            sqlx::query(&format!(
                 r#"
-                UPDATE zart_tasks
+                UPDATE {tasks}
                 SET status         = $1,
                     last_error     = $2,
                     execution_time = $3,
@@ -239,7 +243,8 @@ impl Scheduler for PostgresScheduler {
                 WHERE task_id  = $4
                   AND worker_id = $5
                 "#,
-            )
+                tasks = self.table_names.tasks(),
+            ))
             .bind(new_status)
             .bind(error)
             .bind(t)
@@ -250,9 +255,9 @@ impl Scheduler for PostgresScheduler {
             .map_err(|e| StorageError::Database(Box::new(e)))?
             .rows_affected()
         } else {
-            sqlx::query(
+            sqlx::query(&format!(
                 r#"
-                UPDATE zart_tasks
+                UPDATE {tasks}
                 SET status     = $1,
                     last_error = $2,
                     locked_at  = NULL,
@@ -261,7 +266,8 @@ impl Scheduler for PostgresScheduler {
                 WHERE task_id  = $3
                   AND worker_id = $4
                 "#,
-            )
+                tasks = self.table_names.tasks(),
+            ))
             .bind(new_status)
             .bind(error)
             .bind(task_id)
@@ -279,13 +285,14 @@ impl Scheduler for PostgresScheduler {
     }
 
     async fn cancel_task(&self, task_id: &str) -> Result<bool, StorageError> {
-        let rows_affected = sqlx::query(
+        let rows_affected = sqlx::query(&format!(
             r#"
-            UPDATE zart_tasks
+            UPDATE {tasks}
             SET status = 'cancelled', updated_at = NOW()
             WHERE task_id = $1 AND status = 'scheduled'
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(task_id)
         .execute(&self.pool)
         .await
@@ -296,11 +303,14 @@ impl Scheduler for PostgresScheduler {
     }
 
     async fn delete_task(&self, task_id: &str) -> Result<(), StorageError> {
-        sqlx::query("DELETE FROM zart_tasks WHERE task_id = $1")
-            .bind(task_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        sqlx::query(&format!(
+            "DELETE FROM {tasks} WHERE task_id = $1",
+            tasks = self.table_names.tasks(),
+        ))
+        .bind(task_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
     }
 
@@ -318,9 +328,9 @@ impl Scheduler for PostgresScheduler {
         let threshold = Utc::now()
             - chrono::Duration::from_std(stale_timeout).unwrap_or(chrono::Duration::seconds(300));
 
-        let result = sqlx::query(
+        let result = sqlx::query(&format!(
             r#"
-            UPDATE zart_tasks
+            UPDATE {tasks}
             SET status     = 'scheduled',
                 locked_at  = NULL,
                 worker_id  = NULL,
@@ -328,7 +338,8 @@ impl Scheduler for PostgresScheduler {
             WHERE status    = 'picked_up'
               AND locked_at < $1
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(threshold)
         .execute(&self.pool)
         .await
@@ -338,16 +349,17 @@ impl Scheduler for PostgresScheduler {
     }
 
     async fn renew_lease(&self, task_id: &str, lock_token: &str) -> Result<bool, StorageError> {
-        let rows_affected = sqlx::query(
+        let rows_affected = sqlx::query(&format!(
             r#"
-            UPDATE zart_tasks
+            UPDATE {tasks}
             SET locked_at  = NOW(),
                 updated_at = NOW()
             WHERE task_id   = $1
               AND worker_id = $2
               AND status    = 'picked_up'
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(task_id)
         .bind(lock_token)
         .execute(&self.pool)
@@ -368,9 +380,9 @@ impl Scheduler for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"
-            UPDATE zart_tasks
+            UPDATE {tasks}
             SET status       = 'completed',
                 result       = $1,
                 completed_at = NOW(),
@@ -380,7 +392,8 @@ impl Scheduler for PostgresScheduler {
             WHERE task_id   = $2
               AND worker_id = $3
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(&params.result)
         .bind(&params.completed_task_id)
         .bind(&params.lock_token)
@@ -396,14 +409,15 @@ impl Scheduler for PostgresScheduler {
             return Err(StorageError::LockMismatch(params.completed_task_id));
         }
 
-        sqlx::query(
+        sqlx::query(&format!(
             r#"
-            INSERT INTO zart_tasks
+            INSERT INTO {tasks}
                 (task_id, task_name, execution_time, data, metadata)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (task_id) DO NOTHING
             "#,
-        )
+            tasks = self.table_names.tasks(),
+        ))
         .bind(&params.new_task_id)
         .bind(&params.new_task_name)
         .bind(params.new_execution_time)
