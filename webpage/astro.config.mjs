@@ -8,6 +8,7 @@ export default defineConfig({
     starlight({
       components: {
         Banner: "./src/components/DevBanner.astro",
+        Head: "./src/components/CustomHead.astro",
       },
       title: "Zart",
       description:
