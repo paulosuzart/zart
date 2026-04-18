@@ -321,7 +321,7 @@ impl<T: ExecutionStore + StepStore + WaitGroupStore + EventStore + Send + Sync> 
 /// - [`StepStore`] — step scheduling, completion, and query
 /// - [`WaitGroupStore`] — wait-group coordination
 /// - [`EventStore`] — event delivery and statistics
-/// - [`PauseStorage`](crate::pause_storage::PauseStorage) — pause rules
+/// - [`PauseStorage`] — pause rules
 pub trait StorageBackend:
     TaskScheduler
     + ExecutionStore

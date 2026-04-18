@@ -10,8 +10,8 @@
 //! | [`WaitGroupStore`] | Wait-group coordination |
 //! | [`EventStore`] | External event delivery and execution statistics |
 //!
-//! [`StorageBackend`] composes all five plus
-//! [`PauseStorage`](crate::pause_storage::PauseStorage) into a single blanket
+//! [`crate::StorageBackend`] composes all five plus
+//! [`crate::pause_storage::PauseStorage`] into a single blanket
 //! trait usable as `Arc<dyn StorageBackend>`.
 //!
 //! # Deprecation note
@@ -40,9 +40,8 @@ use crate::types::{
 
 /// Task-queue operations: schedule, poll, and lifecycle management.
 ///
-/// Replaces [`Scheduler`](crate::Scheduler). Implement this trait; the blanket
-/// in [`Scheduler`] means existing code using `dyn Scheduler` continues to work
-/// without any changes.
+/// Replaces the deprecated `Scheduler` trait. Existing code using `dyn Scheduler`
+/// continues to work via the blanket impl in `lib.rs`.
 #[async_trait]
 pub trait TaskScheduler: Send + Sync {
     /// Schedule a task for immediate execution.

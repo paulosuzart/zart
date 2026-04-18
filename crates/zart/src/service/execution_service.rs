@@ -35,14 +35,14 @@ impl ExecutionService {
 
     /// Retry a single dead step within the given run.
     ///
-    /// Delegates to [`StorageBackend::retry_dead_step`] after resolving any
+    /// Delegates to [`zart_scheduler::ExecutionStore::retry_dead_step`] after resolving any
     /// run-level concerns. Returns the new task ID for the retried step.
     ///
     /// # Errors
     ///
-    /// - [`SchedulerError::Database`] wrapping [`StorageError::StepNotFound`]
+    /// - [`SchedulerError::Database`] wrapping `StorageError::StepNotFound`
     ///   if no step exists with the given name.
-    /// - [`SchedulerError::Database`] wrapping [`StorageError::StepStatusMismatch`]
+    /// - [`SchedulerError::Database`] wrapping `StorageError::StepStatusMismatch`
     ///   if the step is not in `dead` status.
     pub async fn retry_step(
         &self,
@@ -103,7 +103,7 @@ impl ExecutionService {
     /// - Steps in `spec.preserve` that are `completed` are carried forward.
     ///
     /// After computing the effective-rerun set the method calls
-    /// [`StorageBackend::restart_run`] with `trigger = 'selective_rerun'`.
+    /// [`zart_scheduler::ExecutionStore::restart_run`] with `trigger = 'selective_rerun'`.
     ///
     /// # Returns
     ///

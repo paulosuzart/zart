@@ -585,8 +585,8 @@ impl DurableScheduler {
     ///
     /// # Errors
     ///
-    /// - [`SchedulerError::Database`] wrapping [`StorageError::StepNotFound`] if the step doesn't exist
-    /// - [`SchedulerError::Database`] wrapping [`StorageError::StepStatusMismatch`] if not dead
+    /// - [`SchedulerError::Database`] wrapping `StorageError::StepNotFound` if the step doesn't exist
+    /// - [`SchedulerError::Database`] wrapping `StorageError::StepStatusMismatch` if not dead
     /// - [`SchedulerError::Database`] if the storage backend fails
     pub async fn retry_step(
         &self,
