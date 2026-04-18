@@ -1,6 +1,6 @@
 ---
 title: Durable Execution
-description: The core concept — what durable execution is, how to trigger workflows, and how to wait for results.
+description: The core concept — what durable execution is, how to trigger workflows, and an overview of the Rust API layers.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -20,6 +20,99 @@ Restart → Step 1 is SKIPPED (cached)
         → Step 2 is SKIPPED (cached)
         → Step 3 runs → done
 ```
+
+## The Rust API Layers
+
+Zart's Rust API is organized into three layers that build on each other. You can use all three together, or drop down to a lower layer when you need more control.
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Macro Layer       #[zart_durable]  #[zart_step]               │
+│  (zart-macros)     Ergonomic async fn → DurableExecution       │
+│                      Standalone step functions                 │
+├────────────────────────────────────────────────────────────────┤
+│  Free Functions    zart::step  zart::schedule  zart::wait      │
+│  (zart)            zart::sleep  zart::wait_for_event  …        │
+│                    All workflow operations — no ctx threading   │
+├────────────────────────────────────────────────────────────────┤
+│  Scheduler Layer   Scheduler  DurableScheduler  Worker         │
+│  (zart + backend)  PostgreSQL polling via SKIP LOCKED          │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Scheduler Layer
+Responsible for persisting and claiming executions. Implements `SKIP LOCKED` polling so multiple workers can run concurrently without coordination.
+
+| Type | Role |
+|---|---|
+| `Scheduler` | Trait — poll for due tasks, mark complete/failed |
+| `DurableScheduler` | Trait — schedule new executions, deliver events |
+| `PostgresScheduler` | Concrete — PostgreSQL backend |
+| `Worker` | Drives the poll loop, dispatches to `TaskRegistry` |
+
+### Free Functions Layer
+All user-facing workflow operations are free functions under the `zart::` namespace. There is no `ctx` to thread through your code — the framework uses task-local storage to make the current execution context available wherever you are in the call stack.
+
+### Macro Layer
+Optional. The `zart-macros` crate provides proc-macros that transform an ordinary `async fn` into a full `DurableExecution` implementation, removing the boilerplate of the trait impl.
+
+| Macro | Purpose |
+|---|---|
+| `#[zart_durable]` | Marks an async fn as a durable workflow |
+| `#[zart_step]` | Turns an async fn into a step struct with `impl ZartStep` |
+
+## Quick Example
+
+```rust
+use zart::prelude::*;
+use zart::{zart_durable, zart_step};
+
+// One attribute turns a plain async fn into a durable step.
+#[zart_step("send-email", retry = "exponential(3, 2s)")]
+async fn send_email(email: &str) -> Result<(), StepError> {
+    mailer.send(email, "Welcome!").await
+}
+
+#[zart_step("setup-billing")]
+async fn setup_billing(email: &str) -> Result<String, StepError> {
+    billing.create_customer(email).await
+}
+
+// The workflow body looks like ordinary async Rust.
+// Every .await? is a durable checkpoint — results are persisted,
+// and a crashed process resumes exactly where it left off.
+#[zart_durable("onboarding", timeout = "10m")]
+async fn onboarding(data: OnboardingData) -> Result<(), TaskError> {
+    send_email(&data.email).await?;        // durable, with retries
+    setup_billing(&data.email).await?;    // durable
+    Ok(())
+}
+```
+
+No new invocation syntax, no context objects to thread through your code. `send_email` and `setup_billing` look and feel like plain async functions — they just happen to be durable. Add `#[zart_step]`, call them normally, and Zart handles persistence, replay, and retries.
+
+```rust
+// Register and start a worker
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let scheduler = PostgresScheduler::connect(&std::env::var("DATABASE_URL")?).await?;
+
+    let mut registry = TaskRegistry::new();
+    registry.register("onboarding", Onboarding);
+
+    let worker = Worker::new(scheduler.clone(), registry, WorkerConfig::default());
+
+    // Schedule an execution
+    DurableScheduler::start_for::<Onboarding>(&scheduler, "run-1", "onboarding", &OnboardingData { /* ... */ }).await?;
+
+    // Run the worker (blocks until shutdown signal)
+    worker.run().await
+}
+```
+
+<Aside type="tip">
+In most applications the scheduler is shared via `Arc<dyn DurableScheduler>` so both the web server (scheduling) and the worker (executing) share the same instance.
+</Aside>
 
 ## How to Trigger a Workflow
 
@@ -147,3 +240,5 @@ let output: OnboardingOutput = durable
 - [**Steps**](/concepts/steps/) — define and compose durable work
 - [**Flow Control**](/concepts/flow-control/) — parallel steps, sleeps, and events
 - [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
+
+
