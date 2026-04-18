@@ -1,14 +1,16 @@
-//! PostgreSQL implementation of [`ExecutionRepository`] for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`ExecutionRepository`] and [`ExecutionStore`] for [`PostgresScheduler`].
 //!
 //! Covers execution lifecycle (start, complete, fail, cancel) and run queries.
 //! Step-level operations live in `step_storage_impl`.
 //! Admin operations (restart, rerun, retry, reset) live in `admin_storage_impl`.
 
+use async_trait::async_trait;
 use sqlx::PgConnection;
 
 use super::PostgresScheduler;
 use super::sql_helpers::start_execution_sql;
-use crate::repository::ExecutionRepository;
+use crate::repository::{AdminRepository, ExecutionRepository};
+use crate::store::ExecutionStore;
 use crate::{
     ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStatus, ExecutionTrigger,
     ListExecutionsParams, SortOrder, StorageError,
@@ -344,5 +346,95 @@ impl ExecutionRepository for PostgresScheduler {
                 },
             )
             .collect())
+    }
+}
+
+// ── ExecutionStore ────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl ExecutionStore for PostgresScheduler {
+    async fn start_execution(
+        &self,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        ExecutionRepository::start_execution(self, execution_id, task_name, payload).await
+    }
+
+    async fn start_execution_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        execution_id: &str,
+        task_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        ExecutionRepository::start_execution_in_tx(self, conn, execution_id, task_name, payload)
+            .await
+    }
+
+    async fn complete_execution(
+        &self,
+        execution_id: &str,
+        result: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        ExecutionRepository::complete_execution(self, execution_id, result).await
+    }
+
+    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
+        ExecutionRepository::fail_execution(self, execution_id).await
+    }
+
+    async fn get_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<ExecutionRecord>, StorageError> {
+        ExecutionRepository::get_execution(self, execution_id).await
+    }
+
+    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
+        ExecutionRepository::cancel_execution(self, execution_id).await
+    }
+
+    async fn list_executions(
+        &self,
+        params: ListExecutionsParams,
+    ) -> Result<Vec<ExecutionRecord>, StorageError> {
+        ExecutionRepository::list_executions(self, params).await
+    }
+
+    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
+        ExecutionRepository::get_current_run_id(self, execution_id).await
+    }
+
+    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+        ExecutionRepository::list_runs(self, execution_id).await
+    }
+
+    async fn reset_execution(
+        &self,
+        execution_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<String, StorageError> {
+        AdminRepository::reset_execution(self, execution_id, payload).await
+    }
+
+    async fn retry_dead_step(
+        &self,
+        run_id: &str,
+        step_name: &str,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        AdminRepository::retry_dead_step(self, run_id, step_name, triggered_by).await
+    }
+
+    async fn restart_run(
+        &self,
+        execution_id: &str,
+        new_payload: Option<serde_json::Value>,
+        trigger: &str,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        AdminRepository::restart_run(self, execution_id, new_payload, trigger, triggered_by).await
     }
 }

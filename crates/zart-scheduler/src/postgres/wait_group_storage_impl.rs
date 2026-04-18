@@ -1,11 +1,14 @@
-//! PostgreSQL implementation of [`WaitGroupRepository`] for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`WaitGroupRepository`] and [`WaitGroupStore`] for [`PostgresScheduler`].
 //!
 //! Covers upserting wait-group steps, completing/failing children, and
 //! recovering orphaned groups. Step-level operations (schedule, complete)
 //! live in `step_storage_impl`.
 
+use async_trait::async_trait;
+
 use super::PostgresScheduler;
 use crate::repository::WaitGroupRepository;
+use crate::store::WaitGroupStore;
 use crate::{
     CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageError, TaskMetadata,
     UpsertWaitGroupStepParams,
@@ -302,5 +305,35 @@ impl WaitGroupRepository for PostgresScheduler {
         }
 
         Ok(recovered)
+    }
+}
+
+// ── WaitGroupStore ────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl WaitGroupStore for PostgresScheduler {
+    async fn upsert_wait_group_step(
+        &self,
+        params: UpsertWaitGroupStepParams,
+    ) -> Result<(), StorageError> {
+        WaitGroupRepository::upsert_wait_group_step(self, params).await
+    }
+
+    async fn complete_wait_group_child(
+        &self,
+        params: CompleteWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        WaitGroupRepository::complete_wait_group_child(self, params).await
+    }
+
+    async fn fail_wait_group_child(
+        &self,
+        params: FailWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        WaitGroupRepository::fail_wait_group_child(self, params).await
+    }
+
+    async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
+        WaitGroupRepository::recover_wait_group_orphans(self).await
     }
 }

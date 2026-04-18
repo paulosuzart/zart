@@ -16,7 +16,6 @@ mod pause_storage_impl;
 mod scheduler_impl;
 mod sql_helpers;
 mod step_storage_impl;
-mod storage_impl;
 mod table_names;
 mod wait_group_storage_impl;
 

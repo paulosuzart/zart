@@ -1,10 +1,13 @@
-//! PostgreSQL implementation of [`EventRepository`] for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`EventRepository`] and [`EventStore`] for [`PostgresScheduler`].
 //!
 //! Covers delivering external events to waiting executions and read-only
 //! execution statistics (a reporting aggregate, not an admin mutation).
 
+use async_trait::async_trait;
+
 use super::PostgresScheduler;
 use crate::repository::EventRepository;
+use crate::store::EventStore;
 use crate::{EventDeliveryResult, ExecutionStats, StorageError, TaskMetadata};
 
 impl EventRepository for PostgresScheduler {
@@ -173,5 +176,23 @@ impl EventRepository for PostgresScheduler {
             failed: row.3,
             cancelled: row.4,
         })
+    }
+}
+
+// ── EventStore ────────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl EventStore for PostgresScheduler {
+    async fn deliver_event(
+        &self,
+        execution_id: &str,
+        event_name: &str,
+        payload: serde_json::Value,
+    ) -> Result<EventDeliveryResult, StorageError> {
+        EventRepository::deliver_event(self, execution_id, event_name, payload).await
+    }
+
+    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+        EventRepository::execution_stats(self).await
     }
 }

@@ -125,7 +125,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresScheduler::new(pool.clone()));
-    sched.run_migrations().await?;
 
     // Use with_pause so we can demo pause/resume too.
     let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));

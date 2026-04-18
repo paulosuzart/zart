@@ -5,8 +5,8 @@ use uuid::Uuid;
 use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
 use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
 use zart_scheduler::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
-    TaskMetadata, UpsertWaitGroupStepParams,
+    CompleteWaitGroupChildParams, EventStore as _, FailWaitGroupChildParams, ScheduleStepParams,
+    StepKind, StepStore as _, TaskMetadata, UpsertWaitGroupStepParams, WaitGroupStore as _,
 };
 
 #[tokio::test]

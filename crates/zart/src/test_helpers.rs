@@ -12,12 +12,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use zart_scheduler::pause_storage::PauseStorage;
 use zart_scheduler::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-    CompleteWaitGroupChildParams, DurableStorage, FailWaitGroupChildParams, FetchedTask,
-    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams, Scheduler,
-    StepKind, StepLookup, StepResultKind, StorageError, TaskMetadata, TaskStatus,
-    UpsertWaitGroupStepParams,
+    CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
+    ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
+    ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
+    ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepResultKind, StepRow, StepStore,
+    StorageError, TaskMetadata, TaskScheduler, TaskStatus, UpsertWaitGroupStepParams,
+    WaitGroupStore,
 };
 
 // ── Recorded call enum ─────────────────────────────────────────────────────────
@@ -143,10 +146,10 @@ impl RecordingSchedulerBuilder {
     }
 }
 
-// ── Scheduler impl ─────────────────────────────────────────────────────────────
+// ── TaskScheduler impl ────────────────────────────────────────────────────────
 
 #[async_trait]
-impl Scheduler for RecordingScheduler {
+impl TaskScheduler for RecordingScheduler {
     async fn schedule_now(
         &self,
         task_id: &str,
@@ -237,43 +240,85 @@ impl Scheduler for RecordingScheduler {
     }
 }
 
-// ── DurableStorage impl ─────────────────────────────────────────────────────────
+// ── ExecutionStore impl ───────────────────────────────────────────────────────
 
 #[async_trait]
-impl DurableStorage for RecordingScheduler {
+impl ExecutionStore for RecordingScheduler {
+    async fn start_execution(
+        &self,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn complete_execution(&self, _: &str, _: serde_json::Value) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn fail_execution(&self, _: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+    async fn get_execution(&self, _: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+        Ok(None)
+    }
+    async fn cancel_execution(&self, _: &str) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+    async fn list_executions(
+        &self,
+        _: ListExecutionsParams,
+    ) -> Result<Vec<ExecutionRecord>, StorageError> {
+        Ok(vec![])
+    }
+    async fn get_current_run_id(&self, _: &str) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
+    async fn list_runs(&self, _: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+        Ok(vec![])
+    }
+    async fn reset_execution(&self, _: &str, _: serde_json::Value) -> Result<String, StorageError> {
+        Ok(String::new())
+    }
+    async fn retry_dead_step(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<String, StorageError> {
+        Ok(String::new())
+    }
+    async fn restart_run(
+        &self,
+        _: &str,
+        _: Option<serde_json::Value>,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<String, StorageError> {
+        Ok(String::new())
+    }
+}
+
+// ── StepStore impl ────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl StepStore for RecordingScheduler {
     async fn get_step_status(
         &self,
         run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
         let key = (run_id.to_string(), step_name.to_string());
-        // Not configured → Ok(None) = step row not yet inserted.
         Ok(self.step_responses.get(&key).and_then(|v| v.clone()))
     }
 
-    async fn check_wait_all_children(
-        &self,
-        _wait_for_task_ids: &[String],
-    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-        self.calls.lock().unwrap().push(Call::CheckWaitAllChildren);
-        Ok(self.wait_all_response.clone())
+    async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {
+        Ok(None)
     }
-
-    async fn complete_event_step_and_schedule_body(
-        &self,
-        _execution_id: &str,
-        _event_name: &str,
-        _payload: serde_json::Value,
-    ) -> Result<bool, StorageError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(Call::CompleteEventStepAndScheduleBody);
-        Ok(true)
+    async fn list_steps(&self, _: &str) -> Result<Vec<StepRow>, StorageError> {
+        Ok(vec![])
     }
-
-    async fn fail_execution(&self, _execution_id: &str) -> Result<(), StorageError> {
-        Ok(())
+    async fn list_step_attempts(&self, _: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
+        Ok(vec![])
     }
 
     async fn schedule_step(
@@ -334,9 +379,32 @@ impl DurableStorage for RecordingScheduler {
         Ok(())
     }
 
+    async fn insert_completed_step(
+        &self,
+        _: &str,
+        _: &str,
+        _: StepKind,
+        _: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn check_wait_all_children(
+        &self,
+        _wait_for_task_ids: &[String],
+    ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        self.calls.lock().unwrap().push(Call::CheckWaitAllChildren);
+        Ok(self.wait_all_response.clone())
+    }
+}
+
+// ── WaitGroupStore impl ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl WaitGroupStore for RecordingScheduler {
     async fn upsert_wait_group_step(
         &self,
-        _params: UpsertWaitGroupStepParams,
+        _: UpsertWaitGroupStepParams,
     ) -> Result<(), StorageError> {
         Ok(())
     }
@@ -353,21 +421,55 @@ impl DurableStorage for RecordingScheduler {
 
     async fn fail_wait_group_child(
         &self,
-        _params: FailWaitGroupChildParams,
+        _: FailWaitGroupChildParams,
     ) -> Result<bool, StorageError> {
         Ok(false)
     }
-
-    async fn insert_completed_step(
-        &self,
-        _run_id: &str,
-        _step_name: &str,
-        _step_kind: StepKind,
-        _result: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        Ok(())
+    async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
+        Ok(0)
     }
 }
+
+// ── EventStore impl ───────────────────────────────────────────────────────────
+
+#[async_trait]
+impl EventStore for RecordingScheduler {
+    async fn deliver_event(
+        &self,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+    ) -> Result<EventDeliveryResult, StorageError> {
+        Ok(EventDeliveryResult::NotRegistered)
+    }
+
+    async fn complete_event_step_and_schedule_body(
+        &self,
+        _execution_id: &str,
+        _event_name: &str,
+        _payload: serde_json::Value,
+    ) -> Result<bool, StorageError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::CompleteEventStepAndScheduleBody);
+        Ok(true)
+    }
+
+    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+        Ok(ExecutionStats {
+            scheduled: 0,
+            running: 0,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+        })
+    }
+}
+
+// ── PauseStorage impl ─────────────────────────────────────────────────────────
+
+impl PauseStorage for RecordingScheduler {}
 
 // ── Task-local test helper ─────────────────────────────────────────────────────
 

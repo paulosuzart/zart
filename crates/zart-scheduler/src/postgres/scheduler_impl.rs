@@ -1,4 +1,4 @@
-//! Implementation of the [`Scheduler`] trait for [`PostgresScheduler`].
+//! Implementation of the [`TaskScheduler`] trait for [`PostgresScheduler`].
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -8,12 +8,12 @@ use uuid::Uuid;
 use super::PostgresScheduler;
 use super::sql_helpers::schedule_at_sql;
 use crate::{
-    CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, Scheduler,
-    StorageError, TaskStatus,
+    CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
+    TaskScheduler, TaskStatus,
 };
 
 #[async_trait]
-impl Scheduler for PostgresScheduler {
+impl TaskScheduler for PostgresScheduler {
     async fn schedule_now(
         &self,
         task_id: &str,

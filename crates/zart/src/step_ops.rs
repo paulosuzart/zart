@@ -324,11 +324,14 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use std::sync::{Arc, Mutex};
+    use zart_scheduler::pause_storage::PauseStorage;
     use zart_scheduler::{
         CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-        CompleteWaitGroupChildParams, DurableStorage, EventDeliveryResult,
-        FailWaitGroupChildParams, FetchedTask, RescheduleStepForRetryParams, ScheduleAtParams,
-        Scheduler, StepKind, StepLookup, StepRow, TaskMetadata, UpsertWaitGroupStepParams,
+        CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
+        ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
+        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow,
+        StepKind, StepLookup, StepRow, StepStore, TaskMetadata, TaskScheduler,
+        UpsertWaitGroupStepParams, WaitGroupStore,
     };
 
     struct CapturingStorage {
@@ -348,7 +351,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Scheduler for CapturingStorage {
+    impl TaskScheduler for CapturingStorage {
         async fn schedule_now(
             &self,
             task_id: &str,
@@ -422,62 +425,86 @@ mod tests {
     }
 
     #[async_trait]
-    impl DurableStorage for CapturingStorage {
-        async fn deliver_event(
+    impl ExecutionStore for CapturingStorage {
+        async fn start_execution(
             &self,
-            _execution_id: &str,
-            _event_name: &str,
-            _payload: serde_json::Value,
-        ) -> Result<EventDeliveryResult, StorageError> {
-            Ok(EventDeliveryResult::NotRegistered)
-        }
-
-        async fn get_step_status(
-            &self,
-            _run_id: &str,
-            _step_name: &str,
-        ) -> Result<Option<StepLookup>, StorageError> {
-            Ok(None)
-        }
-
-        async fn check_wait_all_children(
-            &self,
-            _wait_for_task_ids: &[String],
-        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-            Ok(vec![])
-        }
-
-        async fn get_step(
-            &self,
-            _run_id: &str,
-            _step_name: &str,
-        ) -> Result<Option<StepRow>, StorageError> {
-            Ok(None)
-        }
-
-        async fn list_steps(&self, _run_id: &str) -> Result<Vec<StepRow>, StorageError> {
-            Ok(vec![])
-        }
-
-        async fn upsert_wait_group_step(
-            &self,
-            _params: UpsertWaitGroupStepParams,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
-        async fn complete_wait_group_child(
+        async fn complete_execution(
             &self,
-            _params: CompleteWaitGroupChildParams,
-        ) -> Result<bool, StorageError> {
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn fail_execution(&self, _: &str) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn get_execution(&self, _: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+            Ok(None)
+        }
+        async fn cancel_execution(&self, _: &str) -> Result<bool, StorageError> {
             Ok(false)
         }
-
-        async fn fail_wait_group_child(
+        async fn list_executions(
             &self,
-            _params: FailWaitGroupChildParams,
-        ) -> Result<bool, StorageError> {
-            Ok(false)
+            _: ListExecutionsParams,
+        ) -> Result<Vec<ExecutionRecord>, StorageError> {
+            Ok(vec![])
+        }
+        async fn get_current_run_id(&self, _: &str) -> Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+        async fn list_runs(&self, _: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+            Ok(vec![])
+        }
+        async fn reset_execution(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<String, StorageError> {
+            Ok(String::new())
+        }
+        async fn retry_dead_step(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<String, StorageError> {
+            Ok(String::new())
+        }
+        async fn restart_run(
+            &self,
+            _: &str,
+            _: Option<serde_json::Value>,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<String, StorageError> {
+            Ok(String::new())
+        }
+    }
+
+    #[async_trait]
+    impl StepStore for CapturingStorage {
+        async fn get_step_status(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<StepLookup>, StorageError> {
+            Ok(None)
+        }
+        async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {
+            Ok(None)
+        }
+        async fn list_steps(&self, _: &str) -> Result<Vec<StepRow>, StorageError> {
+            Ok(vec![])
+        }
+        async fn list_step_attempts(&self, _: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
+            Ok(vec![])
         }
 
         async fn schedule_step(
@@ -493,35 +520,86 @@ mod tests {
 
         async fn complete_step_and_schedule_body(
             &self,
-            _params: CompleteStepAndScheduleBodyParams,
+            _: CompleteStepAndScheduleBodyParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn complete_step_no_resume(
             &self,
-            _params: CompleteStepNoResumeParams,
+            _: CompleteStepNoResumeParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn reschedule_step_for_retry(
             &self,
-            _params: RescheduleStepForRetryParams,
+            _: RescheduleStepForRetryParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn insert_completed_step(
             &self,
-            _run_id: &str,
-            _step_name: &str,
-            _step_kind: StepKind,
-            _result: serde_json::Value,
+            _: &str,
+            _: &str,
+            _: StepKind,
+            _: serde_json::Value,
         ) -> Result<(), StorageError> {
             Ok(())
         }
+        async fn check_wait_all_children(
+            &self,
+            _: &[String],
+        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+            Ok(vec![])
+        }
     }
+
+    #[async_trait]
+    impl WaitGroupStore for CapturingStorage {
+        async fn upsert_wait_group_step(
+            &self,
+            _: UpsertWaitGroupStepParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn complete_wait_group_child(
+            &self,
+            _: CompleteWaitGroupChildParams,
+        ) -> Result<bool, StorageError> {
+            Ok(false)
+        }
+        async fn fail_wait_group_child(
+            &self,
+            _: FailWaitGroupChildParams,
+        ) -> Result<bool, StorageError> {
+            Ok(false)
+        }
+        async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
+            Ok(0)
+        }
+    }
+
+    #[async_trait]
+    impl EventStore for CapturingStorage {
+        async fn deliver_event(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<EventDeliveryResult, StorageError> {
+            Ok(EventDeliveryResult::NotRegistered)
+        }
+        async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+            Ok(ExecutionStats {
+                scheduled: 0,
+                running: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: 0,
+            })
+        }
+    }
+
+    impl PauseStorage for CapturingStorage {}
 
     #[tokio::test]
     async fn schedule_wait_group_child_task_writes_wg_step_name_metadata_key() {

@@ -181,10 +181,14 @@ mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use std::sync::{Arc, Mutex};
+    use zart_scheduler::pause_storage::PauseStorage;
     use zart_scheduler::{
-        CompleteAndScheduleParams, DurableStorage, EventDeliveryResult, FetchedTask,
-        RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
-        Scheduler, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
+        CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
+        CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
+        ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
+        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
+        ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, StepStore,
+        TaskScheduler, UpsertWaitGroupStepParams, WaitGroupStore,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,19 +216,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl Scheduler for TestStorage {
+    impl TaskScheduler for TestStorage {
         async fn schedule_now(
             &self,
             task_id: &str,
-            _task_name: &str,
-            _data: serde_json::Value,
+            _: &str,
+            _: serde_json::Value,
         ) -> Result<ScheduleResult, StorageError> {
             Ok(ScheduleResult {
                 task_id: task_id.to_string(),
                 execution_time: Utc::now(),
             })
         }
-
         async fn schedule_at(
             &self,
             params: ScheduleAtParams,
@@ -234,83 +237,73 @@ mod tests {
                 execution_time: params.execution_time,
             })
         }
-
         async fn poll_due(
             &self,
-            _now: DateTime<Utc>,
-            _limit: usize,
+            _: DateTime<Utc>,
+            _: usize,
         ) -> Result<Vec<FetchedTask>, StorageError> {
             Ok(vec![])
         }
-
         async fn update_task_state(
             &self,
-            _task_id: &str,
-            _state: serde_json::Value,
-            _next_execution_time: DateTime<Utc>,
-            _lock_token: &str,
+            _: &str,
+            _: serde_json::Value,
+            _: DateTime<Utc>,
+            _: &str,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn mark_completed(
             &self,
-            _task_id: &str,
-            _result: Option<serde_json::Value>,
-            _lock_token: &str,
+            _: &str,
+            _: Option<serde_json::Value>,
+            _: &str,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn mark_failed(
             &self,
-            _task_id: &str,
-            _error: &str,
-            _next_execution_time: Option<DateTime<Utc>>,
-            _lock_token: &str,
+            _: &str,
+            _: &str,
+            _: Option<DateTime<Utc>>,
+            _: &str,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
-        async fn cancel_task(&self, _task_id: &str) -> Result<bool, StorageError> {
+        async fn cancel_task(&self, _: &str) -> Result<bool, StorageError> {
             Ok(false)
         }
-
-        async fn delete_task(&self, _task_id: &str) -> Result<(), StorageError> {
+        async fn delete_task(&self, _: &str) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn run_migrations(&self) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn complete_and_schedule(
             &self,
-            _params: CompleteAndScheduleParams,
+            _: CompleteAndScheduleParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }
     }
 
     #[async_trait]
-    impl DurableStorage for TestStorage {
+    impl ExecutionStore for TestStorage {
         async fn start_execution(
             &self,
-            _execution_id: &str,
-            _task_name: &str,
-            _payload: serde_json::Value,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn complete_execution(
             &self,
-            _execution_id: &str,
-            _result: serde_json::Value,
+            _: &str,
+            _: serde_json::Value,
         ) -> Result<(), StorageError> {
             Ok(())
         }
-
         async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
             self.calls
                 .lock()
@@ -318,86 +311,129 @@ mod tests {
                 .push(Recorded::FailExecution(execution_id.to_string()));
             Ok(())
         }
-
-        async fn get_execution(
-            &self,
-            _execution_id: &str,
-        ) -> Result<Option<zart_scheduler::ExecutionRecord>, StorageError> {
+        async fn get_execution(&self, _: &str) -> Result<Option<ExecutionRecord>, StorageError> {
             Ok(None)
         }
-
-        async fn cancel_execution(&self, _execution_id: &str) -> Result<bool, StorageError> {
+        async fn cancel_execution(&self, _: &str) -> Result<bool, StorageError> {
             Ok(false)
         }
-
         async fn list_executions(
             &self,
-            _params: zart_scheduler::ListExecutionsParams,
-        ) -> Result<Vec<zart_scheduler::ExecutionRecord>, StorageError> {
+            _: ListExecutionsParams,
+        ) -> Result<Vec<ExecutionRecord>, StorageError> {
             Ok(vec![])
         }
-
-        async fn deliver_event(
-            &self,
-            _execution_id: &str,
-            _event_name: &str,
-            _payload: serde_json::Value,
-        ) -> Result<EventDeliveryResult, StorageError> {
-            Ok(EventDeliveryResult::NotRegistered)
+        async fn get_current_run_id(&self, _: &str) -> Result<Option<String>, StorageError> {
+            Ok(None)
         }
-
+        async fn list_runs(&self, _: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+            Ok(vec![])
+        }
         async fn reset_execution(
             &self,
-            _execution_id: &str,
-            _payload: serde_json::Value,
+            _: &str,
+            _: serde_json::Value,
         ) -> Result<String, StorageError> {
             Ok("run:1".to_string())
         }
+        async fn retry_dead_step(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<String, StorageError> {
+            Ok(String::new())
+        }
+        async fn restart_run(
+            &self,
+            _: &str,
+            _: Option<serde_json::Value>,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<String, StorageError> {
+            Ok(String::new())
+        }
+    }
 
+    #[async_trait]
+    impl StepStore for TestStorage {
         async fn get_step_status(
             &self,
-            _run_id: &str,
-            _step_name: &str,
+            _: &str,
+            _: &str,
         ) -> Result<Option<StepLookup>, StorageError> {
             Ok(None)
         }
-
-        async fn check_wait_all_children(
-            &self,
-            _wait_for_task_ids: &[String],
-        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-            Ok(vec![])
-        }
-
-        async fn get_step(
-            &self,
-            _run_id: &str,
-            _step_name: &str,
-        ) -> Result<Option<StepRow>, StorageError> {
+        async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {
             Ok(None)
         }
-
-        async fn list_steps(&self, _run_id: &str) -> Result<Vec<StepRow>, StorageError> {
+        async fn list_steps(&self, _: &str) -> Result<Vec<StepRow>, StorageError> {
             Ok(vec![])
         }
-
-        async fn upsert_wait_group_step(
+        async fn list_step_attempts(&self, _: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
+            Ok(vec![])
+        }
+        async fn schedule_step(
             &self,
-            _params: UpsertWaitGroupStepParams,
+            _: ScheduleStepParams,
+        ) -> Result<ScheduleResult, StorageError> {
+            Ok(ScheduleResult {
+                task_id: "noop".to_string(),
+                execution_time: Utc::now(),
+            })
+        }
+        async fn complete_step_and_schedule_body(
+            &self,
+            _: CompleteStepAndScheduleBodyParams,
         ) -> Result<(), StorageError> {
             Ok(())
         }
+        async fn complete_step_no_resume(
+            &self,
+            _: CompleteStepNoResumeParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn reschedule_step_for_retry(
+            &self,
+            _: RescheduleStepForRetryParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn insert_completed_step(
+            &self,
+            _: &str,
+            _: &str,
+            _: StepKind,
+            _: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+        async fn check_wait_all_children(
+            &self,
+            _: &[String],
+        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+            Ok(vec![])
+        }
+    }
 
+    #[async_trait]
+    impl WaitGroupStore for TestStorage {
+        async fn upsert_wait_group_step(
+            &self,
+            _: UpsertWaitGroupStepParams,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
         async fn complete_wait_group_child(
             &self,
-            _params: CompleteWaitGroupChildParams,
+            _: CompleteWaitGroupChildParams,
         ) -> Result<bool, StorageError> {
             Ok(false)
         }
-
         async fn fail_wait_group_child(
             &self,
-            _params: FailWaitGroupChildParams,
+            _: FailWaitGroupChildParams,
         ) -> Result<bool, StorageError> {
             self.calls
                 .lock()
@@ -405,52 +441,33 @@ mod tests {
                 .push(Recorded::FailWaitGroupChild);
             Ok(self.fail_wait_group_child_result)
         }
-
         async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
             Ok(0)
         }
+    }
 
-        async fn schedule_step(
+    #[async_trait]
+    impl EventStore for TestStorage {
+        async fn deliver_event(
             &self,
-            _params: ScheduleStepParams,
-        ) -> Result<ScheduleResult, StorageError> {
-            Ok(ScheduleResult {
-                task_id: "noop".to_string(),
-                execution_time: Utc::now(),
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<EventDeliveryResult, StorageError> {
+            Ok(EventDeliveryResult::NotRegistered)
+        }
+        async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+            Ok(ExecutionStats {
+                scheduled: 0,
+                running: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: 0,
             })
         }
-
-        async fn complete_step_and_schedule_body(
-            &self,
-            _params: zart_scheduler::CompleteStepAndScheduleBodyParams,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn complete_step_no_resume(
-            &self,
-            _params: zart_scheduler::CompleteStepNoResumeParams,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn reschedule_step_for_retry(
-            &self,
-            _params: RescheduleStepForRetryParams,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn insert_completed_step(
-            &self,
-            _run_id: &str,
-            _step_name: &str,
-            _step_kind: StepKind,
-            _result: serde_json::Value,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
     }
+
+    impl PauseStorage for TestStorage {}
 
     fn fail_wait_group_spec() -> CompletionSpec {
         CompletionSpec {
