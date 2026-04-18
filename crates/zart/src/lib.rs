@@ -134,6 +134,7 @@ pub mod logging;
 pub mod metrics;
 pub mod registry;
 pub mod retry;
+pub mod service;
 pub mod step_ops;
 pub mod step_types;
 pub mod timeout;
@@ -160,6 +161,7 @@ pub use error::{
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use registry::{DurableExecution, TaskRegistry};
 pub use retry::RetryConfig;
+pub use service::ExecutionService;
 pub use timeout::TimeoutScope;
 pub use trx_impl::{ZartTrx, trx};
 pub use worker::{Worker, WorkerConfig};
@@ -188,6 +190,7 @@ pub mod prelude {
         schedule, sleep, sleep_until, step, step_or, step_or_else, trx, wait, wait_for_event,
         worker::{Worker, WorkerConfig},
     };
+    #[allow(deprecated)]
     pub use zart_scheduler::{
         DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler, StorageBackend,
     };

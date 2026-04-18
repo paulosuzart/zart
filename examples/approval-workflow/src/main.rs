@@ -123,7 +123,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresScheduler::new(pool));
-    sched.run_migrations().await?;
 
     let mut registry = TaskRegistry::new();
     registry.register("approval-task", ApprovalTask);

@@ -194,7 +194,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     POOL.set(pool.clone()).ok();
 
     let sched = Arc::new(PostgresScheduler::new(pool.clone()));
-    sched.run_migrations().await?;
     ensure_schema(&pool).await?;
 
     let user_id = Uuid::new_v4();

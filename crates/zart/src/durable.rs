@@ -4,12 +4,13 @@
 //! execution-aware operations: starting executions with idempotency keys,
 //! querying status, and waiting for completion.
 
-use crate::admin::{ExecutionDetail, PauseRule, PauseScope, ResumeResult, StepWithAttempts};
+use crate::admin::{PauseRule, PauseScope, RerunResult, RerunSpec, ResumeResult};
 use crate::emit_metric;
 use crate::error::SchedulerError;
 #[cfg(feature = "metrics")]
 use crate::metrics::EVENTS_DELIVERED_TOTAL;
 use crate::registry::DurableExecution;
+use crate::service::ExecutionService;
 use std::sync::Arc;
 use std::time::Duration;
 use zart_scheduler::pause_storage::{PauseRule as StoragePauseRule, PauseRuleFilter, PauseStorage};
@@ -80,14 +81,17 @@ const MAX_WAIT_SECS: u64 = 30;
 pub struct DurableScheduler {
     scheduler: Arc<dyn StorageBackend>,
     pause_storage: Option<Arc<dyn PauseStorage>>,
+    execution_service: ExecutionService,
 }
 
 impl DurableScheduler {
     /// Create a new `DurableScheduler`.
     pub fn new(scheduler: Arc<dyn StorageBackend>) -> Self {
+        let execution_service = ExecutionService::new(scheduler.clone());
         Self {
             scheduler,
             pause_storage: None,
+            execution_service,
         }
     }
 
@@ -96,9 +100,11 @@ impl DurableScheduler {
         scheduler: Arc<dyn StorageBackend>,
         pause_storage: Arc<dyn PauseStorage>,
     ) -> Self {
+        let execution_service = ExecutionService::new(scheduler.clone());
         Self {
             scheduler,
             pause_storage: Some(pause_storage),
+            execution_service,
         }
     }
 
@@ -557,51 +563,10 @@ impl DurableScheduler {
         &self,
         execution_id: &str,
         run_id: Option<&str>,
-    ) -> Result<ExecutionDetail, SchedulerError> {
-        let execution = self.status(execution_id).await?;
-
-        let runs = self.list_runs(execution_id).await?;
-
-        let effective_run_id = match run_id {
-            Some(id) => id.to_string(),
-            None => match self.get_current_run_id(execution_id).await? {
-                Some(id) => id,
-                None => {
-                    return Ok(ExecutionDetail {
-                        execution,
-                        runs,
-                        steps: vec![],
-                    });
-                }
-            },
-        };
-
-        let step_rows = self.scheduler.list_steps(&effective_run_id).await?;
-
-        let attempts = self.scheduler.list_step_attempts(&effective_run_id).await?;
-
-        let steps: Vec<StepWithAttempts> = step_rows
-            .into_iter()
-            .map(|step| {
-                let step_attempts: Vec<_> = attempts
-                    .iter()
-                    .filter(|a| a.step_id == step.step_id)
-                    .cloned()
-                    .collect();
-                let retryable = step.status == zart_scheduler::StepStatus::Dead;
-                StepWithAttempts {
-                    step,
-                    attempts: step_attempts,
-                    retryable,
-                }
-            })
-            .collect();
-
-        Ok(ExecutionDetail {
-            execution,
-            runs,
-            steps,
-        })
+    ) -> Result<crate::admin::ExecutionDetail, SchedulerError> {
+        self.execution_service
+            .execution_detail(execution_id, run_id)
+            .await
     }
 
     // ── Admin operations ──────────────────────────────────────────────────────
@@ -620,7 +585,8 @@ impl DurableScheduler {
     ///
     /// # Errors
     ///
-    /// - [`SchedulerError::ExecutionNotFound`] if the step doesn't exist
+    /// - [`SchedulerError::Database`] wrapping `StorageError::StepNotFound` if the step doesn't exist
+    /// - [`SchedulerError::Database`] wrapping `StorageError::StepStatusMismatch` if not dead
     /// - [`SchedulerError::Database`] if the storage backend fails
     pub async fn retry_step(
         &self,
@@ -628,10 +594,9 @@ impl DurableScheduler {
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, SchedulerError> {
-        Ok(self
-            .scheduler
-            .admin_retry_step(run_id, step_name, triggered_by)
-            .await?)
+        self.execution_service
+            .retry_step(run_id, step_name, triggered_by)
+            .await
     }
 
     /// Convenience wrapper around [`Self::retry_step`] that resolves the
@@ -642,12 +607,9 @@ impl DurableScheduler {
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, SchedulerError> {
-        let run_id = self
-            .scheduler
-            .get_current_run_id(execution_id)
-            .await?
-            .ok_or_else(|| SchedulerError::ExecutionNotFound(execution_id.to_string()))?;
-        self.retry_step(&run_id, step_name, triggered_by).await
+        self.execution_service
+            .retry_step_current_run(execution_id, step_name, triggered_by)
+            .await
     }
 
     /// Restart an entire execution from scratch.
@@ -673,10 +635,9 @@ impl DurableScheduler {
         new_payload: Option<serde_json::Value>,
         triggered_by: Option<&str>,
     ) -> Result<String, SchedulerError> {
-        Ok(self
-            .scheduler
-            .admin_restart_execution(execution_id, new_payload, triggered_by)
-            .await?)
+        self.execution_service
+            .restart(execution_id, new_payload, triggered_by)
+            .await
     }
 
     /// Selectively rerun a subset of steps while preserving others.
@@ -699,28 +660,9 @@ impl DurableScheduler {
     pub async fn rerun_steps(
         &self,
         execution_id: &str,
-        spec: crate::admin::RerunSpec,
-    ) -> Result<crate::admin::RerunResult, SchedulerError> {
-        let (new_run_id, effective_rerun) = self
-            .scheduler
-            .admin_rerun_steps(
-                execution_id,
-                &spec.force_rerun,
-                &spec.preserve,
-                spec.triggered_by.as_deref(),
-            )
-            .await?;
-
-        // Parse run number from run_id (format: "exec-id:run:N").
-        let run_number = new_run_id
-            .rsplit_once(":run:")
-            .and_then(|(_, n)| n.parse().ok())
-            .unwrap_or(0);
-
-        Ok(crate::admin::RerunResult {
-            new_run_number: run_number,
-            effective_rerun,
-        })
+        spec: RerunSpec,
+    ) -> Result<RerunResult, SchedulerError> {
+        self.execution_service.rerun_steps(execution_id, spec).await
     }
 
     // ── Pause / Resume ────────────────────────────────────────────────────────

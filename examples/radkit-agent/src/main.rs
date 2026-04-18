@@ -276,7 +276,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresScheduler::new(pool));
-    sched.run_migrations().await?;
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));

@@ -1,6 +1,6 @@
 //! Core scheduling primitives for Zart.
 //!
-//! This crate provides the [`Scheduler`] trait and associated types that define
+//! This crate provides the storage traits and associated types that define
 //! the contract for task scheduling, polling, and storage backends.
 //!
 //! # Architecture
@@ -9,22 +9,27 @@
 //! Each task is a row in the database that gets picked up by a worker via
 //! `SKIP LOCKED`, executed, and either completed, failed, or rescheduled.
 //!
-//! # Examples
+//! ## Focused store traits (Phase 3)
 //!
-//! ```rust
-//! use zart_scheduler::{Scheduler, ScheduleResult};
-//! ```
+//! [`TaskScheduler`], [`ExecutionStore`], [`StepStore`], [`WaitGroupStore`],
+//! and [`EventStore`] replace the old monolithic [`Scheduler`] /
+//! [`DurableStorage`] surfaces. Implement the focused traits; the deprecated
+//! blanket impls keep existing code compiling through the migration window.
 
 pub mod error;
 pub mod pause_storage;
 pub mod recurrence;
+pub mod store;
 pub mod task_metadata;
 pub mod types;
+
+pub(crate) mod repository;
 
 pub mod postgres;
 
 pub use error::StorageError;
 pub use recurrence::Recurrence;
+pub use store::{EventStore, ExecutionStore, StepStore, TaskScheduler, WaitGroupStore};
 pub use task_metadata::{StepMetaType, TaskMetadata};
 pub use types::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
@@ -39,171 +44,61 @@ pub use types::{
 pub use postgres::{PostgresScheduler, TableNames, TableNamesError};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use pause_storage::PauseStorage;
 
-/// A task scheduler that manages task lifecycle: schedule, poll, complete, fail, cancel.
+/// Deprecated: use [`TaskScheduler`] instead.
 ///
-/// Implementors provide the concrete storage backend (PostgreSQL, SQLite, etc.).
-/// The skip-lock polling mechanism ensures tasks are never processed by two workers
-/// simultaneously.
+/// `Scheduler` is now an empty supertrait of `TaskScheduler`. Any type that
+/// implements `TaskScheduler` automatically satisfies `Scheduler` via the
+/// blanket impl below. Migrate by replacing `impl Scheduler for T { … }` with
+/// `impl TaskScheduler for T { … }` — the method signatures are identical.
+#[deprecated(
+    since = "0.2.0",
+    note = "Implement TaskScheduler instead; Scheduler is a blanket alias."
+)]
+pub trait Scheduler: TaskScheduler {}
+
+#[allow(deprecated)]
+impl<T: TaskScheduler> Scheduler for T {}
+
+/// Deprecated: use the focused store traits instead.
+///
+/// [`DurableStorage`] is replaced by [`ExecutionStore`] + [`StepStore`] +
+/// [`WaitGroupStore`] + [`EventStore`]. Implement all four focused traits;
+/// the blanket impl at the bottom of this block gives `DurableStorage` for
+/// free so existing call sites continue compiling through the migration window.
+///
+/// # Migration
+///
+/// ```text
+/// // Before
+/// impl DurableStorage for MyBackend { … }
+///
+/// // After
+/// impl ExecutionStore for MyBackend { … }
+/// impl StepStore for MyBackend { … }
+/// impl WaitGroupStore for MyBackend { … }
+/// impl EventStore for MyBackend { … }
+/// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "Implement ExecutionStore + StepStore + WaitGroupStore + EventStore instead."
+)]
 #[async_trait]
-pub trait Scheduler: Send + Sync {
-    /// Schedule a task for immediate execution.
-    ///
-    /// Uses the current time as the `execution_time`.
-    async fn schedule_now(
-        &self,
-        task_id: &str,
-        task_name: &str,
-        data: serde_json::Value,
-    ) -> Result<ScheduleResult, StorageError>;
+pub trait DurableStorage:
+    ExecutionStore + StepStore + WaitGroupStore + EventStore + Send + Sync
+{
+    // ── ExecutionStore delegation ─────────────────────────────────────────────
 
-    /// Schedule a task for execution at a specific point in time.
-    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError>;
-
-    /// Schedule a task within the caller's transaction.
-    ///
-    /// The caller is responsible for committing or rolling back the transaction.
-    /// Default implementation returns `NotImplemented`.
-    #[allow(unused_variables)]
-    async fn schedule_at_in_tx(
-        &self,
-        conn: &mut sqlx::PgConnection,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError> {
-        Err(StorageError::NotImplemented("schedule_at_in_tx"))
-    }
-
-    /// Poll for tasks that are due for execution.
-    ///
-    /// Uses `SELECT ... FOR UPDATE SKIP LOCKED` semantics so that multiple workers
-    /// can poll concurrently without duplicate processing.
-    ///
-    /// Returns up to `limit` tasks whose `execution_time <= now`.
-    async fn poll_due(
-        &self,
-        now: DateTime<Utc>,
-        limit: usize,
-    ) -> Result<Vec<FetchedTask>, StorageError>;
-
-    /// Update the state of a task that is currently running.
-    ///
-    /// Used by the durable execution runtime to persist step progress between re-entries.
-    async fn update_task_state(
-        &self,
-        task_id: &str,
-        state: serde_json::Value,
-        next_execution_time: DateTime<Utc>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-
-    /// Mark a task as successfully completed.
-    async fn mark_completed(
-        &self,
-        task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-
-    /// Mark a task as failed. Optionally reschedules it for retry.
-    async fn mark_failed(
-        &self,
-        task_id: &str,
-        error: &str,
-        next_execution_time: Option<DateTime<Utc>>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-
-    /// Cancel a scheduled task. Returns `true` if the task was found and cancelled.
-    async fn cancel_task(&self, task_id: &str) -> Result<bool, StorageError>;
-
-    /// Delete a task record permanently.
-    async fn delete_task(&self, task_id: &str) -> Result<(), StorageError>;
-
-    /// Run database migrations required by this backend.
-    async fn run_migrations(&self) -> Result<(), StorageError>;
-
-    /// Begin a new database transaction.
-    ///
-    /// Used by internal methods that need to coordinate multiple writes
-    /// in a single transaction.
-    ///
-    /// # Lifetime note
-    ///
-    /// The returned `Transaction<'_, Postgres>` borrows from `&self`. Callers
-    /// must commit or roll back the transaction before dropping the borrow.
-    /// This method is intended only for short-lived internal coordination
-    /// (e.g. `DurableScheduler::start`). Do not store the transaction beyond
-    /// the calling scope.
-    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
-        Err(StorageError::NotImplemented("begin"))
-    }
-
-    /// Reset tasks that have been stuck in `picked_up` state longer than `stale_timeout`.
-    ///
-    /// A task becomes an orphan when the worker that locked it crashes without
-    /// releasing the lock. This method resets orphans back to `scheduled` so they
-    /// can be picked up again.
-    ///
-    /// Returns the number of tasks recovered.
-    async fn recover_orphans(
-        &self,
-        stale_timeout: std::time::Duration,
-    ) -> Result<usize, StorageError> {
-        let _ = stale_timeout;
-        Ok(0)
-    }
-
-    /// Extend the lease of a task by updating `locked_at` to the current time.
-    ///
-    /// Returns `true` if the lease was renewed (task exists and lock token matches).
-    /// Returns `false` if the task was not found, the lock token doesn't match,
-    /// or the task is no longer in `picked_up` state.
-    ///
-    /// Used by the worker's background heartbeat loop to prevent orphan recovery
-    /// from reclaiming legitimately long-running tasks.
-    async fn renew_lease(&self, _task_id: &str, _lock_token: &str) -> Result<bool, StorageError> {
-        Ok(false)
-    }
-
-    /// Atomically mark one task as completed and insert a new task in a single transaction.
-    ///
-    /// Used by the execution model to complete a step/coordinator/sleep task and
-    /// schedule the next body segment without a gap between the two operations.
-    async fn complete_and_schedule(
-        &self,
-        params: CompleteAndScheduleParams,
-    ) -> Result<(), StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("complete_and_schedule"))
-    }
-}
-
-/// Storage operations for durable executions and the per-row step model.
-///
-/// Extends [`Scheduler`] for backends that support the `zart_executions` table
-/// and the execution-model step rows. Implement this alongside [`Scheduler`]
-/// to enable `DurableScheduler`, `Worker`, and `TaskContext` in their
-/// full durable-execution mode.
-///
-/// A plain task-queue backend only needs to implement [`Scheduler`].
-#[async_trait]
-pub trait DurableStorage: Send + Sync {
-    /// Insert a new durable execution record into `zart_executions`.
     async fn start_execution(
         &self,
         execution_id: &str,
         task_name: &str,
         payload: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let _ = (execution_id, task_name, payload);
-        Err(StorageError::NotImplemented("start_execution"))
+        ExecutionStore::start_execution(self, execution_id, task_name, payload).await
     }
 
-    /// Insert a new durable execution record within the caller's transaction.
-    ///
-    /// The caller is responsible for committing or rolling back the transaction.
-    /// Default implementation returns `NotImplemented`.
     #[allow(unused_variables)]
     async fn start_execution_in_tx(
         &self,
@@ -212,247 +107,163 @@ pub trait DurableStorage: Send + Sync {
         task_name: &str,
         payload: serde_json::Value,
     ) -> Result<(), StorageError> {
-        Err(StorageError::NotImplemented("start_execution_in_tx"))
+        ExecutionStore::start_execution_in_tx(self, conn, execution_id, task_name, payload).await
     }
 
-    /// Mark a durable execution as successfully completed.
     async fn complete_execution(
         &self,
         execution_id: &str,
         result: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let _ = (execution_id, result);
-        Err(StorageError::NotImplemented("complete_execution"))
+        ExecutionStore::complete_execution(self, execution_id, result).await
     }
 
-    /// Mark a durable execution as failed.
     async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
-        let _ = execution_id;
-        Err(StorageError::NotImplemented("fail_execution"))
+        ExecutionStore::fail_execution(self, execution_id).await
     }
 
-    /// Fetch a durable execution record by ID.
     async fn get_execution(
         &self,
         execution_id: &str,
     ) -> Result<Option<ExecutionRecord>, StorageError> {
-        let _ = execution_id;
-        Err(StorageError::NotImplemented("get_execution"))
+        ExecutionStore::get_execution(self, execution_id).await
     }
 
-    /// Cancel a running or scheduled durable execution.
     async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
-        let _ = execution_id;
-        Err(StorageError::NotImplemented("cancel_execution"))
+        ExecutionStore::cancel_execution(self, execution_id).await
     }
 
-    /// List durable execution records with optional filters.
     async fn list_executions(
         &self,
         params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("list_executions"))
+        ExecutionStore::list_executions(self, params).await
     }
 
-    /// Deliver an external event to a waiting execution.
-    ///
-    /// Backends should atomically attempt to complete the matching
-    /// `wait_for_event` step and schedule the next body task.
-    /// The return value distinguishes successful delivery, duplicate delivery,
-    /// and missing registration.
     async fn deliver_event(
         &self,
         execution_id: &str,
         event_name: &str,
         payload: serde_json::Value,
     ) -> Result<EventDeliveryResult, StorageError> {
-        let _ = (execution_id, event_name, payload);
-        Err(StorageError::NotImplemented("deliver_event"))
+        EventStore::deliver_event(self, execution_id, event_name, payload).await
     }
 
-    /// Back-compat shim: completes a wait_for_event step and schedules body.
-    ///
-    /// New callers should use `deliver_event`. This helper maps:
-    /// - `Delivered` -> `true`
-    /// - `AlreadyDelivered`/`NotRegistered` -> `false`
     async fn complete_event_step_and_schedule_body(
         &self,
         execution_id: &str,
         event_name: &str,
         payload: serde_json::Value,
     ) -> Result<bool, StorageError> {
-        match self
-            .deliver_event(execution_id, event_name, payload)
-            .await?
-        {
-            EventDeliveryResult::Delivered => Ok(true),
-            EventDeliveryResult::AlreadyDelivered | EventDeliveryResult::NotRegistered => Ok(false),
-        }
+        EventStore::complete_event_step_and_schedule_body(self, execution_id, event_name, payload)
+            .await
     }
 
-    /// Reset a terminal execution so it can be retried.
-    ///
-    /// Creates a new run at run_index+1, updates `current_run_id`, and returns
-    /// the new `run_id` (e.g. `"{execution_id}:run:1"`).
     async fn reset_execution(
         &self,
         execution_id: &str,
         payload: serde_json::Value,
     ) -> Result<String, StorageError> {
-        let _ = (execution_id, payload);
-        Err(StorageError::NotImplemented("reset_execution"))
+        ExecutionStore::reset_execution(self, execution_id, payload).await
     }
 
-    /// Look up a step by `run_id` + `step_name` in `zart_steps`.
     async fn get_step_status(
         &self,
         run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
-        let _ = (run_id, step_name);
-        Err(StorageError::NotImplemented("get_step_status"))
+        StepStore::get_step_status(self, run_id, step_name).await
     }
 
-    /// Get the current `run_id` for an execution.
     async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
-        let _ = execution_id;
-        Err(StorageError::NotImplemented("get_current_run_id"))
+        ExecutionStore::get_current_run_id(self, execution_id).await
     }
 
-    /// List all runs for an execution, ordered by `run_index ASC`.
     async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
-        let _ = execution_id;
-        Err(StorageError::NotImplemented("list_runs"))
+        ExecutionStore::list_runs(self, execution_id).await
     }
 
-    /// Check whether all wait_all children are completed.
     async fn check_wait_all_children(
         &self,
         wait_for_task_ids: &[String],
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
-        let _ = wait_for_task_ids;
-        Err(StorageError::NotImplemented("check_wait_all_children"))
+        StepStore::check_wait_all_children(self, wait_for_task_ids).await
     }
 
-    /// Look up a step by run_id + step_name.
     async fn get_step(
         &self,
         run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepRow>, StorageError> {
-        let _ = (run_id, step_name);
-        Err(StorageError::NotImplemented("get_step"))
+        StepStore::get_step(self, run_id, step_name).await
     }
 
-    /// List all steps for a run.
     async fn list_steps(&self, run_id: &str) -> Result<Vec<StepRow>, StorageError> {
-        let _ = run_id;
-        Err(StorageError::NotImplemented("list_steps"))
+        StepStore::list_steps(self, run_id).await
     }
 
-    /// Upsert (insert-if-absent) a wait-group step row.
-    ///
-    /// This is idempotent and safe on body replay.
     async fn upsert_wait_group_step(
         &self,
         params: UpsertWaitGroupStepParams,
     ) -> Result<(), StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("upsert_wait_group_step"))
+        WaitGroupStore::upsert_wait_group_step(self, params).await
     }
 
-    /// Complete a wait-group child and atomically decrement the parent group's
-    /// `wg_remaining`. If this child reaches `wg_threshold`, the backend should
-    /// also insert the next body task in the same transaction.
     async fn complete_wait_group_child(
         &self,
         params: CompleteWaitGroupChildParams,
     ) -> Result<bool, StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("complete_wait_group_child"))
+        WaitGroupStore::complete_wait_group_child(self, params).await
     }
 
-    /// Record a wait-group child failure with compare-and-set semantics.
-    ///
-    /// Returns `true` only for the first failing child that flips
-    /// `wg_first_failed` from false to true.
     async fn fail_wait_group_child(
         &self,
         params: FailWaitGroupChildParams,
     ) -> Result<bool, StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("fail_wait_group_child"))
+        WaitGroupStore::fail_wait_group_child(self, params).await
     }
 
-    /// Recover wait-group orphans where the group has already triggered but the
-    /// corresponding body task was never inserted.
-    ///
-    /// Returns the number of recovered body tasks inserted.
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
-        Err(StorageError::NotImplemented("recover_wait_group_orphans"))
+        WaitGroupStore::recover_wait_group_orphans(self).await
     }
 
-    /// Insert a task row and a step row atomically.
     async fn schedule_step(
         &self,
         params: ScheduleStepParams,
     ) -> Result<ScheduleResult, StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("schedule_step"))
+        StepStore::schedule_step(self, params).await
     }
 
-    /// Atomically complete a step+task, record the attempt, and schedule the next body task.
     async fn complete_step_and_schedule_body(
         &self,
         params: CompleteStepAndScheduleBodyParams,
     ) -> Result<(), StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented(
-            "complete_step_and_schedule_body",
-        ))
+        StepStore::complete_step_and_schedule_body(self, params).await
     }
 
-    /// Complete a step and schedule the next body task within the caller's transaction.
-    ///
-    /// The caller is responsible for committing or rolling back the transaction.
-    /// Default implementation returns `NotImplemented`.
     #[allow(unused_variables)]
     async fn complete_step_and_schedule_body_in_tx(
         &self,
         conn: &mut sqlx::PgConnection,
         params: CompleteStepAndScheduleBodyParams,
     ) -> Result<(), StorageError> {
-        Err(StorageError::NotImplemented(
-            "complete_step_and_schedule_body_in_tx",
-        ))
+        StepStore::complete_step_and_schedule_body_in_tx(self, conn, params).await
     }
 
-    /// Atomically complete a step+task and record the attempt (no body continuation).
-    ///
-    /// Used for wait_all children — the coordinator polls and schedules the body when all are done.
     async fn complete_step_no_resume(
         &self,
         params: CompleteStepNoResumeParams,
     ) -> Result<(), StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("complete_step_no_resume"))
+        StepStore::complete_step_no_resume(self, params).await
     }
 
-    /// Atomically record a failed step attempt, update the retry count, and reschedule the task.
     async fn reschedule_step_for_retry(
         &self,
         params: RescheduleStepForRetryParams,
     ) -> Result<(), StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("reschedule_step_for_retry"))
+        StepStore::reschedule_step_for_retry(self, params).await
     }
 
-    /// Write a step row as immediately completed. No task row is created.
-    ///
-    /// Used for capture steps — synchronous, non-parking values that are
-    /// persisted on first encounter and returned from DB on replay.
-    /// No-op on conflict — replay safety via idempotent upsert.
     async fn insert_completed_step(
         &self,
         run_id: &str,
@@ -460,101 +271,93 @@ pub trait DurableStorage: Send + Sync {
         step_kind: StepKind,
         result: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let _ = (run_id, step_name, step_kind, result);
-        Err(StorageError::NotImplemented("insert_completed_step"))
+        StepStore::insert_completed_step(self, run_id, step_name, step_kind, result).await
     }
 
-    /// Retry a single dead step within the current run.
-    ///
-    /// Finds the dead step by `run_id` + `step_name`, creates a new task for it
-    /// with `retry_attempt = 0`, and sets the run status back to `running`.
-    /// No new run is started — scoped to the current run.
-    ///
-    /// # Errors
-    /// - [`StorageError::StepNotFound`] if no step exists for the given name
-    /// - [`StorageError::StepStatusMismatch`] if the step is not in `dead` status
-    async fn admin_retry_step(
+    async fn retry_dead_step(
         &self,
         run_id: &str,
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        let _ = (run_id, step_name, triggered_by);
-        Err(StorageError::NotImplemented("admin_retry_step"))
+        ExecutionStore::retry_dead_step(self, run_id, step_name, triggered_by).await
     }
 
-    /// Restart an entire execution from scratch.
-    ///
-    /// Archives the current run to `zart_execution_runs` (preserving history),
-    /// creates a new run with `trigger = 'restart'`, and schedules a fresh
-    /// body task at segment 0.
-    ///
-    /// If `new_payload` is `Some`, it replaces the execution's payload.
-    /// Returns the new `run_id`.
-    async fn admin_restart_execution(
+    async fn restart_run(
         &self,
         execution_id: &str,
         new_payload: Option<serde_json::Value>,
+        trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        let _ = (execution_id, new_payload, triggered_by);
-        Err(StorageError::NotImplemented("admin_restart_execution"))
+        ExecutionStore::restart_run(self, execution_id, new_payload, trigger, triggered_by).await
     }
 
-    /// Selectively rerun a subset of steps while preserving others.
-    ///
-    /// Archives the current run, starts a new run, and schedules a fresh body
-    /// task. Failed/dead steps are always rerun. `force_rerun` steps are
-    /// rerun even if completed. `preserve` steps are carried forward (ignored
-    /// for failed/dead steps).
-    ///
-    /// # Returns
-    ///
-    /// A tuple of `(new_run_id, effective_rerun_steps)`.
-    async fn admin_rerun_steps(
-        &self,
-        execution_id: &str,
-        force_rerun: &[String],
-        preserve: &[String],
-        triggered_by: Option<&str>,
-    ) -> Result<(String, Vec<String>), StorageError> {
-        let _ = (execution_id, force_rerun, preserve, triggered_by);
-        Err(StorageError::NotImplemented("admin_rerun_steps"))
-    }
-
-    /// Count executions grouped by status.
     async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
-        Err(StorageError::NotImplemented("execution_stats"))
+        EventStore::execution_stats(self).await
     }
 
-    /// List all step attempts for a run.
     async fn list_step_attempts(&self, run_id: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
-        let _ = run_id;
-        Err(StorageError::NotImplemented("list_step_attempts"))
+        StepStore::list_step_attempts(self, run_id).await
     }
 }
 
-/// Combined backend trait for schedulers that support both task-queue and
-/// durable-execution storage.
+/// Blanket impl: any type implementing the four focused store traits
+/// automatically satisfies the deprecated `DurableStorage` trait.
+#[allow(deprecated)]
+impl<T: ExecutionStore + StepStore + WaitGroupStore + EventStore + Send + Sync> DurableStorage
+    for T
+{
+}
+
+/// Combined backend trait — the single type-erased handle for all storage operations.
 ///
-/// A blanket impl covers every concrete type that already satisfies both
-/// [`Scheduler`] and [`DurableStorage`], so backends don't need to implement
-/// this trait explicitly — they just implement the two component traits.
+/// Use `Arc<dyn StorageBackend>` wherever a fully-capable backend is needed.
+/// `PostgresScheduler` satisfies this bound automatically via blanket impls.
 ///
-/// Use `Arc<dyn StorageBackend>` wherever you need a type-erased backend.
-pub trait StorageBackend: Scheduler + DurableStorage + Send + Sync {}
-impl<T: Scheduler + DurableStorage + Send + Sync> StorageBackend for T {}
+/// Composed from:
+/// - [`TaskScheduler`] — task queue lifecycle
+/// - [`ExecutionStore`] — execution records and run primitives
+/// - [`StepStore`] — step scheduling, completion, and query
+/// - [`WaitGroupStore`] — wait-group coordination
+/// - [`EventStore`] — event delivery and statistics
+/// - [`PauseStorage`] — pause rules
+pub trait StorageBackend:
+    TaskScheduler
+    + ExecutionStore
+    + StepStore
+    + WaitGroupStore
+    + EventStore
+    + PauseStorage
+    + Send
+    + Sync
+{
+}
+
+impl<
+    T: TaskScheduler
+        + ExecutionStore
+        + StepStore
+        + WaitGroupStore
+        + EventStore
+        + PauseStorage
+        + Send
+        + Sync,
+> StorageBackend for T
+{
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
     use std::sync::Arc;
 
-    /// A minimal in-memory scheduler stub for unit testing.
+    /// A minimal in-memory stub implementing TaskScheduler.
     struct StubScheduler;
 
     #[async_trait]
-    impl Scheduler for StubScheduler {
+    impl TaskScheduler for StubScheduler {
         async fn schedule_now(
             &self,
             task_id: &str,
@@ -651,10 +454,12 @@ mod tests {
         assert!(cancelled);
     }
 
+    /// Minimal stub that implements the four focused store traits so the
+    /// deprecated `DurableStorage` blanket applies automatically.
     struct StubDurableStorage;
 
     #[async_trait]
-    impl Scheduler for StubDurableStorage {
+    impl TaskScheduler for StubDurableStorage {
         async fn schedule_now(
             &self,
             task_id: &str,
@@ -719,14 +524,186 @@ mod tests {
         }
     }
 
-    impl DurableStorage for StubDurableStorage {}
+    // ExecutionStore — all required methods return NotImplemented
+    #[async_trait]
+    impl ExecutionStore for StubDurableStorage {
+        async fn start_execution(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("start_execution"))
+        }
+        async fn complete_execution(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("complete_execution"))
+        }
+        async fn fail_execution(&self, _: &str) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("fail_execution"))
+        }
+        async fn get_execution(&self, _: &str) -> Result<Option<ExecutionRecord>, StorageError> {
+            Err(StorageError::NotImplemented("get_execution"))
+        }
+        async fn cancel_execution(&self, _: &str) -> Result<bool, StorageError> {
+            Err(StorageError::NotImplemented("cancel_execution"))
+        }
+        async fn list_executions(
+            &self,
+            _: ListExecutionsParams,
+        ) -> Result<Vec<ExecutionRecord>, StorageError> {
+            Err(StorageError::NotImplemented("list_executions"))
+        }
+        async fn get_current_run_id(&self, _: &str) -> Result<Option<String>, StorageError> {
+            Err(StorageError::NotImplemented("get_current_run_id"))
+        }
+        async fn list_runs(&self, _: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
+            Err(StorageError::NotImplemented("list_runs"))
+        }
+        async fn reset_execution(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<String, StorageError> {
+            Err(StorageError::NotImplemented("reset_execution"))
+        }
+        async fn retry_dead_step(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<String, StorageError> {
+            Err(StorageError::NotImplemented("retry_dead_step"))
+        }
+        async fn restart_run(
+            &self,
+            _: &str,
+            _: Option<serde_json::Value>,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<String, StorageError> {
+            Err(StorageError::NotImplemented("restart_run"))
+        }
+    }
+
+    #[async_trait]
+    impl StepStore for StubDurableStorage {
+        async fn get_step_status(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<StepLookup>, StorageError> {
+            Err(StorageError::NotImplemented("get_step_status"))
+        }
+        async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {
+            Err(StorageError::NotImplemented("get_step"))
+        }
+        async fn list_steps(&self, _: &str) -> Result<Vec<StepRow>, StorageError> {
+            Err(StorageError::NotImplemented("list_steps"))
+        }
+        async fn list_step_attempts(&self, _: &str) -> Result<Vec<StepAttemptRow>, StorageError> {
+            Err(StorageError::NotImplemented("list_step_attempts"))
+        }
+        async fn schedule_step(
+            &self,
+            _: ScheduleStepParams,
+        ) -> Result<ScheduleResult, StorageError> {
+            Err(StorageError::NotImplemented("schedule_step"))
+        }
+        async fn complete_step_and_schedule_body(
+            &self,
+            _: CompleteStepAndScheduleBodyParams,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented(
+                "complete_step_and_schedule_body",
+            ))
+        }
+        async fn complete_step_no_resume(
+            &self,
+            _: CompleteStepNoResumeParams,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("complete_step_no_resume"))
+        }
+        async fn reschedule_step_for_retry(
+            &self,
+            _: RescheduleStepForRetryParams,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("reschedule_step_for_retry"))
+        }
+        async fn insert_completed_step(
+            &self,
+            _: &str,
+            _: &str,
+            _: StepKind,
+            _: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("insert_completed_step"))
+        }
+        async fn check_wait_all_children(
+            &self,
+            _: &[String],
+        ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+            Err(StorageError::NotImplemented("check_wait_all_children"))
+        }
+    }
+
+    #[async_trait]
+    impl WaitGroupStore for StubDurableStorage {
+        async fn upsert_wait_group_step(
+            &self,
+            _: UpsertWaitGroupStepParams,
+        ) -> Result<(), StorageError> {
+            Err(StorageError::NotImplemented("upsert_wait_group_step"))
+        }
+        async fn complete_wait_group_child(
+            &self,
+            _: CompleteWaitGroupChildParams,
+        ) -> Result<bool, StorageError> {
+            Err(StorageError::NotImplemented("complete_wait_group_child"))
+        }
+        async fn fail_wait_group_child(
+            &self,
+            _: FailWaitGroupChildParams,
+        ) -> Result<bool, StorageError> {
+            Err(StorageError::NotImplemented("fail_wait_group_child"))
+        }
+        async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
+            Err(StorageError::NotImplemented("recover_wait_group_orphans"))
+        }
+    }
+
+    // EventStore — deliver_event returns NotImplemented; the default
+    // complete_event_step_and_schedule_body propagates that error.
+    #[async_trait]
+    impl EventStore for StubDurableStorage {
+        async fn deliver_event(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<EventDeliveryResult, StorageError> {
+            Err(StorageError::NotImplemented("deliver_event"))
+        }
+        async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
+            Err(StorageError::NotImplemented("execution_stats"))
+        }
+    }
 
     #[tokio::test]
     async fn complete_event_step_and_schedule_body_not_implemented_by_default() {
         let storage = StubDurableStorage;
-        let result = storage
-            .complete_event_step_and_schedule_body("exec-1", "approval", serde_json::json!({}))
-            .await;
+        // EventStore::complete_event_step_and_schedule_body delegates to deliver_event,
+        // which returns NotImplemented above.
+        let result = EventStore::complete_event_step_and_schedule_body(
+            &storage,
+            "exec-1",
+            "approval",
+            serde_json::json!({}),
+        )
+        .await;
         assert!(matches!(result, Err(StorageError::NotImplemented(_))));
     }
 }

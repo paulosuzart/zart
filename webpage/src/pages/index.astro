@@ -11,6 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Playfair+Display:ital,wght@0,700;0,800;1,700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' width='32' height='32'%3E%3Crect width='32' height='32' rx='6' fill='%234f46e5'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' font-weight='700' text-anchor='middle' fill='white'%3EZ%3C/text%3E%3C/svg%3E"></link>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -791,8 +792,55 @@
       50% { opacity: 1; transform: translateX(-50%) scaleX(1.25); }
     }
 
-    /* ── Mobile global fixes ── */
+    /* ── Use cases section ────────────────────────────────── */
+    .use-cases {
+      padding: var(--section-gap) 0;
+      border-top: 1px solid var(--border-dim);
+    }
+
+    .use-cases-grid {
+      display: flex;
+      justify-content: space-between;
+      gap: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .use-case-item {
+      flex: 1;
+      min-width: 200px;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem;
+      transition: color 0.2s;
+      color: var(--text-muted);
+    }
+
+    .use-case-item:hover {
+      color: var(--text);
+    }
+
+    .use-case-icon {
+      font-size: 1.5rem;
+      flex-shrink: 0;
+      width: 40px;
+      text-align: center;
+    }
+
+    .use-case-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      display: block;
+    }
+
+    .use-case-detail {
+      font-size: 0.85rem;
+      opacity: 0.8;
+    }
+
     @media (max-width: 640px) {
+      .use-cases-grid { flex-direction: column; gap: 1.5rem; }
+    }
       :root { --section-gap: 4rem; }
 
       .hero { padding: 3rem 0 2.5rem; }
@@ -873,10 +921,10 @@
         <span></span><span></span><span></span>
       </button>
       <ul class="nav-links" id="nav-links">
-        <li><a href="/getting-started/">Docs</a></li>
-        <li><a href="/about/">About</a></li>
+        <li><a href="/docs/getting-started/">Docs</a></li>
+        <li><a href="/docs/about/">About</a></li>
         <li><a href="https://github.com/paulosuzart/zart" target="_blank" rel="noopener">GitHub</a></li>
-        <li><a href="/getting-started/" class="nav-cta">Get Started</a></li>
+        <li><a href="/docs/getting-started/" class="nav-cta">Get Started</a></li>
       </ul>
     </div>
   </div>
@@ -908,7 +956,7 @@
           </p>
         </div>
         <div class="hero-actions">
-          <a href="/getting-started/" class="btn btn-primary">
+          <a href="/docs/getting-started/" class="btn btn-primary">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Get Started
           </a>
@@ -1215,7 +1263,7 @@
   <div class="container" style="position:relative;z-index:1;">
     <h2 style="font-family: var(--font-display); font-size: clamp(1.6rem, 3vw, 2.2rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 0.75rem;">Ready to build?</h2>
     <p style="color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; max-width: 44ch; margin-inline: auto;">Everything you need to get your first durable workflow running in minutes.</p>
-    <a href="/getting-started/" class="btn btn-primary">Read the docs →</a>
+    <a href="/docs/getting-started/" class="btn btn-primary">Read the docs →</a>
   </div>
 </section>
 
@@ -1228,7 +1276,7 @@
         Zart
       </a>
       <ul class="footer-links">
-        <li><a href="/getting-started/">Docs</a></li>
+        <li><a href="/docs/getting-started/">Docs</a></li>
         <li><a href="/rust-api/overview/">API Reference</a></li>
         <li><a href="https://github.com/paulosuzart/zart" target="_blank" rel="noopener">GitHub</a></li>
       </ul>

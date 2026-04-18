@@ -11,7 +11,8 @@ pub use zart::{
 };
 /// Shared helpers and test step definitions for integration tests.
 pub use zart_scheduler::{
-    DurableStorage as _, EventDeliveryResult, ExecutionStatus, PostgresScheduler, Scheduler as _,
+    EventDeliveryResult, ExecutionStatus, ExecutionStore as _, PostgresScheduler,
+    TaskScheduler as _,
 };
 
 // ── Local step error for test steps ───────────────────────────────────────

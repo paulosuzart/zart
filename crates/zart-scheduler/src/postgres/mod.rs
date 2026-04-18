@@ -9,11 +9,15 @@
 //! Call `PostgresScheduler::run_migrations` (or `just migrate`) once before
 //! starting workers. It applies the embedded SQL files under `migrations/`.
 
+mod admin_storage_impl;
+mod event_storage_impl;
+mod execution_storage_impl;
 mod pause_storage_impl;
 mod scheduler_impl;
 mod sql_helpers;
-mod storage_impl;
+mod step_storage_impl;
 mod table_names;
+mod wait_group_storage_impl;
 
 use sqlx::PgPool;
 

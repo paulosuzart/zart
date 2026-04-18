@@ -7,7 +7,7 @@
 mod postgres_tests {
     use sqlx::PgPool;
     use uuid::Uuid;
-    use zart_scheduler::{PostgresScheduler, Scheduler};
+    use zart_scheduler::{PostgresScheduler, TaskScheduler};
 
     /// Returns a PostgreSQL connection string from the environment.
     /// Defaults to the local Docker Compose instance.

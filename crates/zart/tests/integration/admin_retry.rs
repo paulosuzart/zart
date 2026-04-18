@@ -67,9 +67,9 @@ async fn admin_retry_step_clears_deadline_so_retried_step_can_run() {
     .expect("insert step failed");
 
     let new_task_id = scheduler
-        .admin_retry_step(&run_id, "slow-step", Some("test"))
+        .retry_dead_step(&run_id, "slow-step", Some("test"))
         .await
-        .expect("admin_retry_step failed");
+        .expect("retry_dead_step failed");
 
     let new_metadata: Option<serde_json::Value> =
         sqlx::query_scalar(r#"SELECT metadata FROM zart_tasks WHERE task_id = $1"#)
@@ -81,7 +81,7 @@ async fn admin_retry_step_clears_deadline_so_retried_step_can_run() {
     let meta = new_metadata.expect("new task should have metadata");
     assert!(
         meta.get("deadline").is_none(),
-        "admin_retry_step should have removed the 'deadline' key, but got: {meta}"
+        "retry_dead_step should have removed the 'deadline' key, but got: {meta}"
     );
 
     let step_status: Option<String> = sqlx::query_scalar(
