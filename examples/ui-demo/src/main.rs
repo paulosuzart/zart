@@ -22,10 +22,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart_api::{AppState, admin_router};
-use zart_scheduler::PostgresScheduler;
 
 // ── Order Processing Task ─────────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Connecting to database…");
     let pool = sqlx::PgPool::connect(&db_url).await?;
 
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
     tracing::info!("Migrations applied");
 
     let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));

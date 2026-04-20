@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
-use zart_scheduler::PostgresScheduler;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SleepInput {
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
 
     let mut registry = TaskRegistry::new();
     registry.register("sleep-task", SleepTask);

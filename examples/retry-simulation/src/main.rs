@@ -14,10 +14,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::zart_step;
-use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
 
     let mut registry = TaskRegistry::new();
     registry.register("retry-simulation", RetrySimulationTask);

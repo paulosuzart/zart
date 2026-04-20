@@ -19,11 +19,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::registry::DurableExecution;
 use zart::zart_step;
-use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 
@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));

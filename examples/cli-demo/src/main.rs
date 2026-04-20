@@ -22,8 +22,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use zart::PostgresStorage;
 use zart::prelude::*;
-use zart_scheduler::PostgresScheduler;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -207,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
 
     let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
 

@@ -13,11 +13,11 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::context::ZartStep;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::trx;
-use zart_scheduler::PostgresScheduler;
 
 // ── Schema (created on first run) ────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
     POOL.set(pool.clone()).ok();
 
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
     ensure_schema(&pool).await?;
 
     let user_id = Uuid::new_v4();

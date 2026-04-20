@@ -14,6 +14,7 @@
 pub mod error;
 pub mod recurrence;
 pub mod store;
+pub mod table_names;
 pub mod task_metadata;
 pub mod types;
 

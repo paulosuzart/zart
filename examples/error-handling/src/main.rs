@@ -14,10 +14,10 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::{ExecutionFailure, StepOutcome, TaskError};
 use zart::prelude::*;
 use zart::{zart_durable, zart_step};
-use zart_scheduler::PostgresScheduler;
 
 // ── Step error types ──────────────────────────────────────────────────────────
 
@@ -313,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = std::sync::Arc::new(PostgresScheduler::new(pool));
+    let sched = std::sync::Arc::new(PostgresStorage::new(pool));
 
     let mut registry = TaskRegistry::new();
     registry.register("error-handling-demo", ProcessOrder);

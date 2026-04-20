@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::ExecutionStatus;
+use zart::PostgresStorage;
 use zart::admin::{PauseScope, RerunSpec};
 use zart::error::{SchedulerError, TaskError};
 use zart::prelude::*;
-use zart_scheduler::{ExecutionStatus, PostgresScheduler};
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -124,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
 
     // Use with_pause so we can demo pause/resume too.
     let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
@@ -359,7 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_worker(sched: &Arc<PostgresScheduler>) -> Arc<zart::Worker> {
+fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
     let mut registry = TaskRegistry::new();
     registry.register("zart::admin_demo::AdminDemoTask", AdminDemoTask);
     let registry = Arc::new(registry);

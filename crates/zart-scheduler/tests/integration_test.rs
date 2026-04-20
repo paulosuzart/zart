@@ -306,7 +306,9 @@ mod postgres_tests {
         let prefix = "custtest_";
         setup_custom_tables(&pool, prefix).await;
 
-        let names = zart_scheduler::TableNames::with_prefix(prefix).expect("with_prefix failed");
+        let config = zart_core::table_names::TableNameConfig::with_prefix(prefix)
+            .expect("with_prefix failed");
+        let names = zart_scheduler::TableNames::from_config(config);
         let scheduler = PostgresTaskScheduler::with_table_names(pool.clone(), names);
 
         let task_id = format!("custom-prefix-{}", Uuid::new_v4());

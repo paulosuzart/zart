@@ -8,7 +8,7 @@ members = [
     "examples",
     "examples/admin-demo",
     "examples/cli-demo",
-    "examples/ui-demo",
+    "examples/ui-demo", "crates/zart-core",
 ]
 resolver = "2"
 
@@ -21,6 +21,7 @@ repository = "https://github.com/paulosuzart/zart"
 
 [workspace.dependencies]
 # Internal crates
+zart-core = { path = "crates/zart-core", version = "0.1.1" }
 zart-scheduler = { path = "crates/zart-scheduler", version = "0.1.1" }
 zart = { path = "crates/zart", version = "0.1.1" }
 zart-macros = { path = "crates/zart-macros", version = "0.1.1" }

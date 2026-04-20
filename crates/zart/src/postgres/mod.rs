@@ -65,8 +65,8 @@ impl PostgresStorage {
     /// use zart::postgres::{PostgresStorage, TableNames};
     ///
     /// let pool = PgPool::connect("postgres://...").await.unwrap();
-    /// let names = TableNames::with_prefix("myapp_").unwrap();
-    /// let storage = PostgresStorage::with_table_names(pool, names);
+    /// let config = zart_core::table_names::TableNameConfig::with_prefix("myapp_").unwrap();
+    /// let storage = PostgresStorage::with_table_names(pool, TableNames::from_config(config));
     /// # }
     /// ```
     pub fn with_table_names(pool: PgPool, table_names: TableNames) -> Self {
