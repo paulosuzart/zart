@@ -20,7 +20,6 @@ pub mod error;
 pub mod pause_storage;
 pub mod recurrence;
 pub mod store;
-pub mod task_metadata;
 pub mod types;
 
 pub(crate) mod repository;
@@ -28,9 +27,8 @@ pub(crate) mod repository;
 pub mod postgres;
 
 pub use error::StorageError;
+pub use pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage};
 pub use recurrence::Recurrence;
-pub use store::{EventStore, ExecutionStore, StepStore, TaskScheduler, WaitGroupStore};
-pub use task_metadata::{StepMetaType, TaskMetadata};
 pub use types::{
     CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
     CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
@@ -40,11 +38,12 @@ pub use types::{
     StepAttemptStatus, StepKind, StepLookup, StepResultKind, StepRow, StepStatus, TaskStatus,
     UpsertWaitGroupStepParams,
 };
+pub use zart_core::store::{EventStore, ExecutionStore, StepStore, TaskScheduler, WaitGroupStore};
+pub use zart_core::task_metadata::{StepMetaType, TaskMetadata};
 
 pub use postgres::{PostgresScheduler, TableNames, TableNamesError};
 
 use async_trait::async_trait;
-use pause_storage::PauseStorage;
 
 /// Deprecated: use [`TaskScheduler`] instead.
 ///

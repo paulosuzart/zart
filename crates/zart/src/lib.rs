@@ -137,8 +137,11 @@ pub mod retry;
 pub mod service;
 pub mod step_ops;
 pub mod step_types;
+pub mod store;
+pub mod task_metadata;
 pub mod timeout;
 mod trx_impl;
+pub mod types;
 pub mod worker;
 
 #[cfg(test)]

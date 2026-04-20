@@ -9,6 +9,7 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
+zart-core.workspace = true
 zart-scheduler.workspace = true
 zart-macros.workspace = true
 async-trait.workspace = true
