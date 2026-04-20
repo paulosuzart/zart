@@ -5,5 +5,5 @@
 pub use zart_core::store::pause_storage;
 pub use zart_core::store::{
     EventStore, ExecutionStore, PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage,
-    PauseStore, StepStore, TaskScheduler, WaitGroupStore,
+    PauseStore, StepStore, StorageBackend, TaskScheduler, WaitGroupStore,
 };

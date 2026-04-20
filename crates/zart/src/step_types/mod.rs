@@ -4,8 +4,10 @@
 //! step dispatch. All orchestration lives in behavior implementations and the
 //! dispatch layer; `TaskContext` only expresses intent.
 
+use crate::store::StorageBackend;
 use async_trait::async_trait;
-use zart_scheduler::{StepMetaType, StorageBackend, StorageError, TaskMetadata};
+use zart_core::task_metadata::StepMetaType;
+use zart_core::{StorageError, TaskMetadata};
 
 use crate::context::{PendingFn, TaskContext};
 use crate::error::StepError;
@@ -172,7 +174,7 @@ impl ResultKind {
     }
 }
 
-impl From<ResultKind> for zart_scheduler::StepResultKind {
+impl From<ResultKind> for zart_core::types::StepResultKind {
     fn from(k: ResultKind) -> Self {
         match k {
             ResultKind::Ok => Self::Ok,
@@ -184,14 +186,14 @@ impl From<ResultKind> for zart_scheduler::StepResultKind {
     }
 }
 
-impl From<zart_scheduler::StepResultKind> for ResultKind {
-    fn from(k: zart_scheduler::StepResultKind) -> Self {
+impl From<zart_core::types::StepResultKind> for ResultKind {
+    fn from(k: zart_core::types::StepResultKind) -> Self {
         match k {
-            zart_scheduler::StepResultKind::Ok => Self::Ok,
-            zart_scheduler::StepResultKind::Err => Self::Err,
-            zart_scheduler::StepResultKind::Rx => Self::RetryExhausted,
-            zart_scheduler::StepResultKind::Timeout => Self::TimedOut,
-            zart_scheduler::StepResultKind::Dl => Self::DeadlineExceeded,
+            zart_core::types::StepResultKind::Ok => Self::Ok,
+            zart_core::types::StepResultKind::Err => Self::Err,
+            zart_core::types::StepResultKind::Rx => Self::RetryExhausted,
+            zart_core::types::StepResultKind::Timeout => Self::TimedOut,
+            zart_core::types::StepResultKind::Dl => Self::DeadlineExceeded,
         }
     }
 }
@@ -429,7 +431,8 @@ pub mod step;
 #[cfg(test)]
 mod tests {
     use super::StepDefId;
-    use zart_scheduler::{StepMetaType, TaskMetadata};
+    use zart_core::TaskMetadata;
+    use zart_core::task_metadata::StepMetaType;
 
     fn step_meta(
         step_type: StepMetaType,

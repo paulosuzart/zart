@@ -1,22 +1,23 @@
-//! PostgreSQL implementation of [`ExecutionRepository`] and [`ExecutionStore`] for [`PostgresScheduler`].
+//! PostgreSQL implementation of [`ExecutionStore`] for [`PostgresStorage`].
 //!
 //! Covers execution lifecycle (start, complete, fail, cancel) and run queries.
-//! Step-level operations live in `step_storage_impl`.
-//! Admin operations (restart, rerun, retry, reset) live in `admin_storage_impl`.
+//! Admin operations (retry, restart, reset) delegate to `admin_storage_impl`.
+//! Fine-grained primitives `create_run` and `set_current_run` are implemented here.
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
-
-use super::PostgresScheduler;
-use super::sql_helpers::start_execution_sql;
-use crate::repository::{AdminRepository, ExecutionRepository};
-use crate::store::ExecutionStore;
-use crate::{
+use zart_core::StorageError;
+use zart_core::store::ExecutionStore;
+use zart_core::types::{
     ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStatus, ExecutionTrigger,
-    ListExecutionsParams, SortOrder, StorageError,
+    ListExecutionsParams, SortOrder,
 };
 
-impl ExecutionRepository for PostgresScheduler {
+use super::PostgresStorage;
+use super::sql_helpers::start_execution_sql;
+
+#[async_trait]
+impl ExecutionStore for PostgresStorage {
     async fn start_execution(
         &self,
         execution_id: &str,
@@ -347,76 +348,68 @@ impl ExecutionRepository for PostgresScheduler {
             )
             .collect())
     }
-}
-
-// ── ExecutionStore ────────────────────────────────────────────────────────────
-
-#[async_trait]
-impl ExecutionStore for PostgresScheduler {
-    async fn start_execution(
-        &self,
-        execution_id: &str,
-        task_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        ExecutionRepository::start_execution(self, execution_id, task_name, payload).await
-    }
-
-    async fn start_execution_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        execution_id: &str,
-        task_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        ExecutionRepository::start_execution_in_tx(self, conn, execution_id, task_name, payload)
-            .await
-    }
-
-    async fn complete_execution(
-        &self,
-        execution_id: &str,
-        result: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        ExecutionRepository::complete_execution(self, execution_id, result).await
-    }
-
-    async fn fail_execution(&self, execution_id: &str) -> Result<(), StorageError> {
-        ExecutionRepository::fail_execution(self, execution_id).await
-    }
-
-    async fn get_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<Option<ExecutionRecord>, StorageError> {
-        ExecutionRepository::get_execution(self, execution_id).await
-    }
-
-    async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
-        ExecutionRepository::cancel_execution(self, execution_id).await
-    }
-
-    async fn list_executions(
-        &self,
-        params: ListExecutionsParams,
-    ) -> Result<Vec<ExecutionRecord>, StorageError> {
-        ExecutionRepository::list_executions(self, params).await
-    }
-
-    async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
-        ExecutionRepository::get_current_run_id(self, execution_id).await
-    }
-
-    async fn list_runs(&self, execution_id: &str) -> Result<Vec<ExecutionRunRecord>, StorageError> {
-        ExecutionRepository::list_runs(self, execution_id).await
-    }
 
     async fn reset_execution(
         &self,
         execution_id: &str,
         payload: serde_json::Value,
     ) -> Result<String, StorageError> {
-        AdminRepository::reset_execution(self, execution_id, payload).await
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let max_index: i32 = sqlx::query_scalar(&format!(
+            r#"
+            SELECT COALESCE(MAX(run_index), -1)
+            FROM {execution_runs}
+            WHERE execution_id = $1
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let next_index = max_index + 1;
+        let new_run_id = format!("{execution_id}:run:{next_index}");
+
+        sqlx::query(&format!(
+            r#"
+            INSERT INTO {execution_runs}
+                (run_id, execution_id, run_index, payload, trigger)
+            VALUES ($1, $2, $3, $4, 'restart')
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .bind(next_index)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        sqlx::query(&format!(
+            r#"
+            UPDATE {executions}
+            SET current_run_id = $1
+            WHERE execution_id = $2
+            "#,
+            executions = self.table_names.executions(),
+        ))
+        .bind(&new_run_id)
+        .bind(execution_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(new_run_id)
     }
 
     async fn retry_dead_step(
@@ -425,7 +418,8 @@ impl ExecutionStore for PostgresScheduler {
         step_name: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        AdminRepository::retry_dead_step(self, run_id, step_name, triggered_by).await
+        self.do_retry_dead_step(run_id, step_name, triggered_by)
+            .await
     }
 
     async fn restart_run(
@@ -435,6 +429,78 @@ impl ExecutionStore for PostgresScheduler {
         trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        AdminRepository::restart_run(self, execution_id, new_payload, trigger, triggered_by).await
+        self.do_restart_run(execution_id, new_payload, trigger, triggered_by)
+            .await
+    }
+
+    async fn create_run(
+        &self,
+        execution_id: &str,
+        payload: serde_json::Value,
+        trigger: &str,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let max_index: i32 = sqlx::query_scalar(&format!(
+            r#"
+            SELECT COALESCE(MAX(run_index), -1)
+            FROM {execution_runs}
+            WHERE execution_id = $1
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(execution_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let next_index = max_index + 1;
+        let run_id = format!("{execution_id}:run:{next_index}");
+
+        sqlx::query(&format!(
+            r#"
+            INSERT INTO {execution_runs}
+                (run_id, execution_id, run_index, payload, trigger, triggered_by)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+            execution_runs = self.table_names.execution_runs(),
+        ))
+        .bind(&run_id)
+        .bind(execution_id)
+        .bind(next_index)
+        .bind(&payload)
+        .bind(trigger)
+        .bind(triggered_by)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        Ok(run_id)
+    }
+
+    async fn set_current_run(&self, execution_id: &str, run_id: &str) -> Result<(), StorageError> {
+        sqlx::query(&format!(
+            r#"
+            UPDATE {executions}
+            SET current_run_id = $1
+            WHERE execution_id = $2
+            "#,
+            executions = self.table_names.executions(),
+        ))
+        .bind(run_id)
+        .bind(execution_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
     }
 }

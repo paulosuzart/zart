@@ -3,8 +3,9 @@ use super::helpers::*;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::ListExecutionsParams;
 use zart::{DurableScheduler, TaskRegistry};
-use zart_scheduler::{ListExecutionsParams, Recurrence};
+use zart_scheduler::Recurrence;
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]

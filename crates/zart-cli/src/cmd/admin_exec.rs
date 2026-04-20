@@ -1,6 +1,6 @@
 use zart::DurableScheduler;
+use zart::ExecutionStatus;
 use zart::admin::RerunSpec;
-use zart_scheduler::ExecutionStatus;
 
 use crate::fmt::{fmt_lower, fmt_opt};
 

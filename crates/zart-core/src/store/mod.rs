@@ -221,6 +221,32 @@ pub trait ExecutionStore: Send + Sync {
         trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError>;
+
+    /// Create a new run for an execution and return the new `run_id`.
+    ///
+    /// This is a fine-grained primitive: it inserts the run row but does NOT
+    /// update `current_run_id`. Call [`set_current_run`] afterwards.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn create_run(
+        &self,
+        execution_id: &str,
+        payload: serde_json::Value,
+        trigger: &str,
+        triggered_by: Option<&str>,
+    ) -> Result<String, StorageError> {
+        Err(StorageError::NotImplemented("create_run"))
+    }
+
+    /// Set the `current_run_id` for an execution to `run_id`.
+    ///
+    /// Fine-grained primitive — use after [`create_run`] to atomically advance
+    /// the execution to a new run within a caller-managed transaction.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn set_current_run(&self, execution_id: &str, run_id: &str) -> Result<(), StorageError> {
+        Err(StorageError::NotImplemented("set_current_run"))
+    }
 }
 
 // ── StepStore ─────────────────────────────────────────────────────────────────
@@ -337,6 +363,45 @@ pub trait WaitGroupStore: Send + Sync {
     /// Recover wait-group orphans where the group triggered but the body task
     /// was never inserted. Returns the number of recovered body tasks.
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError>;
+}
+
+// ── StorageBackend ────────────────────────────────────────────────────────────
+
+/// Combined backend trait — the single type-erased handle for all storage operations.
+///
+/// Use `Arc<dyn StorageBackend>` wherever a fully-capable backend is needed.
+/// `PostgresStorage` (in `zart`) satisfies this bound automatically via blanket impls.
+///
+/// Composed from:
+/// - [`TaskScheduler`] — task queue lifecycle
+/// - [`ExecutionStore`] — execution records and run primitives
+/// - [`StepStore`] — step scheduling, completion, and query
+/// - [`WaitGroupStore`] — wait-group coordination
+/// - [`EventStore`] — event delivery and statistics
+/// - [`pause_storage::PauseStorage`] — pause rules
+pub trait StorageBackend:
+    TaskScheduler
+    + ExecutionStore
+    + StepStore
+    + WaitGroupStore
+    + EventStore
+    + pause_storage::PauseStorage
+    + Send
+    + Sync
+{
+}
+
+impl<
+    T: TaskScheduler
+        + ExecutionStore
+        + StepStore
+        + WaitGroupStore
+        + EventStore
+        + pause_storage::PauseStorage
+        + Send
+        + Sync,
+> StorageBackend for T
+{
 }
 
 // ── EventStore ────────────────────────────────────────────────────────────────

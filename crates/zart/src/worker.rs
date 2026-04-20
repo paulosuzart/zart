@@ -10,14 +10,14 @@ use crate::metrics::{
     TASK_HEARTBEAT_RENEWALS_TOTAL, TASKS_TOTAL, WORKER_CONCURRENT_TASKS,
 };
 use crate::registry::TaskRegistry;
+use crate::store::StorageBackend;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, instrument, warn};
 use uuid::Uuid;
-use zart_scheduler::StorageBackend;
-use zart_scheduler::TaskMetadata;
+use zart_core::TaskMetadata;
 
 /// Tuning parameters for a [`Worker`].
 ///
@@ -581,7 +581,7 @@ async fn dispatch_task(
     // ── Cancellation guard ────────────────────────────────────────────────────
     if has_execution {
         match ctx_cleanup.scheduler.get_execution(&execution_id).await {
-            Ok(Some(exec)) if exec.status == zart_scheduler::ExecutionStatus::Cancelled => {
+            Ok(Some(exec)) if exec.status == zart_core::types::ExecutionStatus::Cancelled => {
                 info!("Execution cancelled while task was running; discarding result");
                 let _ = ctx_cleanup
                     .scheduler

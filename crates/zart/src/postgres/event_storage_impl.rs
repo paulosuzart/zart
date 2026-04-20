@@ -1,16 +1,15 @@
-//! PostgreSQL implementation of [`EventRepository`] and [`EventStore`] for [`PostgresScheduler`].
-//!
-//! Covers delivering external events to waiting executions and read-only
-//! execution statistics (a reporting aggregate, not an admin mutation).
+//! PostgreSQL implementation of [`EventStore`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
+use zart_core::StorageError;
+use zart_core::store::EventStore;
+use zart_core::task_metadata::TaskMetadata;
+use zart_core::types::{EventDeliveryResult, ExecutionStats};
 
-use super::PostgresScheduler;
-use crate::repository::EventRepository;
-use crate::store::EventStore;
-use crate::{EventDeliveryResult, ExecutionStats, StorageError, TaskMetadata};
+use super::PostgresStorage;
 
-impl EventRepository for PostgresScheduler {
+#[async_trait]
+impl EventStore for PostgresStorage {
     async fn deliver_event(
         &self,
         execution_id: &str,
@@ -176,23 +175,5 @@ impl EventRepository for PostgresScheduler {
             failed: row.3,
             cancelled: row.4,
         })
-    }
-}
-
-// ── EventStore ────────────────────────────────────────────────────────────────
-
-#[async_trait]
-impl EventStore for PostgresScheduler {
-    async fn deliver_event(
-        &self,
-        execution_id: &str,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<EventDeliveryResult, StorageError> {
-        EventRepository::deliver_event(self, execution_id, event_name, payload).await
-    }
-
-    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
-        EventRepository::execution_stats(self).await
     }
 }

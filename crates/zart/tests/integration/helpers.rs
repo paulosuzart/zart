@@ -5,15 +5,15 @@ pub use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 pub use std::time::Duration;
+/// Shared helpers and test step definitions for integration tests.
+pub use zart::PostgresStorage;
 pub use zart::{
     RetryConfig, TaskRegistry, Worker, WorkerConfig, context::ZartStep, error::TaskError,
     registry::DurableExecution,
 };
-/// Shared helpers and test step definitions for integration tests.
-pub use zart_scheduler::{
-    EventDeliveryResult, ExecutionStatus, ExecutionStore as _, PostgresScheduler,
-    TaskScheduler as _,
-};
+pub use zart_core::store::ExecutionStore as _;
+pub use zart_core::types::{EventDeliveryResult, ExecutionStatus};
+pub use zart_scheduler::TaskScheduler as _;
 
 // ── Local step error for test steps ───────────────────────────────────────
 
@@ -43,17 +43,17 @@ pub fn pg_url() -> String {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string())
 }
 
-pub async fn setup() -> Arc<PostgresScheduler> {
+pub async fn setup() -> Arc<PostgresStorage> {
     let pool = sqlx::PgPool::connect(&pg_url())
         .await
         .expect("failed to connect to PostgreSQL");
-    let scheduler = Arc::new(PostgresScheduler::new(pool));
+    let scheduler = Arc::new(PostgresStorage::new(pool));
     scheduler.run_migrations().await.expect("migrations failed");
     scheduler
 }
 
 pub fn spawn_worker(
-    scheduler: Arc<PostgresScheduler>,
+    scheduler: Arc<PostgresStorage>,
     registry: Arc<TaskRegistry>,
 ) -> (Arc<Worker>, tokio::task::JoinHandle<()>) {
     let config = WorkerConfig {

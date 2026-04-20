@@ -1,19 +1,20 @@
-//! Implementation of the [`TaskScheduler`] trait for [`PostgresTaskScheduler`].
+//! Implementation of [`TaskScheduler`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
-
-use super::PostgresTaskScheduler;
-use super::sql_helpers::schedule_at_sql;
-use crate::{
-    CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
-    TaskScheduler, TaskStatus,
+use zart_core::StorageError;
+use zart_scheduler::{
+    CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, TaskScheduler,
+    TaskStatus,
 };
 
+use super::PostgresStorage;
+use super::sql_helpers::schedule_at_sql;
+
 #[async_trait]
-impl TaskScheduler for PostgresTaskScheduler {
+impl TaskScheduler for PostgresStorage {
     async fn schedule_now(
         &self,
         task_id: &str,
@@ -46,9 +47,6 @@ impl TaskScheduler for PostgresTaskScheduler {
         Ok(result)
     }
 
-    /// Schedule a task within the caller's transaction.
-    ///
-    /// The caller is responsible for committing or rolling back the transaction.
     async fn schedule_at_in_tx(
         &self,
         conn: &mut PgConnection,
@@ -68,7 +66,6 @@ impl TaskScheduler for PostgresTaskScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        // SELECT with SKIP LOCKED to avoid contention between concurrent workers.
         let rows: Vec<(
             String,
             String,
@@ -105,7 +102,6 @@ impl TaskScheduler for PostgresTaskScheduler {
         let mut fetched = Vec::with_capacity(rows.len());
 
         for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in rows {
-            // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
             sqlx::query(&format!(
@@ -133,7 +129,6 @@ impl TaskScheduler for PostgresTaskScheduler {
                 task_name,
                 data,
                 state,
-                // Return the post-increment attempt count.
                 attempt: attempt as usize + 1,
                 lock_token,
                 recurrence,
@@ -315,7 +310,7 @@ impl TaskScheduler for PostgresTaskScheduler {
     }
 
     async fn run_migrations(&self) -> Result<(), StorageError> {
-        sqlx::migrate!("./migrations")
+        sqlx::migrate!("../zart-scheduler/migrations")
             .run(&self.pool)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))

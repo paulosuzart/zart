@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use zart_scheduler::{ExecutionRecord, ExecutionSortField, ListExecutionsParams, SortOrder};
+use zart::{ExecutionRecord, ExecutionSortField, ListExecutionsParams, SortOrder};
 
 // ── Requests ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ impl ListQuery {
         let status = self
             .status
             .as_deref()
-            .and_then(|s| s.parse::<zart_scheduler::ExecutionStatus>().ok());
+            .and_then(|s| s.parse::<zart::ExecutionStatus>().ok());
         let sort_by = match self.sort_by.as_deref() {
             Some("status") => ExecutionSortField::Status,
             Some("taskName") => ExecutionSortField::TaskName,
@@ -259,8 +259,8 @@ pub struct StatsResponse {
     pub cancelled: i64,
 }
 
-impl From<zart_scheduler::ExecutionStats> for StatsResponse {
-    fn from(s: zart_scheduler::ExecutionStats) -> Self {
+impl From<zart::ExecutionStats> for StatsResponse {
+    fn from(s: zart::ExecutionStats) -> Self {
         Self {
             scheduled: s.scheduled,
             running: s.running,

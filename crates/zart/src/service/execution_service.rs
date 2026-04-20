@@ -14,7 +14,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use zart_scheduler::{StepStatus, StorageBackend};
+use crate::store::StorageBackend;
+use zart_core::types::StepStatus;
 
 use crate::admin::{ExecutionDetail, RerunResult, RerunSpec, StepWithAttempts};
 use crate::error::SchedulerError;
@@ -206,7 +207,7 @@ impl ExecutionService {
                     .filter(|a| a.step_id == step.step_id)
                     .cloned()
                     .collect();
-                let retryable = step.status == zart_scheduler::StepStatus::Dead;
+                let retryable = step.status == zart_core::types::StepStatus::Dead;
                 StepWithAttempts {
                     step,
                     attempts: step_attempts,

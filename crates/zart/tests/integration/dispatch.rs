@@ -4,15 +4,18 @@ use std::time::Duration;
 use uuid::Uuid;
 use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
 use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
-use zart_scheduler::{
-    CompleteWaitGroupChildParams, EventStore as _, FailWaitGroupChildParams, ScheduleStepParams,
-    StepKind, StepStore as _, TaskMetadata, UpsertWaitGroupStepParams, WaitGroupStore as _,
+use zart_core::TaskMetadata;
+use zart_core::store::{EventStore as _, StepStore as _, WaitGroupStore as _};
+use zart_core::types::{
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
+    UpsertWaitGroupStepParams,
 };
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn stepdefid_from_task_metadata_correct() {
-    use zart_scheduler::{StepMetaType, TaskMetadata};
+    use zart_core::TaskMetadata;
+    use zart_core::task_metadata::StepMetaType;
 
     let make = |step_type: StepMetaType,
                 step_name: &str,
@@ -189,8 +192,8 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .await
     });
 
-    let r1: Result<bool, zart_scheduler::StorageError> = child1.await.expect("join child1 failed");
-    let r2: Result<bool, zart_scheduler::StorageError> = child2.await.expect("join child2 failed");
+    let r1: Result<bool, zart_core::StorageError> = child1.await.expect("join child1 failed");
+    let r2: Result<bool, zart_core::StorageError> = child2.await.expect("join child2 failed");
     let t1 = r1.expect("complete_wait_group_child #1 failed");
     let t2 = r2.expect("complete_wait_group_child #2 failed");
 

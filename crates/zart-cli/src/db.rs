@@ -11,7 +11,7 @@ pub async fn pool(db_url: Option<String>) -> sqlx::PgPool {
 pub async fn simple(db_url: Option<String>) -> DurableScheduler {
     let url = require_db_url(db_url);
     let pool = connect(&url).await;
-    let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
+    let scheduler = Arc::new(zart::PostgresStorage::new(pool));
     DurableScheduler::new(scheduler)
 }
 
@@ -19,7 +19,7 @@ pub async fn simple(db_url: Option<String>) -> DurableScheduler {
 pub async fn admin(db_url: Option<String>) -> DurableScheduler {
     let url = require_db_url(db_url);
     let pool = connect(&url).await;
-    let scheduler = Arc::new(zart_scheduler::PostgresScheduler::new(pool));
+    let scheduler = Arc::new(zart::PostgresStorage::new(pool));
     DurableScheduler::with_pause(scheduler.clone(), scheduler)
 }
 

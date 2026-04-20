@@ -238,7 +238,8 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
     use zart::{DurableApi, error::SchedulerError};
-    use zart_scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
+    use zart::{ExecutionRecord, ExecutionStats, ListExecutionsParams};
+    use zart_scheduler::ScheduleResult;
 
     struct NullApi;
 

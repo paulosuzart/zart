@@ -3,10 +3,10 @@
 //! This module intentionally provides a conservative, backward-compatible
 //! scaffold that can be wired in during phased cutover.
 
+use crate::store::StorageBackend;
 use async_trait::async_trait;
-use zart_scheduler::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageBackend, StorageError,
-};
+use zart_core::StorageError;
+use zart_core::types::{CompleteWaitGroupChildParams, FailWaitGroupChildParams};
 
 use crate::step_ops;
 use crate::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
@@ -181,15 +181,16 @@ mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use std::sync::{Arc, Mutex};
-    use zart_scheduler::pause_storage::PauseStorage;
-    use zart_scheduler::{
+    use zart_core::store::pause_storage::PauseStorage;
+    use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
+    use zart_core::types::{
         CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-        CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
-        ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
-        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
-        ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, StepStore,
-        TaskScheduler, UpsertWaitGroupStepParams, WaitGroupStore,
+        CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
+        ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
+        RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
+        StepAttemptRow, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
+    use zart_scheduler::TaskScheduler;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Recorded {

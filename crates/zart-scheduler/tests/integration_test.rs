@@ -7,7 +7,7 @@
 mod postgres_tests {
     use sqlx::PgPool;
     use uuid::Uuid;
-    use zart_scheduler::{PostgresScheduler, TaskScheduler};
+    use zart_scheduler::{PostgresTaskScheduler, TaskScheduler};
 
     /// Returns a PostgreSQL connection string from the environment.
     /// Defaults to the local Docker Compose instance.
@@ -17,12 +17,12 @@ mod postgres_tests {
     }
 
     /// Build a pool, run migrations, and return both.
-    async fn setup() -> (PgPool, PostgresScheduler) {
+    async fn setup() -> (PgPool, PostgresTaskScheduler) {
         let pool = PgPool::connect(&pg_url())
             .await
             .expect("failed to connect to PostgreSQL");
 
-        let scheduler = PostgresScheduler::new(pool.clone());
+        let scheduler = PostgresTaskScheduler::new(pool.clone());
         scheduler.run_migrations().await.expect("migrations failed");
 
         (pool, scheduler)
@@ -296,7 +296,7 @@ mod postgres_tests {
             .expect("failed to connect to PostgreSQL");
 
         // Run default migrations to ensure zart_* tables and ENUMs exist.
-        let default_scheduler = PostgresScheduler::new(pool.clone());
+        let default_scheduler = PostgresTaskScheduler::new(pool.clone());
         default_scheduler
             .run_migrations()
             .await
@@ -307,7 +307,7 @@ mod postgres_tests {
         setup_custom_tables(&pool, prefix).await;
 
         let names = zart_scheduler::TableNames::with_prefix(prefix).expect("with_prefix failed");
-        let scheduler = PostgresScheduler::with_table_names(pool.clone(), names);
+        let scheduler = PostgresTaskScheduler::with_table_names(pool.clone(), names);
 
         let task_id = format!("custom-prefix-{}", Uuid::new_v4());
 

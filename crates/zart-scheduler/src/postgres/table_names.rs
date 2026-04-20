@@ -1,4 +1,4 @@
-//! Table-name configuration for [`super::PostgresScheduler`].
+//! Table-name configuration for [`super::PostgresTaskScheduler`].
 //!
 //! [`TableNames`] lets callers override the default `zart_*` table names without
 //! changing any trait signatures. All seven table names are resolved **once at
@@ -32,14 +32,8 @@
 pub struct TableNames {
     // Kept so that `with_schema` can rebuild all names with the same prefix.
     prefix: String,
-    // Pre-resolved, fully-qualified names. Computed once at construction.
+    // Pre-resolved, fully-qualified name for the tasks table.
     tasks: String,
-    executions: String,
-    execution_runs: String,
-    steps: String,
-    step_attempts: String,
-    pause_rules: String,
-    pause_snapshots: String,
 }
 
 /// Errors returned when constructing [`TableNames`] with invalid identifiers.
@@ -120,55 +114,21 @@ impl TableNames {
         &self.tasks
     }
 
-    pub(crate) fn executions(&self) -> &str {
-        &self.executions
-    }
-
-    pub(crate) fn execution_runs(&self) -> &str {
-        &self.execution_runs
-    }
-
-    pub(crate) fn steps(&self) -> &str {
-        &self.steps
-    }
-
-    pub(crate) fn step_attempts(&self) -> &str {
-        &self.step_attempts
-    }
-
-    pub(crate) fn pause_rules(&self) -> &str {
-        &self.pause_rules
-    }
-
-    pub(crate) fn pause_snapshots(&self) -> &str {
-        &self.pause_snapshots
-    }
-
     // ── Internal helpers ────────────────────────────────────────────────────
 
-    /// Build a fully resolved `TableNames` from raw parts.
+    /// Build a `TableNames` from raw parts.
     ///
-    /// All seven table names are computed here and stored; no formatting
+    /// The tasks table name is computed here and stored; no formatting
     /// happens again at query time.
     fn from_parts(prefix: String, schema: Option<String>) -> Self {
-        let resolve = |base: &str| {
-            let table = format!("{prefix}{base}");
+        let tasks = {
+            let table = format!("{prefix}tasks");
             match &schema {
                 Some(s) => format!("\"{s}\".\"{table}\""),
                 None => format!("\"{table}\""),
             }
         };
-
-        Self {
-            tasks: resolve("tasks"),
-            executions: resolve("executions"),
-            execution_runs: resolve("execution_runs"),
-            steps: resolve("steps"),
-            step_attempts: resolve("step_attempts"),
-            pause_rules: resolve("pause_rules"),
-            pause_snapshots: resolve("pause_snapshots"),
-            prefix,
-        }
+        Self { tasks, prefix }
     }
 
     /// Reject identifiers that PostgreSQL would reject or that could be used
@@ -206,27 +166,18 @@ mod tests {
     fn default_uses_zart_prefix_no_schema() {
         let n = TableNames::default();
         assert_eq!(n.tasks(), "\"zart_tasks\"");
-        assert_eq!(n.executions(), "\"zart_executions\"");
-        assert_eq!(n.execution_runs(), "\"zart_execution_runs\"");
-        assert_eq!(n.steps(), "\"zart_steps\"");
-        assert_eq!(n.step_attempts(), "\"zart_step_attempts\"");
-        assert_eq!(n.pause_rules(), "\"zart_pause_rules\"");
-        assert_eq!(n.pause_snapshots(), "\"zart_pause_snapshots\"");
     }
 
     #[test]
     fn with_prefix_replaces_default() {
         let n = TableNames::with_prefix("myapp_").unwrap();
         assert_eq!(n.tasks(), "\"myapp_tasks\"");
-        assert_eq!(n.executions(), "\"myapp_executions\"");
-        assert_eq!(n.steps(), "\"myapp_steps\"");
     }
 
     #[test]
     fn with_schema_qualifies_table() {
         let n = TableNames::default().with_schema("tenant_a").unwrap();
         assert_eq!(n.tasks(), "\"tenant_a\".\"zart_tasks\"");
-        assert_eq!(n.steps(), "\"tenant_a\".\"zart_steps\"");
     }
 
     #[test]
@@ -236,7 +187,6 @@ mod tests {
             .with_schema("myschema")
             .unwrap();
         assert_eq!(n.tasks(), "\"myschema\".\"svc_tasks\"");
-        assert_eq!(n.pause_rules(), "\"myschema\".\"svc_pause_rules\"");
     }
 
     #[test]

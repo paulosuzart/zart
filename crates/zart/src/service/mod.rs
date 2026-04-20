@@ -5,5 +5,7 @@
 //! business logic that should not live in storage primitives.
 
 pub mod execution_service;
+pub mod pause_service;
 
 pub use execution_service::ExecutionService;
+pub use pause_service::PauseService;

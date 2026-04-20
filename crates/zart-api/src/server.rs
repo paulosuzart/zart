@@ -85,8 +85,8 @@ mod tests {
     use async_trait::async_trait;
     use std::time::Duration;
     use zart::error::SchedulerError;
-    use zart_scheduler::ListExecutionsParams;
-    use zart_scheduler::{ExecutionRecord, ExecutionStats, ScheduleResult};
+    use zart::{ExecutionRecord, ExecutionStats, ListExecutionsParams};
+    use zart_scheduler::ScheduleResult;
 
     struct NullApi;
 

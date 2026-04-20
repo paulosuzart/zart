@@ -8,11 +8,12 @@ use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
 use crate::retry::RetryConfig;
 use crate::step_types::{StepDefId, StepRequest, StepResult};
+use crate::store::StorageBackend;
 use crate::timeout::TimeoutScope;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::instrument;
-use zart_scheduler::{StepResultKind, StorageBackend};
+use zart_core::types::StepResultKind;
 
 use super::state::{PendingFn, StepHandle};
 use super::step_context::StepContext;
@@ -554,7 +555,7 @@ impl TaskContext {
         kind: crate::step_types::ResultKind,
         attempt_number: usize,
     ) -> Result<(), StepError> {
-        use zart_scheduler::CompleteStepAndScheduleBodyParams;
+        use zart_core::types::CompleteStepAndScheduleBodyParams;
 
         let step_task_id = self.task_id.clone();
         let step_id = self.task_id.clone();

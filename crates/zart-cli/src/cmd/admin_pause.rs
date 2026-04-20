@@ -1,6 +1,6 @@
 use zart::DurableScheduler;
+use zart::PauseRuleFilter;
 use zart::admin::PauseScope;
-use zart_scheduler::pause_storage::PauseRuleFilter;
 
 pub async fn pause(
     durable: DurableScheduler,

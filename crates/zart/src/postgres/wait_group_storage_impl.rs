@@ -1,20 +1,17 @@
-//! PostgreSQL implementation of [`WaitGroupRepository`] and [`WaitGroupStore`] for [`PostgresScheduler`].
-//!
-//! Covers upserting wait-group steps, completing/failing children, and
-//! recovering orphaned groups. Step-level operations (schedule, complete)
-//! live in `step_storage_impl`.
+//! PostgreSQL implementation of [`WaitGroupStore`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
-
-use super::PostgresScheduler;
-use crate::repository::WaitGroupRepository;
-use crate::store::WaitGroupStore;
-use crate::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageError, TaskMetadata,
-    UpsertWaitGroupStepParams,
+use zart_core::StorageError;
+use zart_core::store::WaitGroupStore;
+use zart_core::task_metadata::TaskMetadata;
+use zart_core::types::{
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, UpsertWaitGroupStepParams,
 };
 
-impl WaitGroupRepository for PostgresScheduler {
+use super::PostgresStorage;
+
+#[async_trait]
+impl WaitGroupStore for PostgresStorage {
     async fn upsert_wait_group_step(
         &self,
         params: UpsertWaitGroupStepParams,
@@ -305,35 +302,5 @@ impl WaitGroupRepository for PostgresScheduler {
         }
 
         Ok(recovered)
-    }
-}
-
-// ── WaitGroupStore ────────────────────────────────────────────────────────────
-
-#[async_trait]
-impl WaitGroupStore for PostgresScheduler {
-    async fn upsert_wait_group_step(
-        &self,
-        params: UpsertWaitGroupStepParams,
-    ) -> Result<(), StorageError> {
-        WaitGroupRepository::upsert_wait_group_step(self, params).await
-    }
-
-    async fn complete_wait_group_child(
-        &self,
-        params: CompleteWaitGroupChildParams,
-    ) -> Result<bool, StorageError> {
-        WaitGroupRepository::complete_wait_group_child(self, params).await
-    }
-
-    async fn fail_wait_group_child(
-        &self,
-        params: FailWaitGroupChildParams,
-    ) -> Result<bool, StorageError> {
-        WaitGroupRepository::fail_wait_group_child(self, params).await
-    }
-
-    async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
-        WaitGroupRepository::recover_wait_group_orphans(self).await
     }
 }

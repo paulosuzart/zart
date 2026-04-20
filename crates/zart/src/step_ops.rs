@@ -7,11 +7,13 @@
 //! Keeping this logic here means `PostgresScheduler` remains a clean,
 //! generic storage backend with no execution-model knowledge.
 
-use zart_scheduler::{
+use crate::store::StorageBackend;
+use zart_core::task_metadata::StepMetaType;
+use zart_core::types::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StepKind, StepMetaType, StepResultKind, StorageBackend,
-    StorageError, TaskMetadata,
+    ScheduleResult, ScheduleStepParams, StepKind, StepResultKind,
 };
+use zart_core::{StorageError, TaskMetadata};
 
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {
@@ -324,15 +326,17 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use std::sync::{Arc, Mutex};
-    use zart_scheduler::pause_storage::PauseStorage;
-    use zart_scheduler::{
+    use zart_core::store::pause_storage::PauseStorage;
+    use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
+    use zart_core::types::{
         CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-        CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
-        ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
-        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow,
-        StepKind, StepLookup, StepRow, StepStore, TaskMetadata, TaskScheduler,
-        UpsertWaitGroupStepParams, WaitGroupStore,
+        CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
+        ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
+        RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow, StepKind, StepLookup,
+        StepRow, UpsertWaitGroupStepParams,
     };
+    use zart_core::{StorageError, TaskMetadata};
+    use zart_scheduler::TaskScheduler;
 
     struct CapturingStorage {
         last_metadata: Arc<Mutex<Option<serde_json::Value>>>,
