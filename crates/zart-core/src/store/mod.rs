@@ -83,6 +83,20 @@ pub trait TaskScheduler: Send + Sync {
         lock_token: &str,
     ) -> Result<(), StorageError>;
 
+    /// Mark a task as completed within a caller-owned transaction.
+    ///
+    /// Default implementation returns `NotImplemented`.
+    async fn mark_completed_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        task_id: &str,
+        result: Option<serde_json::Value>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let _ = (conn, task_id, result, lock_token);
+        Err(StorageError::NotImplemented("mark_completed_in_tx"))
+    }
+
     /// Mark a task as failed, optionally rescheduling for retry.
     async fn mark_failed(
         &self,

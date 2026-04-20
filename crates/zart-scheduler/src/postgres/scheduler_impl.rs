@@ -6,7 +6,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::PostgresTaskScheduler;
-use super::sql_helpers::schedule_at_sql;
+use super::sql_helpers::{mark_completed_sql, schedule_at_sql};
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
     TaskScheduler, TaskStatus,
@@ -190,32 +190,22 @@ impl TaskScheduler for PostgresTaskScheduler {
         result: Option<serde_json::Value>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
-        let rows_affected = sqlx::query(&format!(
-            r#"
-            UPDATE {tasks}
-            SET status       = 'completed',
-                result       = $1,
-                completed_at = NOW(),
-                updated_at   = NOW(),
-                locked_at    = NULL,
-                worker_id    = NULL
-            WHERE task_id  = $2
-              AND worker_id = $3
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&result)
-        .bind(task_id)
-        .bind(lock_token)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?
-        .rows_affected();
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        mark_completed_sql(&mut conn, task_id, result, lock_token, &self.table_names).await
+    }
 
-        if rows_affected == 0 {
-            return Err(StorageError::LockMismatch(task_id.to_string()));
-        }
-        Ok(())
+    async fn mark_completed_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        task_id: &str,
+        result: Option<serde_json::Value>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        mark_completed_sql(conn, task_id, result, lock_token, &self.table_names).await
     }
 
     async fn mark_failed(

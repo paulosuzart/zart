@@ -97,6 +97,16 @@ mod tests {
             Ok(())
         }
 
+        async fn mark_completed_in_tx(
+            &self,
+            _conn: &mut sqlx::PgConnection,
+            _task_id: &str,
+            _result: Option<serde_json::Value>,
+            _lock_token: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
         async fn mark_failed(
             &self,
             _task_id: &str,

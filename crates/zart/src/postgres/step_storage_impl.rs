@@ -12,7 +12,7 @@ use zart_core::types::{
 };
 
 use super::PostgresStorage;
-use super::sql_helpers::complete_step_and_schedule_body_sql;
+use super::sql_helpers::{complete_step_and_schedule_body_sql, schedule_step_sql};
 
 #[async_trait]
 impl StepStore for PostgresStorage {
@@ -229,22 +229,17 @@ impl StepStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&params.task_id)
-        .bind(&params.task_name)
-        .bind(params.execution_time)
-        .bind(&params.data)
-        .bind(&params.metadata)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        // Task-queue insert delegated to task_scheduler (no task-queue SQL in this crate).
+        schedule_step_sql(
+            &mut tx,
+            &params.task_id,
+            &params.task_name,
+            params.execution_time,
+            &params.data,
+            &params.metadata,
+            &*self.task_scheduler,
+        )
+        .await?;
 
         let step_id = format!("{}:step:{}", params.run_id, params.step_name);
         sqlx::query(&format!(
@@ -285,7 +280,13 @@ impl StepStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        complete_step_and_schedule_body_sql(&mut tx, &params, &self.table_names).await?;
+        complete_step_and_schedule_body_sql(
+            &mut tx,
+            &params,
+            &self.table_names,
+            &*self.task_scheduler,
+        )
+        .await?;
 
         tx.commit()
             .await
@@ -298,7 +299,8 @@ impl StepStore for PostgresStorage {
         conn: &mut PgConnection,
         params: CompleteStepAndScheduleBodyParams,
     ) -> Result<(), StorageError> {
-        complete_step_and_schedule_body_sql(conn, &params, &self.table_names).await
+        complete_step_and_schedule_body_sql(conn, &params, &self.table_names, &*self.task_scheduler)
+            .await
     }
 
     async fn complete_step_no_resume(

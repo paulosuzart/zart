@@ -3,11 +3,15 @@
 //! Each function accepts a `&mut sqlx::PgConnection` so that it can be executed
 //! either against a fresh transaction (for the standalone methods) or against a
 //! caller-owned transaction (for the `_in_tx` variants).
+//!
+//! Task-queue inserts (scheduling body tasks, step tasks) go through the
+//! `task_scheduler` parameter so that no task-queue SQL lives in this crate.
 
 use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgConnection;
 use zart_core::StorageError;
+use zart_core::store::TaskScheduler;
 use zart_core::task_metadata::TaskMetadata;
 use zart_core::types::{CompleteStepAndScheduleBodyParams, ScheduleAtParams, ScheduleResult};
 
@@ -87,49 +91,16 @@ pub async fn start_execution_sql(
     Ok(())
 }
 
-/// Insert a task row.
-pub async fn schedule_at_sql(
-    conn: &mut PgConnection,
-    params: &ScheduleAtParams,
-    names: &TableNames,
-) -> Result<ScheduleResult, StorageError> {
-    let recurrence_json = params
-        .recurrence
-        .as_ref()
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-    sqlx::query(&format!(
-        r#"
-        INSERT INTO {tasks}
-            (task_id, task_name, execution_time, data, recurrence, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (task_id) DO NOTHING
-        "#,
-        tasks = names.tasks(),
-    ))
-    .bind(&params.task_id)
-    .bind(&params.task_name)
-    .bind(params.execution_time)
-    .bind(&params.data)
-    .bind(&recurrence_json)
-    .bind(&params.metadata)
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-    Ok(ScheduleResult {
-        task_id: params.task_id.clone(),
-        execution_time: params.execution_time,
-    })
-}
-
 /// Atomically complete a step+task, record the attempt, and schedule the next body task.
+///
+/// Task-queue writes (marking the step task completed, inserting the body task) are
+/// performed via `task_scheduler.mark_completed_in_tx` and `task_scheduler.schedule_at_in_tx`
+/// so that no task-queue SQL lives in this crate.
 pub async fn complete_step_and_schedule_body_sql(
     conn: &mut PgConnection,
     params: &CompleteStepAndScheduleBodyParams,
     names: &TableNames,
+    task_scheduler: &dyn TaskScheduler,
 ) -> Result<(), StorageError> {
     let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
     sqlx::query(&format!(
@@ -162,41 +133,53 @@ pub async fn complete_step_and_schedule_body_sql(
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    let rows_affected = sqlx::query(&format!(
-        r#"
-        UPDATE {tasks} SET status = 'completed', result = $1, completed_at = NOW(), updated_at = NOW(), locked_at = NULL, worker_id = NULL
-        WHERE task_id = $2 AND worker_id = $3
-        "#,
-        tasks = names.tasks(),
-    ))
-    .bind(&params.result)
-    .bind(&params.step_task_id)
-    .bind(&params.lock_token)
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?
-    .rows_affected();
+    // Mark the step task as completed via the task_scheduler delegate (no task-queue SQL in this crate).
+    task_scheduler
+        .mark_completed_in_tx(conn, &params.step_task_id, Some(params.result.clone()), &params.lock_token)
+        .await?;
 
-    if rows_affected == 0 {
-        return Err(StorageError::LockMismatch(params.step_task_id.clone()));
-    }
-
+    // Schedule the next body task via the task_scheduler delegate.
     let body_metadata = TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
-    sqlx::query(&format!(
-        r#"
-        INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-        VALUES ($1, $2, NOW(), $3, $4)
-        ON CONFLICT (task_id) DO NOTHING
-        "#,
-        tasks = names.tasks(),
-    ))
-    .bind(&params.next_body_task_id)
-    .bind(&params.task_name)
-    .bind(&params.data)
-    .bind(&body_metadata)
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?;
+    task_scheduler
+        .schedule_at_in_tx(
+            conn,
+            ScheduleAtParams {
+                task_id: params.next_body_task_id.clone(),
+                task_name: params.task_name.clone(),
+                execution_time: Utc::now(),
+                data: params.data.clone(),
+                recurrence: None,
+                metadata: body_metadata,
+            },
+        )
+        .await?;
 
     Ok(())
+}
+
+/// Insert a task row for a step (task_id + step row) within a caller-owned transaction.
+///
+/// Used by `StepStore::schedule_step`.
+pub async fn schedule_step_sql(
+    conn: &mut PgConnection,
+    task_id: &str,
+    task_name: &str,
+    execution_time: chrono::DateTime<chrono::Utc>,
+    data: &Value,
+    metadata: &Value,
+    task_scheduler: &dyn TaskScheduler,
+) -> Result<ScheduleResult, StorageError> {
+    task_scheduler
+        .schedule_at_in_tx(
+            conn,
+            ScheduleAtParams {
+                task_id: task_id.to_string(),
+                task_name: task_name.to_string(),
+                execution_time,
+                data: data.clone(),
+                recurrence: None,
+                metadata: metadata.clone(),
+            },
+        )
+        .await
 }

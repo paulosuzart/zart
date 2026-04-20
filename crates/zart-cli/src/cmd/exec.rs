@@ -1,5 +1,4 @@
 use zart::DurableScheduler;
-use zart::store::TaskScheduler as _;
 
 pub async fn migrate(pool: sqlx::PgPool) {
     let scheduler = zart::PostgresStorage::new(pool);

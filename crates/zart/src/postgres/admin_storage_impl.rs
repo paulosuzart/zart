@@ -10,7 +10,7 @@
 use chrono::Utc;
 use zart_core::StorageError;
 use zart_core::task_metadata::TaskMetadata;
-use zart_core::types::{ExecutionStatus, StepStatus};
+use zart_core::types::{ExecutionStatus, ScheduleAtParams, StepStatus};
 
 use super::PostgresStorage;
 
@@ -79,21 +79,34 @@ impl PostgresStorage {
             "{run_id}:step:retry:{step_name}:{}",
             Utc::now().timestamp_millis()
         );
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata, status, attempt)
-            SELECT $1, t.task_name, NOW(), t.data, $2, 'scheduled', 0
-            FROM {tasks} t
-            WHERE t.task_id = $3
-            "#,
+
+        // Fetch the task_name and data for the new task from the old task row.
+        let old_task_row: Option<(String, serde_json::Value)> = sqlx::query_as(&format!(
+            r#"SELECT task_name, data FROM {tasks} WHERE task_id = $1"#,
             tasks = self.table_names.tasks(),
         ))
-        .bind(&new_task_id)
-        .bind(&task_metadata)
         .bind(&old_task_id)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let (retry_task_name, retry_data) =
+            old_task_row.unwrap_or_else(|| (String::new(), serde_json::json!({})));
+
+        // Schedule the retry task via the task_scheduler delegate (no task-queue SQL here).
+        self.task_scheduler
+            .schedule_at_in_tx(
+                &mut tx,
+                ScheduleAtParams {
+                    task_id: new_task_id.clone(),
+                    task_name: retry_task_name,
+                    execution_time: Utc::now(),
+                    data: retry_data,
+                    recurrence: None,
+                    metadata: task_metadata,
+                },
+            )
+            .await?;
 
         sqlx::query(&format!(
             r#"
@@ -225,20 +238,19 @@ impl PostgresStorage {
 
                 let body_task_id = format!("{run_id}:body:start");
                 let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
-                sqlx::query(&format!(
-                    r#"
-                    INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-                    VALUES ($1, $2, NOW(), $3, $4)
-                    "#,
-                    tasks = self.table_names.tasks(),
-                ))
-                .bind(&body_task_id)
-                .bind(&task_name)
-                .bind(&payload)
-                .bind(&body_metadata)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(Box::new(e)))?;
+                self.task_scheduler
+                    .schedule_at_in_tx(
+                        &mut tx,
+                        ScheduleAtParams {
+                            task_id: body_task_id,
+                            task_name,
+                            execution_time: Utc::now(),
+                            data: payload,
+                            recurrence: None,
+                            metadata: body_metadata,
+                        },
+                    )
+                    .await?;
 
                 tx.commit()
                     .await
@@ -325,20 +337,19 @@ impl PostgresStorage {
 
         let body_task_id = format!("{new_run_id}:body:start");
         let body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, NOW(), $3, $4)
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&body_task_id)
-        .bind(&task_name)
-        .bind(&payload)
-        .bind(&body_metadata)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        self.task_scheduler
+            .schedule_at_in_tx(
+                &mut tx,
+                ScheduleAtParams {
+                    task_id: body_task_id,
+                    task_name,
+                    execution_time: Utc::now(),
+                    data: payload,
+                    recurrence: None,
+                    metadata: body_metadata,
+                },
+            )
+            .await?;
 
         tx.commit()
             .await

@@ -1,10 +1,11 @@
 //! PostgreSQL implementation of [`EventStore`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
+use chrono::Utc;
 use zart_core::StorageError;
 use zart_core::store::EventStore;
 use zart_core::task_metadata::TaskMetadata;
-use zart_core::types::{EventDeliveryResult, ExecutionStats};
+use zart_core::types::{EventDeliveryResult, ExecutionStats, ScheduleAtParams};
 
 use super::PostgresStorage;
 
@@ -126,21 +127,20 @@ impl EventStore for PostgresStorage {
         let next_body_task_id = format!("{execution_id}:body:after:{event_name}");
         let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, NOW(), $3, $4)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&next_body_task_id)
-        .bind(&task_name)
-        .bind(&run_payload)
-        .bind(&body_metadata)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        // Schedule the continuation body task via the task_scheduler delegate.
+        self.task_scheduler
+            .schedule_at_in_tx(
+                &mut tx,
+                ScheduleAtParams {
+                    task_id: next_body_task_id,
+                    task_name,
+                    execution_time: Utc::now(),
+                    data: run_payload,
+                    recurrence: None,
+                    metadata: body_metadata,
+                },
+            )
+            .await?;
 
         tx.commit()
             .await

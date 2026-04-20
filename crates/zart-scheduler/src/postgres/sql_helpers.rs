@@ -12,6 +12,42 @@ use sqlx::PgConnection;
 
 use super::table_names::TableNames;
 
+/// Mark a task as completed within a caller-owned connection/transaction.
+pub async fn mark_completed_sql(
+    conn: &mut PgConnection,
+    task_id: &str,
+    result: Option<serde_json::Value>,
+    lock_token: &str,
+    names: &TableNames,
+) -> Result<(), StorageError> {
+    let rows_affected = sqlx::query(&format!(
+        r#"
+        UPDATE {tasks}
+        SET status       = 'completed',
+            result       = $1,
+            completed_at = NOW(),
+            updated_at   = NOW(),
+            locked_at    = NULL,
+            worker_id    = NULL
+        WHERE task_id  = $2
+          AND worker_id = $3
+        "#,
+        tasks = names.tasks(),
+    ))
+    .bind(&result)
+    .bind(task_id)
+    .bind(lock_token)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| StorageError::Database(Box::new(e)))?
+    .rows_affected();
+
+    if rows_affected == 0 {
+        return Err(StorageError::LockMismatch(task_id.to_string()));
+    }
+    Ok(())
+}
+
 /// Insert a task row.
 ///
 /// Used by both `schedule_at` and body task scheduling.
