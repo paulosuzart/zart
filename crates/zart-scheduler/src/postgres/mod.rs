@@ -1,4 +1,4 @@
-//! PostgreSQL-backed task-queue implementation of [`TaskScheduler`].
+//! PostgreSQL-backed task-queue implementation of `TaskScheduler`.
 //!
 //! Uses `sqlx` with a `PgPool` for connection pooling. Task locking is
 //! implemented with `SELECT … FOR UPDATE SKIP LOCKED` so multiple workers
@@ -54,7 +54,7 @@ impl PostgresTaskScheduler {
     }
 }
 
-/// Deprecated: use [`zart::PostgresStorage`] for full storage or
+/// Deprecated: use `zart::PostgresStorage` for full storage or
 /// [`PostgresTaskScheduler`] for task-queue-only use.
 #[deprecated(
     since = "0.2.0",

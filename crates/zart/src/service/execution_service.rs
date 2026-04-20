@@ -36,7 +36,7 @@ impl ExecutionService {
 
     /// Retry a single dead step within the given run.
     ///
-    /// Delegates to [`zart_scheduler::ExecutionStore::retry_dead_step`] after resolving any
+    /// Delegates to `ExecutionStore::retry_dead_step` after resolving any
     /// run-level concerns. Returns the new task ID for the retried step.
     ///
     /// # Errors
@@ -104,7 +104,7 @@ impl ExecutionService {
     /// - Steps in `spec.preserve` that are `completed` are carried forward.
     ///
     /// After computing the effective-rerun set the method calls
-    /// [`zart_scheduler::ExecutionStore::restart_run`] with `trigger = 'selective_rerun'`.
+    /// `ExecutionStore::restart_run` with `trigger = 'selective_rerun'`.
     ///
     /// # Returns
     ///

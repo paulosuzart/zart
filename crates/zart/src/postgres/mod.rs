@@ -1,6 +1,6 @@
 //! PostgreSQL-backed storage for all Zart tables.
 //!
-//! [`PostgresStorage`] implements the full [`zart_scheduler::StorageBackend`]
+//! [`PostgresStorage`] implements the full `StorageBackend`
 //! trait, covering both the task queue (`zart_tasks`) and all execution-side
 //! tables (`zart_executions`, `zart_execution_runs`, `zart_steps`,
 //! `zart_step_attempts`, `zart_wait_groups`, `zart_events`, `zart_pause_rules`).
@@ -33,10 +33,10 @@ pub use table_names::{TableNames, TableNamesError};
 
 /// A fully-capable storage backend backed by a PostgreSQL database.
 ///
-/// Implements [`zart_scheduler::StorageBackend`] which composes
-/// [`zart_scheduler::TaskScheduler`], [`zart_scheduler::ExecutionStore`],
-/// [`zart_scheduler::StepStore`], [`zart_scheduler::WaitGroupStore`],
-/// [`zart_scheduler::EventStore`], and [`zart_scheduler::PauseStorage`].
+/// Implements `StorageBackend` which composes
+/// `TaskScheduler`, `ExecutionStore`,
+/// `StepStore`, `WaitGroupStore`,
+/// `EventStore`, and `PauseStorage`.
 ///
 /// Create one with [`PostgresStorage::new`], passing in an already-built
 /// `sqlx::PgPool`. Call `run_migrations` before first use to ensure the

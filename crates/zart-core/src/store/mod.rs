@@ -225,7 +225,7 @@ pub trait ExecutionStore: Send + Sync {
     /// Create a new run for an execution and return the new `run_id`.
     ///
     /// This is a fine-grained primitive: it inserts the run row but does NOT
-    /// update `current_run_id`. Call [`set_current_run`] afterwards.
+    /// update `current_run_id`. Call `set_current_run` afterwards.
     /// Default implementation returns `NotImplemented`.
     #[allow(unused_variables)]
     async fn create_run(
@@ -240,7 +240,7 @@ pub trait ExecutionStore: Send + Sync {
 
     /// Set the `current_run_id` for an execution to `run_id`.
     ///
-    /// Fine-grained primitive — use after [`create_run`] to atomically advance
+    /// Fine-grained primitive — use after `create_run` to atomically advance
     /// the execution to a new run within a caller-managed transaction.
     /// Default implementation returns `NotImplemented`.
     #[allow(unused_variables)]
