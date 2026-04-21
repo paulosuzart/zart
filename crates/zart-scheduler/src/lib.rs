@@ -4,6 +4,9 @@
 //! [`PostgresTaskScheduler`] implementation. It owns only the `zart_tasks` table
 //! lifecycle: schedule, poll, complete, fail, and cancel rows.
 //!
+//! It also owns the worker infrastructure: [`Worker`], [`WorkerConfig`],
+//! [`TaskRegistry`], [`ScheduledTask`], [`TaskInstance`], and [`ExecutionOps`].
+//!
 //! For durable execution storage (executions, steps, wait-groups, events, pauses)
 //! use `zart::PostgresStorage` from the `zart` crate.
 //!
@@ -14,18 +17,27 @@
 //! `SKIP LOCKED`, executed, and either completed, failed, or rescheduled.
 
 pub mod error;
-pub mod recurrence;
-pub mod store;
-pub mod types;
-
+pub mod ops;
 pub mod postgres;
+pub mod recurrence;
+pub mod registry;
+pub mod store;
+pub mod task;
+pub mod types;
+pub mod worker;
+pub mod worker_config;
 
 pub use error::StorageError;
+pub use ops::ExecutionOps;
 pub use recurrence::Recurrence;
+pub use registry::TaskRegistry;
 pub use store::TaskScheduler;
+pub use task::{ScheduledTask, SchedulerTaskError, TaskInstance};
 pub use types::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, TaskStatus,
 };
+pub use worker::Worker;
+pub use worker_config::WorkerConfig;
 
 pub use postgres::{PostgresTaskScheduler, TableNames, TableNamesError};
 
@@ -43,7 +55,6 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::sync::Arc;
 
-    /// A minimal in-memory stub implementing TaskScheduler.
     struct StubScheduler;
 
     #[async_trait::async_trait]

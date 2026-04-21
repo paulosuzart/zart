@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Admin API demonstration example.
 //!
 //! Demonstrates:

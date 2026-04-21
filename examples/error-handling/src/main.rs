@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Error Handling Example
 //!
 //! Demonstrates the full spectrum of zart error handling:

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Approval Workflow Example
 //!
 //! Demonstrates a human-in-the-loop durable workflow using wait_for_event:

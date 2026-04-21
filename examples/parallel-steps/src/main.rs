@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Parallel Steps Example
 //!
 //! Demonstrates parallel step execution using schedule + wait:

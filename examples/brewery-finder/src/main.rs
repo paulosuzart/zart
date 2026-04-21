@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Brewery Finder Example
 //!
 //! Demonstrates a sequential multi-step durable execution using the new `#[zart_step]` macro:

@@ -171,6 +171,7 @@ pub use service::ExecutionService;
 pub use store::StorageBackend;
 pub use timeout::TimeoutScope;
 pub use trx_impl::{ZartTrx, trx};
+#[allow(deprecated)]
 pub use worker::{Worker, WorkerConfig};
 pub use zart_core::store::pause_storage::PauseRuleFilter;
 pub use zart_core::types::{
@@ -185,6 +186,8 @@ pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 ///
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
+    #[allow(deprecated)]
+    pub use crate::worker::{Worker, WorkerConfig};
     pub use crate::{
         AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope, RerunResult,
         RerunSpec, ResumeResult, ZartTrx,
@@ -200,7 +203,6 @@ pub mod prelude {
         require,
         retry::RetryConfig,
         schedule, sleep, sleep_until, step, step_or, step_or_else, trx, wait, wait_for_event,
-        worker::{Worker, WorkerConfig},
     };
     pub use crate::{ExecutionRecord, ExecutionStatus, StorageBackend};
 }

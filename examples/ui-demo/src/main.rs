@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Zart UI demo — long-running backend for the Admin UI.
 //!
 //! Starts a PostgresScheduler, registers two task types, seeds a handful of

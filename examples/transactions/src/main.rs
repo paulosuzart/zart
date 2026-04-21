@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Demonstrates Zart's transaction participation features.
 //!
 //! **Scenario 1** — `start_in_tx`: atomically create a user record and start a

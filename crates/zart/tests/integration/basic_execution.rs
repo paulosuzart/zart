@@ -141,6 +141,7 @@ async fn list_executions_returns_started_executions() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
+#[allow(deprecated)]
 async fn recurring_fixed_delay_task_runs_multiple_times() {
     struct CounterTask {
         count: Arc<std::sync::atomic::AtomicUsize>,

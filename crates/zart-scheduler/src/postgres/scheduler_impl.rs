@@ -6,7 +6,9 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::PostgresTaskScheduler;
-use super::sql_helpers::{mark_completed_sql, mark_failed_sql, schedule_at_sql};
+use super::sql_helpers::{
+    mark_completed_sql, mark_failed_sql, schedule_at_sql, update_task_state_sql,
+};
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
     TaskScheduler,
@@ -399,7 +401,26 @@ impl TaskScheduler for PostgresTaskScheduler {
         Ok(())
     }
 
-    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
+    async fn update_task_state_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        task_id: &str,
+        state: serde_json::Value,
+        next_execution_time: DateTime<Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        update_task_state_sql(
+            conn,
+            task_id,
+            state,
+            next_execution_time,
+            lock_token,
+            &self.table_names,
+        )
+        .await
+    }
+
+    async fn begin(&self) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
         self.pool
             .begin()
             .await

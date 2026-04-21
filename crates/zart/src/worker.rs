@@ -1,4 +1,9 @@
 //! Worker — polls the scheduler and dispatches tasks to registered handlers.
+//!
+//! `Worker` and `WorkerConfig` are now owned by `zart-scheduler`.
+//! The re-exports here are kept for backward compatibility.
+//!
+//! @deprecated Use `zart::WorkerBuilder` (coming in Phase 3) instead.
 
 use crate::context::TaskContext;
 use crate::emit_metric;
@@ -20,104 +25,24 @@ use uuid::Uuid;
 use zart_core::TaskMetadata;
 use zart_scheduler::TaskScheduler;
 
-/// Tuning parameters for a [`Worker`].
-///
-/// All fields have production-ready defaults via [`WorkerConfig::default`].
-/// Override only what you need:
-///
-/// ```rust,ignore
-/// let config = WorkerConfig {
-///     poll_interval:        Duration::from_secs(2),
-///     max_concurrent_tasks: 32,
-///     ..WorkerConfig::default()
-/// };
-/// ```
-#[derive(Debug, Clone)]
-pub struct WorkerConfig {
-    /// How often the worker polls the database for due tasks.
-    pub poll_interval: Duration,
-
-    /// Maximum number of tasks to fetch per poll cycle.
-    pub max_tasks_per_poll: usize,
-
-    /// Maximum number of tasks that can execute concurrently within this worker.
-    pub max_concurrent_tasks: usize,
-
-    /// How long to wait for in-flight tasks to finish during graceful shutdown.
-    pub shutdown_timeout: Duration,
-
-    /// Tasks stuck in `picked_up` state longer than this are considered orphaned
-    /// and will be reset to `scheduled` by the orphan recovery loop.
-    pub orphan_timeout: Duration,
-
-    /// How often to renew the task lease while a handler is executing.
-    ///
-    /// When `None` (the default), the interval is computed as `orphan_timeout / 3`,
-    /// giving 2 retries before orphan recovery would reclaim the task.
-    /// Set to `Some(Duration::ZERO)` to disable heartbeating entirely.
-    pub heartbeat_interval: Option<Duration>,
-}
-
-impl Default for WorkerConfig {
-    fn default() -> Self {
-        Self {
-            poll_interval: Duration::from_secs(5),
-            max_tasks_per_poll: 10,
-            max_concurrent_tasks: 16,
-            shutdown_timeout: Duration::from_secs(30),
-            orphan_timeout: Duration::from_secs(300),
-            heartbeat_interval: None, // Defaults to orphan_timeout / 3.
-        }
-    }
-}
+// WorkerConfig now lives in zart-scheduler; re-export for backward compatibility.
+pub use zart_scheduler::WorkerConfig;
 
 /// Polls the database for due tasks and dispatches them to registered handlers.
+///
+/// # Deprecation
+///
+/// This type will be replaced by `zart::WorkerBuilder` in the next release.
+/// Use [`zart_scheduler::Worker`] for the generic scheduler-level worker.
 ///
 /// Workers are the execution engine of Zart. Each worker runs an async loop
 /// that fetches tasks with a `SELECT … FOR UPDATE SKIP LOCKED` query, so
 /// multiple workers — across threads or processes — can run without
 /// coordination and without double-executing the same task.
-///
-/// # Concurrency model
-///
-/// Each poll cycle fetches up to [`WorkerConfig::max_tasks_per_poll`] tasks.
-/// Each task is spawned as an independent Tokio task, bounded by a semaphore
-/// at [`WorkerConfig::max_concurrent_tasks`]. The worker itself never blocks
-/// waiting for a handler to finish.
-///
-/// # Heartbeating and orphan recovery
-///
-/// While a handler runs, a background loop renews the task's database lease
-/// at `orphan_timeout / 3` intervals (configurable via
-/// [`WorkerConfig::heartbeat_interval`]). If the process crashes the lease
-/// expires and the next orphan-recovery scan (every 10 poll cycles) resets
-/// the task to `scheduled` so another worker can pick it up.
-///
-/// # Graceful shutdown
-///
-/// Call [`stop`](Self::stop) to signal the worker to exit after the current
-/// poll cycle. In-flight handlers are given [`WorkerConfig::shutdown_timeout`]
-/// to finish. For integration with external shutdown coordinators, build the
-/// worker with [`Worker::with_cancellation`] and cancel the shared token.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use std::sync::Arc;
-/// use zart::{Worker, WorkerConfig, TaskRegistry};
-///
-/// let mut registry = TaskRegistry::new();
-/// registry.register("onboard-user", OnboardUser);
-/// let registry = Arc::new(registry);
-///
-/// let worker = Worker::new(scheduler.clone(), Arc::clone(&registry), WorkerConfig::default());
-///
-/// // Run until a signal is received, then shut down cleanly.
-/// tokio::select! {
-///     _ = worker.run()          => {}
-///     _ = tokio::signal::ctrl_c() => { worker.stop(); }
-/// }
-/// ```
+#[deprecated(
+    since = "0.3.0",
+    note = "Use `zart::WorkerBuilder` instead. See spec 0037 phase 3."
+)]
 pub struct Worker {
     scheduler: Arc<dyn TaskScheduler>,
     storage: Arc<dyn StorageBackend>,
@@ -129,6 +54,7 @@ pub struct Worker {
     cancellation: CancellationToken,
 }
 
+#[allow(deprecated)]
 impl Worker {
     /// Create a new worker.
     pub fn new(
@@ -832,6 +758,7 @@ fn build_execution_failure(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

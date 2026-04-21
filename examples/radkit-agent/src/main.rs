@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Radkit Agent Example
 //!
 //! Demonstrates integrating radkit AI agents with durable execution:

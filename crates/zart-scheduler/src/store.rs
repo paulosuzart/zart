@@ -57,6 +57,21 @@ pub trait TaskScheduler: Send + Sync {
         lock_token: &str,
     ) -> Result<(), StorageError>;
 
+    /// Reschedule a task within a caller-owned transaction.
+    ///
+    /// Default implementation returns `NotImplemented`.
+    async fn update_task_state_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        task_id: &str,
+        state: serde_json::Value,
+        next_execution_time: DateTime<Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        let _ = (conn, task_id, state, next_execution_time, lock_token);
+        Err(StorageError::NotImplemented("update_task_state_in_tx"))
+    }
+
     /// Mark a task as successfully completed.
     async fn mark_completed(
         &self,
@@ -114,8 +129,12 @@ pub trait TaskScheduler: Send + Sync {
 
     /// Begin a new database transaction.
     ///
+    /// Returns a `'static` transaction — the connection is acquired from the
+    /// underlying pool and is not tied to the `&self` borrow. This allows
+    /// callers to hold the transaction independently of the scheduler reference.
+    ///
     /// Default implementation returns `NotImplemented`.
-    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
+    async fn begin(&self) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
         Err(StorageError::NotImplemented("begin"))
     }
 

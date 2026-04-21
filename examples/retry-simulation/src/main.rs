@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Retry Simulation Example
 //!
 //! Demonstrates how to simulate and observe retry behavior in Zart durable executions.

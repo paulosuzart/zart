@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 pub use serde::{Deserialize, Serialize};
 pub use std::borrow::Cow;
 pub use std::sync::{

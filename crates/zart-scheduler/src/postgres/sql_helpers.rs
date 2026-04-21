@@ -122,6 +122,47 @@ pub async fn mark_failed_sql(
     Ok(())
 }
 
+/// Reschedule a task within a caller-owned connection/transaction.
+///
+/// Sets the task back to `'scheduled'` with the given execution time and
+/// clears the lock, so the next worker poll can pick it up again.
+pub async fn update_task_state_sql(
+    conn: &mut PgConnection,
+    task_id: &str,
+    state: serde_json::Value,
+    next_execution_time: DateTime<Utc>,
+    lock_token: &str,
+    names: &TableNames,
+) -> Result<(), StorageError> {
+    let rows_affected = sqlx::query(&format!(
+        r#"
+        UPDATE {tasks}
+        SET state          = $1,
+            execution_time = $2,
+            status         = 'scheduled',
+            locked_at      = NULL,
+            worker_id      = NULL,
+            updated_at     = NOW()
+        WHERE task_id  = $3
+          AND worker_id = $4
+        "#,
+        tasks = names.tasks(),
+    ))
+    .bind(&state)
+    .bind(next_execution_time)
+    .bind(task_id)
+    .bind(lock_token)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| StorageError::Database(Box::new(e)))?
+    .rows_affected();
+
+    if rows_affected == 0 {
+        return Err(StorageError::LockMismatch(task_id.to_string()));
+    }
+    Ok(())
+}
+
 /// Insert a task row.
 ///
 /// Used by both `schedule_at` and body task scheduling.

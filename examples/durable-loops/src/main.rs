@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Durable Loops Example
 //!
 //! Demonstrates durable iteration over a collection with guaranteed step-name uniqueness.

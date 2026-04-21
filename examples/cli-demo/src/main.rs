@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! CLI Interaction Demo — Long-running durable execution for CLI admin commands demonstration.
 //!
 //! This example starts a durable execution with multiple steps and sleeps to provide
