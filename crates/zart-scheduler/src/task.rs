@@ -13,6 +13,10 @@ pub enum SchedulerTaskError {
     #[error("{0}")]
     Failed(String),
 
+    /// A handler panicked or failed catastrophically.
+    #[error("handler panic: {0}")]
+    HandlerPanic(String),
+
     /// A storage operation inside the task failed.
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),

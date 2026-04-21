@@ -99,11 +99,20 @@ impl PostgresStorage {
                 &mut tx,
                 ScheduleAtParams {
                     task_id: new_task_id.clone(),
-                    task_name: retry_task_name,
+                    task_name: crate::TASK_NAME.to_string(),
                     execution_time: Utc::now(),
                     data: retry_data,
                     recurrence: None,
-                    metadata: task_metadata,
+                    metadata: {
+                        let mut m = task_metadata.clone();
+                        if let Some(obj) = m.as_object_mut() {
+                            obj.insert(
+                                "handler".to_string(),
+                                serde_json::Value::String(retry_task_name.clone()),
+                            );
+                        }
+                        m
+                    },
                 },
             )
             .await?;
@@ -336,17 +345,26 @@ impl PostgresStorage {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let body_task_id = format!("{new_run_id}:body:start");
-        let body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
+        let _body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
         self.task_scheduler
             .schedule_at_in_tx(
                 &mut tx,
                 ScheduleAtParams {
                     task_id: body_task_id,
-                    task_name,
+                    task_name: crate::TASK_NAME.to_string(),
                     execution_time: Utc::now(),
                     data: payload,
                     recurrence: None,
-                    metadata: body_metadata,
+                    metadata: {
+                        let mut m = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
+                        if let Some(obj) = m.as_object_mut() {
+                            obj.insert(
+                                "handler".to_string(),
+                                serde_json::Value::String(task_name.clone()),
+                            );
+                        }
+                        m
+                    },
                 },
             )
             .await?;

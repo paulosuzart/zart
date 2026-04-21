@@ -18,6 +18,7 @@ use zart::PostgresStorage;
 use zart::admin::{PauseScope, RerunSpec};
 use zart::error::{SchedulerError, TaskError};
 use zart::prelude::*;
+use zart_scheduler;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -365,10 +366,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
-    let mut registry = TaskRegistry::new();
+fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart_scheduler::Worker> {
+    let mut registry = DurableRegistry::new();
     registry.register("zart::admin_demo::AdminDemoTask", AdminDemoTask);
-    let registry = Arc::new(registry);
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(100),
         max_tasks_per_poll: 10,
@@ -377,12 +377,12 @@ fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(
-        sched.task_scheduler(),
-        sched.clone(),
-        registry,
-        config,
-    ));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
     worker

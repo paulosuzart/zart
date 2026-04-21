@@ -125,7 +125,16 @@ impl EventStore for PostgresStorage {
         }
 
         let next_body_task_id = format!("{execution_id}:body:after:{event_name}");
-        let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
+        let body_metadata = {
+            let mut m = TaskMetadata::body(&run_id, execution_id).to_json_value();
+            if let Some(obj) = m.as_object_mut() {
+                obj.insert(
+                    "handler".to_string(),
+                    serde_json::Value::String(task_name.clone()),
+                );
+            }
+            m
+        };
 
         // Schedule the continuation body task via the task_scheduler delegate.
         self.task_scheduler
@@ -133,7 +142,7 @@ impl EventStore for PostgresStorage {
                 &mut tx,
                 ScheduleAtParams {
                     task_id: next_body_task_id,
-                    task_name,
+                    task_name: crate::TASK_NAME.to_string(),
                     execution_time: Utc::now(),
                     data: run_payload,
                     recurrence: None,

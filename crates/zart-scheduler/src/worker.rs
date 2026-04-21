@@ -305,8 +305,7 @@ async fn dispatch_task(
     // The inner block releases the borrow on `tx` so we can commit/rollback after.
     let execute_result: Result<(), SchedulerTaskError> = {
         let conn: &mut PgConnection = &mut tx;
-        let mut ops =
-            ExecutionOps::new(conn, scheduler.as_ref(), &task.task_id, &task.lock_token);
+        let mut ops = ExecutionOps::new(conn, scheduler.clone(), &task.task_id, &task.lock_token);
         let result = handler.execute(&instance, &mut ops).await;
         // Default: complete with no result if the handler returned Ok without setting an outcome.
         if result.is_ok() && !ops.outcome_set() {

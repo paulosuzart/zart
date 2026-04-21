@@ -287,26 +287,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(TASK_ORDER, OrderProcessingTask);
     registry.register(TASK_PIPELINE, DataPipelineTask);
-    let registry = Arc::new(registry);
 
     let cancellation = CancellationToken::new();
 
-    let worker = Arc::new(Worker::new(
-        sched.task_scheduler(),
-        sched.clone(),
-        registry,
-        WorkerConfig {
-            poll_interval: Duration::from_millis(200),
-            max_tasks_per_poll: 10,
-            max_concurrent_tasks: 8,
-            shutdown_timeout: Duration::from_secs(5),
-            orphan_timeout: Duration::from_secs(60),
-            ..Default::default()
-        },
-    ));
+    let worker = Arc::new(
+        WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(WorkerConfig {
+                poll_interval: Duration::from_millis(200),
+                max_tasks_per_poll: 10,
+                max_concurrent_tasks: 8,
+                shutdown_timeout: Duration::from_secs(5),
+                orphan_timeout: Duration::from_secs(60),
+                ..Default::default()
+            })
+            .build(),
+    );
 
     let worker_handle = {
         let w = worker.clone();

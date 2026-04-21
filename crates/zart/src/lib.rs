@@ -125,6 +125,7 @@
 pub mod admin;
 pub mod api;
 pub mod api_trait;
+pub mod builder;
 pub mod context;
 pub mod durable;
 pub mod error;
@@ -139,11 +140,13 @@ pub mod service;
 pub mod step_ops;
 pub mod step_types;
 pub mod store;
+pub mod task;
 pub mod task_metadata;
 pub mod timeout;
 mod trx_impl;
 pub mod types;
-pub mod worker;
+
+pub const TASK_NAME: &str = "__zart__";
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
@@ -157,6 +160,7 @@ pub use api::{
     step_or_else, wait, wait_for_event,
 };
 pub use api_trait::{DurableApi, into_durable_api};
+pub use builder::WorkerBuilder;
 pub use context::{StepHandle, TaskContext, ZartStep};
 pub use durable::DurableScheduler;
 pub use error::{
@@ -164,15 +168,15 @@ pub use error::{
 };
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use postgres::PostgresStorage;
-pub use registry::{DurableExecution, TaskRegistry};
+pub use registry::{DurableExecution, DurableRegistry};
+pub use zart_scheduler::WorkerConfig;
 // Re-export execution-side types so callers don't need zart-core directly.
 pub use retry::RetryConfig;
 pub use service::ExecutionService;
 pub use store::StorageBackend;
 pub use timeout::TimeoutScope;
 pub use trx_impl::{ZartTrx, trx};
-#[allow(deprecated)]
-pub use worker::{Worker, WorkerConfig};
+// Worker is now provided via WorkerBuilder
 pub use zart_core::store::pause_storage::PauseRuleFilter;
 pub use zart_core::types::{
     ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStats, ExecutionStatus,
@@ -186,12 +190,11 @@ pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 ///
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
-    #[allow(deprecated)]
-    pub use crate::worker::{Worker, WorkerConfig};
     pub use crate::{
         AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope, RerunResult,
-        RerunSpec, ResumeResult, ZartTrx,
+        RerunSpec, ResumeResult, WorkerConfig, ZartTrx,
         api_trait::DurableApi,
+        builder::WorkerBuilder,
         capture, context,
         context::{StepHandle, ZartStep},
         durable::DurableScheduler,
@@ -199,7 +202,7 @@ pub mod prelude {
             ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
         },
         now,
-        registry::{DurableExecution, TaskRegistry},
+        registry::{DurableExecution, DurableRegistry},
         require,
         retry::RetryConfig,
         schedule, sleep, sleep_until, step, step_or, step_or_else, trx, wait, wait_for_event,

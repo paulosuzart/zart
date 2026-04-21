@@ -100,13 +100,22 @@ pub async fn schedule_step_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.step_name.to_string(),
             step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data: spec.data,
-            metadata,
+            metadata: {
+                let mut m = metadata;
+                if let Some(obj) = m.as_object_mut() {
+                    obj.insert(
+                        "handler".to_string(),
+                        serde_json::Value::String(spec.task_name.to_string()),
+                    );
+                }
+                m
+            },
             retry_config: retry_config_json,
         })
         .await
@@ -169,13 +178,22 @@ pub async fn schedule_wait_group_child_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.step_name.to_string(),
             step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data,
-            metadata,
+            metadata: {
+                let mut m = metadata;
+                if let Some(obj) = m.as_object_mut() {
+                    obj.insert(
+                        "handler".to_string(),
+                        serde_json::Value::String(spec.task_name.to_string()),
+                    );
+                }
+                m
+            },
             retry_config: None,
         })
         .await
@@ -270,13 +288,22 @@ pub async fn schedule_wait_for_event_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.event_name.to_string(),
             step_kind: StepKind::WaitForEvent,
             execution_time,
             data: spec.data,
-            metadata,
+            metadata: {
+                let mut m = metadata;
+                if let Some(obj) = m.as_object_mut() {
+                    obj.insert(
+                        "handler".to_string(),
+                        serde_json::Value::String(spec.task_name.to_string()),
+                    );
+                }
+                m
+            },
             retry_config: None,
         })
         .await
@@ -308,13 +335,22 @@ pub async fn schedule_sleep_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: sleep_task_id.to_string(),
-            task_name: task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: run_id.to_string(),
             step_name: "__sleep".to_string(),
             step_kind: StepKind::Sleep,
             execution_time: wake_time,
             data,
-            metadata,
+            metadata: {
+                let mut m = metadata;
+                if let Some(obj) = m.as_object_mut() {
+                    obj.insert(
+                        "handler".to_string(),
+                        serde_json::Value::String(task_name.to_string()),
+                    );
+                }
+                m
+            },
             retry_config: None,
         })
         .await

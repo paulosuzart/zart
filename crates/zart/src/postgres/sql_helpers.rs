@@ -144,13 +144,22 @@ pub async fn complete_step_and_schedule_body_sql(
         .await?;
 
     // Schedule the next body task via the task_scheduler delegate.
-    let body_metadata = TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
+    let body_metadata = {
+        let mut m = TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
+        if let Some(obj) = m.as_object_mut() {
+            obj.insert(
+                "handler".to_string(),
+                serde_json::Value::String(params.task_name.clone()),
+            );
+        }
+        m
+    };
     task_scheduler
         .schedule_at_in_tx(
             conn,
             ScheduleAtParams {
                 task_id: params.next_body_task_id.clone(),
-                task_name: params.task_name.clone(),
+                task_name: crate::TASK_NAME.to_string(),
                 execution_time: Utc::now(),
                 data: params.data.clone(),
                 recurrence: None,
@@ -179,7 +188,7 @@ pub async fn schedule_step_sql(
             conn,
             ScheduleAtParams {
                 task_id: task_id.to_string(),
-                task_name: task_name.to_string(),
+                task_name: crate::TASK_NAME.to_string(),
                 execution_time,
                 data: data.clone(),
                 recurrence: None,

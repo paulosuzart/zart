@@ -244,9 +244,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Run the worker ───────────────────────────────────────────────────
     println!("--- Running Worker (Scenario 2: zart::trx in deduct-balance step) ---\n");
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("onboard-user", OnboardUser);
-    let registry = Arc::new(registry);
 
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
@@ -256,12 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(60),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(
-        sched.task_scheduler(),
-        sched.clone(),
-        registry.clone(),
-        config,
-    ));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
