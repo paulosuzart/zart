@@ -4,153 +4,29 @@
 //!
 //! | Trait | Domain |
 //! |---|---|
-//! | [`TaskScheduler`] | Task-queue lifecycle (schedule, poll, complete, fail) |
 //! | [`ExecutionStore`] | Durable execution records and run primitives |
 //! | [`StepStore`] | Step scheduling, completion, retry, and queries |
 //! | [`WaitGroupStore`] | Wait-group coordination |
 //! | [`EventStore`] | External event delivery and execution statistics |
 //! | [`PauseStorage`] | Pause rule storage |
+//!
+//! [`TaskScheduler`] lives in the `zart-scheduler` crate.
+//! [`StorageBackend`] lives in the `zart` crate.
 
 pub mod pause_storage;
 
 pub use pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage, PauseStore};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 
 use crate::error::StorageError;
 use crate::types::{
-    CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-    CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
-    ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
-    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
-    StepAttemptRow, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
+    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
+    EventDeliveryResult, ExecutionRecord, ExecutionRunRecord, ExecutionStats,
+    FailWaitGroupChildParams, ListExecutionsParams, RescheduleStepForRetryParams, ScheduleResult,
+    ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
 };
-
-// ── TaskScheduler ─────────────────────────────────────────────────────────────
-
-/// Task-queue operations: schedule, poll, and lifecycle management.
-///
-/// Replaces the deprecated `Scheduler` trait. Existing code using `dyn Scheduler`
-/// continues to work via the blanket impl in `lib.rs`.
-#[async_trait]
-pub trait TaskScheduler: Send + Sync {
-    /// Schedule a task for immediate execution.
-    async fn schedule_now(
-        &self,
-        task_id: &str,
-        task_name: &str,
-        data: serde_json::Value,
-    ) -> Result<ScheduleResult, StorageError>;
-
-    /// Schedule a task for execution at a specific point in time.
-    async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError>;
-
-    /// Schedule a task within the caller's transaction.
-    ///
-    /// Default implementation returns `NotImplemented`.
-    #[allow(unused_variables)]
-    async fn schedule_at_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError> {
-        Err(StorageError::NotImplemented("schedule_at_in_tx"))
-    }
-
-    /// Poll for tasks due for execution using `SKIP LOCKED` semantics.
-    async fn poll_due(
-        &self,
-        now: DateTime<Utc>,
-        limit: usize,
-    ) -> Result<Vec<FetchedTask>, StorageError>;
-
-    /// Persist step progress between re-entries of a running task.
-    async fn update_task_state(
-        &self,
-        task_id: &str,
-        state: serde_json::Value,
-        next_execution_time: DateTime<Utc>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-
-    /// Mark a task as successfully completed.
-    async fn mark_completed(
-        &self,
-        task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-
-    /// Mark a task as completed within a caller-owned transaction.
-    ///
-    /// Default implementation returns `NotImplemented`.
-    async fn mark_completed_in_tx(
-        &self,
-        conn: &mut sqlx::PgConnection,
-        task_id: &str,
-        result: Option<serde_json::Value>,
-        lock_token: &str,
-    ) -> Result<(), StorageError> {
-        let _ = (conn, task_id, result, lock_token);
-        Err(StorageError::NotImplemented("mark_completed_in_tx"))
-    }
-
-    /// Mark a task as failed, optionally rescheduling for retry.
-    async fn mark_failed(
-        &self,
-        task_id: &str,
-        error: &str,
-        next_execution_time: Option<DateTime<Utc>>,
-        lock_token: &str,
-    ) -> Result<(), StorageError>;
-
-    /// Cancel a scheduled task. Returns `true` if the task was found and cancelled.
-    async fn cancel_task(&self, task_id: &str) -> Result<bool, StorageError>;
-
-    /// Delete a task record permanently.
-    async fn delete_task(&self, task_id: &str) -> Result<(), StorageError>;
-
-    /// Run database migrations required by this backend.
-    async fn run_migrations(&self) -> Result<(), StorageError>;
-
-    /// Begin a new database transaction.
-    ///
-    /// Default implementation returns `NotImplemented`.
-    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
-        Err(StorageError::NotImplemented("begin"))
-    }
-
-    /// Reset tasks stuck in `picked_up` longer than `stale_timeout`.
-    ///
-    /// Default implementation returns `Ok(0)`.
-    async fn recover_orphans(
-        &self,
-        stale_timeout: std::time::Duration,
-    ) -> Result<usize, StorageError> {
-        let _ = stale_timeout;
-        Ok(0)
-    }
-
-    /// Extend the lease of a running task to prevent orphan recovery.
-    ///
-    /// Default implementation returns `Ok(false)`.
-    async fn renew_lease(&self, _task_id: &str, _lock_token: &str) -> Result<bool, StorageError> {
-        Ok(false)
-    }
-
-    /// Atomically complete one task and schedule a successor in a single transaction.
-    ///
-    /// Default implementation returns `NotImplemented`.
-    async fn complete_and_schedule(
-        &self,
-        params: CompleteAndScheduleParams,
-    ) -> Result<(), StorageError> {
-        let _ = params;
-        Err(StorageError::NotImplemented("complete_and_schedule"))
-    }
-}
 
 // ── ExecutionStore ────────────────────────────────────────────────────────────
 
@@ -377,45 +253,6 @@ pub trait WaitGroupStore: Send + Sync {
     /// Recover wait-group orphans where the group triggered but the body task
     /// was never inserted. Returns the number of recovered body tasks.
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError>;
-}
-
-// ── StorageBackend ────────────────────────────────────────────────────────────
-
-/// Combined backend trait — the single type-erased handle for all storage operations.
-///
-/// Use `Arc<dyn StorageBackend>` wherever a fully-capable backend is needed.
-/// `PostgresStorage` (in `zart`) satisfies this bound automatically via blanket impls.
-///
-/// Composed from:
-/// - [`TaskScheduler`] — task queue lifecycle
-/// - [`ExecutionStore`] — execution records and run primitives
-/// - [`StepStore`] — step scheduling, completion, and query
-/// - [`WaitGroupStore`] — wait-group coordination
-/// - [`EventStore`] — event delivery and statistics
-/// - [`pause_storage::PauseStorage`] — pause rules
-pub trait StorageBackend:
-    TaskScheduler
-    + ExecutionStore
-    + StepStore
-    + WaitGroupStore
-    + EventStore
-    + pause_storage::PauseStorage
-    + Send
-    + Sync
-{
-}
-
-impl<
-    T: TaskScheduler
-        + ExecutionStore
-        + StepStore
-        + WaitGroupStore
-        + EventStore
-        + pause_storage::PauseStorage
-        + Send
-        + Sync,
-> StorageBackend for T
-{
 }
 
 // ── EventStore ────────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ async fn cancelled_execution_not_overwritten_when_handler_succeeds() {
     let registry = Arc::new(registry);
 
     let execution_id = format!("test-cancel-race-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     durable
         .start(&execution_id, "gated-task", serde_json::json!({}))
         .await
@@ -68,7 +68,7 @@ async fn cancelled_execution_not_requeued_on_step_scheduled() {
     let registry = Arc::new(registry);
 
     let execution_id = format!("test-cancel-step-race-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     durable
         .start(&execution_id, "gated-step-task", serde_json::json!({}))
         .await

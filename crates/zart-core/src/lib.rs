@@ -9,7 +9,10 @@
 //! - [`types`] — shared execution, step, and scheduling types
 //! - [`recurrence`] — recurrence configuration for repeating tasks
 //! - [`task_metadata`] — typed metadata carried on task rows
-//! - [`store`] — focused storage trait definitions
+//! - [`store`] — focused storage trait definitions (ExecutionStore, StepStore, etc.)
+//!
+//! [`TaskScheduler`] lives in the `zart-scheduler` crate.
+//! [`StorageBackend`] lives in the `zart` crate.
 
 pub mod error;
 pub mod recurrence;

@@ -168,10 +168,10 @@ pub use registry::{DurableExecution, TaskRegistry};
 // Re-export execution-side types so callers don't need zart-core directly.
 pub use retry::RetryConfig;
 pub use service::ExecutionService;
+pub use store::StorageBackend;
 pub use timeout::TimeoutScope;
 pub use trx_impl::{ZartTrx, trx};
 pub use worker::{Worker, WorkerConfig};
-pub use zart_core::store::StorageBackend;
 pub use zart_core::store::pause_storage::PauseRuleFilter;
 pub use zart_core::types::{
     ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStats, ExecutionStatus,

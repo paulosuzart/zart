@@ -173,7 +173,7 @@ pub async fn step_internal_target_step_raw(
 
                     step_def_id
                         .completion_behavior(&spec.outcome)
-                        .complete(&*ctx.scheduler, spec)
+                        .complete(&*ctx.scheduler, &*ctx.task_scheduler, spec)
                         .await
                         .map_err(|e| StepError::Failed {
                             step: step_name.to_string(),
@@ -214,7 +214,7 @@ pub async fn step_internal_target_step_raw(
 
     step_def_id
         .completion_behavior(&spec.outcome)
-        .complete(&*ctx.scheduler, spec)
+        .complete(&*ctx.scheduler, &*ctx.task_scheduler, spec)
         .await
         .map_err(|e| StepError::Failed {
             step: step_name.to_string(),

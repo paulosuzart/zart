@@ -117,6 +117,17 @@ mod tests {
             Ok(())
         }
 
+        async fn mark_failed_in_tx(
+            &self,
+            _conn: &mut sqlx::PgConnection,
+            _task_id: &str,
+            _error: &str,
+            _next_execution_time: Option<DateTime<Utc>>,
+            _lock_token: &str,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
         async fn cancel_task(&self, _task_id: &str) -> Result<bool, StorageError> {
             Ok(true)
         }

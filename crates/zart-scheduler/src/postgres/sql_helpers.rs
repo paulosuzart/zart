@@ -7,7 +7,9 @@
 //! All functions also accept a `&TableNames` so that the generated SQL uses the
 //! caller-configured table names rather than the hard-coded `zart_*` defaults.
 
-use crate::{ScheduleAtParams, ScheduleResult, StorageError};
+use chrono::{DateTime, Utc};
+
+use crate::{ScheduleAtParams, ScheduleResult, StorageError, TaskStatus};
 use sqlx::PgConnection;
 
 use super::table_names::TableNames;
@@ -41,6 +43,78 @@ pub async fn mark_completed_sql(
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?
     .rows_affected();
+
+    if rows_affected == 0 {
+        return Err(StorageError::LockMismatch(task_id.to_string()));
+    }
+    Ok(())
+}
+
+/// Mark a task as failed within a caller-owned connection/transaction.
+///
+/// When `next_execution_time` is `Some`, the task is rescheduled (status set to
+/// `'scheduled'` with the given execution time). When `None`, the task is marked
+/// as permanently failed (status set to `'failed'`).
+pub async fn mark_failed_sql(
+    conn: &mut PgConnection,
+    task_id: &str,
+    error: &str,
+    next_execution_time: Option<DateTime<Utc>>,
+    lock_token: &str,
+    names: &TableNames,
+) -> Result<(), StorageError> {
+    let (new_status, exec_time) = match next_execution_time {
+        Some(t) => (TaskStatus::Scheduled, Some(t)),
+        None => (TaskStatus::Failed, None),
+    };
+
+    let rows_affected = if let Some(t) = exec_time {
+        sqlx::query(&format!(
+            r#"
+            UPDATE {tasks}
+            SET status         = $1,
+                last_error     = $2,
+                execution_time = $3,
+                locked_at      = NULL,
+                worker_id      = NULL,
+                updated_at     = NOW()
+            WHERE task_id  = $4
+              AND worker_id = $5
+            "#,
+            tasks = names.tasks(),
+        ))
+        .bind(new_status)
+        .bind(error)
+        .bind(t)
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected()
+    } else {
+        sqlx::query(&format!(
+            r#"
+            UPDATE {tasks}
+            SET status     = $1,
+                last_error = $2,
+                locked_at  = NULL,
+                worker_id  = NULL,
+                updated_at = NOW()
+            WHERE task_id  = $3
+              AND worker_id = $4
+            "#,
+            tasks = names.tasks(),
+        ))
+        .bind(new_status)
+        .bind(error)
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected()
+    };
 
     if rows_affected == 0 {
         return Err(StorageError::LockMismatch(task_id.to_string()));

@@ -209,7 +209,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresStorage::new(pool.clone()));
 
-    let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
+    let durable = Arc::new(DurableScheduler::with_pause(
+        sched.clone(),
+        sched.task_scheduler(),
+        sched.clone(),
+    ));
 
     // Start the durable execution
     durable
@@ -238,7 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let worker = zart::Worker::new(sched.clone(), registry, config);
+    let worker = zart::Worker::new(sched.task_scheduler(), sched.clone(), registry, config);
 
     println!("Worker starting... (press Ctrl+C to stop)");
     println!();

@@ -11,9 +11,9 @@ use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgConnection;
 use zart_core::StorageError;
-use zart_core::store::TaskScheduler;
 use zart_core::task_metadata::TaskMetadata;
 use zart_core::types::{CompleteStepAndScheduleBodyParams, ScheduleAtParams, ScheduleResult};
+use zart_scheduler::TaskScheduler;
 
 use super::table_names::TableNames;
 
@@ -135,7 +135,12 @@ pub async fn complete_step_and_schedule_body_sql(
 
     // Mark the step task as completed via the task_scheduler delegate (no task-queue SQL in this crate).
     task_scheduler
-        .mark_completed_in_tx(conn, &params.step_task_id, Some(params.result.clone()), &params.lock_token)
+        .mark_completed_in_tx(
+            conn,
+            &params.step_task_id,
+            Some(params.result.clone()),
+            &params.lock_token,
+        )
         .await?;
 
     // Schedule the next body task via the task_scheduler delegate.

@@ -64,7 +64,12 @@ pub fn spawn_worker(
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(Worker::new(scheduler, registry, config));
+    let worker = Arc::new(Worker::new(
+        scheduler.task_scheduler(),
+        scheduler,
+        registry,
+        config,
+    ));
     let w = worker.clone();
     let handle = tokio::spawn(async move { w.run().await });
     (worker, handle)

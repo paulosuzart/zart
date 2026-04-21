@@ -14,7 +14,7 @@ async fn wait_for_event_resumes_execution_after_offer_event() {
     let registry = Arc::new(registry);
 
     let execution_id = format!("test-event-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "wait-event-task", serde_json::json!({}))
@@ -56,7 +56,7 @@ async fn cancel_stops_execution_before_completion() {
     let registry = Arc::new(registry);
 
     let execution_id = format!("test-cancel-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "wait-event-task", serde_json::json!({}))
@@ -85,7 +85,7 @@ async fn wait_with_timeout_returns_error_when_execution_does_not_complete() {
     let registry = Arc::new(registry);
 
     let execution_id = format!("test-timeout-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "wait-event-task", serde_json::json!({}))

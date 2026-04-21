@@ -131,6 +131,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .expect("schedule child-2 failed");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -200,6 +201,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
     assert!(t1 ^ t2, "exactly one child should trigger body scheduling");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -284,6 +286,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
         .expect("schedule fail-2 failed");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -346,7 +349,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn deliver_event_happy_path_and_idempotency() {
     let scheduler = setup().await;
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     let execution_id = format!("test-deliver-event-{}", Uuid::new_v4());
     durable
@@ -428,6 +431,7 @@ async fn completion_behaviors_execute_with_real_backend() {
         .expect("schedule_step failed");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -455,11 +459,12 @@ async fn completion_behaviors_execute_with_real_backend() {
 
     let behavior = zart::step_types::completion::ScheduleNextBody;
     behavior
-        .complete(&*scheduler, spec)
+        .complete(&*scheduler, &*scheduler.task_scheduler(), spec)
         .await
         .expect("ScheduleNextBody::complete failed");
 
     let due = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");

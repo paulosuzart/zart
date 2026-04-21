@@ -7,6 +7,7 @@ use crate::store::StorageBackend;
 use async_trait::async_trait;
 use zart_core::StorageError;
 use zart_core::types::{CompleteWaitGroupChildParams, FailWaitGroupChildParams};
+use zart_scheduler::TaskScheduler;
 
 use crate::step_ops;
 use crate::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
@@ -20,6 +21,7 @@ impl CompletionBehavior for ScheduleNextBody {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        _task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let serialized = match spec.result {
@@ -61,6 +63,7 @@ impl CompletionBehavior for DecrementAndMaybeResume {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        _task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let group_step_name = match spec.wait_group_step_name {
@@ -110,6 +113,7 @@ impl CompletionBehavior for FailWaitGroup {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        _task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let group_step_name = match spec.wait_group_step_name {
@@ -159,6 +163,7 @@ impl CompletionBehavior for FailExecutionOnDeadline {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let reason = match spec.outcome {
@@ -166,7 +171,7 @@ impl CompletionBehavior for FailExecutionOnDeadline {
             CompletionOutcome::Success => "event deadline exceeded".to_string(),
         };
 
-        scheduler
+        task_scheduler
             .mark_failed(&spec.step_task_id, &reason, None, &spec.worker_id)
             .await?;
 
@@ -494,7 +499,7 @@ mod tests {
         let (storage, calls) = TestStorage::new(true);
 
         let res = FailWaitGroup
-            .complete(&storage, fail_wait_group_spec())
+            .complete(&storage, &storage, fail_wait_group_spec())
             .await;
         assert!(res.is_ok());
 
@@ -513,7 +518,7 @@ mod tests {
         let (storage, calls) = TestStorage::new(false);
 
         let res = FailWaitGroup
-            .complete(&storage, fail_wait_group_spec())
+            .complete(&storage, &storage, fail_wait_group_spec())
             .await;
         assert!(res.is_ok());
 

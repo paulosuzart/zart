@@ -128,7 +128,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sched = Arc::new(PostgresStorage::new(pool.clone()));
 
     // Use with_pause so we can demo pause/resume too.
-    let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
+    let durable = Arc::new(DurableScheduler::with_pause(
+        sched.clone(),
+        sched.task_scheduler(),
+        sched.clone(),
+    ));
 
     // ── 1. Typed wait_completion ──────────────────────────────────────────────
 
@@ -372,7 +376,12 @@ fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry, config));
+    let worker = Arc::new(zart::Worker::new(
+        sched.task_scheduler(),
+        sched.clone(),
+        registry,
+        config,
+    ));
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
     worker

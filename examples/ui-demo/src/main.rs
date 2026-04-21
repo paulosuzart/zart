@@ -282,7 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sched = Arc::new(PostgresStorage::new(pool.clone()));
     tracing::info!("Migrations applied");
 
-    let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
+    let durable = Arc::new(DurableScheduler::new(sched.clone(), sched.task_scheduler()));
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
@@ -294,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
 
     let worker = Arc::new(Worker::new(
+        sched.task_scheduler(),
         sched.clone(),
         registry,
         WorkerConfig {

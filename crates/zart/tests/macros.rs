@@ -312,8 +312,10 @@ impl EventStore for MockScheduler {
 impl PauseStorage for MockScheduler {}
 
 fn make_ctx() -> TaskContext {
+    let scheduler = Arc::new(MockScheduler::new());
     TaskContext::new(
-        Arc::new(MockScheduler::new()),
+        scheduler.clone() as Arc<dyn zart::store::StorageBackend>,
+        scheduler as Arc<dyn zart_scheduler::TaskScheduler>,
         "test-execution",
         "test-task",
         "lock-token",

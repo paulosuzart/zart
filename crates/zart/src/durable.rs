@@ -17,7 +17,7 @@ use std::time::Duration;
 use zart_core::TaskMetadata;
 use zart_core::store::pause_storage::{PauseRuleFilter, PauseStorage};
 use zart_core::types::{ExecutionRecord, ExecutionStatus, ListExecutionsParams};
-use zart_scheduler::{ScheduleAtParams, ScheduleResult};
+use zart_scheduler::{ScheduleAtParams, ScheduleResult, TaskScheduler};
 
 // Maximum duration for `wait_with_timeout` as per the spec.
 const MAX_WAIT_SECS: u64 = 30;
@@ -79,16 +79,18 @@ const MAX_WAIT_SECS: u64 = 30;
 ///     .await?;
 /// ```
 pub struct DurableScheduler {
-    scheduler: Arc<dyn StorageBackend>,
+    storage: Arc<dyn StorageBackend>,
+    scheduler: Arc<dyn TaskScheduler>,
     pause_service: Option<PauseService>,
     execution_service: ExecutionService,
 }
 
 impl DurableScheduler {
     /// Create a new `DurableScheduler`.
-    pub fn new(scheduler: Arc<dyn StorageBackend>) -> Self {
-        let execution_service = ExecutionService::new(scheduler.clone());
+    pub fn new(storage: Arc<dyn StorageBackend>, scheduler: Arc<dyn TaskScheduler>) -> Self {
+        let execution_service = ExecutionService::new(storage.clone());
         Self {
+            storage,
             scheduler,
             pause_service: None,
             execution_service,
@@ -97,11 +99,13 @@ impl DurableScheduler {
 
     /// Create a new `DurableScheduler` with pause/resume support.
     pub fn with_pause(
-        scheduler: Arc<dyn StorageBackend>,
+        storage: Arc<dyn StorageBackend>,
+        scheduler: Arc<dyn TaskScheduler>,
         pause_storage: Arc<dyn PauseStorage>,
     ) -> Self {
-        let execution_service = ExecutionService::new(scheduler.clone());
+        let execution_service = ExecutionService::new(storage.clone());
         Self {
+            storage,
             scheduler,
             pause_service: Some(PauseService::new(pause_storage)),
             execution_service,
@@ -128,7 +132,7 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
         // Check if execution already exists (read-only, outside the transaction).
-        let existing = self.scheduler.get_execution(execution_id).await?;
+        let existing = self.storage.get_execution(execution_id).await?;
         let run_id: String;
         let reset_mode;
 
@@ -148,7 +152,7 @@ impl DurableScheduler {
                     | ExecutionStatus::Cancelled => {
                         // reset_execution returns the new run_id directly.
                         run_id = self
-                            .scheduler
+                            .storage
                             .reset_execution(execution_id, payload.clone())
                             .await?;
                         reset_mode = true;
@@ -189,7 +193,7 @@ impl DurableScheduler {
         // create the execution record and schedule the root task.
         let mut conn = self.scheduler.begin().await?;
 
-        self.scheduler
+        self.storage
             .start_execution_in_tx(&mut conn, execution_id, task_name, payload)
             .await?;
 
@@ -209,7 +213,7 @@ impl DurableScheduler {
     /// Returns [`SchedulerError::ExecutionNotFound`] if no execution with the
     /// given ID exists.
     pub async fn status(&self, execution_id: &str) -> Result<ExecutionRecord, SchedulerError> {
-        self.scheduler
+        self.storage
             .get_execution(execution_id)
             .await?
             .ok_or_else(|| SchedulerError::ExecutionNotFound(execution_id.to_string()))
@@ -222,7 +226,7 @@ impl DurableScheduler {
         &self,
         execution_id: &str,
     ) -> Result<Option<String>, SchedulerError> {
-        Ok(self.scheduler.get_current_run_id(execution_id).await?)
+        Ok(self.storage.get_current_run_id(execution_id).await?)
     }
 
     /// List all runs for a durable execution.
@@ -230,7 +234,7 @@ impl DurableScheduler {
         &self,
         execution_id: &str,
     ) -> Result<Vec<zart_core::types::ExecutionRunRecord>, SchedulerError> {
-        Ok(self.scheduler.list_runs(execution_id).await?)
+        Ok(self.storage.list_runs(execution_id).await?)
     }
 
     /// Block until the execution reaches a terminal state (completed, failed,
@@ -285,7 +289,7 @@ impl DurableScheduler {
     /// Returns `true` if the execution was found and cancelled, `false` if it
     /// was already in a terminal state or did not exist.
     pub async fn cancel(&self, execution_id: &str) -> Result<bool, SchedulerError> {
-        Ok(self.scheduler.cancel_execution(execution_id).await?)
+        Ok(self.storage.cancel_execution(execution_id).await?)
     }
 
     /// Deliver an external event to a waiting execution.
@@ -306,7 +310,7 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<(), SchedulerError> {
         let result = self
-            .scheduler
+            .storage
             .complete_event_step_and_schedule_body(execution_id, event_name, payload)
             .await;
         match result {
@@ -344,7 +348,7 @@ impl DurableScheduler {
         &self,
         params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
-        Ok(self.scheduler.list_executions(params).await?)
+        Ok(self.storage.list_executions(params).await?)
     }
 
     // ── Typed completion API ──────────────────────────────────────────────────
@@ -412,7 +416,7 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
         // Check if execution already exists — if so, we don't support reset-in-tx in V1.
-        if let Some(_existing) = self.scheduler.get_execution(execution_id).await? {
+        if let Some(_existing) = self.storage.get_execution(execution_id).await? {
             return Err(SchedulerError::NotSupported(
                 "start_in_tx does not support resetting existing executions; use start() instead",
             ));
@@ -431,7 +435,7 @@ impl DurableScheduler {
             metadata,
         };
 
-        self.scheduler
+        self.storage
             .start_execution_in_tx(tx, execution_id, task_name, payload)
             .await?;
 
@@ -552,7 +556,7 @@ impl DurableScheduler {
 
     /// Return aggregate execution counts grouped by status.
     pub async fn stats(&self) -> Result<zart_core::types::ExecutionStats, SchedulerError> {
-        Ok(self.scheduler.execution_stats().await?)
+        Ok(self.storage.execution_stats().await?)
     }
 
     /// Return full detail for an execution: the record, all runs, and the

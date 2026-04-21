@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, instrument, warn};
 use uuid::Uuid;
 use zart_core::TaskMetadata;
+use zart_scheduler::TaskScheduler;
 
 /// Tuning parameters for a [`Worker`].
 ///
@@ -118,7 +119,8 @@ impl Default for WorkerConfig {
 /// }
 /// ```
 pub struct Worker {
-    scheduler: Arc<dyn StorageBackend>,
+    scheduler: Arc<dyn TaskScheduler>,
+    storage: Arc<dyn StorageBackend>,
     registry: Arc<TaskRegistry>,
     config: WorkerConfig,
     /// Notified by [`stop`](Self::stop) to trigger a graceful shutdown.
@@ -130,12 +132,14 @@ pub struct Worker {
 impl Worker {
     /// Create a new worker.
     pub fn new(
-        scheduler: Arc<dyn StorageBackend>,
+        scheduler: Arc<dyn TaskScheduler>,
+        storage: Arc<dyn StorageBackend>,
         registry: Arc<TaskRegistry>,
         config: WorkerConfig,
     ) -> Self {
         Self {
             scheduler,
+            storage,
             registry,
             config,
             shutdown: Arc::new(Notify::new()),
@@ -148,13 +152,15 @@ impl Worker {
     /// This allows multiple workers to be shut down together
     /// when a common CancellationToken is cancelled.
     pub fn with_cancellation(
-        scheduler: Arc<dyn StorageBackend>,
+        scheduler: Arc<dyn TaskScheduler>,
+        storage: Arc<dyn StorageBackend>,
         registry: Arc<TaskRegistry>,
         config: WorkerConfig,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
             scheduler,
+            storage,
             registry,
             config,
             shutdown: Arc::new(Notify::new()),
@@ -259,6 +265,7 @@ impl Worker {
                 };
 
                 let scheduler = self.scheduler.clone();
+                let storage = self.storage.clone();
                 let registry = self.registry.clone();
                 let heartbeat_interval = self.config.heartbeat_interval;
                 let orphan_timeout = self.config.orphan_timeout;
@@ -269,6 +276,7 @@ impl Worker {
                         emit_metric!(WORKER_CONCURRENT_TASKS.inc());
                         dispatch_task(
                             scheduler,
+                            storage,
                             registry,
                             task,
                             heartbeat_interval,
@@ -304,7 +312,7 @@ impl Worker {
 /// `CancellationToken` is cancelled (i.e., the handler has returned).
 #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
 async fn heartbeat_loop(
-    scheduler: Arc<dyn StorageBackend>,
+    scheduler: Arc<dyn TaskScheduler>,
     task_id: String,
     lock_token: String,
     task_name: String,
@@ -353,7 +361,7 @@ async fn heartbeat_loop(
 /// Dispatch a single fetched task to its registered handler and persist the result.
 #[instrument(
     name = "task.dispatch",
-    skip(scheduler, registry, task),
+    skip(scheduler, storage, registry, task),
     fields(
         task_id = %task.task_id,
         task_name = %task.task_name,
@@ -362,7 +370,8 @@ async fn heartbeat_loop(
     ),
 )]
 async fn dispatch_task(
-    scheduler: Arc<dyn StorageBackend>,
+    scheduler: Arc<dyn TaskScheduler>,
+    storage: Arc<dyn StorageBackend>,
     registry: Arc<TaskRegistry>,
     task: zart_scheduler::FetchedTask,
     heartbeat_interval: Option<Duration>,
@@ -454,7 +463,7 @@ async fn dispatch_task(
     // Compute execution deadline from handler timeout + execution scheduled_at.
     let execution_deadline = if has_execution {
         if let Some(timeout_dur) = handler.timeout() {
-            match scheduler.get_execution(&execution_id).await {
+            match storage.get_execution(&execution_id).await {
                 Ok(Some(exec)) => Some(
                     exec.scheduled_at
                         + chrono::Duration::from_std(timeout_dur)
@@ -493,7 +502,7 @@ async fn dispatch_task(
                 {
                     error!(error = %e, "Failed to mark task completed after deadline on_failure recovery");
                 }
-                let _ = scheduler
+                let _ = storage
                     .complete_execution(&execution_id, output)
                     .await
                     .map_err(|e| error!(error = %e, "Failed to complete execution record"));
@@ -511,7 +520,7 @@ async fn dispatch_task(
                 {
                     error!(error = %e, "Failed to mark task failed after deadline exceeded");
                 }
-                let _ = scheduler
+                let _ = storage
                     .fail_execution(&execution_id)
                     .await
                     .map_err(|e| error!(error = %e, "Failed to fail execution record"));
@@ -522,6 +531,7 @@ async fn dispatch_task(
 
     let ctx = Arc::new(
         TaskContext::new(
+            storage.clone(),
             scheduler.clone(),
             execution_id.clone(),
             task.task_name.clone(),
@@ -583,8 +593,7 @@ async fn dispatch_task(
         match ctx_cleanup.scheduler.get_execution(&execution_id).await {
             Ok(Some(exec)) if exec.status == zart_core::types::ExecutionStatus::Cancelled => {
                 info!("Execution cancelled while task was running; discarding result");
-                let _ = ctx_cleanup
-                    .scheduler
+                let _ = scheduler
                     .mark_failed(
                         &task.task_id,
                         "execution cancelled",
@@ -618,8 +627,7 @@ async fn dispatch_task(
                         .inc()
                 );
             }
-            if let Err(e) = ctx_cleanup
-                .scheduler
+            if let Err(e) = scheduler
                 .mark_completed(&task.task_id, Some(result.clone()), &ctx_cleanup.lock_token)
                 .await
             {
@@ -633,8 +641,7 @@ async fn dispatch_task(
                 if let Some(next_time) = recurrence.next_after(now) {
                     let new_task_id = Uuid::new_v4().to_string();
                     let task_data = ctx_cleanup.data().clone();
-                    if let Err(e) = ctx_cleanup
-                        .scheduler
+                    if let Err(e) = scheduler
                         .schedule_at(zart_scheduler::ScheduleAtParams {
                             task_id: new_task_id.clone(),
                             task_name: task.task_name.clone(),
@@ -699,8 +706,7 @@ async fn dispatch_task(
         }) => {
             info!(step = %step, "Body step scheduled — marking body task complete");
             emit_metric!(TASKS_TOTAL.with_label_values(&["completed"]).inc());
-            if let Err(e) = ctx_cleanup
-                .scheduler
+            if let Err(e) = scheduler
                 .mark_completed(&task.task_id, None, &ctx_cleanup.lock_token)
                 .await
             {
@@ -730,8 +736,7 @@ async fn dispatch_task(
                                 .with_label_values(&["recovered", &task.task_name])
                                 .inc()
                         );
-                        if let Err(e) = ctx_cleanup
-                            .scheduler
+                        if let Err(e) = scheduler
                             .mark_completed(
                                 &task.task_id,
                                 Some(output.clone()),
@@ -765,8 +770,7 @@ async fn dispatch_task(
                         .inc()
                 );
             }
-            if let Err(e) = ctx_cleanup
-                .scheduler
+            if let Err(e) = scheduler
                 .mark_failed(
                     &task.task_id,
                     &err.to_string(),

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::instrument;
 use zart_core::types::StepResultKind;
+use zart_scheduler::TaskScheduler;
 
 use super::state::{PendingFn, StepHandle};
 use super::step_context::StepContext;
@@ -27,8 +28,10 @@ use super::step_trait::ZartStep;
 /// Users typically do not interact with this type directly — use the `zart::*` free functions
 /// instead. `TaskContext` is a framework-internal type that implements the scheduling logic.
 pub struct TaskContext {
-    /// The underlying scheduler (used to schedule step tasks).
+    /// The underlying scheduler (used for step store operations).
     pub(crate) scheduler: Arc<dyn StorageBackend>,
+    /// Task-queue scheduler (used for task lifecycle operations).
+    pub(crate) task_scheduler: Arc<dyn TaskScheduler>,
     /// Unique identifier of the enclosing durable execution.
     execution_id: String,
     /// The `run_id` of the current execution run (`zart_execution_runs.run_id`).
@@ -61,6 +64,7 @@ impl TaskContext {
     /// Called by the worker when it picks up a task.
     pub fn new(
         scheduler: Arc<dyn StorageBackend>,
+        task_scheduler: Arc<dyn TaskScheduler>,
         execution_id: impl Into<String>,
         task_name: impl Into<String>,
         lock_token: impl Into<String>,
@@ -71,6 +75,7 @@ impl TaskContext {
         let run_id = execution_id.clone();
         Self {
             scheduler,
+            task_scheduler,
             task_id,
             execution_id,
             run_id,

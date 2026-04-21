@@ -287,7 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(registry);
 
     let execution_id = format!("radkit-demo-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let input = AgentInput {
         query: "Find breweries in Portland, Oregon".to_string(),
@@ -307,7 +307,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = Arc::new(zart::Worker::new(
+        sched.task_scheduler(),
+        sched.clone(),
+        registry.clone(),
+        config,
+    ));
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

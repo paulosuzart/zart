@@ -203,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Scenario 1: Transactional Scheduling ---");
     println!("Creating user and starting onboarding in a single transaction...\n");
 
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let mut tx = pool.begin().await?;
 
@@ -255,7 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(60),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = Arc::new(zart::Worker::new(
+        sched.task_scheduler(),
+        sched.clone(),
+        registry.clone(),
+        config,
+    ));
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

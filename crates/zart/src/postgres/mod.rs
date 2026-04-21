@@ -1,14 +1,11 @@
 //! PostgreSQL-backed storage for all Zart execution-side tables.
 //!
-//! [`PostgresStorage`] implements the full `StorageBackend` trait, covering
-//! all execution-side tables (`zart_executions`, `zart_execution_runs`,
-//! `zart_steps`, `zart_step_attempts`, `zart_wait_groups`, `zart_events`,
-//! `zart_pause_rules`).
+//! [`PostgresStorage`] implements [`StorageBackend`], covering all execution-side
+//! tables (`zart_executions`, `zart_execution_runs`, `zart_steps`,
+//! `zart_step_attempts`, `zart_wait_groups`, `zart_events`, `zart_pause_rules`).
 //!
 //! Task-queue operations (`zart_tasks`) are owned by [`zart_scheduler::PostgresTaskScheduler`]
 //! and are accessed via the internal `task_scheduler` held by this struct.
-//! `PostgresStorage` implements `TaskScheduler` purely by delegation — no
-//! task-queue SQL lives here.
 //!
 //! # Usage
 //!
@@ -27,7 +24,6 @@ mod admin_storage_impl;
 mod event_storage_impl;
 mod execution_storage_impl;
 mod pause_storage_impl;
-mod scheduler_delegation;
 mod sql_helpers;
 mod step_storage_impl;
 mod table_names;
@@ -37,16 +33,16 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 use zart_core::StorageError;
-use zart_core::store::TaskScheduler;
 use zart_scheduler::PostgresTaskScheduler;
+use zart_scheduler::TaskScheduler;
 
 pub use table_names::{TableNames, TableNamesError};
 
-/// A fully-capable storage backend backed by a PostgreSQL database.
+/// A fully-capable execution-side storage backend backed by a PostgreSQL database.
 ///
-/// Implements `StorageBackend` which composes `TaskScheduler` (via delegation
-/// to an internal [`PostgresTaskScheduler`]), `ExecutionStore`, `StepStore`,
-/// `WaitGroupStore`, `EventStore`, and `PauseStorage`.
+/// Implements [`StorageBackend`] which composes `ExecutionStore`, `StepStore`,
+/// `WaitGroupStore`, `EventStore`, and `PauseStorage`. Task-queue operations
+/// are delegated to an internal [`PostgresTaskScheduler`].
 ///
 /// Create one with [`PostgresStorage::new`], passing in an already-built
 /// `sqlx::PgPool`. Call [`run_migrations`](Self::run_migrations) before first
@@ -54,7 +50,7 @@ pub use table_names::{TableNames, TableNamesError};
 pub struct PostgresStorage {
     pool: PgPool,
     table_names: TableNames,
-    /// Task-queue delegate. All `TaskScheduler` methods forward here.
+    /// Task-queue delegate. All task-queue methods forward here.
     /// No task-queue SQL lives in this crate.
     pub(crate) task_scheduler: Arc<dyn TaskScheduler>,
 }
@@ -109,6 +105,11 @@ impl PostgresStorage {
     /// Returns a reference to the underlying connection pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Returns a clone of the internal task scheduler.
+    pub fn task_scheduler(&self) -> Arc<dyn TaskScheduler> {
+        self.task_scheduler.clone()
     }
 
     /// Run all database migrations required by this backend.

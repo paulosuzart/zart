@@ -13,7 +13,7 @@ use zart::{
 #[ignore]
 async fn start_in_tx_rollback_leaves_no_execution() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-rollback-{}", Uuid::new_v4());
@@ -40,7 +40,7 @@ async fn start_in_tx_rollback_leaves_no_execution() {
 #[ignore]
 async fn start_in_tx_commit_creates_execution_and_task() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-commit-{}", Uuid::new_v4());
@@ -74,7 +74,7 @@ async fn start_in_tx_commit_creates_execution_and_task() {
 #[ignore]
 async fn start_for_in_tx_commit_creates_execution_with_payload() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-typed-{}", Uuid::new_v4());
@@ -103,7 +103,7 @@ async fn start_for_in_tx_commit_creates_execution_with_payload() {
 #[ignore]
 async fn start_in_tx_duplicate_returns_not_supported() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-dup-{}", Uuid::new_v4());
@@ -154,7 +154,7 @@ async fn trx_double_call_returns_error() {
     registry.register("double-trx", DoubleTrxHandler { pool });
     let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("double-trx-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "double-trx", serde_json::json!({}))
@@ -227,7 +227,7 @@ async fn step_without_trx_completes_normally() {
     registry.register("no-trx-step", NoTrxStepHandler);
     let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("no-trx-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "no-trx-step", serde_json::json!({}))
@@ -340,7 +340,7 @@ async fn trx_atomic_step_write_and_completion_commit_together() {
     );
     let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("atomic-write-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "atomic-write-handler", serde_json::json!({}))
@@ -450,7 +450,7 @@ async fn trx_atomic_step_write_rolls_back_on_step_error() {
     );
     let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("atomic-err-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "failing-write-handler", serde_json::json!({}))

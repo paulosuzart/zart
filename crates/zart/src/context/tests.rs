@@ -164,9 +164,12 @@ async fn step_mode_wait_for_event_returns_cached_payload() {
 
 // ── New execution model: call-counting tests ──────────────────────────────
 
-fn make_body_ctx(scheduler: std::sync::Arc<dyn StorageBackend>) -> TaskContext {
+fn make_body_ctx(
+    scheduler: std::sync::Arc<crate::test_helpers::RecordingScheduler>,
+) -> TaskContext {
     TaskContext::new(
-        scheduler,
+        scheduler.clone() as std::sync::Arc<dyn StorageBackend>,
+        scheduler as std::sync::Arc<dyn zart_scheduler::TaskScheduler>,
         "exec-1",
         "test-task",
         "lock-tok",
@@ -175,10 +178,14 @@ fn make_body_ctx(scheduler: std::sync::Arc<dyn StorageBackend>) -> TaskContext {
     .with_execution_mode(ExecutionMode::Body)
 }
 
-fn make_step_ctx(scheduler: std::sync::Arc<dyn StorageBackend>, target: &str) -> TaskContext {
+fn make_step_ctx(
+    scheduler: std::sync::Arc<crate::test_helpers::RecordingScheduler>,
+    target: &str,
+) -> TaskContext {
     let task_id = format!("exec-1:step:{target}");
     TaskContext::new(
-        scheduler,
+        scheduler.clone() as std::sync::Arc<dyn StorageBackend>,
+        scheduler as std::sync::Arc<dyn zart_scheduler::TaskScheduler>,
         "exec-1",
         "test-task",
         "lock-tok",
@@ -539,7 +546,8 @@ async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_
     let (scheduler, calls) = RecordingScheduler::builder().build();
 
     let ctx = TaskContext::new(
-        scheduler,
+        scheduler.clone() as std::sync::Arc<dyn StorageBackend>,
+        scheduler as std::sync::Arc<dyn zart_scheduler::TaskScheduler>,
         "exec-1",
         "test-task",
         "lock-tok",
@@ -679,14 +687,15 @@ async fn sleep_body_mode_inserts_one_sleep_task_with_exact_wake_time() {
 
 /// Helper: make a step-mode context with a retry config embedded.
 fn make_step_ctx_with_retry(
-    scheduler: std::sync::Arc<dyn StorageBackend>,
+    scheduler: std::sync::Arc<crate::test_helpers::RecordingScheduler>,
     target: &str,
     retry_attempt: usize,
     retry_config: RetryConfig,
 ) -> TaskContext {
     let task_id = format!("exec-1:step:{target}");
     TaskContext::new(
-        scheduler,
+        scheduler.clone() as std::sync::Arc<dyn StorageBackend>,
+        scheduler as std::sync::Arc<dyn zart_scheduler::TaskScheduler>,
         "exec-1",
         "test-task",
         "lock-tok",

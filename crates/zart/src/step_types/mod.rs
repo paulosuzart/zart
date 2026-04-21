@@ -6,8 +6,10 @@
 
 use crate::store::StorageBackend;
 use async_trait::async_trait;
+use zart_core::StorageError;
+use zart_core::TaskMetadata;
 use zart_core::task_metadata::StepMetaType;
-use zart_core::{StorageError, TaskMetadata};
+use zart_scheduler::TaskScheduler;
 
 use crate::context::{PendingFn, TaskContext};
 use crate::error::StepError;
@@ -321,6 +323,7 @@ pub trait CompletionBehavior: Send + Sync {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError>;
 }

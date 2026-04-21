@@ -14,7 +14,7 @@ async fn parallel_steps_all_complete_and_sum_results() {
     let registry = Arc::new(registry);
 
     let execution_id = format!("test-par-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "parallel-task", serde_json::json!({}))
