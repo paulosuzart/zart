@@ -1,6 +1,6 @@
 //! PostgreSQL-backed storage for all Zart execution-side tables.
 //!
-//! [`PostgresStorage`] implements [`StorageBackend`], covering all execution-side
+//! [`PostgresStorage`] implements `StorageBackend`, covering all execution-side
 //! tables (`zart_executions`, `zart_execution_runs`, `zart_steps`,
 //! `zart_step_attempts`, `zart_wait_groups`, `zart_events`, `zart_pause_rules`).
 //!
@@ -40,7 +40,7 @@ pub use table_names::{TableNames, TableNamesError};
 
 /// A fully-capable execution-side storage backend backed by a PostgreSQL database.
 ///
-/// Implements [`StorageBackend`] which composes `ExecutionStore`, `StepStore`,
+/// Implements `StorageBackend`, composing `ExecutionStore`, `StepStore`,
 /// `WaitGroupStore`, `EventStore`, and `PauseStorage`. Task-queue operations
 /// are delegated to an internal [`PostgresTaskScheduler`].
 ///

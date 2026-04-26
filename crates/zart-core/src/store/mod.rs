@@ -10,8 +10,8 @@
 //! | [`EventStore`] | External event delivery and execution statistics |
 //! | [`PauseStorage`] | Pause rule storage |
 //!
-//! [`TaskScheduler`] lives in the `zart-scheduler` crate.
-//! [`StorageBackend`] lives in the `zart` crate.
+//! `TaskScheduler` lives in the `zart-scheduler` crate.
+//! `StorageBackend` lives in the `zart` crate.
 
 pub mod pause_storage;
 

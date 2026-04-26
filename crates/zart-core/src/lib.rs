@@ -11,8 +11,8 @@
 //! - [`task_metadata`] — typed metadata carried on task rows
 //! - [`store`] — focused storage trait definitions (ExecutionStore, StepStore, etc.)
 //!
-//! [`TaskScheduler`] lives in the `zart-scheduler` crate.
-//! [`StorageBackend`] lives in the `zart` crate.
+//! `TaskScheduler` lives in the `zart-scheduler` crate.
+//! `StorageBackend` lives in the `zart` crate.
 
 pub mod error;
 pub mod recurrence;

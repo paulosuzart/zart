@@ -2,7 +2,7 @@
 //!
 //! [`StorageBackend`] is composed here from the domain traits defined in
 //! `zart-core` (`ExecutionStore`, `StepStore`, `WaitGroupStore`, `EventStore`,
-//! `PauseStorage`). The [`TaskScheduler`] trait lives in the `zart-scheduler`
+//! `PauseStorage`). The `TaskScheduler` trait lives in the `zart-scheduler`
 //! crate and is **not** part of `StorageBackend` — it is held separately by
 //! types that need both execution-side and task-queue operations.
 
