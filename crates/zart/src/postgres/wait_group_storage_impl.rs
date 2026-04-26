@@ -142,7 +142,7 @@ impl WaitGroupStore for PostgresStorage {
                 tasks = self.table_names.tasks(),
             ))
             .bind(&params.next_body_task_id)
-            .bind(&params.task_name)
+            .bind(crate::TASK_NAME)
             .bind(&params.data)
             .bind(&body_metadata)
             .execute(&mut *tx)
@@ -272,7 +272,7 @@ impl WaitGroupStore for PostgresStorage {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let mut recovered = 0usize;
-        for (run_id, step_name, task_name, execution_id) in rows {
+        for (run_id, step_name, _task_name, execution_id) in rows {
             let next_body_task_id = format!("{run_id}:body:after:{step_name}");
             let body_metadata = TaskMetadata::body(&run_id, &execution_id).to_json_value();
 
@@ -288,7 +288,7 @@ impl WaitGroupStore for PostgresStorage {
                 execution_runs = self.table_names.execution_runs(),
             ))
             .bind(&next_body_task_id)
-            .bind(&task_name)
+            .bind(crate::TASK_NAME)
             .bind(&body_metadata)
             .bind(&run_id)
             .execute(&self.pool)

@@ -165,7 +165,6 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
             lock_token: lock1,
             attempt_number: 1,
             next_body_task_id: next_body_task_id_1,
-            task_name: task_name.to_string(),
             data: serde_json::json!({}),
         })
         .await
@@ -187,7 +186,6 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
             lock_token: lock2,
             attempt_number: 1,
             next_body_task_id: next_body_task_id_2,
-            task_name: task_name.to_string(),
             data: serde_json::json!({}),
         })
         .await
@@ -446,7 +444,6 @@ async fn completion_behaviors_execute_with_real_backend() {
         step_id: schedule.task_id.clone(),
         step_name: "comp-step".to_string(),
         worker_id: step_lock,
-        task_name: task_name.to_string(),
         run_id: format!("{execution_id}:run:0"),
         execution_id: execution_id.clone(),
         data: serde_json::json!({}),

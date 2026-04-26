@@ -144,16 +144,6 @@ pub async fn complete_step_and_schedule_body_sql(
         .await?;
 
     // Schedule the next body task via the task_scheduler delegate.
-    let body_metadata = {
-        let mut m = TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
-        if let Some(obj) = m.as_object_mut() {
-            obj.insert(
-                "handler".to_string(),
-                serde_json::Value::String(params.task_name.clone()),
-            );
-        }
-        m
-    };
     task_scheduler
         .schedule_at_in_tx(
             conn,
@@ -163,7 +153,7 @@ pub async fn complete_step_and_schedule_body_sql(
                 execution_time: Utc::now(),
                 data: params.data.clone(),
                 recurrence: None,
-                metadata: body_metadata,
+                metadata: TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value(),
             },
         )
         .await?;

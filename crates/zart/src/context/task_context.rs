@@ -581,7 +581,6 @@ impl TaskContext {
             lock_token: self.lock_token.clone(),
             attempt_number,
             next_body_task_id,
-            task_name: self.task_name().to_string(),
             data: self.data().clone(),
         };
 
@@ -902,11 +901,6 @@ impl TaskContext {
 
     /// Returns the registered name of this task handler.
     pub fn task_name(&self) -> &str {
-        &self.task_name
-    }
-
-    /// Returns the registered name of this task handler (crate-visible accessor).
-    pub(crate) fn task_name_internal(&self) -> &str {
         &self.task_name
     }
 

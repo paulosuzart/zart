@@ -441,7 +441,6 @@ pub struct CompleteStepAndScheduleBodyParams {
     pub lock_token: String,
     pub attempt_number: usize,
     pub next_body_task_id: String,
-    pub task_name: String,
     pub run_id: String,
     pub execution_id: String,
     pub data: serde_json::Value,
@@ -488,7 +487,6 @@ pub struct CompleteWaitGroupChildParams {
     pub lock_token: String,
     pub attempt_number: usize,
     pub next_body_task_id: String,
-    pub task_name: String,
     pub data: serde_json::Value,
 }
 

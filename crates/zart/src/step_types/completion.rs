@@ -42,7 +42,6 @@ impl CompletionBehavior for ScheduleNextBody {
                 result_kind: crate::step_types::ResultKind::Ok,
                 lock_token: &spec.worker_id,
                 next_body_task_id: &next_body_task_id,
-                task_name: &spec.task_name,
                 run_id: &spec.run_id,
                 execution_id: &spec.execution_id,
                 data: spec.data,
@@ -95,7 +94,6 @@ impl CompletionBehavior for DecrementAndMaybeResume {
                 lock_token: spec.worker_id,
                 attempt_number: spec.attempt_number,
                 next_body_task_id,
-                task_name: spec.task_name,
                 data: spec.data,
             })
             .await?;
@@ -481,7 +479,6 @@ mod tests {
             step_id: "exec-1:step:child-a".to_string(),
             step_name: "child-a".to_string(),
             worker_id: "lock-1".to_string(),
-            task_name: "task-a".to_string(),
             run_id: "exec-1:run:0".to_string(),
             execution_id: "exec-1".to_string(),
             data: serde_json::json!({}),

@@ -80,18 +80,16 @@ impl PostgresStorage {
             Utc::now().timestamp_millis()
         );
 
-        // Fetch the task_name and data for the new task from the old task row.
-        let old_task_row: Option<(String, serde_json::Value)> = sqlx::query_as(&format!(
-            r#"SELECT task_name, data FROM {tasks} WHERE task_id = $1"#,
+        // Fetch the data for the new task from the old task row.
+        let retry_data: serde_json::Value = sqlx::query_scalar(&format!(
+            r#"SELECT data FROM {tasks} WHERE task_id = $1"#,
             tasks = self.table_names.tasks(),
         ))
         .bind(&old_task_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        let (retry_task_name, retry_data) =
-            old_task_row.unwrap_or_else(|| (String::new(), serde_json::json!({})));
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .unwrap_or(serde_json::json!({}));
 
         // Schedule the retry task via the task_scheduler delegate (no task-queue SQL here).
         self.task_scheduler
@@ -103,16 +101,7 @@ impl PostgresStorage {
                     execution_time: Utc::now(),
                     data: retry_data,
                     recurrence: None,
-                    metadata: {
-                        let mut m = task_metadata.clone();
-                        if let Some(obj) = m.as_object_mut() {
-                            obj.insert(
-                                "handler".to_string(),
-                                serde_json::Value::String(retry_task_name.clone()),
-                            );
-                        }
-                        m
-                    },
+                    metadata: task_metadata.clone(),
                 },
             )
             .await?;
@@ -201,19 +190,6 @@ impl PostgresStorage {
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-                let task_name: Option<String> = sqlx::query_scalar(&format!(
-                    r#"
-                    SELECT task_name FROM {executions} WHERE execution_id = $1
-                    "#,
-                    executions = self.table_names.executions(),
-                ))
-                .bind(execution_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-                let task_name = task_name.unwrap_or_default();
-
                 sqlx::query(&format!(
                     r#"
                     INSERT INTO {execution_runs}
@@ -246,17 +222,16 @@ impl PostgresStorage {
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
 
                 let body_task_id = format!("{run_id}:body:start");
-                let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
                 self.task_scheduler
                     .schedule_at_in_tx(
                         &mut tx,
                         ScheduleAtParams {
                             task_id: body_task_id,
-                            task_name,
+                            task_name: crate::TASK_NAME.to_string(),
                             execution_time: Utc::now(),
                             data: payload,
                             recurrence: None,
-                            metadata: body_metadata,
+                            metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
                         },
                     )
                     .await?;
@@ -301,17 +276,6 @@ impl PostgresStorage {
         let new_run_id = format!("{execution_id}:run:{next_index}");
         let payload = new_payload.unwrap_or(current_payload);
 
-        let task_name: String = sqlx::query_scalar(&format!(
-            r#"
-            SELECT task_name FROM {executions} WHERE execution_id = $1
-            "#,
-            executions = self.table_names.executions(),
-        ))
-        .bind(execution_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
         sqlx::query(&format!(
             r#"
             INSERT INTO {execution_runs}
@@ -345,7 +309,6 @@ impl PostgresStorage {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let body_task_id = format!("{new_run_id}:body:start");
-        let _body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
         self.task_scheduler
             .schedule_at_in_tx(
                 &mut tx,
@@ -355,16 +318,7 @@ impl PostgresStorage {
                     execution_time: Utc::now(),
                     data: payload,
                     recurrence: None,
-                    metadata: {
-                        let mut m = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
-                        if let Some(obj) = m.as_object_mut() {
-                            obj.insert(
-                                "handler".to_string(),
-                                serde_json::Value::String(task_name.clone()),
-                            );
-                        }
-                        m
-                    },
+                    metadata: TaskMetadata::body(&new_run_id, execution_id).to_json_value(),
                 },
             )
             .await?;

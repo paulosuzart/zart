@@ -272,7 +272,6 @@ pub struct CompletionSpec {
     pub step_id: String,
     pub step_name: String,
     pub worker_id: String,
-    pub task_name: String,
     pub run_id: String,
     pub execution_id: String,
     pub data: serde_json::Value,

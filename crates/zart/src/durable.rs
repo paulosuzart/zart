@@ -169,7 +169,6 @@ impl DurableScheduler {
         // record and body task are created in a single transaction.
         // The task_id is "{run_id}:body:start" — deterministic and debuggable.
         let task_id = format!("{run_id}:body:start");
-        let _metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         let params = ScheduleAtParams {
             task_id: task_id.clone(),
@@ -177,16 +176,7 @@ impl DurableScheduler {
             execution_time: chrono::Utc::now(),
             data: payload.clone(),
             recurrence: None,
-            metadata: {
-                let mut m = TaskMetadata::body(&run_id, execution_id).to_json_value();
-                if let Some(obj) = m.as_object_mut() {
-                    obj.insert(
-                        "handler".to_string(),
-                        serde_json::Value::String(task_name.to_string()),
-                    );
-                }
-                m
-            },
+            metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
         };
 
         if reset_mode {
@@ -433,7 +423,6 @@ impl DurableScheduler {
 
         let run_id = format!("{execution_id}:run:0");
         let task_id = format!("{run_id}:body:start");
-        let _metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         let params = ScheduleAtParams {
             task_id: task_id.clone(),
@@ -441,16 +430,7 @@ impl DurableScheduler {
             execution_time: chrono::Utc::now(),
             data: payload.clone(),
             recurrence: None,
-            metadata: {
-                let mut m = TaskMetadata::body(&run_id, execution_id).to_json_value();
-                if let Some(obj) = m.as_object_mut() {
-                    obj.insert(
-                        "handler".to_string(),
-                        serde_json::Value::String(task_name.to_string()),
-                    );
-                }
-                m
-            },
+            metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
         };
 
         self.storage

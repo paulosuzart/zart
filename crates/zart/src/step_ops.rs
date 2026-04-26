@@ -18,7 +18,6 @@ use zart_core::{StorageError, TaskMetadata};
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {
     pub task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub step_name: &'a str,
@@ -38,7 +37,6 @@ pub struct ResumeBodySpec<'a> {
     pub result_kind: crate::step_types::ResultKind,
     pub lock_token: &'a str,
     pub next_body_task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub data: serde_json::Value,
@@ -49,7 +47,6 @@ pub struct ResumeBodySpec<'a> {
 /// Parameters for [`schedule_wait_group_child_task`].
 pub struct WaitGroupChildSpec<'a> {
     pub task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub step_name: &'a str,
@@ -60,7 +57,6 @@ pub struct WaitGroupChildSpec<'a> {
 /// Parameters for [`schedule_wait_for_event_task`].
 pub struct EventStepSpec<'a> {
     pub task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub event_name: &'a str,
@@ -106,16 +102,7 @@ pub async fn schedule_step_task(
             step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data: spec.data,
-            metadata: {
-                let mut m = metadata;
-                if let Some(obj) = m.as_object_mut() {
-                    obj.insert(
-                        "handler".to_string(),
-                        serde_json::Value::String(spec.task_name.to_string()),
-                    );
-                }
-                m
-            },
+            metadata,
             retry_config: retry_config_json,
         })
         .await
@@ -184,16 +171,7 @@ pub async fn schedule_wait_group_child_task(
             step_kind: StepKind::Step,
             execution_time: chrono::Utc::now(),
             data,
-            metadata: {
-                let mut m = metadata;
-                if let Some(obj) = m.as_object_mut() {
-                    obj.insert(
-                        "handler".to_string(),
-                        serde_json::Value::String(spec.task_name.to_string()),
-                    );
-                }
-                m
-            },
+            metadata,
             retry_config: None,
         })
         .await
@@ -223,7 +201,6 @@ pub async fn complete_step_and_schedule_body(
             lock_token: spec.lock_token.to_string(),
             attempt_number: spec.attempt_number,
             next_body_task_id: spec.next_body_task_id.to_string(),
-            task_name: spec.task_name.to_string(),
             run_id: spec.run_id.to_string(),
             execution_id: spec.execution_id.to_string(),
             data: spec.data,
@@ -294,16 +271,7 @@ pub async fn schedule_wait_for_event_task(
             step_kind: StepKind::WaitForEvent,
             execution_time,
             data: spec.data,
-            metadata: {
-                let mut m = metadata;
-                if let Some(obj) = m.as_object_mut() {
-                    obj.insert(
-                        "handler".to_string(),
-                        serde_json::Value::String(spec.task_name.to_string()),
-                    );
-                }
-                m
-            },
+            metadata,
             retry_config: None,
         })
         .await
@@ -313,7 +281,6 @@ pub async fn schedule_wait_for_event_task(
 pub async fn schedule_sleep_task(
     scheduler: &dyn StorageBackend,
     sleep_task_id: &str,
-    task_name: &str,
     run_id: &str,
     execution_id: &str,
     wake_time: chrono::DateTime<chrono::Utc>,
@@ -341,16 +308,7 @@ pub async fn schedule_sleep_task(
             step_kind: StepKind::Sleep,
             execution_time: wake_time,
             data,
-            metadata: {
-                let mut m = metadata;
-                if let Some(obj) = m.as_object_mut() {
-                    obj.insert(
-                        "handler".to_string(),
-                        serde_json::Value::String(task_name.to_string()),
-                    );
-                }
-                m
-            },
+            metadata,
             retry_config: None,
         })
         .await
@@ -649,7 +607,6 @@ mod tests {
             &storage,
             WaitGroupChildSpec {
                 task_id: "exec-1:step:child-a",
-                task_name: "test-task",
                 run_id: "exec-1:run:0",
                 execution_id: "exec-1",
                 step_name: "child-a",

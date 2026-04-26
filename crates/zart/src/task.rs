@@ -55,16 +55,6 @@ impl ScheduledTask for ZartTask {
             .map(|m| m.run_id().to_string())
             .unwrap_or_else(|| execution_id.clone());
 
-        // Extract the specific handler name from metadata
-        let handler_name = instance
-            .metadata
-            .get("handler")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                warn!(task_id = %instance.task_id, "Task missing 'handler' name in metadata");
-                SchedulerTaskError::HandlerPanic("missing handler name in metadata".to_string())
-            })?;
-
         let step_deadline = typed_meta
             .as_ref()
             .and_then(|m| m.deadline())
@@ -92,7 +82,34 @@ impl ScheduledTask for ZartTask {
             other => other,
         };
 
-        // 2. Look up handler
+        // 2. Load execution record — provides handler name and scheduled_at for deadline check.
+        //    All __zart__ tasks are created with an execution_id in metadata; if one is missing
+        //    the task row is corrupt and we cannot dispatch it.
+        if !has_execution {
+            warn!(task_id = %instance.task_id, "ZartTask received a task without execution context");
+            ops.complete(None)
+                .await
+                .map_err(SchedulerTaskError::Storage)?;
+            return Err(SchedulerTaskError::HandlerPanic(
+                "missing execution context".to_string(),
+            ));
+        }
+        let execution = match self.storage.get_execution(&execution_id).await {
+            Ok(Some(exec)) => exec,
+            Ok(None) => {
+                warn!(execution_id = %execution_id, "Execution record not found — task may be stale");
+                ops.complete(None)
+                    .await
+                    .map_err(SchedulerTaskError::Storage)?;
+                return Err(SchedulerTaskError::HandlerPanic(format!(
+                    "execution {execution_id} not found"
+                )));
+            }
+            Err(e) => return Err(SchedulerTaskError::Storage(e)),
+        };
+        let handler_name = execution.task_name.as_str();
+
+        // 3. Look up handler
         let handler = match self.registry.get_handler(handler_name) {
             Some(h) => h,
             None => {
@@ -108,26 +125,11 @@ impl ScheduledTask for ZartTask {
             }
         };
 
-        // 3. Execution deadline check
-        let execution_deadline = if has_execution {
-            if let Some(timeout_dur) = handler.timeout() {
-                match self.storage.get_execution(&execution_id).await {
-                    Ok(Some(exec)) => Some(
-                        exec.scheduled_at
-                            + chrono::Duration::from_std(timeout_dur)
-                                .unwrap_or(chrono::Duration::zero()),
-                    ),
-                    Ok(None) | Err(_) => {
-                        warn!("Could not load execution {execution_id} for deadline check");
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // 4. Execution deadline (derived from execution.scheduled_at + handler timeout).
+        let execution_deadline = handler.timeout().map(|dur| {
+            execution.scheduled_at
+                + chrono::Duration::from_std(dur).unwrap_or(chrono::Duration::zero())
+        });
 
         if let Some(deadline) = execution_deadline
             && chrono::Utc::now() >= deadline

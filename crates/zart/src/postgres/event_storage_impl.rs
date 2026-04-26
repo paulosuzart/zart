@@ -23,9 +23,9 @@ impl EventStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let exec_row: Option<(String, String, serde_json::Value)> = sqlx::query_as(&format!(
+        let exec_row: Option<(String, serde_json::Value)> = sqlx::query_as(&format!(
             r#"
-            SELECT e.current_run_id, e.task_name, r.payload
+            SELECT e.current_run_id, r.payload
             FROM {executions} e
             JOIN {execution_runs} r ON r.run_id = e.current_run_id
             WHERE e.execution_id = $1
@@ -38,7 +38,7 @@ impl EventStore for PostgresStorage {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let (run_id, task_name, run_payload) = match exec_row {
+        let (run_id, run_payload) = match exec_row {
             None => {
                 tx.rollback()
                     .await
@@ -125,16 +125,6 @@ impl EventStore for PostgresStorage {
         }
 
         let next_body_task_id = format!("{execution_id}:body:after:{event_name}");
-        let body_metadata = {
-            let mut m = TaskMetadata::body(&run_id, execution_id).to_json_value();
-            if let Some(obj) = m.as_object_mut() {
-                obj.insert(
-                    "handler".to_string(),
-                    serde_json::Value::String(task_name.clone()),
-                );
-            }
-            m
-        };
 
         // Schedule the continuation body task via the task_scheduler delegate.
         self.task_scheduler
@@ -146,7 +136,7 @@ impl EventStore for PostgresStorage {
                     execution_time: Utc::now(),
                     data: run_payload,
                     recurrence: None,
-                    metadata: body_metadata,
+                    metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
                 },
             )
             .await?;
