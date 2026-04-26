@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::ListExecutionsParams;
-use zart::{DurableScheduler, TaskRegistry};
+use zart::{DurableRegistry, DurableScheduler};
 use zart_scheduler::Recurrence;
 
 #[tokio::test]
@@ -12,9 +12,8 @@ use zart_scheduler::Recurrence;
 async fn durable_execution_runs_sequential_steps() {
     let scheduler = setup().await;
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("sequential-task", SequentialTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-seq-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -43,9 +42,8 @@ async fn durable_execution_runs_sequential_steps() {
 async fn failed_step_causes_execution_to_fail() {
     let scheduler = setup().await;
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("failing-task", FailingTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-fail-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -73,14 +71,13 @@ async fn step_retries_on_transient_failure() {
     let scheduler = setup().await;
     let attempt_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(
         "transient-fail-task",
         TransientFailTask {
             attempts: attempt_counter.clone(),
         },
     );
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-retry-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -141,34 +138,36 @@ async fn list_executions_returns_started_executions() {
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
-#[allow(deprecated)]
 async fn recurring_fixed_delay_task_runs_multiple_times() {
-    struct CounterTask {
+    use zart_scheduler::TaskRegistry as SchedulerRegistry;
+    use zart_scheduler::{ExecutionOps, ScheduledTask, SchedulerTaskError, TaskInstance};
+
+    struct CounterScheduledTask {
         count: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     #[async_trait::async_trait]
-    impl DurableExecution for CounterTask {
-        type Data = serde_json::Value;
-        type Output = serde_json::Value;
-
-        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+    impl ScheduledTask for CounterScheduledTask {
+        async fn execute(
+            &self,
+            _instance: &TaskInstance,
+            _ops: &mut ExecutionOps<'_>,
+        ) -> Result<(), SchedulerTaskError> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(serde_json::json!({}))
+            Ok(())
         }
     }
 
     let scheduler = setup().await;
     let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let mut registry = TaskRegistry::new();
-    registry.register(
+    let mut scheduler_registry = SchedulerRegistry::new();
+    scheduler_registry.register(
         "counter-task",
-        CounterTask {
+        CounterScheduledTask {
             count: call_count.clone(),
         },
     );
-    let registry = Arc::new(registry);
 
     let task_id = format!("recurring-{}", Uuid::new_v4());
     scheduler
@@ -194,8 +193,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
     };
     let worker = Arc::new(Worker::new(
         scheduler.task_scheduler(),
-        scheduler.clone(),
-        registry,
+        Arc::new(scheduler_registry),
         config,
     ));
     let w = worker.clone();
@@ -246,9 +244,8 @@ async fn step_exhausts_retries_and_fails_execution() {
         }
     }
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("always-fail-task", AlwaysFailTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-exhaust-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());

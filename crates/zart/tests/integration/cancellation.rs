@@ -5,7 +5,7 @@
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableScheduler, TaskRegistry};
+use zart::{DurableRegistry, DurableScheduler};
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
@@ -14,7 +14,7 @@ async fn cancelled_execution_not_overwritten_when_handler_succeeds() {
     let started = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(
         "gated-task",
         GatedTask {
@@ -22,7 +22,6 @@ async fn cancelled_execution_not_overwritten_when_handler_succeeds() {
             gate: gate.clone(),
         },
     );
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-cancel-race-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -57,7 +56,7 @@ async fn cancelled_execution_not_requeued_on_step_scheduled() {
     let started = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(
         "gated-step-task",
         GatedStepTask {
@@ -65,7 +64,6 @@ async fn cancelled_execution_not_requeued_on_step_scheduled() {
             gate: gate.clone(),
         },
     );
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-cancel-step-race-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());

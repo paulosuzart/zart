@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 //! Admin API demonstration example.
 //!
 //! Demonstrates:
@@ -18,7 +17,6 @@ use zart::PostgresStorage;
 use zart::admin::{PauseScope, RerunSpec};
 use zart::error::{SchedulerError, TaskError};
 use zart::prelude::*;
-use zart_scheduler;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -366,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart_scheduler::Worker> {
+fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
     let mut registry = DurableRegistry::new();
     registry.register("zart::admin_demo::AdminDemoTask", AdminDemoTask);
     let config = zart::WorkerConfig {

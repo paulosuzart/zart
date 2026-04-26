@@ -332,7 +332,7 @@ async fn run_handler<H: DurableExecution>(
 where
     H::Data: serde::Serialize,
 {
-    let mut registry = zart::TaskRegistry::new();
+    let mut registry = zart::DurableRegistry::new();
     registry.register(task_name, handler);
 
     let ctx = Arc::new(make_ctx());

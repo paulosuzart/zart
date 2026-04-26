@@ -2,15 +2,14 @@
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableScheduler, TaskRegistry};
+use zart::{DurableRegistry, DurableScheduler};
 
 #[tokio::test]
 #[ignore]
 async fn wait_completion_returns_typed_result() {
     let scheduler = setup().await;
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("zart::tests::integration::TypedTask", TypedTask);
-    let registry = Arc::new(registry);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -37,9 +36,8 @@ async fn wait_completion_returns_typed_result() {
 #[ignore]
 async fn wait_completion_with_timeout_returns_typed_result() {
     let scheduler = setup().await;
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("zart::tests::integration::TypedTask", TypedTask);
-    let registry = Arc::new(registry);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -66,9 +64,8 @@ async fn wait_completion_with_timeout_returns_typed_result() {
 #[ignore]
 async fn start_and_wait_for_returns_typed_result() {
     let scheduler = setup().await;
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("zart::tests::integration::TypedTask", TypedTask);
-    let registry = Arc::new(registry);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -96,9 +93,8 @@ async fn start_and_wait_for_returns_typed_result() {
 #[ignore]
 async fn start_and_wait_for_infers_types_from_handler() {
     let scheduler = setup().await;
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("zart::tests::integration::TypedTask", TypedTask);
-    let registry = Arc::new(registry);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
@@ -159,9 +155,8 @@ async fn wait_completion_fails_when_no_result() {
 #[ignore]
 async fn wait_completion_fails_on_type_mismatch() {
     let scheduler = setup().await;
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("zart::tests::integration::TypedTask", TypedTask);
-    let registry = Arc::new(registry);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());

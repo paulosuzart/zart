@@ -2,16 +2,15 @@
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableScheduler, TaskRegistry};
+use zart::{DurableRegistry, DurableScheduler};
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn parallel_steps_all_complete_and_sum_results() {
     let scheduler = setup().await;
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("parallel-task", ParallelTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-par-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());

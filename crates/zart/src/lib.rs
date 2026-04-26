@@ -61,12 +61,14 @@
 //! Register the handler, start a worker, and fire an execution:
 //!
 //! ```text
-//! let mut registry = TaskRegistry::new();
+//! let mut registry = DurableRegistry::new();
 //! registry.register("onboard-user", OnboardUser);
 //!
 //! let scheduler = /* connect to postgres */;
-//! let sched     = DurableScheduler::new(scheduler.clone());
-//! let worker    = Worker::new(scheduler, Arc::new(registry), WorkerConfig::default());
+//! let sched     = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+//! let worker    = WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
+//!                     .registry(registry)
+//!                     .build();
 //!
 //! // Start the execution from anywhere in your application.
 //! sched.start_for::<OnboardUser>("onboard-alice", "onboard-user", &user_id).await?;
@@ -83,7 +85,7 @@
 //! | [`ZartStep`] | Trait for individual steps; results are cached across retries. |
 //! | [`DurableScheduler`] | Starts executions, queries status, and waits for results. |
 //! | [`Worker`] | Polls the database and dispatches handlers on a configurable thread pool. |
-//! | [`TaskRegistry`] | Maps task-name strings to handler instances. |
+//! | [`DurableRegistry`] | Maps task-name strings to handler instances. |
 //!
 //! # Step helpers
 //!
@@ -169,7 +171,7 @@ pub use error::{
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use postgres::PostgresStorage;
 pub use registry::{DurableExecution, DurableRegistry};
-pub use zart_scheduler::WorkerConfig;
+pub use zart_scheduler::{Worker, WorkerConfig};
 // Re-export execution-side types so callers don't need zart-core directly.
 pub use retry::RetryConfig;
 pub use service::ExecutionService;

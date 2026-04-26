@@ -177,7 +177,7 @@ pub async fn complete_step_and_schedule_body_sql(
 pub async fn schedule_step_sql(
     conn: &mut PgConnection,
     task_id: &str,
-    task_name: &str,
+    _task_name: &str,
     execution_time: chrono::DateTime<chrono::Utc>,
     data: &Value,
     metadata: &Value,

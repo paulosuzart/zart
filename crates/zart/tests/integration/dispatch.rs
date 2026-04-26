@@ -3,7 +3,7 @@ use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
-use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
+use zart::{DurableRegistry, DurableScheduler, step_types::StepDefId};
 use zart_core::TaskMetadata;
 use zart_core::store::{EventStore as _, StepStore as _, WaitGroupStore as _};
 use zart_core::types::{
@@ -357,9 +357,8 @@ async fn deliver_event_happy_path_and_idempotency() {
         .await
         .expect("start failed");
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("wait-event-task", WaitEventTask);
-    let registry = Arc::new(registry);
     let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
 
     tokio::time::sleep(Duration::from_millis(600)).await;

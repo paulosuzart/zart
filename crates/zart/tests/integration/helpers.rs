@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 pub use serde::{Deserialize, Serialize};
 pub use std::borrow::Cow;
 pub use std::sync::{
@@ -10,8 +8,8 @@ pub use std::time::Duration;
 /// Shared helpers and test step definitions for integration tests.
 pub use zart::PostgresStorage;
 pub use zart::{
-    RetryConfig, TaskRegistry, Worker, WorkerConfig, context::ZartStep, error::TaskError,
-    registry::DurableExecution,
+    DurableRegistry, RetryConfig, Worker, WorkerBuilder, WorkerConfig, context::ZartStep,
+    error::TaskError, registry::DurableExecution,
 };
 pub use zart_core::store::ExecutionStore as _;
 pub use zart_core::types::{EventDeliveryResult, ExecutionStatus};
@@ -56,7 +54,7 @@ pub async fn setup() -> Arc<PostgresStorage> {
 
 pub fn spawn_worker(
     scheduler: Arc<PostgresStorage>,
-    registry: Arc<TaskRegistry>,
+    registry: DurableRegistry,
 ) -> (Arc<Worker>, tokio::task::JoinHandle<()>) {
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(100),
@@ -66,12 +64,12 @@ pub fn spawn_worker(
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(Worker::new(
-        scheduler.task_scheduler(),
-        scheduler,
-        registry,
-        config,
-    ));
+    let worker = Arc::new(
+        WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let handle = tokio::spawn(async move { w.run().await });
     (worker, handle)

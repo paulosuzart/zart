@@ -35,7 +35,7 @@ impl ScheduledTask for ZartTask {
                     error!(error = %e, task_id = %instance.task_id, "Failed to parse task metadata");
                     ops.complete(None)
                         .await
-                        .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                        .map_err(SchedulerTaskError::Storage)?;
                     return Err(SchedulerTaskError::HandlerPanic(
                         "invalid metadata".to_string(),
                     ));
@@ -139,14 +139,14 @@ impl ScheduledTask for ZartTask {
                     info!("on_failure recovered from execution deadline");
                     ops.complete(Some(output.clone()))
                         .await
-                        .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                        .map_err(SchedulerTaskError::Storage)?;
                     let _ = self.storage.complete_execution(&execution_id, output).await;
                 }
                 Err(recovery_err) => {
                     error!(error = %recovery_err, "on_failure did not recover execution deadline");
                     ops.complete(None)
                         .await
-                        .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                        .map_err(SchedulerTaskError::Storage)?;
                     let _ = self.storage.fail_execution(&execution_id).await;
                     return Err(SchedulerTaskError::HandlerPanic(format!(
                         "deadline exceeded: {recovery_err}"
@@ -182,7 +182,7 @@ impl ScheduledTask for ZartTask {
                 info!("Task completed successfully");
                 ops.complete(Some(val.clone()))
                     .await
-                    .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                    .map_err(SchedulerTaskError::Storage)?;
                 if has_execution {
                     let _ = self.storage.complete_execution(&execution_id, val).await;
                 }
@@ -201,7 +201,7 @@ impl ScheduledTask for ZartTask {
                 info!(step = %step, "Body step scheduled — marking body task complete");
                 ops.complete(None)
                     .await
-                    .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                    .map_err(SchedulerTaskError::Storage)?;
             }
             Err(err) => {
                 let failure = build_execution_failure(&err, instance);
@@ -213,7 +213,7 @@ impl ScheduledTask for ZartTask {
                             );
                             ops.complete(Some(output.clone()))
                                 .await
-                                .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                                .map_err(SchedulerTaskError::Storage)?;
                             let _ = self.storage.complete_execution(&execution_id, output).await;
                         }
                         Err(recovery_err) => {
@@ -223,7 +223,7 @@ impl ScheduledTask for ZartTask {
                 }
                 ops.complete(None)
                     .await
-                    .map_err(|e| SchedulerTaskError::Storage(e.into()))?;
+                    .map_err(SchedulerTaskError::Storage)?;
                 if has_execution {
                     let _ = self.storage.fail_execution(&execution_id).await;
                 }
