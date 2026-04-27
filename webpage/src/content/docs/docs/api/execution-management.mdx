@@ -5,15 +5,15 @@ description: Reference for DurableScheduler — start, status, wait, cancel, and
 
 import { Aside } from '@astrojs/starlight/components';
 
-`DurableScheduler` is the high-level entry point for interacting with durable executions. It wraps the underlying `Scheduler` and provides execution-aware operations.
+`DurableScheduler` is the high-level entry point for interacting with durable executions. It wraps the underlying `TaskScheduler` and provides execution-aware operations.
 
 ## Construction
 
 ```rust
-let durable = DurableScheduler::new(scheduler.clone());
+let durable = DurableScheduler::new(storage.clone(), storage.task_scheduler());
 ```
 
-The `scheduler` is typically an `Arc<PostgresScheduler>`. The `DurableScheduler` borrows it via `Arc` so it can be shared between your web server (scheduling) and the worker (executing).
+The `storage` is typically an `Arc<PostgresStorage>`. The `DurableScheduler` borrows both via `Arc` so it can be shared between your web server (scheduling) and the worker (executing).
 
 ## Starting an Execution
 
@@ -65,7 +65,7 @@ Get the current status of a durable execution without blocking.
 async fn status(
     &self,
     execution_id: &str,
-) -> Result<DurableExecutionStatus, SchedulerError>
+) -> Result<ExecutionRecord, SchedulerError>
 ```
 
 ```rust
@@ -83,7 +83,7 @@ async fn wait(
     execution_id: &str,
     timeout: Duration,
     poll_interval: Option<Duration>,
-) -> Result<DurableExecutionStatus, SchedulerError>
+) -> Result<ExecutionRecord, SchedulerError>
 ```
 
 ```rust
@@ -195,24 +195,20 @@ The event is deserialized into the type expected by the corresponding `zart::wai
 
 ## Execution Status
 
-`DurableExecutionStatus` contains:
+`ExecutionRecord` contains:
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | `String` | Registered task name |
 | `execution_id` | `String` | Unique execution identifier |
-| `payload` | `serde_json::Value` | Original input |
-| `status` | `ExecutionStatus` | Current state |
-| `result` | `Option<serde_json::Value>` | Output if completed, error info if failed |
-| `scheduled_at` | `DateTime<Utc>` | When the execution was first scheduled |
-| `completed_at` | `Option<DateTime<Utc>>` | When the execution reached a terminal state |
-| `steps` | `Vec<StepStatusInfo>` | Per-step status and results |
+| `task_name` | `String` | Registered task name |
+| `current_run_id` | `Option<String>` | Pointer to active run |
+| `created_at` | `DateTime<Utc>` | When the execution was first scheduled |
 
 `ExecutionStatus` variants:
 
 | Variant | Meaning |
 |---|---|
-| `Pending` | Scheduled but not yet picked up by a worker |
+| `Scheduled` | Scheduled but not yet picked up by a worker |
 | `Running` | Actively being processed |
 | `Waiting` | Durably paused (sleep or event wait) |
 | `Completed` | Finished successfully |
@@ -224,23 +220,27 @@ The event is deserialized into the type expected by the corresponding `zart::wai
 ```rust
 async fn list_executions(
     &self,
-    status_filter: Option<ExecutionStatus>,
-    task_name: Option<String>,
-    limit: u32,
-    offset: u32,
-) -> Result<Vec<DurableExecutionStatus>, SchedulerError>
+    params: ListExecutionsParams,
+) -> Result<Vec<ExecutionRecord>, SchedulerError>
 ```
 
 Query executions with optional filtering by status and task name, with pagination.
 
 ```rust
 let all = durable
-    .list_executions(None, Some("onboarding".into()), 100, 0)
+    .list_executions(ListExecutionsParams {
+        status: Some(ExecutionStatus::Completed),
+        task_name: Some("onboarding".into()),
+        limit: 100,
+        offset: 0,
+        sort_field: Some(ExecutionSortField::ScheduledAt),
+        sort_order: Some(SortOrder::Desc),
+    })
     .await?;
 ```
 
 ## Next Steps
 
-- [**Durable Execution**](/concepts/durable-execution/) — the concept and lifecycle
-- [**Free Functions**](/api/free-functions/) — `sleep`, `wait_for_event`, `schedule`, `wait`
-- [**Error Types**](/api/error-types/) — `SchedulerError`, `TaskError`, `ExecutionFailure`
+- [**Durable Execution**](/docs/concepts/durable-execution/) — the concept and lifecycle
+- [**Free Functions**](/docs/api/free-functions/) — `sleep`, `wait_for_event`, `schedule`, `wait`
+- [**Error Types**](/docs/api/error-types/) — `SchedulerError`, `TaskError`, `ExecutionFailure`

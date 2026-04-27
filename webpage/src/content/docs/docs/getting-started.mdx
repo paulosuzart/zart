@@ -60,13 +60,15 @@ sqlx          = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 
 ```rust
 use sqlx::PgPool;
+use zart::PostgresStorage;
+use std::sync::Arc;
 
 let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-let sched = Arc::new(PostgresScheduler::new(pool));
+let sched = Arc::new(PostgresStorage::new(pool));
 sched.run_migrations().await?;
 ```
 
-This creates the `zart_tasks`, `zart_execution_runs`, and `zart_events` tables. Migrations are idempotent — safe to run on every deploy.
+This creates the `zart_tasks`, `zart_executions`, `zart_execution_runs`, `zart_steps`, `zart_step_attempts`, and `zart_pause_rules` tables. Migrations are idempotent — safe to run on every deploy.
 
 You can also run them from the CLI:
 
@@ -78,16 +80,14 @@ just migrate
 
 ```rust
 use zart::prelude::*;
-use zart::registry::TaskRegistry;
-use zart::worker::Worker;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
     sched.run_migrations().await?;
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("onboarding", Onboarding);
 
     let config = zart::WorkerConfig {
@@ -99,7 +99,12 @@ async fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let worker = Arc::new(Worker::new(sched.clone(), Arc::new(registry), config));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
@@ -114,10 +119,10 @@ The worker polls PostgreSQL for due tasks and dispatches them to registered hand
 Call this from anywhere — a web handler, a background task, a test:
 
 ```rust
-let durable = DurableScheduler::new(sched.clone());
+let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
 durable
-    .start_for::<OnboardingTask>(
+    .start_for::<Onboarding>(
         "signup-user-42",   // idempotency key — safe to call twice
         "onboarding",
         &OnboardingData { email: "alice@example.com".into() },
@@ -143,7 +148,7 @@ You can also combine start and wait into a single call:
 
 ```rust
 let output = durable
-    .start_and_wait_for::<OnboardingTask>("signup-user-42", "onboarding", &input, Duration::from_secs(60))
+    .start_and_wait_for::<Onboarding>("signup-user-42", "onboarding", &input, Duration::from_secs(60))
     .await?;
 ```
 
@@ -169,11 +174,11 @@ just example-sleep
 just example-brewery
 ```
 
-See the full [Examples](/examples/brewery-finder/) section for detailed walkthroughs.
+See the full [Examples](/docs/examples/brewery-finder/) section for detailed walkthroughs.
 
 ## Next Steps
 
-- [**Durable Execution**](/concepts/durable-execution/) — the core concept, lifecycle, and idempotency
-- [**Steps**](/concepts/steps/) — defining steps, retries, sleeps, events, and durable values
-- [**Flow Control**](/concepts/flow-control/) — parallel steps and durable loops
-- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
+- [**Durable Execution**](/docs/concepts/durable-execution/) — the core concept, lifecycle, and idempotency
+- [**Steps**](/docs/concepts/steps/) — defining steps, retries, sleeps, events, and durable values
+- [**Flow Control**](/docs/concepts/flow-control/) — parallel steps and durable loops
+- [**Error Handling**](/docs/concepts/error-handling/) — the three-way outcome model

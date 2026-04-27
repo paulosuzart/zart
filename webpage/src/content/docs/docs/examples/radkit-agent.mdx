@@ -208,11 +208,10 @@ impl DurableExecution for RadkitAgent {
 let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
 let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));
 
-let mut registry = TaskRegistry::new();
+let mut registry = DurableRegistry::new();
 registry.register("radkit-agent", RadkitAgent { llm });
-let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone());
+let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 durable
     .start_for::<RadkitAgent>(&execution_id, "radkit-agent", &AgentInput {
         query: "Find breweries in Portland, Oregon".to_string(),
