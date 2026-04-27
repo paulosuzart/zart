@@ -468,7 +468,7 @@ impl ExecutionStore for PostgresStorage {
             r#"
             INSERT INTO {execution_runs}
                 (run_id, execution_id, run_index, payload, trigger, triggered_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5::execution_trigger, $6)
             "#,
             execution_runs = self.table_names.execution_runs(),
         ))
