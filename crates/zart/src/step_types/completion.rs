@@ -3,10 +3,11 @@
 //! This module intentionally provides a conservative, backward-compatible
 //! scaffold that can be wired in during phased cutover.
 
+use crate::store::StorageBackend;
 use async_trait::async_trait;
-use zart_scheduler::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams, StorageBackend, StorageError,
-};
+use zart_core::StorageError;
+use zart_core::types::{CompleteWaitGroupChildParams, FailWaitGroupChildParams};
+use zart_scheduler::TaskScheduler;
 
 use crate::step_ops;
 use crate::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
@@ -20,6 +21,7 @@ impl CompletionBehavior for ScheduleNextBody {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        _task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let serialized = match spec.result {
@@ -40,7 +42,6 @@ impl CompletionBehavior for ScheduleNextBody {
                 result_kind: crate::step_types::ResultKind::Ok,
                 lock_token: &spec.worker_id,
                 next_body_task_id: &next_body_task_id,
-                task_name: &spec.task_name,
                 run_id: &spec.run_id,
                 execution_id: &spec.execution_id,
                 data: spec.data,
@@ -61,6 +62,7 @@ impl CompletionBehavior for DecrementAndMaybeResume {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        _task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let group_step_name = match spec.wait_group_step_name {
@@ -92,7 +94,6 @@ impl CompletionBehavior for DecrementAndMaybeResume {
                 lock_token: spec.worker_id,
                 attempt_number: spec.attempt_number,
                 next_body_task_id,
-                task_name: spec.task_name,
                 data: spec.data,
             })
             .await?;
@@ -110,6 +111,7 @@ impl CompletionBehavior for FailWaitGroup {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        _task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let group_step_name = match spec.wait_group_step_name {
@@ -159,6 +161,7 @@ impl CompletionBehavior for FailExecutionOnDeadline {
     async fn complete(
         &self,
         scheduler: &dyn StorageBackend,
+        task_scheduler: &dyn TaskScheduler,
         spec: CompletionSpec,
     ) -> Result<(), StorageError> {
         let reason = match spec.outcome {
@@ -166,7 +169,7 @@ impl CompletionBehavior for FailExecutionOnDeadline {
             CompletionOutcome::Success => "event deadline exceeded".to_string(),
         };
 
-        scheduler
+        task_scheduler
             .mark_failed(&spec.step_task_id, &reason, None, &spec.worker_id)
             .await?;
 
@@ -181,15 +184,16 @@ mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use std::sync::{Arc, Mutex};
-    use zart_scheduler::pause_storage::PauseStorage;
-    use zart_scheduler::{
+    use zart_core::store::pause_storage::PauseStorage;
+    use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
+    use zart_core::types::{
         CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-        CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
-        ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
-        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
-        ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, StepStore,
-        TaskScheduler, UpsertWaitGroupStepParams, WaitGroupStore,
+        CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
+        ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
+        RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
+        StepAttemptRow, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
+    use zart_scheduler::TaskScheduler;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Recorded {
@@ -475,7 +479,6 @@ mod tests {
             step_id: "exec-1:step:child-a".to_string(),
             step_name: "child-a".to_string(),
             worker_id: "lock-1".to_string(),
-            task_name: "task-a".to_string(),
             run_id: "exec-1:run:0".to_string(),
             execution_id: "exec-1".to_string(),
             data: serde_json::json!({}),
@@ -493,7 +496,7 @@ mod tests {
         let (storage, calls) = TestStorage::new(true);
 
         let res = FailWaitGroup
-            .complete(&storage, fail_wait_group_spec())
+            .complete(&storage, &storage, fail_wait_group_spec())
             .await;
         assert!(res.is_ok());
 
@@ -512,7 +515,7 @@ mod tests {
         let (storage, calls) = TestStorage::new(false);
 
         let res = FailWaitGroup
-            .complete(&storage, fail_wait_group_spec())
+            .complete(&storage, &storage, fail_wait_group_spec())
             .await;
         assert!(res.is_ok());
 

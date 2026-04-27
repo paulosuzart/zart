@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! CLI Interaction Demo — Long-running durable execution for CLI admin commands demonstration.
 //!
 //! This example starts a durable execution with multiple steps and sleeps to provide
@@ -22,8 +23,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use zart::PostgresStorage;
 use zart::prelude::*;
-use zart_scheduler::PostgresScheduler;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -207,9 +208,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
 
-    let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
+    let durable = Arc::new(DurableScheduler::with_pause(
+        sched.clone(),
+        sched.task_scheduler(),
+        sched.clone(),
+    ));
 
     // Start the durable execution
     durable
@@ -225,9 +230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Register and run the handler
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("zart::cli_demo::CliDemoTask", CliDemoTask);
-    let registry = Arc::new(registry);
 
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(500),
@@ -238,7 +242,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let worker = zart::Worker::new(sched.clone(), registry, config);
+    let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        .registry(registry)
+        .config(config)
+        .build();
 
     println!("Worker starting... (press Ctrl+C to stop)");
     println!();

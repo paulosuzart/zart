@@ -1,10 +1,11 @@
+#![allow(deprecated)]
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
-use zart_scheduler::PostgresScheduler;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SleepInput {
@@ -55,14 +56,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("sleep-task", SleepTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("sleep-demo-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let input = SleepInput {
         task_name: "demo".to_string(),
@@ -81,7 +81,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(60),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

@@ -1,16 +1,16 @@
-//! PostgreSQL implementation of [`EventRepository`] and [`EventStore`] for [`PostgresScheduler`].
-//!
-//! Covers delivering external events to waiting executions and read-only
-//! execution statistics (a reporting aggregate, not an admin mutation).
+//! PostgreSQL implementation of [`EventStore`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
+use chrono::Utc;
+use zart_core::StorageError;
+use zart_core::store::EventStore;
+use zart_core::task_metadata::TaskMetadata;
+use zart_core::types::{EventDeliveryResult, ExecutionStats, ScheduleAtParams};
 
-use super::PostgresScheduler;
-use crate::repository::EventRepository;
-use crate::store::EventStore;
-use crate::{EventDeliveryResult, ExecutionStats, StorageError, TaskMetadata};
+use super::PostgresStorage;
 
-impl EventRepository for PostgresScheduler {
+#[async_trait]
+impl EventStore for PostgresStorage {
     async fn deliver_event(
         &self,
         execution_id: &str,
@@ -23,9 +23,9 @@ impl EventRepository for PostgresScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let exec_row: Option<(String, String, serde_json::Value)> = sqlx::query_as(&format!(
+        let exec_row: Option<(String, serde_json::Value)> = sqlx::query_as(&format!(
             r#"
-            SELECT e.current_run_id, e.task_name, r.payload
+            SELECT e.current_run_id, r.payload
             FROM {executions} e
             JOIN {execution_runs} r ON r.run_id = e.current_run_id
             WHERE e.execution_id = $1
@@ -38,7 +38,7 @@ impl EventRepository for PostgresScheduler {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let (run_id, task_name, run_payload) = match exec_row {
+        let (run_id, run_payload) = match exec_row {
             None => {
                 tx.rollback()
                     .await
@@ -125,23 +125,21 @@ impl EventRepository for PostgresScheduler {
         }
 
         let next_body_task_id = format!("{execution_id}:body:after:{event_name}");
-        let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, NOW(), $3, $4)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&next_body_task_id)
-        .bind(&task_name)
-        .bind(&run_payload)
-        .bind(&body_metadata)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        // Schedule the continuation body task via the task_scheduler delegate.
+        self.task_scheduler
+            .schedule_at_in_tx(
+                &mut tx,
+                ScheduleAtParams {
+                    task_id: next_body_task_id,
+                    task_name: crate::TASK_NAME.to_string(),
+                    execution_time: Utc::now(),
+                    data: run_payload,
+                    recurrence: None,
+                    metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
+                },
+            )
+            .await?;
 
         tx.commit()
             .await
@@ -176,23 +174,5 @@ impl EventRepository for PostgresScheduler {
             failed: row.3,
             cancelled: row.4,
         })
-    }
-}
-
-// ── EventStore ────────────────────────────────────────────────────────────────
-
-#[async_trait]
-impl EventStore for PostgresScheduler {
-    async fn deliver_event(
-        &self,
-        execution_id: &str,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> Result<EventDeliveryResult, StorageError> {
-        EventRepository::deliver_event(self, execution_id, event_name, payload).await
-    }
-
-    async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
-        EventRepository::execution_stats(self).await
     }
 }

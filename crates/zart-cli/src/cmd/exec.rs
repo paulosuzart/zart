@@ -1,8 +1,7 @@
 use zart::DurableScheduler;
-use zart_scheduler::TaskScheduler as _;
 
 pub async fn migrate(pool: sqlx::PgPool) {
-    let scheduler = zart_scheduler::PostgresScheduler::new(pool);
+    let scheduler = zart::PostgresStorage::new(pool);
     scheduler.run_migrations().await.unwrap_or_else(|e| {
         eprintln!("error: migrations failed: {e}");
         std::process::exit(1);

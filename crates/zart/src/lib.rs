@@ -61,12 +61,14 @@
 //! Register the handler, start a worker, and fire an execution:
 //!
 //! ```text
-//! let mut registry = TaskRegistry::new();
+//! let mut registry = DurableRegistry::new();
 //! registry.register("onboard-user", OnboardUser);
 //!
 //! let scheduler = /* connect to postgres */;
-//! let sched     = DurableScheduler::new(scheduler.clone());
-//! let worker    = Worker::new(scheduler, Arc::new(registry), WorkerConfig::default());
+//! let sched     = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+//! let worker    = WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
+//!                     .registry(registry)
+//!                     .build();
 //!
 //! // Start the execution from anywhere in your application.
 //! sched.start_for::<OnboardUser>("onboard-alice", "onboard-user", &user_id).await?;
@@ -83,7 +85,7 @@
 //! | [`ZartStep`] | Trait for individual steps; results are cached across retries. |
 //! | [`DurableScheduler`] | Starts executions, queries status, and waits for results. |
 //! | [`Worker`] | Polls the database and dispatches handlers on a configurable thread pool. |
-//! | [`TaskRegistry`] | Maps task-name strings to handler instances. |
+//! | [`DurableRegistry`] | Maps task-name strings to handler instances. |
 //!
 //! # Step helpers
 //!
@@ -125,6 +127,7 @@
 pub mod admin;
 pub mod api;
 pub mod api_trait;
+pub mod builder;
 pub mod context;
 pub mod durable;
 pub mod error;
@@ -132,14 +135,20 @@ pub mod execution_model;
 pub(crate) mod local;
 pub mod logging;
 pub mod metrics;
+pub mod postgres;
 pub mod registry;
 pub mod retry;
 pub mod service;
 pub mod step_ops;
 pub mod step_types;
+pub mod store;
+pub mod task;
+pub mod task_metadata;
 pub mod timeout;
 mod trx_impl;
-pub mod worker;
+pub mod types;
+
+pub const TASK_NAME: &str = "__zart__";
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
@@ -153,18 +162,28 @@ pub use api::{
     step_or_else, wait, wait_for_event,
 };
 pub use api_trait::{DurableApi, into_durable_api};
+pub use builder::WorkerBuilder;
 pub use context::{StepHandle, TaskContext, ZartStep};
 pub use durable::DurableScheduler;
 pub use error::{
     ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
 };
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
-pub use registry::{DurableExecution, TaskRegistry};
+pub use postgres::PostgresStorage;
+pub use registry::{DurableExecution, DurableRegistry};
+pub use zart_scheduler::{Worker, WorkerConfig};
+// Re-export execution-side types so callers don't need zart-core directly.
 pub use retry::RetryConfig;
 pub use service::ExecutionService;
+pub use store::StorageBackend;
 pub use timeout::TimeoutScope;
 pub use trx_impl::{ZartTrx, trx};
-pub use worker::{Worker, WorkerConfig};
+// Worker is now provided via WorkerBuilder
+pub use zart_core::store::pause_storage::PauseRuleFilter;
+pub use zart_core::types::{
+    ExecutionRecord, ExecutionRunRecord, ExecutionSortField, ExecutionStats, ExecutionStatus,
+    ListExecutionsParams, SortOrder,
+};
 
 // Re-export proc macros from zart-macros
 pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
@@ -175,8 +194,9 @@ pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 pub mod prelude {
     pub use crate::{
         AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope, RerunResult,
-        RerunSpec, ResumeResult, ZartTrx,
+        RerunSpec, ResumeResult, WorkerConfig, ZartTrx,
         api_trait::DurableApi,
+        builder::WorkerBuilder,
         capture, context,
         context::{StepHandle, ZartStep},
         durable::DurableScheduler,
@@ -184,14 +204,10 @@ pub mod prelude {
             ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
         },
         now,
-        registry::{DurableExecution, TaskRegistry},
+        registry::{DurableExecution, DurableRegistry},
         require,
         retry::RetryConfig,
         schedule, sleep, sleep_until, step, step_or, step_or_else, trx, wait, wait_for_event,
-        worker::{Worker, WorkerConfig},
     };
-    #[allow(deprecated)]
-    pub use zart_scheduler::{
-        DurableStorage, ExecutionRecord, ExecutionStatus, Scheduler, StorageBackend,
-    };
+    pub use crate::{ExecutionRecord, ExecutionStatus, StorageBackend};
 }

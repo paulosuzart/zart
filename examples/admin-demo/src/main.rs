@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::ExecutionStatus;
+use zart::PostgresStorage;
 use zart::admin::{PauseScope, RerunSpec};
 use zart::error::{SchedulerError, TaskError};
 use zart::prelude::*;
-use zart_scheduler::{ExecutionStatus, PostgresScheduler};
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -124,10 +125,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
 
     // Use with_pause so we can demo pause/resume too.
-    let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
+    let durable = Arc::new(DurableScheduler::with_pause(
+        sched.clone(),
+        sched.task_scheduler(),
+        sched.clone(),
+    ));
 
     // ── 1. Typed wait_completion ──────────────────────────────────────────────
 
@@ -359,10 +364,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_worker(sched: &Arc<PostgresScheduler>) -> Arc<zart::Worker> {
-    let mut registry = TaskRegistry::new();
+fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
+    let mut registry = DurableRegistry::new();
     registry.register("zart::admin_demo::AdminDemoTask", AdminDemoTask);
-    let registry = Arc::new(registry);
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(100),
         max_tasks_per_poll: 10,
@@ -371,7 +375,12 @@ fn spawn_worker(sched: &Arc<PostgresScheduler>) -> Arc<zart::Worker> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry, config));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
     worker

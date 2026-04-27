@@ -1,14 +1,14 @@
-//! PostgreSQL implementation of the [`PauseStorage`] trait.
+//! PostgreSQL implementation of [`PauseStorage`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
 use globset::Glob;
+use zart_core::StorageError;
+use zart_core::store::pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage};
 
-use super::PostgresScheduler;
-use crate::StorageError;
-use crate::pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage};
+use super::PostgresStorage;
 
 #[async_trait]
-impl PauseStorage for PostgresScheduler {
+impl PauseStorage for PostgresStorage {
     async fn create_pause_rule(&self, rule: PauseRule) -> Result<PauseRule, StorageError> {
         sqlx::query(&format!(
             r#"

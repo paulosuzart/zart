@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Demonstrates Zart's transaction participation features.
 //!
 //! **Scenario 1** — `start_in_tx`: atomically create a user record and start a
@@ -13,11 +14,11 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::context::ZartStep;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::trx;
-use zart_scheduler::PostgresScheduler;
 
 // ── Schema (created on first run) ────────────────────────────────────────────
 
@@ -193,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
     POOL.set(pool.clone()).ok();
 
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
     ensure_schema(&pool).await?;
 
     let user_id = Uuid::new_v4();
@@ -203,7 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Scenario 1: Transactional Scheduling ---");
     println!("Creating user and starting onboarding in a single transaction...\n");
 
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let mut tx = pool.begin().await?;
 
@@ -243,9 +244,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Run the worker ───────────────────────────────────────────────────
     println!("--- Running Worker (Scenario 2: zart::trx in deduct-balance step) ---\n");
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("onboard-user", OnboardUser);
-    let registry = Arc::new(registry);
 
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
@@ -255,7 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(60),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

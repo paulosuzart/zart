@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Error Handling Example
 //!
 //! Demonstrates the full spectrum of zart error handling:
@@ -14,10 +15,10 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::{ExecutionFailure, StepOutcome, TaskError};
 use zart::prelude::*;
 use zart::{zart_durable, zart_step};
-use zart_scheduler::PostgresScheduler;
 
 // ── Step error types ──────────────────────────────────────────────────────────
 
@@ -313,14 +314,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = std::sync::Arc::new(PostgresScheduler::new(pool));
+    let sched = std::sync::Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("error-handling-demo", ProcessOrder);
-    let registry = std::sync::Arc::new(registry);
 
     let execution_id = format!("error-handling-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let input = OrderInput {
         account_id: "acct-123".to_string(),
@@ -341,7 +341,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = std::sync::Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = std::sync::Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

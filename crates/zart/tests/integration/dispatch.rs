@@ -3,16 +3,19 @@ use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
-use zart::{DurableScheduler, TaskRegistry, step_types::StepDefId};
-use zart_scheduler::{
-    CompleteWaitGroupChildParams, EventStore as _, FailWaitGroupChildParams, ScheduleStepParams,
-    StepKind, StepStore as _, TaskMetadata, UpsertWaitGroupStepParams, WaitGroupStore as _,
+use zart::{DurableRegistry, DurableScheduler, step_types::StepDefId};
+use zart_core::TaskMetadata;
+use zart_core::store::{EventStore as _, StepStore as _, WaitGroupStore as _};
+use zart_core::types::{
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
+    UpsertWaitGroupStepParams,
 };
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn stepdefid_from_task_metadata_correct() {
-    use zart_scheduler::{StepMetaType, TaskMetadata};
+    use zart_core::TaskMetadata;
+    use zart_core::task_metadata::StepMetaType;
 
     let make = |step_type: StepMetaType,
                 step_name: &str,
@@ -128,6 +131,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .expect("schedule child-2 failed");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -161,7 +165,6 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
             lock_token: lock1,
             attempt_number: 1,
             next_body_task_id: next_body_task_id_1,
-            task_name: task_name.to_string(),
             data: serde_json::json!({}),
         })
         .await
@@ -183,20 +186,20 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
             lock_token: lock2,
             attempt_number: 1,
             next_body_task_id: next_body_task_id_2,
-            task_name: task_name.to_string(),
             data: serde_json::json!({}),
         })
         .await
     });
 
-    let r1: Result<bool, zart_scheduler::StorageError> = child1.await.expect("join child1 failed");
-    let r2: Result<bool, zart_scheduler::StorageError> = child2.await.expect("join child2 failed");
+    let r1: Result<bool, zart_core::StorageError> = child1.await.expect("join child1 failed");
+    let r2: Result<bool, zart_core::StorageError> = child2.await.expect("join child2 failed");
     let t1 = r1.expect("complete_wait_group_child #1 failed");
     let t2 = r2.expect("complete_wait_group_child #2 failed");
 
     assert!(t1 ^ t2, "exactly one child should trigger body scheduling");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -281,6 +284,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
         .expect("schedule fail-2 failed");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -343,7 +347,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn deliver_event_happy_path_and_idempotency() {
     let scheduler = setup().await;
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     let execution_id = format!("test-deliver-event-{}", Uuid::new_v4());
     durable
@@ -351,9 +355,8 @@ async fn deliver_event_happy_path_and_idempotency() {
         .await
         .expect("start failed");
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("wait-event-task", WaitEventTask);
-    let registry = Arc::new(registry);
     let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
 
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -425,6 +428,7 @@ async fn completion_behaviors_execute_with_real_backend() {
         .expect("schedule_step failed");
 
     let fetched = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -440,7 +444,6 @@ async fn completion_behaviors_execute_with_real_backend() {
         step_id: schedule.task_id.clone(),
         step_name: "comp-step".to_string(),
         worker_id: step_lock,
-        task_name: task_name.to_string(),
         run_id: format!("{execution_id}:run:0"),
         execution_id: execution_id.clone(),
         data: serde_json::json!({}),
@@ -452,11 +455,12 @@ async fn completion_behaviors_execute_with_real_backend() {
 
     let behavior = zart::step_types::completion::ScheduleNextBody;
     behavior
-        .complete(&*scheduler, spec)
+        .complete(&*scheduler, &*scheduler.task_scheduler(), spec)
         .await
         .expect("ScheduleNextBody::complete failed");
 
     let due = scheduler
+        .task_scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");

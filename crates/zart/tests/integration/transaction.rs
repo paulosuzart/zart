@@ -4,7 +4,8 @@ use std::borrow::Cow;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::{
-    DurableScheduler, TaskRegistry, context::ZartStep, error::TaskError, registry::DurableExecution,
+    DurableRegistry, DurableScheduler, context::ZartStep, error::TaskError,
+    registry::DurableExecution,
 };
 
 // ── Scenario 1: Transactional scheduling ───────────────────────────────
@@ -13,7 +14,7 @@ use zart::{
 #[ignore]
 async fn start_in_tx_rollback_leaves_no_execution() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-rollback-{}", Uuid::new_v4());
@@ -40,7 +41,7 @@ async fn start_in_tx_rollback_leaves_no_execution() {
 #[ignore]
 async fn start_in_tx_commit_creates_execution_and_task() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-commit-{}", Uuid::new_v4());
@@ -74,7 +75,7 @@ async fn start_in_tx_commit_creates_execution_and_task() {
 #[ignore]
 async fn start_for_in_tx_commit_creates_execution_with_payload() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-typed-{}", Uuid::new_v4());
@@ -103,7 +104,7 @@ async fn start_for_in_tx_commit_creates_execution_with_payload() {
 #[ignore]
 async fn start_in_tx_duplicate_returns_not_supported() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let pool = scheduler.pool().clone();
 
     let exec_id = format!("trx-dup-{}", Uuid::new_v4());
@@ -149,12 +150,11 @@ async fn trx_called_outside_step_returns_error() {
 async fn trx_double_call_returns_error() {
     let scheduler = setup().await;
     let pool = scheduler.pool().clone();
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
 
     registry.register("double-trx", DoubleTrxHandler { pool });
-    let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("double-trx-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "double-trx", serde_json::json!({}))
@@ -222,12 +222,11 @@ impl DurableExecution for DoubleTrxHandler {
 #[ignore]
 async fn step_without_trx_completes_normally() {
     let scheduler = setup().await;
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
 
     registry.register("no-trx-step", NoTrxStepHandler);
-    let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("no-trx-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "no-trx-step", serde_json::json!({}))
@@ -330,7 +329,7 @@ async fn trx_atomic_step_write_and_completion_commit_together() {
 
     let ledger_key_clone = ledger_key.clone();
     let pool_clone = pool.clone();
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(
         "atomic-write-handler",
         AtomicHandler {
@@ -338,9 +337,8 @@ async fn trx_atomic_step_write_and_completion_commit_together() {
             ledger_key: ledger_key_clone,
         },
     );
-    let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("atomic-write-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "atomic-write-handler", serde_json::json!({}))
@@ -440,7 +438,7 @@ async fn trx_atomic_step_write_rolls_back_on_step_error() {
 
     let ledger_key_clone = ledger_key.clone();
     let pool_clone = pool.clone();
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(
         "failing-write-handler",
         FailingHandler {
@@ -448,9 +446,8 @@ async fn trx_atomic_step_write_rolls_back_on_step_error() {
             ledger_key: ledger_key_clone,
         },
     );
-    let registry = Arc::new(registry);
 
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
     let exec_id = format!("atomic-err-{}", Uuid::new_v4());
     sched
         .start(&exec_id, "failing-write-handler", serde_json::json!({}))

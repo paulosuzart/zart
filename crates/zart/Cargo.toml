@@ -9,6 +9,7 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
+zart-core.workspace = true
 zart-scheduler.workspace = true
 zart-macros.workspace = true
 async-trait.workspace = true
@@ -24,6 +25,7 @@ prometheus = { workspace = true, optional = true }
 lazy_static = { workspace = true, optional = true }
 tokio-util.workspace = true
 sqlx = { workspace = true, features = ["postgres"] }
+globset.workspace = true
 
 [features]
 metrics = ["dep:prometheus", "dep:lazy_static"]

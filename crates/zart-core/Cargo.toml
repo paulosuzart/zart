@@ -1,0 +1,19 @@
+[package]
+name = "zart-core"
+description = "Shared core types, traits, and error primitives for Zart"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+cron.workspace = true
+globset.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true }
+thiserror.workspace = true

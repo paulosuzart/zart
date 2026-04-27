@@ -212,9 +212,9 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 ///
 /// ```rust,ignore
 /// use std::sync::Arc;
-/// use zart::{TaskRegistry, Worker, WorkerConfig};
+/// use zart::{DurableRegistry, Worker, WorkerConfig};
 ///
-/// let mut registry = TaskRegistry::new();
+/// let mut registry = DurableRegistry::new();
 /// registry.register("fulfill-order",  FulfillOrder);
 /// registry.register("onboard-user",   OnboardUser);
 /// registry.register("send-invoice",   SendInvoice);
@@ -224,11 +224,11 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 ///
 /// let worker = Worker::new(scheduler.clone(), Arc::clone(&registry), WorkerConfig::default());
 /// ```
-pub struct TaskRegistry {
+pub struct DurableRegistry {
     handlers: HashMap<String, Box<dyn RegisteredTask>>,
 }
 
-impl TaskRegistry {
+impl DurableRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
@@ -284,7 +284,7 @@ impl TaskRegistry {
     }
 }
 
-impl Default for TaskRegistry {
+impl Default for DurableRegistry {
     fn default() -> Self {
         Self::new()
     }
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn register_and_lookup() {
-        let mut registry = TaskRegistry::new();
+        let mut registry = DurableRegistry::new();
         registry.register("echo", EchoTask);
         assert!(registry.get_handler("echo").is_some());
         assert!(registry.get_handler("missing").is_none());
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn registry_len() {
-        let mut registry = TaskRegistry::new();
+        let mut registry = DurableRegistry::new();
         assert_eq!(registry.len(), 0);
         assert!(registry.is_empty());
         registry.register("echo", EchoTask);

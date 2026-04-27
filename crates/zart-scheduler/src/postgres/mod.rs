@@ -1,4 +1,4 @@
-//! PostgreSQL-backed implementation of the `Scheduler` trait.
+//! PostgreSQL-backed task-queue implementation of `TaskScheduler`.
 //!
 //! Uses `sqlx` with a `PgPool` for connection pooling. Task locking is
 //! implemented with `SELECT … FOR UPDATE SKIP LOCKED` so multiple workers
@@ -6,41 +6,36 @@
 //!
 //! # Migrations
 //!
-//! Call `PostgresScheduler::run_migrations` (or `just migrate`) once before
+//! Call `PostgresTaskScheduler::run_migrations` (or `just migrate`) once before
 //! starting workers. It applies the embedded SQL files under `migrations/`.
 
-mod admin_storage_impl;
-mod event_storage_impl;
-mod execution_storage_impl;
-mod pause_storage_impl;
 mod scheduler_impl;
 mod sql_helpers;
-mod step_storage_impl;
 mod table_names;
-mod wait_group_storage_impl;
 
 use sqlx::PgPool;
 
 pub use table_names::{TableNames, TableNamesError};
 
-/// A `Scheduler` backed by a PostgreSQL database.
+/// A [`TaskScheduler`](crate::TaskScheduler) backed by a PostgreSQL database.
 ///
-/// Create one with [`PostgresScheduler::new`], passing in an already-built
+/// Manages only the `zart_tasks` table (task queue lifecycle: schedule, poll,
+/// complete, fail, cancel). For execution, step, and event storage use
+/// `zart::PostgresStorage`.
+///
+/// Create one with [`PostgresTaskScheduler::new`], passing in an already-built
 /// `sqlx::PgPool`. Call `run_migrations` before first use to ensure the
 /// schema is up to date.
 ///
 /// To use custom table names (e.g. to avoid collisions or support multi-tenancy),
-/// use [`PostgresScheduler::with_table_names`] together with [`TableNames`].
-pub struct PostgresScheduler {
-    pool: PgPool,
-    table_names: TableNames,
+/// use [`PostgresTaskScheduler::with_table_names`] together with [`TableNames`].
+pub struct PostgresTaskScheduler {
+    pub(crate) pool: PgPool,
+    pub(crate) table_names: TableNames,
 }
 
-impl PostgresScheduler {
-    /// Create a new scheduler using the default `zart_*` table names.
-    ///
-    /// This is backward-compatible with existing code — no migration or
-    /// configuration change is required.
+impl PostgresTaskScheduler {
+    /// Create a new task scheduler using the default `zart_*` table names.
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
@@ -48,22 +43,7 @@ impl PostgresScheduler {
         }
     }
 
-    /// Create a new scheduler with explicit table-name configuration.
-    ///
-    /// Use this when you need a custom prefix or schema qualifier.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # async fn example() {
-    /// use sqlx::PgPool;
-    /// use zart_scheduler::postgres::{PostgresScheduler, TableNames};
-    ///
-    /// let pool = PgPool::connect("postgres://...").await.unwrap();
-    /// let names = TableNames::with_prefix("myapp_").unwrap();
-    /// let scheduler = PostgresScheduler::with_table_names(pool, names);
-    /// # }
-    /// ```
+    /// Create a new task scheduler with explicit table-name configuration.
     pub fn with_table_names(pool: PgPool, table_names: TableNames) -> Self {
         Self { pool, table_names }
     }
@@ -73,3 +53,11 @@ impl PostgresScheduler {
         &self.pool
     }
 }
+
+/// Deprecated: use `zart::PostgresStorage` for full storage or
+/// [`PostgresTaskScheduler`] for task-queue-only use.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use zart::PostgresStorage for full StorageBackend or PostgresTaskScheduler for task-queue only."
+)]
+pub type PostgresScheduler = PostgresTaskScheduler;

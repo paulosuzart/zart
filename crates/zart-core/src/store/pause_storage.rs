@@ -1,13 +1,10 @@
 //! Storage operations for pause/resume rules.
-//!
-//! Separate from `DurableStorage` — pause rules are operational controls,
-//! not part of the core execution lifecycle.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::StorageError;
+use crate::error::StorageError;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -65,7 +62,7 @@ pub struct PauseSnapshot {
 
 /// Storage operations for pause/resume rules.
 ///
-/// Separate from `DurableStorage` and `Scheduler` — pause rules
+/// Separate from `DurableStorage` and `TaskScheduler` — pause rules
 /// are operational controls that happen to affect scheduling.
 #[async_trait]
 pub trait PauseStorage: Send + Sync {
@@ -108,11 +105,11 @@ pub trait PauseStorage: Send + Sync {
     }
 
     /// Capture a snapshot of the current execution state for audit purposes.
-    ///
-    /// Called when a pause rule is activated. The snapshot is denormalized
-    /// history — not used for resume logic.
     async fn snapshot_pause_state(&self, snapshot: PauseSnapshot) -> Result<(), StorageError> {
         let _ = snapshot;
         Err(StorageError::NotImplemented("snapshot_pause_state"))
     }
 }
+
+/// Type alias for the new name used in `zart::store`.
+pub use PauseStorage as PauseStore;

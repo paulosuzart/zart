@@ -3966,6 +3966,7 @@ version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "globset",
  "lazy_static",
  "prometheus",
  "serde",
@@ -3978,6 +3979,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zart-core",
  "zart-macros",
  "zart-scheduler",
 ]
@@ -4016,6 +4018,21 @@ dependencies = [
  "uuid",
  "zart",
  "zart-scheduler",
+]
+
+[[package]]
+name = "zart-core"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "globset",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4065,8 +4082,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "uuid",
+ "zart-core",
 ]
 
 [[package]]

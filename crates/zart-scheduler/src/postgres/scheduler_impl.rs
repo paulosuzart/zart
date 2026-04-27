@@ -1,19 +1,21 @@
-//! Implementation of the [`TaskScheduler`] trait for [`PostgresScheduler`].
+//! Implementation of the [`TaskScheduler`] trait for [`PostgresTaskScheduler`].
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use super::PostgresScheduler;
-use super::sql_helpers::schedule_at_sql;
+use super::PostgresTaskScheduler;
+use super::sql_helpers::{
+    mark_completed_sql, mark_failed_sql, schedule_at_sql, update_task_state_sql,
+};
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
-    TaskScheduler, TaskStatus,
+    TaskScheduler,
 };
 
 #[async_trait]
-impl TaskScheduler for PostgresScheduler {
+impl TaskScheduler for PostgresTaskScheduler {
     async fn schedule_now(
         &self,
         task_id: &str,
@@ -190,32 +192,22 @@ impl TaskScheduler for PostgresScheduler {
         result: Option<serde_json::Value>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
-        let rows_affected = sqlx::query(&format!(
-            r#"
-            UPDATE {tasks}
-            SET status       = 'completed',
-                result       = $1,
-                completed_at = NOW(),
-                updated_at   = NOW(),
-                locked_at    = NULL,
-                worker_id    = NULL
-            WHERE task_id  = $2
-              AND worker_id = $3
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&result)
-        .bind(task_id)
-        .bind(lock_token)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?
-        .rows_affected();
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        mark_completed_sql(&mut conn, task_id, result, lock_token, &self.table_names).await
+    }
 
-        if rows_affected == 0 {
-            return Err(StorageError::LockMismatch(task_id.to_string()));
-        }
-        Ok(())
+    async fn mark_completed_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        task_id: &str,
+        result: Option<serde_json::Value>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        mark_completed_sql(conn, task_id, result, lock_token, &self.table_names).await
     }
 
     async fn mark_failed(
@@ -225,63 +217,39 @@ impl TaskScheduler for PostgresScheduler {
         next_execution_time: Option<DateTime<Utc>>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
-        let (new_status, exec_time) = match next_execution_time {
-            Some(t) => (TaskStatus::Scheduled, Some(t)),
-            None => (TaskStatus::Failed, None),
-        };
-
-        let rows_affected = if let Some(t) = exec_time {
-            sqlx::query(&format!(
-                r#"
-                UPDATE {tasks}
-                SET status         = $1,
-                    last_error     = $2,
-                    execution_time = $3,
-                    locked_at      = NULL,
-                    worker_id      = NULL,
-                    updated_at     = NOW()
-                WHERE task_id  = $4
-                  AND worker_id = $5
-                "#,
-                tasks = self.table_names.tasks(),
-            ))
-            .bind(new_status)
-            .bind(error)
-            .bind(t)
-            .bind(task_id)
-            .bind(lock_token)
-            .execute(&self.pool)
+        let mut conn = self
+            .pool
+            .acquire()
             .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?
-            .rows_affected()
-        } else {
-            sqlx::query(&format!(
-                r#"
-                UPDATE {tasks}
-                SET status     = $1,
-                    last_error = $2,
-                    locked_at  = NULL,
-                    worker_id  = NULL,
-                    updated_at = NOW()
-                WHERE task_id  = $3
-                  AND worker_id = $4
-                "#,
-                tasks = self.table_names.tasks(),
-            ))
-            .bind(new_status)
-            .bind(error)
-            .bind(task_id)
-            .bind(lock_token)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?
-            .rows_affected()
-        };
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        mark_failed_sql(
+            &mut conn,
+            task_id,
+            error,
+            next_execution_time,
+            lock_token,
+            &self.table_names,
+        )
+        .await
+    }
 
-        if rows_affected == 0 {
-            return Err(StorageError::LockMismatch(task_id.to_string()));
-        }
-        Ok(())
+    async fn mark_failed_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        task_id: &str,
+        error: &str,
+        next_execution_time: Option<DateTime<Utc>>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        mark_failed_sql(
+            conn,
+            task_id,
+            error,
+            next_execution_time,
+            lock_token,
+            &self.table_names,
+        )
+        .await
     }
 
     async fn cancel_task(&self, task_id: &str) -> Result<bool, StorageError> {
@@ -433,7 +401,26 @@ impl TaskScheduler for PostgresScheduler {
         Ok(())
     }
 
-    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, StorageError> {
+    async fn update_task_state_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        task_id: &str,
+        state: serde_json::Value,
+        next_execution_time: DateTime<Utc>,
+        lock_token: &str,
+    ) -> Result<(), StorageError> {
+        update_task_state_sql(
+            conn,
+            task_id,
+            state,
+            next_execution_time,
+            lock_token,
+            &self.table_names,
+        )
+        .await
+    }
+
+    async fn begin(&self) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {
         self.pool
             .begin()
             .await

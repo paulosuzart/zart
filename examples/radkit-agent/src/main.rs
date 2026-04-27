@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Radkit Agent Example
 //!
 //! Demonstrates integrating radkit AI agents with durable execution:
@@ -19,11 +20,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::registry::DurableExecution;
 use zart::zart_step;
-use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 
@@ -275,19 +276,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
     let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));
 
     let agent = RadkitAgent { llm };
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("radkit-agent", agent);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("radkit-demo-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let input = AgentInput {
         query: "Find breweries in Portland, Oregon".to_string(),
@@ -307,7 +307,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

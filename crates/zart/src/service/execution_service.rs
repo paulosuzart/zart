@@ -14,7 +14,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use zart_scheduler::{StepStatus, StorageBackend};
+use crate::store::StorageBackend;
+use zart_core::types::StepStatus;
 
 use crate::admin::{ExecutionDetail, RerunResult, RerunSpec, StepWithAttempts};
 use crate::error::SchedulerError;
@@ -35,7 +36,7 @@ impl ExecutionService {
 
     /// Retry a single dead step within the given run.
     ///
-    /// Delegates to [`zart_scheduler::ExecutionStore::retry_dead_step`] after resolving any
+    /// Delegates to `ExecutionStore::retry_dead_step` after resolving any
     /// run-level concerns. Returns the new task ID for the retried step.
     ///
     /// # Errors
@@ -103,7 +104,7 @@ impl ExecutionService {
     /// - Steps in `spec.preserve` that are `completed` are carried forward.
     ///
     /// After computing the effective-rerun set the method calls
-    /// [`zart_scheduler::ExecutionStore::restart_run`] with `trigger = 'selective_rerun'`.
+    /// `ExecutionStore::restart_run` with `trigger = 'selective_rerun'`.
     ///
     /// # Returns
     ///
@@ -206,7 +207,7 @@ impl ExecutionService {
                     .filter(|a| a.step_id == step.step_id)
                     .cloned()
                     .collect();
-                let retryable = step.status == zart_scheduler::StepStatus::Dead;
+                let retryable = step.status == zart_core::types::StepStatus::Dead;
                 StepWithAttempts {
                     step,
                     attempts: step_attempts,

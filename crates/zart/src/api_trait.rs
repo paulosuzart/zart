@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use zart_scheduler::{ExecutionRecord, ExecutionStats, ListExecutionsParams, ScheduleResult};
+use zart_core::types::{ExecutionRecord, ExecutionStats, ListExecutionsParams};
+use zart_scheduler::ScheduleResult;
 
 /// Object-safe interface for durable execution management.
 ///

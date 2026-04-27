@@ -35,8 +35,22 @@ test-integration-core:
     cargo test -p zart --test integration -- --include-ignored --test-threads=1
 
 # Run all tests including ignored ones and examples (requires PostgreSQL + internet)
+# Excludes: radkit-agent (needs LLM API key), ui-demo (separate UI pipeline)
 test-integration-full:
+    just migrate
     cargo test --workspace -- --include-ignored --test-threads=1
+    @echo "── Running examples ─────────────────────────────────────────────────────"
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-brewery-finder
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-approval-workflow
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-parallel-steps
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-retry-simulation
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-durable-loops
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-sleep
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-error-handling
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-transactions
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p example-admin-demo
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} bash examples/cli-demo/demo.sh
+    @echo "── All examples completed ────────────────────────────────────────────────"
 
 # Run tests for a specific crate only
 test-crate crate:

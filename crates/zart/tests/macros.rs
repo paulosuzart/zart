@@ -16,15 +16,18 @@ use zart::context::ZartStep;
 use zart::error::TaskError;
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
-use zart_macros::zart_durable;
-use zart_scheduler::pause_storage::PauseStorage;
-use zart_scheduler::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, EventDeliveryResult, EventStore,
-    ExecutionRecord, ExecutionRunRecord, ExecutionStats, ExecutionStore, FetchedTask,
-    ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
-    ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, StepStore, StorageError,
-    TaskScheduler, UpsertWaitGroupStepParams, WaitGroupStore,
+use zart_core::StorageError;
+use zart_core::store::pause_storage::PauseStorage;
+use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
+use zart_core::types::{
+    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
+    EventDeliveryResult, ExecutionRecord, ExecutionRunRecord, ExecutionStats,
+    FailWaitGroupChildParams, FetchedTask, ListExecutionsParams, RescheduleStepForRetryParams,
+    ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepAttemptRow, StepKind, StepLookup,
+    StepRow, UpsertWaitGroupStepParams,
 };
+use zart_macros::zart_durable;
+use zart_scheduler::TaskScheduler;
 
 // ── Local step error for test steps ───────────────────────────────────────
 
@@ -262,13 +265,13 @@ impl WaitGroupStore for MockScheduler {
     }
     async fn complete_wait_group_child(
         &self,
-        _: zart_scheduler::CompleteWaitGroupChildParams,
+        _: CompleteWaitGroupChildParams,
     ) -> Result<bool, StorageError> {
         Ok(false)
     }
     async fn fail_wait_group_child(
         &self,
-        _: zart_scheduler::FailWaitGroupChildParams,
+        _: FailWaitGroupChildParams,
     ) -> Result<bool, StorageError> {
         Ok(false)
     }
@@ -309,8 +312,10 @@ impl EventStore for MockScheduler {
 impl PauseStorage for MockScheduler {}
 
 fn make_ctx() -> TaskContext {
+    let scheduler = Arc::new(MockScheduler::new());
     TaskContext::new(
-        Arc::new(MockScheduler::new()),
+        scheduler.clone() as Arc<dyn zart::store::StorageBackend>,
+        scheduler as Arc<dyn zart_scheduler::TaskScheduler>,
         "test-execution",
         "test-task",
         "lock-token",
@@ -327,7 +332,7 @@ async fn run_handler<H: DurableExecution>(
 where
     H::Data: serde::Serialize,
 {
-    let mut registry = zart::TaskRegistry::new();
+    let mut registry = zart::DurableRegistry::new();
     registry.register(task_name, handler);
 
     let ctx = Arc::new(make_ctx());

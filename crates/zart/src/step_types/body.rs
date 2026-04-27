@@ -5,7 +5,7 @@
 //! schedule a new row if absent, or signal in-flight if already scheduled.
 
 use async_trait::async_trait;
-use zart_scheduler::{StepLookup, TaskStatus, UpsertWaitGroupStepParams};
+use zart_core::types::{StepLookup, TaskStatus, UpsertWaitGroupStepParams};
 
 use crate::TaskContext;
 use crate::emit_metric;
@@ -95,7 +95,6 @@ impl BodyBehavior for LookupOrSchedule {
                     &*ctx.scheduler,
                     step_ops::StepTaskSpec {
                         task_id: &task_id,
-                        task_name: ctx.task_name_internal(),
                         run_id: ctx.run_id(),
                         execution_id: ctx.execution_id(),
                         step_name,
@@ -172,9 +171,9 @@ impl BodyBehavior for LookupOrScheduleSleep {
                 step_ops::schedule_sleep_task(
                     &*ctx.scheduler,
                     &task_id,
-                    ctx.task_name_internal(),
                     ctx.run_id(),
                     ctx.execution_id(),
+                    step_name,
                     wake_time,
                     ctx.data().clone(),
                 )
@@ -276,7 +275,6 @@ impl BodyBehavior for LookupOrScheduleEvent {
                     &*ctx.scheduler,
                     step_ops::EventStepSpec {
                         task_id: &task_id,
-                        task_name: ctx.task_name_internal(),
                         run_id: ctx.run_id(),
                         execution_id: ctx.execution_id(),
                         event_name: step_name,
@@ -381,7 +379,6 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
                         &*ctx.scheduler,
                         step_ops::WaitGroupChildSpec {
                             task_id: &child_task_id,
-                            task_name: ctx.task_name_internal(),
                             run_id: ctx.run_id(),
                             execution_id: ctx.execution_id(),
                             step_name: child_name,

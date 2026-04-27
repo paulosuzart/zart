@@ -3,20 +3,20 @@ use super::helpers::*;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableScheduler, TaskRegistry};
-use zart_scheduler::{ListExecutionsParams, Recurrence};
+use zart::ListExecutionsParams;
+use zart::{DurableRegistry, DurableScheduler};
+use zart_scheduler::Recurrence;
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn durable_execution_runs_sequential_steps() {
     let scheduler = setup().await;
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("sequential-task", SequentialTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-seq-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "sequential-task", serde_json::json!({}))
@@ -42,12 +42,11 @@ async fn durable_execution_runs_sequential_steps() {
 async fn failed_step_causes_execution_to_fail() {
     let scheduler = setup().await;
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("failing-task", FailingTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-fail-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "failing-task", serde_json::json!({}))
@@ -72,17 +71,16 @@ async fn step_retries_on_transient_failure() {
     let scheduler = setup().await;
     let attempt_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(
         "transient-fail-task",
         TransientFailTask {
             attempts: attempt_counter.clone(),
         },
     );
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-retry-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "transient-fail-task", serde_json::json!({}))
@@ -109,7 +107,7 @@ async fn step_retries_on_transient_failure() {
 async fn list_executions_returns_started_executions() {
     let scheduler = setup().await;
 
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     let base_id = Uuid::new_v4().to_string();
     let id_a = format!("test-list-a-{base_id}");
@@ -141,35 +139,39 @@ async fn list_executions_returns_started_executions() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn recurring_fixed_delay_task_runs_multiple_times() {
-    struct CounterTask {
+    use zart_scheduler::TaskRegistry as SchedulerRegistry;
+    use zart_scheduler::{ExecutionOps, ScheduledTask, SchedulerTaskError, TaskInstance};
+
+    struct CounterScheduledTask {
         count: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     #[async_trait::async_trait]
-    impl DurableExecution for CounterTask {
-        type Data = serde_json::Value;
-        type Output = serde_json::Value;
-
-        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+    impl ScheduledTask for CounterScheduledTask {
+        async fn execute(
+            &self,
+            _instance: &TaskInstance,
+            _ops: &mut ExecutionOps<'_>,
+        ) -> Result<(), SchedulerTaskError> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(serde_json::json!({}))
+            Ok(())
         }
     }
 
     let scheduler = setup().await;
     let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let mut registry = TaskRegistry::new();
-    registry.register(
+    let mut scheduler_registry = SchedulerRegistry::new();
+    scheduler_registry.register(
         "counter-task",
-        CounterTask {
+        CounterScheduledTask {
             count: call_count.clone(),
         },
     );
-    let registry = Arc::new(registry);
 
     let task_id = format!("recurring-{}", Uuid::new_v4());
     scheduler
+        .task_scheduler()
         .schedule_at(zart_scheduler::ScheduleAtParams {
             task_id: task_id.clone(),
             task_name: "counter-task".to_string(),
@@ -189,7 +191,11 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(Worker::new(scheduler.clone(), registry, config));
+    let worker = Arc::new(Worker::new(
+        scheduler.task_scheduler(),
+        Arc::new(scheduler_registry),
+        config,
+    ));
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 
@@ -238,12 +244,11 @@ async fn step_exhausts_retries_and_fails_execution() {
         }
     }
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("always-fail-task", AlwaysFailTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("test-exhaust-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "always-fail-task", serde_json::json!({}))
@@ -268,7 +273,7 @@ async fn cancel_stops_execution_before_it_runs() {
     let scheduler = setup().await;
 
     let execution_id = format!("test-cancel-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone());
+    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     durable
         .start(&execution_id, "sequential-task", serde_json::json!({}))
@@ -285,7 +290,7 @@ async fn cancel_stops_execution_before_it_runs() {
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn start_uses_single_internal_transaction() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone());
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 
     let exec_id = format!("start-atomic-{}", Uuid::new_v4());
     let result = sched

@@ -29,7 +29,7 @@ pub enum SchedulerError {
 
     /// An execution with this ID already exists and is not in a terminal state.
     #[error("Execution '{0}' already exists (status: {1})")]
-    ExecutionAlreadyExists(String, zart_scheduler::ExecutionStatus),
+    ExecutionAlreadyExists(String, zart_core::types::ExecutionStatus),
 
     /// Serialization or deserialization of task data failed.
     #[error("Serialization error: {0}")]

@@ -7,16 +7,17 @@
 //! Keeping this logic here means `PostgresScheduler` remains a clean,
 //! generic storage backend with no execution-model knowledge.
 
-use zart_scheduler::{
+use crate::store::StorageBackend;
+use zart_core::task_metadata::StepMetaType;
+use zart_core::types::{
     CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StepKind, StepMetaType, StepResultKind, StorageBackend,
-    StorageError, TaskMetadata,
+    ScheduleResult, ScheduleStepParams, StepKind, StepResultKind,
 };
+use zart_core::{StorageError, TaskMetadata};
 
 /// Parameters for [`schedule_step_task`].
 pub struct StepTaskSpec<'a> {
     pub task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub step_name: &'a str,
@@ -36,7 +37,6 @@ pub struct ResumeBodySpec<'a> {
     pub result_kind: crate::step_types::ResultKind,
     pub lock_token: &'a str,
     pub next_body_task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub data: serde_json::Value,
@@ -47,7 +47,6 @@ pub struct ResumeBodySpec<'a> {
 /// Parameters for [`schedule_wait_group_child_task`].
 pub struct WaitGroupChildSpec<'a> {
     pub task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub step_name: &'a str,
@@ -58,7 +57,6 @@ pub struct WaitGroupChildSpec<'a> {
 /// Parameters for [`schedule_wait_for_event_task`].
 pub struct EventStepSpec<'a> {
     pub task_id: &'a str,
-    pub task_name: &'a str,
     pub run_id: &'a str,
     pub execution_id: &'a str,
     pub event_name: &'a str,
@@ -98,7 +96,7 @@ pub async fn schedule_step_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.step_name.to_string(),
             step_kind: StepKind::Step,
@@ -167,7 +165,7 @@ pub async fn schedule_wait_group_child_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.step_name.to_string(),
             step_kind: StepKind::Step,
@@ -203,7 +201,6 @@ pub async fn complete_step_and_schedule_body(
             lock_token: spec.lock_token.to_string(),
             attempt_number: spec.attempt_number,
             next_body_task_id: spec.next_body_task_id.to_string(),
-            task_name: spec.task_name.to_string(),
             run_id: spec.run_id.to_string(),
             execution_id: spec.execution_id.to_string(),
             data: spec.data,
@@ -268,7 +265,7 @@ pub async fn schedule_wait_for_event_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: spec.task_id.to_string(),
-            task_name: spec.task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: spec.run_id.to_string(),
             step_name: spec.event_name.to_string(),
             step_kind: StepKind::WaitForEvent,
@@ -284,9 +281,9 @@ pub async fn schedule_wait_for_event_task(
 pub async fn schedule_sleep_task(
     scheduler: &dyn StorageBackend,
     sleep_task_id: &str,
-    task_name: &str,
     run_id: &str,
     execution_id: &str,
+    step_name: &str,
     wake_time: chrono::DateTime<chrono::Utc>,
     data: serde_json::Value,
 ) -> Result<ScheduleResult, StorageError> {
@@ -294,7 +291,7 @@ pub async fn schedule_sleep_task(
         step_type: StepMetaType::Sleep,
         run_id: run_id.to_string(),
         execution_id: execution_id.to_string(),
-        step_name: "__sleep".to_string(),
+        step_name: step_name.to_string(),
         retry_attempt: 0,
         retry_config: None,
         deadline: None,
@@ -306,9 +303,9 @@ pub async fn schedule_sleep_task(
     scheduler
         .schedule_step(ScheduleStepParams {
             task_id: sleep_task_id.to_string(),
-            task_name: task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             run_id: run_id.to_string(),
-            step_name: "__sleep".to_string(),
+            step_name: step_name.to_string(),
             step_kind: StepKind::Sleep,
             execution_time: wake_time,
             data,
@@ -324,15 +321,17 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use std::sync::{Arc, Mutex};
-    use zart_scheduler::pause_storage::PauseStorage;
-    use zart_scheduler::{
+    use zart_core::store::pause_storage::PauseStorage;
+    use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
+    use zart_core::types::{
         CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-        CompleteWaitGroupChildParams, EventDeliveryResult, EventStore, ExecutionRecord,
-        ExecutionRunRecord, ExecutionStats, ExecutionStore, FailWaitGroupChildParams, FetchedTask,
-        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow,
-        StepKind, StepLookup, StepRow, StepStore, TaskMetadata, TaskScheduler,
-        UpsertWaitGroupStepParams, WaitGroupStore,
+        CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
+        ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
+        RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow, StepKind, StepLookup,
+        StepRow, UpsertWaitGroupStepParams,
     };
+    use zart_core::{StorageError, TaskMetadata};
+    use zart_scheduler::TaskScheduler;
 
     struct CapturingStorage {
         last_metadata: Arc<Mutex<Option<serde_json::Value>>>,
@@ -609,7 +608,6 @@ mod tests {
             &storage,
             WaitGroupChildSpec {
                 task_id: "exec-1:step:child-a",
-                task_name: "test-task",
                 run_id: "exec-1:run:0",
                 execution_id: "exec-1",
                 step_name: "child-a",

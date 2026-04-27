@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Parallel Steps Example
 //!
 //! Demonstrates parallel step execution using schedule + wait:
@@ -10,11 +11,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::registry::DurableExecution;
 use zart::zart_step;
-use zart_scheduler::PostgresScheduler;
 
 // ── Local serializable step error ─────────────────────────────────────────────
 
@@ -46,10 +47,14 @@ struct HealthCheckOutput {
     results: Vec<ServiceResult>,
 }
 
-// ── Step definition using #[zart_step] ────────────────────────────────────────
+// ── Step definition ───────────────────────────────────────────────────────────
 
 /// A health check step that simulates checking a service.
-#[zart_step("check-service")]
+///
+/// The `{service}` placeholder expands at runtime, producing unique step names
+/// ("check-auth-api", "check-payments", …) so parallel instances in the same
+/// `wait_all` each get a distinct task ID.
+#[zart_step("check-{service}")]
 async fn check_service(service: String) -> Result<ServiceResult, StepError> {
     println!(
         "[check-{}] Attempt {}",
@@ -131,14 +136,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresScheduler::new(pool));
+    let sched = Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("health-check", HealthCheckTask);
-    let registry = Arc::new(registry);
 
     let execution_id = format!("health-check-demo-{}", uuid::Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone());
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     let input = HealthCheckInput {
         services: vec![
@@ -165,7 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(zart::Worker::new(sched.clone(), registry.clone(), config));
+    let worker = Arc::new(
+        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });
 

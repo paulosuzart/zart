@@ -5,15 +5,15 @@ pub use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 pub use std::time::Duration;
-pub use zart::{
-    RetryConfig, TaskRegistry, Worker, WorkerConfig, context::ZartStep, error::TaskError,
-    registry::DurableExecution,
-};
 /// Shared helpers and test step definitions for integration tests.
-pub use zart_scheduler::{
-    EventDeliveryResult, ExecutionStatus, ExecutionStore as _, PostgresScheduler,
-    TaskScheduler as _,
+pub use zart::PostgresStorage;
+pub use zart::{
+    DurableRegistry, RetryConfig, Worker, WorkerBuilder, WorkerConfig, context::ZartStep,
+    error::TaskError, registry::DurableExecution,
 };
+pub use zart_core::store::ExecutionStore as _;
+pub use zart_core::types::{EventDeliveryResult, ExecutionStatus};
+pub use zart_scheduler::TaskScheduler as _;
 
 // ── Local step error for test steps ───────────────────────────────────────
 
@@ -43,18 +43,18 @@ pub fn pg_url() -> String {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string())
 }
 
-pub async fn setup() -> Arc<PostgresScheduler> {
+pub async fn setup() -> Arc<PostgresStorage> {
     let pool = sqlx::PgPool::connect(&pg_url())
         .await
         .expect("failed to connect to PostgreSQL");
-    let scheduler = Arc::new(PostgresScheduler::new(pool));
+    let scheduler = Arc::new(PostgresStorage::new(pool));
     scheduler.run_migrations().await.expect("migrations failed");
     scheduler
 }
 
 pub fn spawn_worker(
-    scheduler: Arc<PostgresScheduler>,
-    registry: Arc<TaskRegistry>,
+    scheduler: Arc<PostgresStorage>,
+    registry: DurableRegistry,
 ) -> (Arc<Worker>, tokio::task::JoinHandle<()>) {
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(100),
@@ -64,7 +64,12 @@ pub fn spawn_worker(
         orphan_timeout: Duration::from_secs(30),
         ..Default::default()
     };
-    let worker = Arc::new(Worker::new(scheduler, registry, config));
+    let worker = Arc::new(
+        WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
+            .registry(registry)
+            .config(config)
+            .build(),
+    );
     let w = worker.clone();
     let handle = tokio::spawn(async move { w.run().await });
     (worker, handle)

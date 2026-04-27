@@ -10,14 +10,14 @@ use crate::error::SchedulerError;
 #[cfg(feature = "metrics")]
 use crate::metrics::EVENTS_DELIVERED_TOTAL;
 use crate::registry::DurableExecution;
-use crate::service::ExecutionService;
+use crate::service::{ExecutionService, PauseService};
+use crate::store::StorageBackend;
 use std::sync::Arc;
 use std::time::Duration;
-use zart_scheduler::pause_storage::{PauseRule as StoragePauseRule, PauseRuleFilter, PauseStorage};
-use zart_scheduler::{
-    ExecutionRecord, ExecutionStatus, ListExecutionsParams, ScheduleAtParams, ScheduleResult,
-    StorageBackend, TaskMetadata,
-};
+use zart_core::TaskMetadata;
+use zart_core::store::pause_storage::{PauseRuleFilter, PauseStorage};
+use zart_core::types::{ExecutionRecord, ExecutionStatus, ListExecutionsParams};
+use zart_scheduler::{ScheduleAtParams, ScheduleResult, TaskScheduler};
 
 // Maximum duration for `wait_with_timeout` as per the spec.
 const MAX_WAIT_SECS: u64 = 30;
@@ -79,31 +79,35 @@ const MAX_WAIT_SECS: u64 = 30;
 ///     .await?;
 /// ```
 pub struct DurableScheduler {
-    scheduler: Arc<dyn StorageBackend>,
-    pause_storage: Option<Arc<dyn PauseStorage>>,
+    storage: Arc<dyn StorageBackend>,
+    scheduler: Arc<dyn TaskScheduler>,
+    pause_service: Option<PauseService>,
     execution_service: ExecutionService,
 }
 
 impl DurableScheduler {
     /// Create a new `DurableScheduler`.
-    pub fn new(scheduler: Arc<dyn StorageBackend>) -> Self {
-        let execution_service = ExecutionService::new(scheduler.clone());
+    pub fn new(storage: Arc<dyn StorageBackend>, scheduler: Arc<dyn TaskScheduler>) -> Self {
+        let execution_service = ExecutionService::new(storage.clone());
         Self {
+            storage,
             scheduler,
-            pause_storage: None,
+            pause_service: None,
             execution_service,
         }
     }
 
     /// Create a new `DurableScheduler` with pause/resume support.
     pub fn with_pause(
-        scheduler: Arc<dyn StorageBackend>,
+        storage: Arc<dyn StorageBackend>,
+        scheduler: Arc<dyn TaskScheduler>,
         pause_storage: Arc<dyn PauseStorage>,
     ) -> Self {
-        let execution_service = ExecutionService::new(scheduler.clone());
+        let execution_service = ExecutionService::new(storage.clone());
         Self {
+            storage,
             scheduler,
-            pause_storage: Some(pause_storage),
+            pause_service: Some(PauseService::new(pause_storage)),
             execution_service,
         }
     }
@@ -128,7 +132,7 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
         // Check if execution already exists (read-only, outside the transaction).
-        let existing = self.scheduler.get_execution(execution_id).await?;
+        let existing = self.storage.get_execution(execution_id).await?;
         let run_id: String;
         let reset_mode;
 
@@ -148,7 +152,7 @@ impl DurableScheduler {
                     | ExecutionStatus::Cancelled => {
                         // reset_execution returns the new run_id directly.
                         run_id = self
-                            .scheduler
+                            .storage
                             .reset_execution(execution_id, payload.clone())
                             .await?;
                         reset_mode = true;
@@ -165,15 +169,14 @@ impl DurableScheduler {
         // record and body task are created in a single transaction.
         // The task_id is "{run_id}:body:start" — deterministic and debuggable.
         let task_id = format!("{run_id}:body:start");
-        let metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         let params = ScheduleAtParams {
             task_id: task_id.clone(),
-            task_name: task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             execution_time: chrono::Utc::now(),
             data: payload.clone(),
             recurrence: None,
-            metadata,
+            metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
         };
 
         if reset_mode {
@@ -189,7 +192,7 @@ impl DurableScheduler {
         // create the execution record and schedule the root task.
         let mut conn = self.scheduler.begin().await?;
 
-        self.scheduler
+        self.storage
             .start_execution_in_tx(&mut conn, execution_id, task_name, payload)
             .await?;
 
@@ -209,7 +212,7 @@ impl DurableScheduler {
     /// Returns [`SchedulerError::ExecutionNotFound`] if no execution with the
     /// given ID exists.
     pub async fn status(&self, execution_id: &str) -> Result<ExecutionRecord, SchedulerError> {
-        self.scheduler
+        self.storage
             .get_execution(execution_id)
             .await?
             .ok_or_else(|| SchedulerError::ExecutionNotFound(execution_id.to_string()))
@@ -222,15 +225,15 @@ impl DurableScheduler {
         &self,
         execution_id: &str,
     ) -> Result<Option<String>, SchedulerError> {
-        Ok(self.scheduler.get_current_run_id(execution_id).await?)
+        Ok(self.storage.get_current_run_id(execution_id).await?)
     }
 
     /// List all runs for a durable execution.
     pub async fn list_runs(
         &self,
         execution_id: &str,
-    ) -> Result<Vec<zart_scheduler::ExecutionRunRecord>, SchedulerError> {
-        Ok(self.scheduler.list_runs(execution_id).await?)
+    ) -> Result<Vec<zart_core::types::ExecutionRunRecord>, SchedulerError> {
+        Ok(self.storage.list_runs(execution_id).await?)
     }
 
     /// Block until the execution reaches a terminal state (completed, failed,
@@ -285,7 +288,7 @@ impl DurableScheduler {
     /// Returns `true` if the execution was found and cancelled, `false` if it
     /// was already in a terminal state or did not exist.
     pub async fn cancel(&self, execution_id: &str) -> Result<bool, SchedulerError> {
-        Ok(self.scheduler.cancel_execution(execution_id).await?)
+        Ok(self.storage.cancel_execution(execution_id).await?)
     }
 
     /// Deliver an external event to a waiting execution.
@@ -306,7 +309,7 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<(), SchedulerError> {
         let result = self
-            .scheduler
+            .storage
             .complete_event_step_and_schedule_body(execution_id, event_name, payload)
             .await;
         match result {
@@ -344,7 +347,7 @@ impl DurableScheduler {
         &self,
         params: ListExecutionsParams,
     ) -> Result<Vec<ExecutionRecord>, SchedulerError> {
-        Ok(self.scheduler.list_executions(params).await?)
+        Ok(self.storage.list_executions(params).await?)
     }
 
     // ── Typed completion API ──────────────────────────────────────────────────
@@ -412,7 +415,7 @@ impl DurableScheduler {
         payload: serde_json::Value,
     ) -> Result<ScheduleResult, SchedulerError> {
         // Check if execution already exists — if so, we don't support reset-in-tx in V1.
-        if let Some(_existing) = self.scheduler.get_execution(execution_id).await? {
+        if let Some(_existing) = self.storage.get_execution(execution_id).await? {
             return Err(SchedulerError::NotSupported(
                 "start_in_tx does not support resetting existing executions; use start() instead",
             ));
@@ -420,18 +423,17 @@ impl DurableScheduler {
 
         let run_id = format!("{execution_id}:run:0");
         let task_id = format!("{run_id}:body:start");
-        let metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
 
         let params = ScheduleAtParams {
             task_id: task_id.clone(),
-            task_name: task_name.to_string(),
+            task_name: crate::TASK_NAME.to_string(),
             execution_time: chrono::Utc::now(),
             data: payload.clone(),
             recurrence: None,
-            metadata,
+            metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
         };
 
-        self.scheduler
+        self.storage
             .start_execution_in_tx(tx, execution_id, task_name, payload)
             .await?;
 
@@ -551,8 +553,8 @@ impl DurableScheduler {
     // ── Stats ────────────────────────────────────────────────────────────────
 
     /// Return aggregate execution counts grouped by status.
-    pub async fn stats(&self) -> Result<zart_scheduler::ExecutionStats, SchedulerError> {
-        Ok(self.scheduler.execution_stats().await?)
+    pub async fn stats(&self) -> Result<zart_core::types::ExecutionStats, SchedulerError> {
+        Ok(self.storage.execution_stats().await?)
     }
 
     /// Return full detail for an execution: the record, all runs, and the
@@ -671,76 +673,28 @@ impl DurableScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::Database`] if pause storage is not configured
-    /// or the database operation fails.
+    /// Returns [`SchedulerError::PauseStorageNotConfigured`] if pause was not
+    /// enabled via [`Self::with_pause`], or [`SchedulerError::Database`] on failure.
     pub async fn pause(&self, scope: PauseScope) -> Result<PauseRule, SchedulerError> {
-        let pause_storage = self
-            .pause_storage
+        self.pause_service
             .as_ref()
-            .ok_or_else(|| SchedulerError::PauseStorageNotConfigured)?;
-
-        let rule_id = format!("pause-rule-{}", uuid::Uuid::new_v4());
-        let rule = StoragePauseRule {
-            rule_id: rule_id.clone(),
-            execution_id: scope.execution_id,
-            task_name: scope.task_name,
-            step_pattern: scope.step_pattern,
-            created_at: chrono::Utc::now(),
-            expires_at: scope.expires_at,
-            created_by: scope.triggered_by,
-            deleted_at: None,
-            deleted_by: None,
-        };
-
-        let created = pause_storage.create_pause_rule(rule).await?;
-
-        Ok(PauseRule {
-            rule_id: created.rule_id,
-            scope: PauseScope {
-                execution_id: created.execution_id,
-                task_name: created.task_name,
-                step_pattern: created.step_pattern,
-                expires_at: created.expires_at,
-                triggered_by: created.created_by,
-            },
-            created_at: created.created_at,
-            deleted_at: created.deleted_at,
-        })
+            .ok_or(SchedulerError::PauseStorageNotConfigured)?
+            .pause(scope)
+            .await
     }
 
     /// Resume execution by soft-deleting matching pause rules.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::Database`] if pause storage is not configured
-    /// or the database operation fails.
+    /// Returns [`SchedulerError::PauseStorageNotConfigured`] if pause was not
+    /// enabled via [`Self::with_pause`], or [`SchedulerError::Database`] on failure.
     pub async fn resume(&self, scope: PauseScope) -> Result<ResumeResult, SchedulerError> {
-        let pause_storage = self
-            .pause_storage
+        self.pause_service
             .as_ref()
-            .ok_or_else(|| SchedulerError::PauseStorageNotConfigured)?;
-
-        // Find matching rules and soft-delete them.
-        let filter = PauseRuleFilter {
-            execution_id: scope.execution_id.clone(),
-            task_name: scope.task_name.clone(),
-            include_deleted: false,
-        };
-        let rules = pause_storage.list_pause_rules(filter).await?;
-
-        let mut deleted = 0usize;
-        for rule in &rules {
-            if pause_storage
-                .delete_pause_rule(&rule.rule_id, scope.triggered_by.as_deref())
-                .await?
-            {
-                deleted += 1;
-            }
-        }
-
-        Ok(ResumeResult {
-            rules_deleted: deleted,
-        })
+            .ok_or(SchedulerError::PauseStorageNotConfigured)?
+            .resume(scope)
+            .await
     }
 
     /// Resume by deleting a specific pause rule by ID.
@@ -749,47 +703,27 @@ impl DurableScheduler {
         rule_id: &str,
         deleted_by: Option<&str>,
     ) -> Result<bool, SchedulerError> {
-        let pause_storage = self
-            .pause_storage
+        self.pause_service
             .as_ref()
-            .ok_or_else(|| SchedulerError::PauseStorageNotConfigured)?;
-
-        Ok(pause_storage.delete_pause_rule(rule_id, deleted_by).await?)
+            .ok_or(SchedulerError::PauseStorageNotConfigured)?
+            .resume_rule_by_id(rule_id, deleted_by)
+            .await
     }
 
     /// List active pause rules.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError::Database`] if pause storage is not configured
-    /// or the database operation fails.
+    /// Returns [`SchedulerError::PauseStorageNotConfigured`] if pause was not
+    /// enabled via [`Self::with_pause`], or [`SchedulerError::Database`] on failure.
     pub async fn list_pause_rules(
         &self,
         filter: Option<PauseRuleFilter>,
     ) -> Result<Vec<PauseRule>, SchedulerError> {
-        let pause_storage = self
-            .pause_storage
+        self.pause_service
             .as_ref()
-            .ok_or_else(|| SchedulerError::PauseStorageNotConfigured)?;
-
-        let rules = pause_storage
-            .list_pause_rules(filter.unwrap_or_default())
-            .await?;
-
-        Ok(rules
-            .into_iter()
-            .map(|r| PauseRule {
-                rule_id: r.rule_id,
-                scope: PauseScope {
-                    execution_id: r.execution_id,
-                    task_name: r.task_name,
-                    step_pattern: r.step_pattern,
-                    expires_at: r.expires_at,
-                    triggered_by: r.created_by,
-                },
-                created_at: r.created_at,
-                deleted_at: r.deleted_at,
-            })
-            .collect())
+            .ok_or(SchedulerError::PauseStorageNotConfigured)?
+            .list_rules(filter)
+            .await
     }
 }

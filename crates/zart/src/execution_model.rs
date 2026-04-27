@@ -10,7 +10,8 @@
 
 use crate::retry::RetryConfig;
 use serde::{Deserialize, Serialize};
-use zart_scheduler::{StepMetaType, TaskMetadata};
+use zart_core::TaskMetadata;
+use zart_core::task_metadata::StepMetaType;
 
 /// How a task should be dispatched by the worker.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,7 +101,8 @@ pub fn is_wait_all_child(metadata: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
-    use zart_scheduler::{StepMetaType, TaskMetadata};
+    use zart_core::TaskMetadata;
+    use zart_core::task_metadata::StepMetaType;
 
     // ── Typed API (from_task_metadata) ────────────────────────────────────────
 

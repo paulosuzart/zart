@@ -20,7 +20,9 @@ tracing.workspace = true
 uuid.workspace = true
 cron.workspace = true
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 sqlx = { workspace = true }
+zart-core = { path = "../zart-core" }
 
 [dev-dependencies]
 tokio.workspace = true

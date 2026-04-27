@@ -1,22 +1,22 @@
-//! PostgreSQL implementation of [`AdminRepository`] for [`PostgresScheduler`].
+//! Admin SQL helpers — inherent methods on [`PostgresStorage`].
 //!
-//! Provides raw SQL primitives for admin intervention:
-//! - `retry_dead_step` — atomically reset a dead step and schedule a retry task
-//! - `restart_run` — archive the current run and start a fresh one
-//! - `reset_execution` — create a new run for a terminal execution (no body task)
+//! These implement the orchestration currently in `ExecutionStore::retry_dead_step`,
+//! `restart_run`, and `reset_execution`. They are called by the `ExecutionStore`
+//! trait impl in `execution_storage_impl.rs`.
 //!
-//! Business logic (effective-rerun computation, step-status validation beyond
-//! what is atomic with the transaction) lives in `ExecutionService` in the
-//! `zart` crate.
+//! In Phase 3, the orchestration logic will move to `ExecutionService` which
+//! will call the fine-grained `create_run`/`set_current_run` primitives.
 
 use chrono::Utc;
+use zart_core::StorageError;
+use zart_core::task_metadata::TaskMetadata;
+use zart_core::types::{ExecutionStatus, ScheduleAtParams, StepStatus};
 
-use super::PostgresScheduler;
-use crate::repository::AdminRepository;
-use crate::{ExecutionStatus, StepStatus, StorageError, TaskMetadata};
+use super::PostgresStorage;
 
-impl AdminRepository for PostgresScheduler {
-    async fn retry_dead_step(
+impl PostgresStorage {
+    /// Atomically validate a step is `dead`, create a retry task, and reset the run.
+    pub(super) async fn do_retry_dead_step(
         &self,
         run_id: &str,
         step_name: &str,
@@ -43,9 +43,7 @@ impl AdminRepository for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let (step_id, current_status, old_task_id) = match step_row {
-            None => {
-                return Err(StorageError::StepNotFound(step_name.to_string()));
-            }
+            None => return Err(StorageError::StepNotFound(step_name.to_string())),
             Some(row) => row,
         };
 
@@ -81,21 +79,32 @@ impl AdminRepository for PostgresScheduler {
             "{run_id}:step:retry:{step_name}:{}",
             Utc::now().timestamp_millis()
         );
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata, status, attempt)
-            SELECT $1, t.task_name, NOW(), t.data, $2, 'scheduled', 0
-            FROM {tasks} t
-            WHERE t.task_id = $3
-            "#,
+
+        // Fetch the data for the new task from the old task row.
+        let retry_data: serde_json::Value = sqlx::query_scalar(&format!(
+            r#"SELECT data FROM {tasks} WHERE task_id = $1"#,
             tasks = self.table_names.tasks(),
         ))
-        .bind(&new_task_id)
-        .bind(&task_metadata)
         .bind(&old_task_id)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .unwrap_or(serde_json::json!({}));
+
+        // Schedule the retry task via the task_scheduler delegate (no task-queue SQL here).
+        self.task_scheduler
+            .schedule_at_in_tx(
+                &mut tx,
+                ScheduleAtParams {
+                    task_id: new_task_id.clone(),
+                    task_name: crate::TASK_NAME.to_string(),
+                    execution_time: Utc::now(),
+                    data: retry_data,
+                    recurrence: None,
+                    metadata: task_metadata.clone(),
+                },
+            )
+            .await?;
 
         sqlx::query(&format!(
             r#"
@@ -131,7 +140,8 @@ impl AdminRepository for PostgresScheduler {
         Ok(new_task_id)
     }
 
-    async fn restart_run(
+    /// Archive the current run and start a fresh one, scheduling a new body task.
+    pub(super) async fn do_restart_run(
         &self,
         execution_id: &str,
         new_payload: Option<serde_json::Value>,
@@ -162,7 +172,7 @@ impl AdminRepository for PostgresScheduler {
 
         let (current_run_id, current_status, current_payload) = match current_run {
             None => {
-                // No existing run — bootstrap a first run (edge case for restart on fresh execution)
+                // Bootstrap a first run for fresh execution
                 let run_id = format!("{execution_id}:run:0");
                 let payload = new_payload.unwrap_or(serde_json::json!({}));
 
@@ -180,24 +190,11 @@ impl AdminRepository for PostgresScheduler {
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-                let task_name: Option<String> = sqlx::query_scalar(&format!(
-                    r#"
-                    SELECT task_name FROM {executions} WHERE execution_id = $1
-                    "#,
-                    executions = self.table_names.executions(),
-                ))
-                .bind(execution_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-                let task_name = task_name.unwrap_or_default();
-
                 sqlx::query(&format!(
                     r#"
                     INSERT INTO {execution_runs}
                         (run_id, execution_id, run_index, payload, trigger, triggered_by)
-                    VALUES ($1, $2, 0, $3, $4, $5)
+                    VALUES ($1, $2, 0, $3, $4::execution_trigger, $5)
                     "#,
                     execution_runs = self.table_names.execution_runs(),
                 ))
@@ -225,21 +222,19 @@ impl AdminRepository for PostgresScheduler {
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
 
                 let body_task_id = format!("{run_id}:body:start");
-                let body_metadata = TaskMetadata::body(&run_id, execution_id).to_json_value();
-                sqlx::query(&format!(
-                    r#"
-                    INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-                    VALUES ($1, $2, NOW(), $3, $4)
-                    "#,
-                    tasks = self.table_names.tasks(),
-                ))
-                .bind(&body_task_id)
-                .bind(&task_name)
-                .bind(&payload)
-                .bind(&body_metadata)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| StorageError::Database(Box::new(e)))?;
+                self.task_scheduler
+                    .schedule_at_in_tx(
+                        &mut tx,
+                        ScheduleAtParams {
+                            task_id: body_task_id,
+                            task_name: crate::TASK_NAME.to_string(),
+                            execution_time: Utc::now(),
+                            data: payload,
+                            recurrence: None,
+                            metadata: TaskMetadata::body(&run_id, execution_id).to_json_value(),
+                        },
+                    )
+                    .await?;
 
                 tx.commit()
                     .await
@@ -249,7 +244,7 @@ impl AdminRepository for PostgresScheduler {
             Some(row) => row,
         };
 
-        // Archive the current run (freeze its final status)
+        // Archive the current run
         sqlx::query(&format!(
             r#"
             UPDATE {execution_runs}
@@ -281,22 +276,11 @@ impl AdminRepository for PostgresScheduler {
         let new_run_id = format!("{execution_id}:run:{next_index}");
         let payload = new_payload.unwrap_or(current_payload);
 
-        let task_name: String = sqlx::query_scalar(&format!(
-            r#"
-            SELECT task_name FROM {executions} WHERE execution_id = $1
-            "#,
-            executions = self.table_names.executions(),
-        ))
-        .bind(execution_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
         sqlx::query(&format!(
             r#"
             INSERT INTO {execution_runs}
                 (run_id, execution_id, run_index, payload, trigger, triggered_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5::execution_trigger, $6)
             "#,
             execution_runs = self.table_names.execution_runs(),
         ))
@@ -325,89 +309,24 @@ impl AdminRepository for PostgresScheduler {
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let body_task_id = format!("{new_run_id}:body:start");
-        let body_metadata = TaskMetadata::body(&new_run_id, execution_id).to_json_value();
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, NOW(), $3, $4)
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&body_task_id)
-        .bind(&task_name)
-        .bind(&payload)
-        .bind(&body_metadata)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        self.task_scheduler
+            .schedule_at_in_tx(
+                &mut tx,
+                ScheduleAtParams {
+                    task_id: body_task_id,
+                    task_name: crate::TASK_NAME.to_string(),
+                    execution_time: Utc::now(),
+                    data: payload,
+                    recurrence: None,
+                    metadata: TaskMetadata::body(&new_run_id, execution_id).to_json_value(),
+                },
+            )
+            .await?;
 
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        Ok(new_run_id)
-    }
-
-    async fn reset_execution(
-        &self,
-        execution_id: &str,
-        payload: serde_json::Value,
-    ) -> Result<String, StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        let max_index: i32 = sqlx::query_scalar(&format!(
-            r#"
-            SELECT COALESCE(MAX(run_index), -1)
-            FROM {execution_runs}
-            WHERE execution_id = $1
-            "#,
-            execution_runs = self.table_names.execution_runs(),
-        ))
-        .bind(execution_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        let next_index = max_index + 1;
-        let new_run_id = format!("{execution_id}:run:{next_index}");
-
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {execution_runs}
-                (run_id, execution_id, run_index, payload, trigger)
-            VALUES ($1, $2, $3, $4, 'restart')
-            "#,
-            execution_runs = self.table_names.execution_runs(),
-        ))
-        .bind(&new_run_id)
-        .bind(execution_id)
-        .bind(next_index)
-        .bind(&payload)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        sqlx::query(&format!(
-            r#"
-            UPDATE {executions}
-            SET current_run_id = $1
-            WHERE execution_id = $2
-            "#,
-            executions = self.table_names.executions(),
-        ))
-        .bind(&new_run_id)
-        .bind(execution_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(new_run_id)
     }
 }

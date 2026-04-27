@@ -19,7 +19,7 @@ use crate::step_types::{
     CompletionOutcome, CompletionSpec, ResultKind, StepDefId, StepRequest, StepResult,
 };
 use serde::{Deserialize, Serialize};
-use zart_scheduler::{StepKind, TaskStatus};
+use zart_core::types::{StepKind, TaskStatus};
 
 /// TaskContext step internal entry point for declarative step handling.
 ///
@@ -159,7 +159,6 @@ pub async fn step_internal_target_step_raw(
                         step_id: ctx.task_id.clone(),
                         step_name: step_name.to_string(),
                         worker_id: ctx.lock_token.clone(),
-                        task_name: ctx.task_name().to_string(),
                         run_id: ctx.run_id().to_string(),
                         execution_id: ctx.execution_id().to_string(),
                         data: ctx.data().clone(),
@@ -173,7 +172,7 @@ pub async fn step_internal_target_step_raw(
 
                     step_def_id
                         .completion_behavior(&spec.outcome)
-                        .complete(&*ctx.scheduler, spec)
+                        .complete(&*ctx.scheduler, &*ctx.task_scheduler, spec)
                         .await
                         .map_err(|e| StepError::Failed {
                             step: step_name.to_string(),
@@ -202,7 +201,6 @@ pub async fn step_internal_target_step_raw(
         step_id: ctx.task_id.clone(),
         step_name: step_name.to_string(),
         worker_id: ctx.lock_token.clone(),
-        task_name: ctx.task_name().to_string(),
         run_id: ctx.run_id().to_string(),
         execution_id: ctx.execution_id().to_string(),
         data: ctx.data().clone(),
@@ -214,14 +212,20 @@ pub async fn step_internal_target_step_raw(
 
     step_def_id
         .completion_behavior(&spec.outcome)
-        .complete(&*ctx.scheduler, spec)
+        .complete(&*ctx.scheduler, &*ctx.task_scheduler, spec)
         .await
         .map_err(|e| StepError::Failed {
             step: step_name.to_string(),
             reason: e.to_string(),
         })?;
 
-    Ok((serde_json::Value::Null, ResultKind::Ok))
+    // Signal to all callers that this task's outcome was committed transactionally.
+    // Returning StepExecuted (rather than Ok) causes the handler body to halt
+    // immediately, which is required for sleep and wait-group child tasks that
+    // must not continue executing after their completion transaction commits.
+    Err(StepError::StepExecuted {
+        step: step_name.to_string(),
+    })
 }
 
 /// Target-step completion path (legacy shim).
@@ -277,7 +281,7 @@ where
             reason: e.to_string(),
         })?;
 
-    if let Some(zart_scheduler::StepLookup {
+    if let Some(zart_core::types::StepLookup {
         status: TaskStatus::Completed,
         result: Some(json),
         ..

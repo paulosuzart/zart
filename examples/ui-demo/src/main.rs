@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Zart UI demo — long-running backend for the Admin UI.
 //!
 //! Starts a PostgresScheduler, registers two task types, seeds a handful of
@@ -22,10 +23,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use zart::PostgresStorage;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart_api::{AppState, admin_router};
-use zart_scheduler::PostgresScheduler;
 
 // ── Order Processing Task ─────────────────────────────────────────────────────
 
@@ -279,32 +280,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Connecting to database…");
     let pool = sqlx::PgPool::connect(&db_url).await?;
 
-    let sched = Arc::new(PostgresScheduler::new(pool.clone()));
+    let sched = Arc::new(PostgresStorage::new(pool.clone()));
     tracing::info!("Migrations applied");
 
-    let durable = Arc::new(DurableScheduler::with_pause(sched.clone(), sched.clone()));
+    let durable = Arc::new(DurableScheduler::new(sched.clone(), sched.task_scheduler()));
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register(TASK_ORDER, OrderProcessingTask);
     registry.register(TASK_PIPELINE, DataPipelineTask);
-    let registry = Arc::new(registry);
 
     let cancellation = CancellationToken::new();
 
-    let worker = Arc::new(Worker::new(
-        sched.clone(),
-        registry,
-        WorkerConfig {
-            poll_interval: Duration::from_millis(200),
-            max_tasks_per_poll: 10,
-            max_concurrent_tasks: 8,
-            shutdown_timeout: Duration::from_secs(5),
-            orphan_timeout: Duration::from_secs(60),
-            ..Default::default()
-        },
-    ));
+    let worker = Arc::new(
+        WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+            .registry(registry)
+            .config(WorkerConfig {
+                poll_interval: Duration::from_millis(200),
+                max_tasks_per_poll: 10,
+                max_concurrent_tasks: 8,
+                shutdown_timeout: Duration::from_secs(5),
+                orphan_timeout: Duration::from_secs(60),
+                ..Default::default()
+            })
+            .build(),
+    );
 
     let worker_handle = {
         let w = worker.clone();
