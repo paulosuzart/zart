@@ -427,7 +427,6 @@ impl StepDefId {
 
 pub mod body;
 pub mod completion;
-pub mod dispatch;
 pub mod step;
 
 #[cfg(test)]
