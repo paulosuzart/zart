@@ -135,7 +135,7 @@ The `timeout_scope` attribute controls whether a step's timeout is a **global de
 | `global` (default) | Deadline = `first_attempt + duration`. All retries share the same window. If the deadline has passed when a retry is picked up, the step immediately completes with `TimedOut`. |
 | `per_attempt` | Each retry attempt gets a fresh countdown. No deadline is persisted. |
 
-See [Timeouts and Deadlines](/concepts/timeouts/) for a full conceptual walkthrough.
+See [Timeouts and Deadlines](/docs/concepts/timeouts/) for a full conceptual walkthrough.
 
 ### Retry Syntax
 
@@ -217,6 +217,6 @@ async fn call_service_per_attempt() -> Result<String, StepError> {
 
 ## Next Steps
 
-- [**Free Functions**](/api/free-functions/) — all `zart::` free functions
-- [**Steps**](/concepts/steps/) — conceptual walkthrough for steps and retries
-- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
+- [**Free Functions**](/docs/api/free-functions/) — all `zart::` free functions
+- [**Steps**](/docs/concepts/steps/) — conceptual walkthrough for steps and retries
+- [**Error Handling**](/docs/concepts/error-handling/) — the three-way outcome model

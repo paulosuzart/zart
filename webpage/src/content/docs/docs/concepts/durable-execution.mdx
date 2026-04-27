@@ -27,9 +27,8 @@ Every durable execution is identified by a **unique execution ID** that doubles 
 
 ```rust
 use zart::prelude::*;
-use zart::scheduler::DurableScheduler;
 
-let durable = DurableScheduler::new(scheduler.clone());
+let durable = DurableScheduler::new(storage.clone(), storage.task_scheduler());
 
 // Schedule a new execution (idempotent)
 durable
@@ -89,7 +88,7 @@ let output = durable
 ```rust
 let record = durable.status("signup-user-42").await?;
 println!("Status: {:?}", record.status);
-// ExecutionStatus::Pending | Running | Completed | Failed | Cancelled
+// ExecutionStatus::Scheduled | Running | Completed | Failed | Cancelled
 ```
 
 ### `cancel` — stop a running execution
@@ -115,7 +114,7 @@ stateDiagram-v2
     Waiting --> Failed: event timeout
 ```
 
-1. **Schedule** — `start_for` inserts a row in `zart_executions` with status `pending`.
+1. **Schedule** — `start_for` inserts a row in `zart_executions` with status `scheduled`.
 2. **Claim** — Workers poll PostgreSQL with `SELECT … FOR UPDATE SKIP LOCKED`. Exactly one worker owns one execution.
 3. **Run** — The handler body executes. Each step call checks the database:
    - **Hit** — stored result deserialized and returned; the step logic is never called again.
@@ -144,6 +143,6 @@ let output: OnboardingOutput = durable
 
 ## Next Steps
 
-- [**Steps**](/concepts/steps/) — define and compose durable work
-- [**Flow Control**](/concepts/flow-control/) — parallel steps, sleeps, and events
-- [**Error Handling**](/concepts/error-handling/) — the three-way outcome model
+- [**Steps**](/docs/concepts/steps/) — define and compose durable work
+- [**Flow Control**](/docs/concepts/flow-control/) — parallel steps, sleeps, and events
+- [**Error Handling**](/docs/concepts/error-handling/) — the three-way outcome model

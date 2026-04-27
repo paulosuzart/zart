@@ -30,7 +30,7 @@ Both `BusinessErr` and `ZartErr` result in `TaskError::StepFailed`, preserving t
 
 ### `zart::step`
 
-Execute a step and return the three-way [`StepOutcome`](/api/error-types/#stepoutcome).
+Execute a step and return the three-way [`StepOutcome`](/docs/api/error-types/#stepoutcome).
 
 ```rust
 pub async fn step<S: ZartStep + Send>(
@@ -189,7 +189,7 @@ let decision: ApprovalDecision = zart::wait_for_event(
 ).await?;
 ```
 
-See [**Steps → wait_for_event**](/concepts/steps/#wait_for_event--external-signals) for the full walkthrough.
+See [**Steps → wait_for_event**](/docs/concepts/steps/#wait_for_event--external-signals) for the full walkthrough.
 
 ## Durable Values
 
@@ -257,6 +257,6 @@ println!("Is retry:  {}", info.is_retry());
 
 ## Next Steps
 
-- [**Macros**](/api/macros/) — `#[zart_durable]` and `#[zart_step]`
-- [**Execution Management**](/api/execution-management/) — `DurableScheduler`
-- [**Error Types**](/api/error-types/) — `StepOutcome`, `TaskError`, `ExecutionFailure`
+- [**Macros**](/docs/api/macros/) — `#[zart_durable]` and `#[zart_step]`
+- [**Execution Management**](/docs/api/execution-management/) — `DurableScheduler`
+- [**Error Types**](/docs/api/error-types/) — `StepOutcome`, `TaskError`, `ExecutionFailure`

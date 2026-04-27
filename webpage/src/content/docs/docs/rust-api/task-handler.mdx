@@ -33,12 +33,12 @@ The `run` method receives the deserialized payload. All workflow operations are 
 
 When `timeout()` returns `Some(duration)`, the framework computes a deadline as `scheduled_at + duration` when the execution is first started. The worker checks this deadline before dispatching each task. If the deadline has passed, the worker invokes `on_failure(ExecutionDeadlineExceeded)` instead of executing the task.
 
-## TaskRegistry
+## DurableRegistry
 
 Register all handlers before starting a worker. The string name is how you reference the workflow when scheduling.
 
 ```rust
-let mut registry = TaskRegistry::new();
+let mut registry = DurableRegistry::new();
 registry.register("onboarding", OnboardingTask);
 registry.register("checkout",   CheckoutTask);
 ```
@@ -49,7 +49,7 @@ Registering two handlers under the same name panics at startup. Names are case-s
 
 ## Core Steps
 
-Steps are defined with `#[zart_step]` or by manually implementing the [`ZartStep`](/rust-api/zart-step/) trait. Each step's result is persisted to the database before the workflow moves on.
+Steps are defined with `#[zart_step]` or by manually implementing the [`ZartStep`](/docs/rust-api/zart-step/) trait. Each step's result is persisted to the database before the workflow moves on.
 
 ### Sequential Steps
 
@@ -82,7 +82,7 @@ async fn place_order(card: &str, amount: i64) -> Result<String, StepError> {
 }
 ```
 
-See [ZartStep](/rust-api/zart-step/) for all available configuration options.
+See [ZartStep](/docs/rust-api/zart-step/) for all available configuration options.
 
 ## Timing
 
@@ -129,7 +129,7 @@ POST /api/v1/events/{execution_id}/manager-approval
 {"approved": true, "reviewer": "bob@example.com"}
 ```
 
-Returns `Err(TaskError::EventTimeout)` if the timeout elapses before the event arrives. See [Wait for Event](/rust-api/wait-for-event/) for full patterns.
+Returns `Err(TaskError::EventTimeout)` if the timeout elapses before the event arrives. See [Wait for Event](/docs/rust-api/wait-for-event/) for full patterns.
 
 ## Capture Values
 
@@ -146,7 +146,7 @@ Or use the built-in `now()` helper for timestamps:
 let started_at = zart::now("started-at").await?;
 ```
 
-On first run the expression is evaluated and persisted. On replay the cached value is returned — the expression is never re-evaluated. See [Capture Variables](/rust-api/capture-variables/) for full details and when to use captures vs regular steps.
+On first run the expression is evaluated and persisted. On replay the cached value is returned — the expression is never re-evaluated. See [Capture Variables](/docs/rust-api/capture-variables/) for full details and when to use captures vs regular steps.
 
 ## Parallel Execution
 
@@ -164,7 +164,7 @@ let h3 = zart::schedule(provision(&user.user_id));
 let results = zart::wait(vec![h1, h2, h3]).await?;
 ```
 
-See [Parallel Steps](/rust-api/parallel-steps/) for error handling and dynamic fan-out patterns.
+See [Parallel Steps](/docs/rust-api/parallel-steps/) for error handling and dynamic fan-out patterns.
 
 ## Execution Metadata
 

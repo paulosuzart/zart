@@ -29,7 +29,7 @@ All admin operations are methods on `DurableScheduler`. You need a scheduler wit
 use zart::DurableScheduler;
 use zart::admin::{RerunSpec, PauseScope};
 
-let durable = DurableScheduler::with_pause(sched.clone(), sched.clone());
+let durable = DurableScheduler::with_pause(sched.clone(), sched.task_scheduler(), sched.clone());
 ```
 
 ### Retry a Dead Step
@@ -217,6 +217,6 @@ The `triggered_by` field is optional but recommended for audit purposes. It flow
 
 ## Next Steps
 
-- [**HTTP API Endpoints**](/admin/endpoints/) — full HTTP API reference
-- [**Execution Management**](/api/execution-management/) — `DurableScheduler` API
-- [**Deployment Options**](/deployment/options/) — running workers and admin endpoints in production
+- [**HTTP API Endpoints**](/docs/admin/endpoints/) — full HTTP API reference
+- [**Execution Management**](/docs/api/execution-management/) — `DurableScheduler` API
+- [**Deployment Options**](/docs/deployment/options/) — running workers and admin endpoints in production

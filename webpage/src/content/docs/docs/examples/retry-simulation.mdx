@@ -110,11 +110,10 @@ impl DurableExecution for RetrySimulationTask {
 ## Running the workflow
 
 ```rust
-let mut registry = TaskRegistry::new();
+let mut registry = DurableRegistry::new();
 registry.register("retry-simulation", RetrySimulationTask);
-let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone());
+let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 durable
     .start_for::<RetrySimulationTask>(&execution_id, "retry-simulation", &RetrySimulationInput {
         name: "retry-demo".into(),
@@ -160,4 +159,4 @@ The retry delay (`1s` fixed in this example) means the second attempt runs appro
 
 **`zart::context().max_retries`** — returns the configured retry limit so the step can adapt its behavior as retries are exhausted.
 
-See [ZartStep — Retry Configuration](/rust-api/zart-step/#retry-configuration) for the full retry API reference.
+See [ZartStep — Retry Configuration](/docs/rust-api/zart-step/#retry-configuration) for the full retry API reference.

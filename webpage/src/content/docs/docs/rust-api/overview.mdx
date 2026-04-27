@@ -19,7 +19,7 @@ Zart's Rust API is organized into three layers that build on each other. You can
 │  (zart)            zart::sleep  zart::wait_for_event  …        │
 │                    All workflow operations — no ctx threading   │
 ├────────────────────────────────────────────────────────────────┤
-│  Scheduler Layer   Scheduler  DurableScheduler  Worker         │
+│  Scheduler Layer   TaskScheduler  DurableScheduler  Worker     │
 │  (zart + backend)  PostgreSQL polling via SKIP LOCKED          │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -30,10 +30,12 @@ Responsible for persisting and claiming executions. Implements `SKIP LOCKED` pol
 
 | Type | Role |
 |---|---|
-| `Scheduler` | Trait — poll for due tasks, mark complete/failed |
-| `DurableScheduler` | Trait — schedule new executions, deliver events |
-| `PostgresScheduler` | Concrete — PostgreSQL backend |
-| `Worker` | Drives the poll loop, dispatches to `TaskRegistry` |
+| `TaskScheduler` | Trait (in `zart-scheduler`) — poll for due tasks, mark complete/failed |
+| `PostgresTaskScheduler` | Concrete — PostgreSQL-backed task queue (`zart_tasks`) |
+| `PostgresStorage` | Concrete — execution-side storage (`zart_executions`, `zart_steps`, …) |
+| `Worker` | Drives the poll loop, dispatches to the internal `TaskRegistry` |
+| `WorkerBuilder` | Builder for `Worker`; wires `DurableRegistry` into the internal `TaskRegistry` |
+| `DurableRegistry` | User-facing registry — maps task-name strings to handler instances |
 
 ### Free Functions Layer
 
@@ -84,15 +86,23 @@ No new invocation syntax, no context objects to thread through your code. `send_
 // 3. Register and start a worker
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let scheduler = PostgresScheduler::connect(&std::env::var("DATABASE_URL")?).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let sched = Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("onboarding", Onboarding);
 
-    let worker = Worker::new(scheduler.clone(), registry, WorkerConfig::default());
+    let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        .registry(registry)
+        .config(zart::WorkerConfig::default())
+        .build();
+
+    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
     // Schedule an execution
-    DurableScheduler::start_for::<Onboarding>(&scheduler, "run-1", "onboarding", &OnboardingData { /* ... */ }).await?;
+    durable
+        .start_for::<Onboarding>("run-1", "onboarding", &OnboardingData { /* ... */ })
+        .await?;
 
     // Run the worker (blocks until shutdown signal)
     worker.run().await
@@ -100,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 <Aside type="tip">
-In most applications the scheduler is shared via `Arc<dyn DurableScheduler>` so both the web server (scheduling) and the worker (executing) share the same instance.
+In most applications the scheduler is shared via `Arc<PostgresStorage>` so both the web server (scheduling) and the worker (executing) share the same instance.
 </Aside>
 
 ## Free Functions Reference
@@ -110,32 +120,32 @@ All functions are available in the `zart` crate and work from within any durable
 | Function | Signature | Description | See also |
 |---|---|---|---|
 | `zart::step` | `async fn step<S: ZartStep>(s: S) -> Result<S::Output, StepError>` | Execute a step and persist its result. Steps awaited directly via `IntoFuture` call this internally. | — |
-| `zart::schedule` | `fn schedule<S: ZartStep>(s: S) -> StepHandle<S::Output>` | Register a step for parallel execution without waiting. | [Parallel Steps](/rust-api/parallel-steps/) |
-| `zart::wait` | `async fn wait<T>(handles: Vec<StepHandle<T>>) -> Result<Vec<Result<T, _>>, _>` | Durably await all handles returned by `schedule`. | [Parallel Steps](/rust-api/parallel-steps/) |
-| `zart::sleep` | `async fn sleep(name: &str, duration: Duration) -> Result<(), StepError>` | Suspend execution for a fixed duration. `name` must be unique and stable. | [Durable Loops](/rust-api/loops/) |
+| `zart::schedule` | `fn schedule<S: ZartStep>(s: S) -> StepHandle<S::Output>` | Register a step for parallel execution without waiting. | [Parallel Steps](/docs/rust-api/parallel-steps/) |
+| `zart::wait` | `async fn wait<T>(handles: Vec<StepHandle<T>>) -> Result<Vec<Result<T, _>>, _>` | Durably await all handles returned by `schedule`. | [Parallel Steps](/docs/rust-api/parallel-steps/) |
+| `zart::sleep` | `async fn sleep(name: &str, duration: Duration) -> Result<(), StepError>` | Suspend execution for a fixed duration. `name` must be unique and stable. | [Durable Loops](/docs/rust-api/loops/) |
 | `zart::sleep_until` | `async fn sleep_until(name: &str, wake_time: DateTime<Utc>) -> Result<(), StepError>` | Suspend until a specific UTC timestamp. | — |
-| `zart::wait_for_event` | `async fn wait_for_event<T>(name: &str, timeout: Option<Duration>) -> Result<T, StepError>` | Suspend until an external event is delivered. | [Wait for Event](/rust-api/wait-for-event/) |
-| `zart::capture` | `async fn capture<T, F>(name: &str, f: F) -> Result<T, StepError>` | Persist a pure synchronous value durably. | [Capture Variables](/rust-api/capture-variables/) |
-| `zart::now` | `async fn now(name: &str) -> Result<DateTime<Utc>, StepError>` | Persist the current UTC time durably. Shorthand for `capture(name, Utc::now)`. | [Capture Variables](/rust-api/capture-variables/) |
+| `zart::wait_for_event` | `async fn wait_for_event<T>(name: &str, timeout: Option<Duration>) -> Result<T, StepError>` | Suspend until an external event is delivered. | [Wait for Event](/docs/rust-api/wait-for-event/) |
+| `zart::capture` | `async fn capture<T, F>(name: &str, f: F) -> Result<T, StepError>` | Persist a pure synchronous value durably. | [Capture Variables](/docs/rust-api/capture-variables/) |
+| `zart::now` | `async fn now(name: &str) -> Result<DateTime<Utc>, StepError>` | Persist the current UTC time durably. Shorthand for `capture(name, Utc::now)`. | [Capture Variables](/docs/rust-api/capture-variables/) |
 | `zart::context` | `fn context() -> ExecutionInfo` | Read-only execution metadata. Callable from handler body **and** step body. | — |
 
 `ExecutionInfo` fields: `execution_id: String`, `task_name: String`, `data: serde_json::Value`, `current_attempt: usize`, `max_retries: Option<usize>`, and `fn is_retry() -> bool`.
 
 ## Execution Lifecycle
 
-1. **Schedule** — `DurableScheduler::start_for()` inserts a row into `zart_executions` with status `pending`.
+1. **Schedule** — `DurableScheduler::start_for()` inserts a row into `zart_executions` with status `scheduled`.
 2. **Claim** — Worker polls with `SELECT … FOR UPDATE SKIP LOCKED`. One worker owns one execution at a time.
-3. **Run** — `DurableExecution::run()` is called. Each `zart::step()` call (or direct `.await` on a step) checks `zart_tasks` for an existing result.
+3. **Run** — `DurableExecution::run()` is called. Each step call checks `zart_steps` for an existing result.
    - **Step hit** — stored result deserialized and returned without calling the step logic.
-   - **Step miss** — step's `run()` is called, result serialized and written to `zart_tasks`, then returned.
+   - **Step miss** — step's `run()` is called, result serialized and written to `zart_steps`, then returned.
 4. **Complete** — execution status set to `completed`, output stored.
 5. **Fail** — if `run` returns `Err`, execution is retried up to `max_retries()`. Final failure sets status `failed`.
 
 ## Next Steps
 
-- [DurableExecution Trait](/rust-api/task-handler/) — full reference for the workflow trait
-- [ZartStep Trait](/rust-api/zart-step/) — defining durable steps
-- [Capture Variables](/rust-api/capture-variables/) — persist synchronous values durably
-- [Durable Loops](/rust-api/loops/) — iterate over collections durably
-- [Parallel Steps](/rust-api/parallel-steps/) — concurrent fan-out with `zart::schedule` and `zart::wait`
-- [Wait for Event](/rust-api/wait-for-event/) — external signals and human approvals
+- [DurableExecution Trait](/docs/rust-api/task-handler/) — full reference for the workflow trait
+- [ZartStep Trait](/docs/rust-api/zart-step/) — defining durable steps
+- [Capture Variables](/docs/rust-api/capture-variables/) — persist synchronous values durably
+- [Durable Loops](/docs/rust-api/loops/) — iterate over collections durably
+- [Parallel Steps](/docs/rust-api/parallel-steps/) — concurrent fan-out with `zart::schedule` and `zart::wait`
+- [Wait for Event](/docs/rust-api/wait-for-event/) — external signals and human approvals

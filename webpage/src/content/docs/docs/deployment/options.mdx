@@ -10,34 +10,34 @@ import { Aside } from '@astrojs/starlight/components';
 The simplest deployment: run the worker inside your application binary using a background `tokio` task.
 
 ```rust
-use zart::{Worker, WorkerConfig, TaskRegistry};
-use zart_postgres::PostgresScheduler;
+use zart::prelude::*;
+use zart::PostgresStorage;
 use std::time::Duration;
+use std::sync::Arc;
 use tokio::signal;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let scheduler = PostgresScheduler::connect(
-        &std::env::var("DATABASE_URL")?
-    ).await?;
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let sched = Arc::new(PostgresStorage::new(pool));
 
     // Register all your task handlers
-    let mut registry = TaskRegistry::new();
+    let mut registry = DurableRegistry::new();
     registry.register("onboarding", OnboardingTask::new());
     registry.register("checkout",   CheckoutTask::new());
     registry.register("report-gen", ReportTask::new());
 
     // Build the worker
-    let worker = Worker::new(
-        scheduler.clone(),
-        registry,
-        WorkerConfig {
+    let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        .registry(registry)
+        .config(zart::WorkerConfig {
             poll_interval:        Duration::from_secs(5),
             max_tasks_per_poll:   10,
             max_concurrent_tasks: 16,
             shutdown_timeout:     Duration::from_secs(30),
-        },
-    );
+            ..Default::default()
+        })
+        .build();
 
     // Spawn worker as a background task — doesn't block your app
     let worker_handle = tokio::spawn(async move {
@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Your web server / app logic runs here alongside the worker
-    run_axum_server(scheduler).await?;
+    run_axum_server(sched).await?;
 
     // Graceful shutdown
     worker_handle.abort();
@@ -70,21 +70,23 @@ The worker's `tokio` tasks run on the same runtime as your application. `max_con
 
 | Database | Crate | Notes |
 |---|---|---|
-| PostgreSQL 14+ | `zart-postgres` | Recommended for production. Uses `SKIP LOCKED`, advisory locks, and `LISTEN/NOTIFY` for efficient polling. |
+| PostgreSQL 14+ | `zart` (`PostgresStorage`) | Recommended for production. Uses `SKIP LOCKED`, advisory locks, and `LISTEN/NOTIFY` for efficient polling. |
 
 ### Connection Pooling
 
-The PostgreSQL backend uses `sqlx`'s built-in connection pool. Configure pool size via the `WorkerConfig`:
+The PostgreSQL backend uses `sqlx`'s built-in connection pool. Configure pool size via `sqlx::PgPoolOptions`:
 
 ```rust
-let scheduler = PostgresScheduler::connect_with_pool(
-    &database_url,
-    PoolConfig {
-        max_connections: 20,
-        min_connections: 2,
-        acquire_timeout: Duration::from_secs(30),
-    },
-).await?;
+use sqlx::PgPoolOptions;
+
+let pool = PgPoolOptions::new()
+    .max_connections(20)
+    .min_connections(2)
+    .acquire_timeout(Duration::from_secs(30))
+    .connect(&database_url)
+    .await?;
+
+let sched = Arc::new(PostgresStorage::new(pool));
 ```
 
 ---
@@ -96,10 +98,10 @@ By default Zart uses `zart_tasks`, `zart_executions`, and the other `zart_*` tab
 ### Custom prefix
 
 ```rust
-use zart_scheduler::{TableNames, PostgresScheduler};
+use zart::postgres::{PostgresStorage, TableNames};
 
 let names = TableNames::with_prefix("myapp_")?;  // → myapp_tasks, myapp_executions, …
-let scheduler = PostgresScheduler::with_table_names(pool, names);
+let sched = PostgresStorage::with_table_names(pool, names);
 ```
 
 ### Schema qualifier
@@ -107,7 +109,7 @@ let scheduler = PostgresScheduler::with_table_names(pool, names);
 ```rust
 let names = TableNames::default().with_schema("tenant_a")?;
 // → "tenant_a"."zart_tasks", "tenant_a"."zart_executions", …
-let scheduler = PostgresScheduler::with_table_names(pool, names);
+let sched = PostgresStorage::with_table_names(pool, names);
 ```
 
 ### Prefix + schema
@@ -115,7 +117,7 @@ let scheduler = PostgresScheduler::with_table_names(pool, names);
 ```rust
 let names = TableNames::with_prefix("svc_")?.with_schema("myschema")?;
 // → "myschema"."svc_tasks", …
-let scheduler = PostgresScheduler::with_table_names(pool, names);
+let sched = PostgresStorage::with_table_names(pool, names);
 ```
 
 ### Environment variables
@@ -128,7 +130,7 @@ ZART_TABLE_PREFIX=myapp_ ZART_SCHEMA=tenant_a ./my-worker
 
 ```rust
 let names = TableNames::from_env_or_default()?;
-let scheduler = PostgresScheduler::with_table_names(pool, names);
+let sched = PostgresStorage::with_table_names(pool, names);
 ```
 
 <Aside type="note">
@@ -146,9 +148,9 @@ All deployment modes support graceful shutdown. When a shutdown signal is receiv
 3. Tasks still running after the timeout are re-queued for another worker.
 
 ```rust
-WorkerConfig {
+zart::WorkerConfig {
     shutdown_timeout: Duration::from_secs(30), // wait up to 30s for tasks to finish
-    // ...
+    ..Default::default()
 }
 ```
 

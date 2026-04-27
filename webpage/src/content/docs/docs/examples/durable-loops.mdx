@@ -116,11 +116,10 @@ impl DurableExecution for ReportBatchTask {
 ## Running the workflow
 
 ```rust
-let mut registry = TaskRegistry::new();
+let mut registry = DurableRegistry::new();
 registry.register("report-batch", ReportBatchTask);
-let registry = Arc::new(registry);
 
-let durable = DurableScheduler::new(sched.clone());
+let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 durable
     .start_for::<ReportBatchTask>(&execution_id, "report-batch", &BatchInput {
         batch_name: "2024-annual".into(),
@@ -164,4 +163,4 @@ If the worker crashes after processing reports 0–2 but before report 3, the re
 
 **`.named()`** — when the unique key isn't part of the step struct (or the step is reused under different naming schemes), override the name at the call site: `.named(format!("notify-stakeholder-{i}"))`.
 
-See [Durable Loops](/rust-api/loops/) for full documentation on both mechanisms and guidance on when to use each.
+See [Durable Loops](/docs/rust-api/loops/) for full documentation on both mechanisms and guidance on when to use each.

@@ -146,10 +146,12 @@ use std::sync::Arc;
 use zart::Worker;
 
 async fn health(State(worker): State<Arc<Worker>>) -> impl IntoResponse {
-    if worker.is_healthy() {
-        StatusCode::OK
-    } else {
+    // Worker exposes stop/cancellation signals for health checks.
+    // Add application-specific health logic as needed.
+    if worker.cancellation_token().is_cancelled() {
         StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
     }
 }
 

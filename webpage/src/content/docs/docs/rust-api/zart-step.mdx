@@ -194,7 +194,7 @@ fn timeout_scope(&self) -> TimeoutScope {
 
 **Timeout is always terminal** — it never triggers a retry. Retry is reserved for business errors only.
 
-See [Timeouts and Deadlines](/concepts/timeouts/) for a full conceptual walkthrough.
+See [Timeouts and Deadlines](/docs/concepts/timeouts/) for a full conceptual walkthrough.
 
 ## Loops and Repeated Calls
 
@@ -205,7 +205,7 @@ Two mechanisms make this easy:
 - **`{field}` template** — embed a struct field in the step name at definition time: `#[zart_step("fetch-page-{page}")]`. The macro generates a dynamic name at runtime.
 - **`.named()`** — override the step identity at the call site: `my_step().named(format!("my-step-{i}")).await?`.
 
-See [Durable Loops](/rust-api/loops/) for full patterns, examples, and guidance on which mechanism to use.
+See [Durable Loops](/docs/rust-api/loops/) for full patterns, examples, and guidance on which mechanism to use.
 
 ## Parallel Steps
 
