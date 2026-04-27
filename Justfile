@@ -48,6 +48,7 @@ test-integration-full:
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-sleep
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-error-handling
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-transactions
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-scheduler-only
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p example-admin-demo
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} bash examples/cli-demo/demo.sh
     @echo "── All examples completed ────────────────────────────────────────────────"
@@ -220,6 +221,12 @@ example-transactions db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-transactions
 
+# Run the scheduler-only example (task queue without durable execution)
+# Usage: just example-scheduler-only [DATABASE_URL]
+example-scheduler-only db_url=example_db_url:
+    just migrate
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-scheduler-only
+
 # Run the cli-demo example (long-running execution + interactive CLI admin commands)
 # Usage: just example-cli-demo [DATABASE_URL]
 example-cli-demo db_url=example_db_url:
@@ -243,6 +250,7 @@ run-all-examples db_url=example_db_url:
     just example-sleep {{db_url}}
     just example-error-handling {{db_url}}
     just example-transactions {{db_url}}
+    just example-scheduler-only {{db_url}}
     just example-admin-demo {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)

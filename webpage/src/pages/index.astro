@@ -17,21 +17,21 @@
 
     :root {
       --brand:        oklch(63% 0.26 285);
-      --brand-low:    oklch(20% 0.09 285);
+      --brand-low:    oklch(94% 0.03 285);
       --brand-high:   oklch(82% 0.18 285);
       --brand-dim:    oklch(45% 0.18 285);
 
-      --bg:           oklch(9%  0.014 285);
-      --bg-card:      oklch(12% 0.022 285);
-      --bg-elevated:  oklch(15% 0.028 285);
-      --bg-code:      oklch(11% 0.018 285);
+      --bg:           oklch(98% 0.003 285);
+      --bg-card:      oklch(100% 0 0);
+      --bg-elevated:  oklch(94% 0.01 285);
+      --bg-code:      oklch(97% 0.015 285);
 
-      --text:         oklch(94% 0.006 285);
-      --text-muted:   oklch(65% 0.04  285);
-      --text-faint:   oklch(45% 0.03  285);
+      --text:         oklch(28% 0.02 285);
+      --text-muted:   oklch(55% 0.03 285);
+      --text-faint:   oklch(72% 0.02 285);
 
-      --border:       oklch(22% 0.04  285);
-      --border-dim:   oklch(18% 0.03  285);
+      --border:       oklch(88% 0.01 285);
+      --border-dim:   oklch(93% 0.006 285);
 
       --radius-sm:    6px;
       --radius:       10px;
@@ -75,7 +75,7 @@
       z-index: 100;
       /* needed for absolute mobile dropdown */
       border-bottom: 1px solid var(--border-dim);
-      background: oklch(9% 0.014 285 / 0.85);
+      background: oklch(98% 0.003 285 / 0.85);
       backdrop-filter: blur(20px) saturate(1.4);
       -webkit-backdrop-filter: blur(20px) saturate(1.4);
     }
@@ -175,7 +175,7 @@
         left: 0;
         right: 0;
         flex-direction: column;
-        background: oklch(12% 0.022 285 / 0.98);
+        background: oklch(100% 0 0 / 0.98);
         backdrop-filter: blur(20px);
         border-bottom: 1px solid var(--border-dim);
         padding: 0.75rem 1rem;
@@ -230,7 +230,7 @@
       gap: 0.5rem;
       background: var(--brand-low);
       border: 1px solid oklch(63% 0.26 285 / 0.3);
-      color: var(--brand-high);
+      color: var(--brand-dim);
       font-size: 0.8rem;
       font-weight: 600;
       font-family: var(--font-mono);
@@ -268,7 +268,7 @@
 
     .hero h1 em {
       font-style: italic;
-      color: var(--brand-high);
+      color: var(--brand);
     }
 
     .hero-sub {
@@ -330,7 +330,7 @@
       border-radius: var(--radius-lg);
       overflow: hidden;
       max-width: 100%;
-      box-shadow: 0 24px 64px oklch(0% 0 0 / 0.5), 0 0 0 1px oklch(63% 0.26 285 / 0.08);
+      box-shadow: 0 24px 64px oklch(0% 0 0 / 0.12), 0 0 0 1px oklch(63% 0.26 285 / 0.08);
     }
 
     .code-window-bar {
@@ -338,8 +338,8 @@
       align-items: center;
       gap: 0.5rem;
       padding: 0.5rem 1rem;
-      background: var(--bg-elevated);
-      border-bottom: 1px solid var(--border-dim);
+      background: oklch(92% 0.025 285);
+      border-bottom: 1px solid oklch(85% 0.035 285);
     }
 
     .dot {
@@ -355,7 +355,7 @@
       margin-left: auto;
       font-family: var(--font-mono);
       font-size: 0.75rem;
-      color: var(--text-faint);
+      color: oklch(55% 0.05 285);
     }
 
     .code-window pre {
@@ -372,14 +372,14 @@
     }
 
     /* Syntax tokens */
-    .kw  { color: oklch(72% 0.2 300); }   /* keywords: use, async, fn, let, Ok  */
-    .mac { color: oklch(78% 0.22 55);  }   /* macros: z_step!, z_wait_event! */
-    .str { color: oklch(76% 0.18 145); }   /* strings */
-    .cmt { color: var(--text-faint); font-style: italic; }
-    .ty  { color: oklch(80% 0.16 220); }   /* types: Order, Receipt, Result */
-    .fn  { color: oklch(80% 0.2 55);   }   /* function names */
-    .attr { color: oklch(72% 0.2 300); }   /* attributes */
-    .lit { color: oklch(78% 0.18 55);  }   /* literals */
+    .kw  { color: oklch(45% 0.18 285); font-weight: 600; }  /* keywords: use, async, fn, let, Ok  */
+    .mac { color: oklch(50% 0.18 25);  font-weight: 600; }  /* macros: z_step!, z_wait_event! */
+    .str { color: oklch(42% 0.14 145); }                   /* strings */
+    .cmt { color: oklch(65% 0.02 285); font-style: italic; } /* comments */
+    .ty  { color: oklch(45% 0.14 220); }                   /* types: Order, Receipt, Result */
+    .fn  { color: oklch(50% 0.16 55);   }                  /* function names */
+    .attr { color: oklch(45% 0.15 300); }                  /* attributes */
+    .lit { color: oklch(48% 0.15 55);  }                   /* literals */
 
     /* ────────────────────────────────────────
        PILLARS
@@ -402,7 +402,7 @@
       transition: background 0.2s;
     }
     .pillar:last-child { border-right: none; }
-    .pillar:hover { background: oklch(14% 0.024 285 / 0.6); }
+    .pillar:hover { background: oklch(95% 0.015 285 / 0.6); }
     .pillar-icon {
       width: 38px;
       height: 38px;
@@ -444,8 +444,8 @@
     }
     .pill:hover {
       border-color: oklch(63% 0.26 285 / 0.5);
-      background: oklch(20% 0.09 285);
-      color: var(--brand-high);
+      background: oklch(96% 0.025 285);
+      color: var(--brand-dim);
       transform: translateY(-1px);
       box-shadow: 0 4px 12px oklch(63% 0.26 285 / 0.15);
     }
@@ -459,17 +459,17 @@
     }
     .pill-rust { border-color: oklch(70% 0.18 35 / 0.3); }
     .pill-rust .pill-dot { background: oklch(70% 0.18 35); box-shadow: 0 0 4px oklch(70% 0.18 35 / 0.5); }
-    .pill-rust:hover { background: oklch(15% 0.06 35); border-color: oklch(70% 0.18 35 / 0.6); color: oklch(88% 0.14 35); box-shadow: 0 4px 14px oklch(70% 0.18 35 / 0.2); }
+    .pill-rust:hover { background: oklch(97% 0.03 35); border-color: oklch(70% 0.18 35 / 0.6); color: oklch(45% 0.14 35); box-shadow: 0 4px 14px oklch(70% 0.18 35 / 0.2); }
     .pill-rust:hover .pill-dot { box-shadow: 0 0 8px oklch(70% 0.18 35); }
 
     .pill-tokio { border-color: oklch(70% 0.2 175 / 0.3); }
     .pill-tokio .pill-dot { background: oklch(70% 0.2 175); box-shadow: 0 0 4px oklch(70% 0.2 175 / 0.5); }
-    .pill-tokio:hover { background: oklch(15% 0.06 175); border-color: oklch(70% 0.2 175 / 0.6); color: oklch(88% 0.15 175); box-shadow: 0 4px 14px oklch(70% 0.2 175 / 0.2); }
+    .pill-tokio:hover { background: oklch(97% 0.03 175); border-color: oklch(70% 0.2 175 / 0.6); color: oklch(35% 0.12 175); box-shadow: 0 4px 14px oklch(70% 0.2 175 / 0.2); }
     .pill-tokio:hover .pill-dot { box-shadow: 0 0 8px oklch(70% 0.2 175); }
 
     .pill-pg { border-color: oklch(65% 0.18 245 / 0.3); }
     .pill-pg .pill-dot { background: oklch(65% 0.18 245); box-shadow: 0 0 4px oklch(65% 0.18 245 / 0.5); }
-    .pill-pg:hover { background: oklch(15% 0.06 245); border-color: oklch(65% 0.18 245 / 0.6); color: oklch(85% 0.14 245); box-shadow: 0 4px 14px oklch(65% 0.18 245 / 0.2); }
+    .pill-pg:hover { background: oklch(96% 0.03 245); border-color: oklch(65% 0.18 245 / 0.6); color: oklch(40% 0.12 245); box-shadow: 0 4px 14px oklch(65% 0.18 245 / 0.2); }
     .pill-pg:hover .pill-dot { box-shadow: 0 0 8px oklch(65% 0.18 245); }
 
     /* ────────────────────────────────────────
@@ -570,36 +570,44 @@
 
     .tabs-wrapper {
       margin-top: 2.5rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: var(--bg-card);
+      box-shadow: 0 8px 32px oklch(0% 0 0 / 0.05);
     }
 
     .tab-list {
       display: flex;
       gap: 0.25rem;
-      border-bottom: 1px solid var(--border-dim);
+      background: oklch(94% 0.01 285);
+      border-bottom: 1px solid var(--border);
       margin-bottom: 0;
       list-style: none;
       overflow-x: auto;
-      padding-bottom: 0;
+      padding: 0.5rem 1rem 0;
     }
 
     .tab-btn {
-      background: none;
+      background: transparent;
       border: none;
-      color: var(--text-faint);
+      color: var(--text-muted);
       font-family: var(--font-sans);
       font-size: 0.875rem;
       font-weight: 500;
-      padding: 0.65rem 1rem;
+      padding: 0.5rem 1rem;
       cursor: pointer;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
       border-bottom: 2px solid transparent;
       margin-bottom: -1px;
-      transition: color 0.15s, border-color 0.15s;
+      transition: all 0.15s;
       white-space: nowrap;
     }
 
-    .tab-btn:hover { color: var(--text-muted); }
+    .tab-btn:hover { color: var(--text); background: oklch(97% 0.01 285); }
     .tab-btn.active {
-      color: var(--brand-high);
+      color: var(--brand-dim);
+      background: var(--bg-code);
       border-bottom-color: var(--brand);
     }
 
@@ -608,9 +616,8 @@
 
     .tab-code-window {
       background: var(--bg-code);
-      border: 1px solid var(--border);
-      border-top: none;
-      border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+      border: none;
+      border-radius: 0;
       overflow: hidden;
     }
 
@@ -648,7 +655,7 @@
 
     .sub-tab-btn:hover { color: var(--text-muted); background: var(--bg-card); }
     .sub-tab-btn.active {
-      color: var(--brand-high);
+      color: var(--brand-dim);
       background: var(--brand-low);
       border-color: oklch(63% 0.26 285 / 0.3);
       animation: none;
@@ -666,7 +673,7 @@
       display: inline-block;
       background: oklch(55% 0.2 55 / 0.15);
       border: 1px solid oklch(55% 0.2 55 / 0.4);
-      color: oklch(78% 0.18 55);
+      color: oklch(55% 0.14 55);
       font-family: var(--font-mono);
       font-size: 0.75rem;
       font-weight: 600;
@@ -686,7 +693,7 @@
 
     .coming-soon-panel p {
       font-size: 0.875rem;
-      color: var(--text-faint);
+      color: var(--text-muted);
       max-width: 40ch;
       margin: 0 auto;
     }
@@ -731,12 +738,15 @@
       min-width: 0;
       max-width: 100%;
       opacity: 0;
-      transition: opacity 0.45s ease;
+      transition: none;
       pointer-events: none;
+      z-index: 0;
     }
     .hero-code-variant.active {
       opacity: 1;
+      transition: opacity 0.45s ease;
       pointer-events: auto;
+      z-index: 1;
     }
 
     /* ── Scroll reveal ──────────────────────────────────────── */
@@ -764,7 +774,7 @@
     }
     .feature-card:hover .feature-icon {
       transform: scale(1.15) rotate(-5deg);
-      background: oklch(25% 0.11 285);
+      background: oklch(88% 0.08 285);
     }
 
     /* ── CTA section aurora ─────────────────────────────────── */
@@ -778,11 +788,11 @@
     .cta-section::before {
       content: '';
       position: absolute;
-      bottom: -60%;
+      bottom: 0%;
       left: 50%;
       transform: translateX(-50%);
-      width: 700px;
-      height: 350px;
+      width: 600px;
+      height: 220px;
       background: radial-gradient(ellipse, oklch(63% 0.26 285 / 0.11) 0%, transparent 70%);
       pointer-events: none;
       animation: cta-glow 5s ease-in-out infinite;
@@ -863,7 +873,7 @@
     ──────────────────────────────────────── */
     footer {
       border-top: 1px solid var(--border-dim);
-      padding: 2.5rem 0;
+      padding: 4rem 0 2.5rem;
       margin-top: var(--section-gap);
     }
 
@@ -1272,7 +1282,7 @@
   <div class="container">
     <div class="footer-inner">
       <a href="/" class="footer-logo">
-        <div class="logo-box" style="width:24px;height:24px;font-size:13px;border-radius:5px;">Z</div>
+        <div class="logo-box" style="width:26px;height:26px;font-size:11px;border-radius:6px;">Z</div>
         Zart
       </a>
       <ul class="footer-links">

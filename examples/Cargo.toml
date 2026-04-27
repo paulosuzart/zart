@@ -40,6 +40,10 @@ path = "error-handling/src/main.rs"
 name = "example-transactions"
 path = "transactions/src/main.rs"
 
+[[bin]]
+name = "example-scheduler-only"
+path = "scheduler-only/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }
