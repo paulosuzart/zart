@@ -74,6 +74,7 @@ impl ExecutionStore for PostgresStorage {
                 completed_at = NOW()
             WHERE execution_id = $2
               AND run_id = (SELECT current_run_id FROM {executions} WHERE execution_id = $2)
+              AND status != 'cancelled'
             "#,
             execution_runs = self.table_names.execution_runs(),
             executions = self.table_names.executions(),
@@ -103,6 +104,7 @@ impl ExecutionStore for PostgresStorage {
             SET status = 'failed'
             WHERE execution_id = $1
               AND run_id = (SELECT current_run_id FROM {executions} WHERE execution_id = $1)
+              AND status != 'cancelled'
             "#,
             execution_runs = self.table_names.execution_runs(),
             executions = self.table_names.executions(),
