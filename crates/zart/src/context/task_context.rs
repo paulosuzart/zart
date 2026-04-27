@@ -7,7 +7,8 @@
 use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
 use crate::retry::RetryConfig;
-use crate::step_types::{StepDefId, StepRequest, StepResult};
+use crate::step_ops;
+use crate::step_types::{CompletionOutcome, CompletionSpec, StepDefId, StepRequest, StepResult};
 use crate::store::StorageBackend;
 use crate::timeout::TimeoutScope;
 use serde::{Deserialize, Serialize};
@@ -146,77 +147,6 @@ impl TaskContext {
     }
 
     // ── Internal step execution helpers (used by execute_step) ────────────────
-
-    /// Internal dispatcher for `execute_step`, delegating orchestration to
-    /// declarative dispatch/behaviors.
-    ///
-    /// Note: This method is kept for backward compatibility with internal callers
-    /// (`capture_internal`, `wait_for_event`, etc.) that use the `step_internal<T>`
-    /// shim. New typed step execution goes through `execute_step` directly.
-    #[allow(dead_code)]
-    async fn step_internal<T, F, Fut>(
-        &self,
-        step_name: &str,
-        _retry_config: Option<RetryConfig>,
-        step_fn: F,
-    ) -> Result<T, StepError>
-    where
-        T: Serialize + for<'de> Deserialize<'de>,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, StepError>>,
-    {
-        match &self.execution_mode {
-            ExecutionMode::Body => {
-                let result = crate::step_types::dispatch::step_internal(
-                    StepDefId::Step,
-                    self,
-                    StepRequest::new_step(step_name, _retry_config.as_ref(), None),
-                    None,
-                )
-                .await;
-
-                match result {
-                    Ok(v) => Ok(v),
-                    Err(e) => Err(e),
-                }
-            }
-            ExecutionMode::Step { target_step, .. } => {
-                let target = target_step.clone();
-
-                if step_name == target {
-                    let step_ctx = self.step_context();
-                    let immediate_outcome = match crate::local::ZART_PHASE
-                        .scope(crate::local::Phase::Step(step_ctx), step_fn())
-                        .await
-                    {
-                        Ok(v) => serde_json::to_value(v)
-                            .map(StepResult::Executed)
-                            .map_err(|e| StepError::Failed {
-                                step: step_name.to_string(),
-                                reason: format!("failed to serialize result: {e}"),
-                            }),
-                        Err(e) => Err(e),
-                    };
-
-                    crate::step_types::dispatch::step_internal_target_step(
-                        StepDefId::Step,
-                        self,
-                        step_name,
-                        immediate_outcome,
-                    )
-                    .await
-                } else {
-                    crate::step_types::dispatch::step_internal(
-                        StepDefId::Step,
-                        self,
-                        StepRequest::new_step(step_name, None, None),
-                        None,
-                    )
-                    .await
-                }
-            }
-        }
-    }
 
     /// Execute a [`ZartStep`] struct with automatic retry and timeout handling.
     ///
@@ -487,10 +417,7 @@ impl TaskContext {
                                 reason: format!("failed to rollback step transaction: {e}"),
                             })?;
 
-                        if let Some(next) = crate::step_types::dispatch::next_retry_time(
-                            &retry_config,
-                            retry_attempt,
-                        ) {
+                        if let Some(next) = next_retry_time(&retry_config, retry_attempt) {
                             step_ops::reschedule_step_for_retry(
                                 &*self.scheduler,
                                 &self.task_id,
@@ -545,6 +472,129 @@ impl TaskContext {
                 .await
             }
         }
+    }
+
+    /// Complete a target step: handle retry scheduling on failure,
+    /// route to completion behavior on success.
+    async fn complete_target_step(
+        &self,
+        step_def_id: StepDefId,
+        step_name: &str,
+        immediate_outcome: Result<StepResult, StepError>,
+    ) -> Result<(), StepError> {
+        let (retry_attempt, retry_config) = match &self.execution_mode {
+            ExecutionMode::Step {
+                retry_attempt,
+                retry_config,
+                ..
+            } => (*retry_attempt, retry_config.clone()),
+            ExecutionMode::Body => {
+                return Err(StepError::Failed {
+                    step: step_name.to_string(),
+                    reason: "target-step path reached in body mode".to_string(),
+                });
+            }
+        };
+
+        let step_result = match immediate_outcome {
+            Ok(r) => r,
+            Err(err) => {
+                if let Some(next) =
+                    next_retry_time_with_error(err.to_string(), &retry_config, retry_attempt)
+                {
+                    step_ops::reschedule_step_for_retry(
+                        &*self.scheduler,
+                        &self.task_id,
+                        retry_attempt + 1,
+                        &next.error,
+                        next.when,
+                        &self.lock_token,
+                    )
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: format!("failed to schedule retry: {e}"),
+                    })?;
+
+                    return Ok(());
+                }
+
+                if step_def_id == StepDefId::WaitGroupChild {
+                    let wait_group_step_name = self
+                        .data()
+                        .get("wg_step_name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+
+                    if let Some(group_step_name) = wait_group_step_name {
+                        let spec = CompletionSpec {
+                            step_task_id: self.task_id.clone(),
+                            step_id: self.task_id.clone(),
+                            step_name: step_name.to_string(),
+                            worker_id: self.lock_token.clone(),
+                            run_id: self.run_id().to_string(),
+                            execution_id: self.execution_id().to_string(),
+                            data: self.data().clone(),
+                            attempt_number: retry_attempt + 1,
+                            result: StepResult::Transition,
+                            wait_group_step_name: Some(group_step_name),
+                            outcome: CompletionOutcome::Failure {
+                                error: err.to_string(),
+                            },
+                        };
+
+                        step_def_id
+                            .completion_behavior(&spec.outcome)
+                            .complete(&*self.scheduler, &*self.task_scheduler, spec)
+                            .await
+                            .map_err(|e| StepError::Failed {
+                                step: step_name.to_string(),
+                                reason: e.to_string(),
+                            })?;
+
+                        return Ok(());
+                    }
+                }
+
+                return Err(err);
+            }
+        };
+
+        let wait_group_step_name = if step_def_id == StepDefId::WaitGroupChild {
+            self.data()
+                .get("wg_step_name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        } else {
+            None
+        };
+
+        let spec = CompletionSpec {
+            step_task_id: self.task_id.clone(),
+            step_id: self.task_id.clone(),
+            step_name: step_name.to_string(),
+            worker_id: self.lock_token.clone(),
+            run_id: self.run_id().to_string(),
+            execution_id: self.execution_id().to_string(),
+            data: self.data().clone(),
+            attempt_number: retry_attempt + 1,
+            result: step_result,
+            wait_group_step_name,
+            outcome: CompletionOutcome::Success,
+        };
+
+        step_def_id
+            .completion_behavior(&spec.outcome)
+            .complete(&*self.scheduler, &*self.task_scheduler, spec)
+            .await
+            .map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        Err(StepError::StepExecuted {
+            step: step_name.to_string(),
+        })
     }
 
     /// Complete a step row and schedule the next body segment in one transaction.
@@ -715,13 +765,10 @@ impl TaskContext {
 
                 let req = StepRequest::new_wait_group_barrier(&group_step_name, &step_names, 0);
 
-                let json = crate::step_types::dispatch::step_internal::<serde_json::Value>(
-                    StepDefId::WaitGroupBarrier,
-                    self,
-                    req,
-                    None,
-                )
-                .await?;
+                let (json, _kind) = StepDefId::WaitGroupBarrier
+                    .body_behavior()
+                    .handle(self, &req)
+                    .await?;
 
                 // If body behavior reports completion, deserialize results by handle order.
                 if let serde_json::Value::Array(values) = json {
@@ -760,15 +807,16 @@ impl TaskContext {
                 for handle in handles {
                     if handle.step_name == target {
                         if let Some(pending_fn) = handle.pending {
-                            let req = StepRequest::new_wait_group_child(&target);
-                            let _ =
-                                crate::step_types::dispatch::step_internal::<serde_json::Value>(
-                                    StepDefId::WaitGroupChild,
-                                    self,
-                                    req,
-                                    Some(pending_fn),
-                                )
-                                .await?;
+                            let immediate_outcome = StepDefId::WaitGroupChild
+                                .step_behavior()
+                                .handle(self, &target, Some(pending_fn))
+                                .await;
+                            self.complete_target_step(
+                                StepDefId::WaitGroupChild,
+                                &target,
+                                immediate_outcome,
+                            )
+                            .await?;
                             return Err(StepError::StepExecuted {
                                 step: target.to_string(),
                             });
@@ -816,14 +864,28 @@ impl TaskContext {
         wake_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), StepError> {
         let req = StepRequest::new_sleep(step_name, wake_time);
-        crate::step_types::dispatch::step_internal::<serde_json::Value>(
-            StepDefId::Sleep,
-            self,
-            req,
-            None,
-        )
-        .await
-        .map(|_| ())
+
+        match &self.execution_mode {
+            ExecutionMode::Body => {
+                StepDefId::Sleep.body_behavior().handle(self, &req).await?;
+                Ok(())
+            }
+            ExecutionMode::Step { target_step, .. } => {
+                if step_name != target_step {
+                    StepDefId::Sleep
+                        .step_behavior()
+                        .handle(self, step_name, None)
+                        .await?;
+                    return Ok(());
+                }
+                let outcome = StepDefId::Sleep
+                    .step_behavior()
+                    .handle(self, step_name, None)
+                    .await;
+                self.complete_target_step(StepDefId::Sleep, step_name, outcome)
+                    .await
+            }
+        }
     }
 
     /// Wait for an external event to be delivered to this execution.
@@ -845,18 +907,45 @@ impl TaskContext {
         });
 
         let req = StepRequest::new_wait_for_event(event_name, deadline);
-        let json = crate::step_types::dispatch::step_internal::<serde_json::Value>(
-            StepDefId::WaitForEvent,
-            self,
-            req,
-            None,
-        )
-        .await?;
 
-        serde_json::from_value(json).map_err(|e| StepError::Failed {
-            step: event_name.to_string(),
-            reason: format!("failed to deserialize event result: {e}"),
-        })
+        match &self.execution_mode {
+            ExecutionMode::Body => {
+                let (json, _kind) = StepDefId::WaitForEvent
+                    .body_behavior()
+                    .handle(self, &req)
+                    .await?;
+                serde_json::from_value(json).map_err(|e| StepError::Failed {
+                    step: event_name.to_string(),
+                    reason: format!("failed to deserialize event result: {e}"),
+                })
+            }
+            ExecutionMode::Step { target_step, .. } => {
+                if event_name != target_step {
+                    let result = StepDefId::WaitForEvent
+                        .step_behavior()
+                        .handle(self, event_name, None)
+                        .await?;
+                    let json = match result {
+                        StepResult::Executed(v) | StepResult::Cached(v) => v,
+                        StepResult::Transition => serde_json::Value::Null,
+                    };
+                    return serde_json::from_value(json).map_err(|e| StepError::Failed {
+                        step: event_name.to_string(),
+                        reason: format!("failed to deserialize event result: {e}"),
+                    });
+                }
+
+                let immediate_outcome = StepDefId::WaitForEvent
+                    .step_behavior()
+                    .handle(self, event_name, None)
+                    .await;
+                self.complete_target_step(StepDefId::WaitForEvent, event_name, immediate_outcome)
+                    .await?;
+                Err(StepError::StepExecuted {
+                    step: event_name.to_string(),
+                })
+            }
+        }
     }
 
     // ── Capture ─────────────────────────────────────────────────────────────
@@ -874,7 +963,54 @@ impl TaskContext {
         T: Serialize + for<'de> Deserialize<'de>,
         F: FnOnce() -> T,
     {
-        crate::step_types::dispatch::capture_internal(self, step_name, f).await
+        use zart_core::types::StepKind;
+
+        let lookup = self
+            .scheduler
+            .get_step_status(self.run_id(), step_name)
+            .await
+            .map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        if let Some(zart_core::types::StepLookup {
+            status: zart_core::types::TaskStatus::Completed,
+            result: Some(json),
+            ..
+        }) = lookup
+        {
+            return serde_json::from_value(json).map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: format!("deserialize capture result: {e}"),
+            });
+        }
+
+        if matches!(self.execution_mode, ExecutionMode::Step { .. }) {
+            return Err(StepError::Failed {
+                step: step_name.to_string(),
+                reason: format!(
+                    "capture step '{step_name}' not found during step-mode replay — \
+                     the step ID may have changed or the step was added after the execution started"
+                ),
+            });
+        }
+
+        let value = f();
+        let json = serde_json::to_value(&value).map_err(|e| StepError::Failed {
+            step: step_name.to_string(),
+            reason: format!("serialize capture result: {e}"),
+        })?;
+
+        self.scheduler
+            .insert_completed_step(self.run_id(), step_name, StepKind::Capture, json)
+            .await
+            .map_err(|e| StepError::Failed {
+                step: step_name.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        Ok(value)
     }
 
     /// Capture the current UTC time durably.
@@ -940,6 +1076,30 @@ impl TaskContext {
     pub fn is_retry_attempt(&self) -> bool {
         self.current_attempt() > 0
     }
+}
+
+struct RetryPlan {
+    when: chrono::DateTime<chrono::Utc>,
+    error: String,
+}
+
+/// Compute the next retry time for a step, if retries remain.
+fn next_retry_time(
+    retry_config: &Option<RetryConfig>,
+    retry_attempt: usize,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let cfg = retry_config.as_ref()?;
+    let delay = cfg.delay_for(retry_attempt + 1)?;
+    Some(chrono::Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero()))
+}
+
+fn next_retry_time_with_error(
+    error: String,
+    retry_config: &Option<RetryConfig>,
+    retry_attempt: usize,
+) -> Option<RetryPlan> {
+    let when = next_retry_time(retry_config, retry_attempt)?;
+    Some(RetryPlan { when, error })
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
