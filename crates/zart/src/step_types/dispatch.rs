@@ -219,7 +219,13 @@ pub async fn step_internal_target_step_raw(
             reason: e.to_string(),
         })?;
 
-    Ok((serde_json::Value::Null, ResultKind::Ok))
+    // Signal to all callers that this task's outcome was committed transactionally.
+    // Returning StepExecuted (rather than Ok) causes the handler body to halt
+    // immediately, which is required for sleep and wait-group child tasks that
+    // must not continue executing after their completion transaction commits.
+    Err(StepError::StepExecuted {
+        step: step_name.to_string(),
+    })
 }
 
 /// Target-step completion path (legacy shim).

@@ -173,6 +173,7 @@ impl BodyBehavior for LookupOrScheduleSleep {
                     &task_id,
                     ctx.run_id(),
                     ctx.execution_id(),
+                    step_name,
                     wake_time,
                     ctx.data().clone(),
                 )
