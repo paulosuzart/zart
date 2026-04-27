@@ -194,7 +194,9 @@ impl ScheduledTask for ZartTask {
                 ..
             }) => {
                 info!(step = %step, "Step executed in step mode — completion was transactional");
-                // Already completed in DB via StepOps
+                // The step-completion path already committed its own transaction and cleared
+                // worker_id. Tell the worker not to attempt a second complete/mark_failed.
+                ops.mark_handled();
             }
             Err(TaskError::StepFailed {
                 source: StepError::Scheduled { ref step, .. },

@@ -55,6 +55,15 @@ impl<'a> ExecutionOps<'a> {
         self.outcome_set
     }
 
+    /// Signal that this task's outcome was already committed by a separate path
+    /// (e.g. step-task completion via `complete_step_and_schedule_body`).
+    ///
+    /// Sets `outcome_set` so the worker skips the default `complete(None)` call,
+    /// avoiding a lock-token mismatch against a row that was already cleared.
+    pub fn mark_handled(&mut self) {
+        self.outcome_set = true;
+    }
+
     /// Returns a clone of the scheduler associated with these operations.
     pub fn scheduler(&self) -> Arc<dyn TaskScheduler> {
         self.scheduler.clone()
