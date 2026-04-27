@@ -143,7 +143,7 @@
       box-shadow: 0 2px 10px oklch(63% 0.26 285 / 0.35);
       transition: opacity 0.15s !important;
     }
-    .nav-cta:hover { opacity: 0.9; background: transparent !important; }
+    .nav-cta:hover { opacity: 0.9; background: var(--brand) !important; }
 
     .nav-hamburger {
       display: none;
@@ -502,6 +502,26 @@
       letter-spacing: -0.03em;
       color: var(--text);
       margin-bottom: 0.75rem;
+      display: inline-block;
+      position: relative;
+    }
+
+    .features .section-title::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      left: 10%;
+      right: 10%;
+      height: 2px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, transparent, var(--brand), oklch(63% 0.26 340), var(--brand), transparent);
+      background-size: 200% 100%;
+      animation: shimmer-title 3s ease-in-out infinite;
+    }
+
+    @keyframes shimmer-title {
+      0%, 100% { opacity: 0.4; background-position: 0% 50%; }
+      50% { opacity: 1; background-position: 100% 50%; }
     }
 
     .section-sub {
@@ -526,12 +546,42 @@
       border: 1px solid var(--border-dim);
       border-radius: var(--radius-lg);
       padding: 1.5rem;
-      transition: border-color 0.2s, transform 0.2s;
+      transition: border-color 0.2s, transform 0.5s, opacity 0.5s, box-shadow 0.3s;
+      opacity: 0.9;
+      transform: translateY(30px);
+    }
+
+    .feature-card.in-view {
+      opacity: 1;
+      transform: translateY(0);
     }
 
     .feature-card:hover {
-      border-color: oklch(63% 0.26 285 / 0.4);
-      transform: translateY(-2px);
+      border-color: oklch(63% 0.26 285 / 0.6);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 36px oklch(63% 0.26 285 / 0.18), 0 0 0 1px oklch(63% 0.26 285 / 0.12);
+    }
+
+    .feature-card.in-view:hover {
+      transform: translateY(-4px);
+    }
+
+    /* Expanded animation area for in-view cards */
+    .feature-animation {
+      width: 100%;
+      height: 60px;
+      margin-bottom: 0.75rem;
+      overflow: hidden;
+      transition: height 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+    }
+
+    .feature-card.in-view .feature-animation {
+      height: 100px;
+    }
+
+    .feature-card:hover .feature-animation,
+    .feature-card.in-view:hover .feature-animation {
+      height: 180px;
     }
 
     .feature-icon {
@@ -546,6 +596,344 @@
       font-size: 1.1rem;
     }
 
+    /* Geometric icon animations */
+    .geo-icon { transition: transform 0.3s ease; }
+    .feature-card:hover .geo-icon { transform: scale(1.1); }
+
+    /* State Recovery: pulse */
+    @keyframes pulse-state {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.15); }
+    }
+    .geo-state { animation: pulse-state 2.5s ease-in-out infinite; }
+
+    /* Smart Retries: rotate */
+    @keyframes rotate-retry {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .geo-retry { animation: rotate-retry 6s linear infinite; transform-origin: 10px 10px; }
+
+    /* Concurrent Workers: spin */
+    @keyframes spin-worker {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .geo-worker { animation: spin-worker 8s linear infinite; transform-origin: 10px 10px; }
+
+    /* Timeouts: tick */
+    @keyframes tick-time {
+      0%, 100% { transform: rotate(0deg); }
+      25% { transform: rotate(90deg); }
+      50% { transform: rotate(180deg); }
+      75% { transform: rotate(270deg); }
+    }
+    .geo-time-hand { animation: tick-time 12s linear infinite; transform-origin: 10px 10px; }
+
+    /* Idempotency: slide bolt */
+    @keyframes slide-bolt {
+      0%, 100% { transform: translateX(0); }
+      50% { transform: translateX(2px); }
+    }
+    .geo-lock-bolt { animation: slide-bolt 3s ease-in-out infinite; }
+
+    /* Events: wave expand */
+    @keyframes wave-expand {
+      0% { transform: scale(1); opacity: 1; }
+      100% { transform: scale(1.5); opacity: 0; }
+    }
+    .geo-wave { animation: wave-expand 2s ease-out infinite; }
+    .geo-wave-2 { animation-delay: 0.5s; }
+
+    .feature-animation svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* State Recovery animation - isometric with glitch */
+    @keyframes db-pulse {
+      0%, 100% { fill: var(--brand-low); }
+      50% { fill: var(--brand-high); }
+    }
+    .feature-card.in-view .db-top, .feature-card.in-view .db-bottom { animation: db-pulse 2s ease-in-out infinite; }
+    .feature-card.in-view .db-body { animation: db-pulse 2s ease-in-out infinite 0.2s; }
+
+    @keyframes save-flash-anim {
+      0%, 25%, 35%, 70%, 100% { opacity: 0; }
+      27%, 33% { opacity: 1; }
+      72%, 78% { opacity: 1; }
+    }
+    .feature-card.in-view .save-flash { animation: save-flash-anim 8s ease-in-out infinite; }
+
+    @keyframes step-execute {
+      0%, 30% { fill: var(--brand-low); stroke: var(--brand); }
+      15% { fill: var(--brand); stroke: var(--brand-dim); }
+      35%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+    }
+    .feature-card.in-view .sr-step1 { animation: step-execute 8s ease-in-out infinite; }
+    .feature-card.in-view .sr-step2 { animation: step-execute 8s ease-in-out infinite 2s; }
+
+    @keyframes step3-execute {
+      0%, 55% { fill: var(--brand-low); }
+      55.1%, 100% { fill: var(--brand-low); }
+    }
+    .feature-card.in-view .sr-step3 { animation: step3-execute 8s ease-in-out infinite; }
+
+    @keyframes arrow-flow {
+      0%, 30% { stroke-dashoffset: 0; opacity: 0; }
+      31%, 100% { stroke-dashoffset: -10; opacity: 1; }
+    }
+    .feature-card.in-view .sr-arrow12 { animation: arrow-flow 8s linear infinite; }
+    .feature-card.in-view .sr-arrow23 { animation: arrow-flow 8s linear infinite 2s; }
+
+    @keyframes save-dash {
+      0%, 25% { stroke-dashoffset: 0; opacity: 0; }
+      26%, 100% { stroke-dashoffset: -8; opacity: 1; }
+      15% { opacity: 0; }
+    }
+    .feature-card.in-view .sr-save1 { animation: save-dash 8s linear infinite; }
+    .feature-card.in-view .sr-save2 { animation: save-dash 8s linear infinite 2s; }
+
+    @keyframes glitch-anim {
+      0%, 45%, 55%, 100% { opacity: 0; }
+      47%, 53% { opacity: 1; }
+    }
+    .feature-card.in-view .sr-glitch { animation: glitch-anim 8s ease-in-out infinite; }
+
+    @keyframes reload-anim {
+      0%, 60%, 100% { opacity: 0; stroke-dasharray: 0 200; }
+      61%, 90% { opacity: 1; stroke-dasharray: 200 0; }
+    }
+    .feature-card.in-view .sr-reload { animation: reload-anim 8s ease-in-out infinite; }
+
+    /* Smart Retries animation - exponential backoff with timers */
+    @keyframes retry-execute {
+      0%, 15%, 100% { fill: var(--brand); }
+      1%, 14% { fill: var(--brand); }
+    }
+    .feature-card.in-view .retry-node { animation: retry-execute 10s ease-in-out infinite; }
+
+    @keyframes fail-flash-anim {
+      0%, 20%, 25%, 100% { opacity: 0; }
+      21%, 24% { opacity: 1; }
+    }
+    .feature-card.in-view .fail-flash { animation: fail-flash-anim 10s ease-in-out infinite; }
+
+    @keyframes retry1-anim {
+      0%, 30%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      35%, 45% { fill: var(--brand); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .retry1 { animation: retry1-anim 10s ease-in-out infinite; }
+
+    @keyframes retry2-anim {
+      0%, 50%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      55%, 65% { fill: var(--brand); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .retry2 { animation: retry2-anim 10s ease-in-out infinite; }
+
+    @keyframes retry3-anim {
+      0%, 70%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      75%, 85% { fill: var(--brand); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .retry3 { animation: retry3-anim 10s ease-in-out infinite; }
+
+    @keyframes timer-pulse {
+      0%, 100% { stroke-dasharray: 0 31.4; }
+      50% { stroke-dasharray: 31.4 0; }
+    }
+    .feature-card.in-view .timer1 { animation: timer-pulse 2s ease-in-out infinite 3s; }
+    .feature-card.in-view .timer2 { animation: timer-pulse 3s ease-in-out infinite 5s; }
+    .feature-card.in-view .timer3 { animation: timer-pulse 4s ease-in-out infinite 7s; }
+
+    @keyframes conn-dash {
+      to { stroke-dashoffset: -8; }
+    }
+    .feature-card.in-view .conn1 { animation: conn-dash 1s linear infinite 2s; }
+    .feature-card.in-view .conn2 { animation: conn-dash 1.5s linear infinite 5s; }
+    .feature-card.in-view .conn3 { animation: conn-dash 2s linear infinite 7s; }
+
+    @keyframes success-anim {
+      0%, 85%, 100% { fill: var(--brand-low); }
+      90%, 100% { fill: var(--brand); }
+    }
+    .feature-card.in-view .success-node { animation: success-anim 10s ease-in-out infinite; }
+    .feature-card.in-view .conn4 { animation: conn-dash 1s linear infinite 8.5s; }
+
+    /* Concurrent Workers animation - queue to workers */
+    @keyframes queue-pulse {
+      0%, 100% { fill: var(--brand-low); }
+      50% { fill: var(--brand-high); }
+    }
+    .feature-card.in-view .queue-task { animation: queue-pulse 2s ease-in-out infinite; }
+    .feature-card.in-view .q2 { animation-delay: 0.2s; }
+    .feature-card.in-view .q3 { animation-delay: 0.4s; }
+    .feature-card.in-view .q4 { animation-delay: 0.6s; }
+
+    @keyframes worker-ready {
+      0%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      50% { fill: var(--brand-high); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .cw-worker { animation: worker-ready 2s ease-in-out infinite; }
+    .feature-card.in-view .w2 { animation-delay: 0.3s; }
+    .feature-card.in-view .w3 { animation-delay: 0.6s; }
+
+    @keyframes flow-glow {
+      0% { stroke-dashoffset: 0; stroke: var(--brand); opacity: 1; }
+      100% { stroke-dashoffset: -20; stroke: var(--brand-high); opacity: 0.7; }
+    }
+    .feature-card.in-view .flow-line { stroke-dasharray: 5 3; animation: flow-glow 2s linear infinite; }
+    .feature-card.in-view .f2 { animation-delay: 0.3s; }
+    .feature-card.in-view .f3 { animation-delay: 0.6s; }
+
+    @keyframes scale-glow {
+      0%, 100% { fill: var(--brand); opacity: 0.5; }
+      50% { fill: var(--brand-high); opacity: 1; }
+    }
+    .feature-card.in-view .scale-text { animation: scale-glow 3s ease-in-out infinite; }
+
+    /* Timeouts & Deadlines animation - glowing orb + dissolve */
+    @keyframes progress-shrink {
+      0% { width: 180px; }
+      70% { width: 0px; }
+      71%, 100% { width: 180px; }
+    }
+    .feature-card.in-view .progress-fill { animation: progress-shrink 8s linear infinite; }
+
+    @keyframes orb-move {
+      0% { transform: translateX(0); }
+      70% { transform: translateX(170px); }
+      71%, 100% { transform: translateX(0); }
+    }
+    .feature-card.in-view .glowing-orb { animation: orb-move 8s linear infinite, glow-pulse 1s ease-in-out infinite; }
+
+    @keyframes glow-pulse {
+      0%, 100% { fill: white; filter: drop-shadow(0 0 3px white); }
+      50% { fill: var(--brand-high); filter: drop-shadow(0 0 6px var(--brand)); }
+    }
+
+    @keyframes workflow-dissolve {
+      0%, 60% { opacity: 1; }
+      70%, 80% { opacity: 0; }
+      81%, 100% { opacity: 1; }
+    }
+    .feature-card.in-view .workflow-process { animation: workflow-dissolve 8s ease-in-out infinite; }
+
+    @keyframes deadline-pulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.8; }
+    }
+    .feature-card.in-view .deadline-zone { animation: deadline-pulse 2s ease-in-out infinite 4s; }
+
+    @keyframes reset-text {
+      0%, 75%, 100% { opacity: 0; }
+      76%, 85% { opacity: 1; }
+    }
+    .feature-card.in-view .reset-text { animation: reset-text 8s ease-in-out infinite; }
+
+    /* Idempotency Built-in animation - gate + barrier */
+    @keyframes req1-move {
+      0%, 20%, 100% { fill: var(--brand); }
+      5%, 15% { fill: var(--brand-high); }
+    }
+    .feature-card.in-view .id-req1 { animation: req1-move 6s ease-in-out infinite; }
+
+    @keyframes req2-move {
+      0%, 60%, 100% { fill: var(--brand); }
+      65%, 75% { fill: var(--brand-high); }
+    }
+    .feature-card.in-view .id-req2 { animation: req2-move 6s ease-in-out infinite; }
+
+    @keyframes gate-open {
+      0%, 20%, 50%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      25%, 45% { fill: var(--brand-high); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .processor-gate { animation: gate-open 6s ease-in-out infinite; }
+
+    @keyframes exec-check {
+      0%, 30%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      35%, 45% { fill: var(--brand-high); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .exec-id { animation: exec-check 6s ease-in-out infinite; }
+
+    @keyframes done-glow {
+      0%, 40%, 100% { fill: var(--brand); }
+      45%, 55% { fill: var(--brand-dim); }
+    }
+    .feature-card.in-view .id-done { animation: done-glow 6s ease-in-out infinite; }
+
+    @keyframes path-glow {
+      0%, 100% { stroke: var(--brand); }
+      50% { stroke: var(--brand-high); }
+    }
+    .feature-card.in-view .path1 { animation: path-glow 6s ease-in-out infinite; }
+
+    @keyframes barrier-flash {
+      0%, 70%, 100% { stroke: oklch(65% 0.2 30); opacity: 1; }
+      75%, 85% { stroke: oklch(65% 0.2 30 / 0.3); opacity: 0.5; }
+    }
+    .feature-card.in-view .barrier { animation: barrier-flash 6s ease-in-out infinite; }
+    .feature-card.in-view .path2 { animation: path-glow 6s ease-in-out infinite 3s; }
+
+    /* Events & Async Waits animation - webhook + resume */
+    @keyframes start-glow {
+      0%, 20%, 100% { fill: var(--brand); }
+      10% { fill: var(--brand-high); }
+    }
+    .feature-card.in-view .wf-start { animation: start-glow 6s ease-in-out infinite; }
+
+    @keyframes wait-yellow {
+      0%, 30%, 100% { fill: var(--brand-low); stroke: var(--brand); }
+      35%, 65% { fill: oklch(85% 0.15 85); stroke: oklch(70% 0.15 85); }
+      70%, 80% { fill: var(--brand); stroke: var(--brand-dim); }
+    }
+    .feature-card.in-view .wait-node { animation: wait-yellow 6s ease-in-out infinite; }
+
+    @keyframes resume-flow {
+      0%, 70%, 100% { fill: var(--brand-low); }
+      75%, 95% { fill: var(--brand); }
+    }
+    .feature-card.in-view .wf-resume { animation: resume-flow 6s ease-in-out infinite; }
+
+    @keyframes done-flow {
+      0%, 85%, 100% { fill: var(--brand-low); }
+      90%, 100% { fill: var(--brand); }
+    }
+    .feature-card.in-view .wf-done { animation: done-flow 6s ease-in-out infinite; }
+
+    @keyframes arr-dash {
+      to { stroke-dashoffset: -6; }
+    }
+    .feature-card.in-view .arr1 { animation: arr-dash 1s linear infinite; }
+    .feature-card.in-view .arr2 { animation: arr-dash 1s linear infinite 2s; }
+    .feature-card.in-view .arr3 { animation: arr-dash 1s linear infinite 5s; }
+
+    @keyframes dashed-extend {
+      0%, 30%, 100% { stroke-dashoffset: 0; opacity: 0; }
+      35%, 65% { stroke-dashoffset: -6; opacity: 1; }
+    }
+    .feature-card.in-view .dashed-line { animation: dashed-extend 6s ease-in-out infinite; }
+
+    @keyframes webhook-pulse {
+      0%, 30%, 100% { r: 8; fill: var(--brand); }
+      35%, 65% { r: 10; fill: var(--brand-high); }
+    }
+    .feature-card.in-view .webhook-icon { animation: webhook-pulse 6s ease-in-out infinite; }
+
+    @keyframes signal-up {
+      0%, 50%, 100% { opacity: 0; }
+      55%, 70% { opacity: 1; }
+    }
+    .feature-card.in-view .signal-line { animation: signal-up 6s ease-in-out infinite; }
+
+    /* Respect reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      .geo-state, .geo-retry, .geo-worker, .geo-time-hand, .geo-lock-bolt, .geo-wave,
+      .replay-path, .replay-dot, .step-box {
+        animation: none !important;
+      }
+      .feature-card:hover .geo-icon { transform: none; }
+    }
+
     .feature-name {
       font-size: 0.95rem;
       font-weight: 600;
@@ -558,6 +946,37 @@
       font-size: 0.875rem;
       color: var(--text-muted);
       line-height: 1.6;
+    }
+
+    .feature-tag {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-top: 0.85rem;
+      padding: 0.4rem 0.65rem;
+      border-radius: var(--radius-sm);
+      background: var(--brand-low);
+      border: 1px solid oklch(63% 0.26 285 / 0.18);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--brand-dim);
+      line-height: 1.4;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.3s ease, transform 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+      pointer-events: none;
+    }
+
+    .feature-tag::before {
+      content: '//';
+      opacity: 0.45;
+      flex-shrink: 0;
+    }
+
+    .feature-card:hover .feature-tag {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
     }
 
     /* ────────────────────────────────────────
@@ -1127,47 +1546,242 @@
     </div>
 
     <div class="features-grid">
-      <div class="feature-card reveal reveal-delay-1">
-        <div class="feature-icon">⚡</div>
+      <div class="feature-card reveal reveal-delay-1 in-view">
+        <div class="feature-animation">
+          <svg width="100%" height="100" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Database cylinder -->
+            <ellipse cx="25" cy="35" rx="12" ry="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="db-top"/>
+            <rect x="13" y="35" width="24" height="25" rx="0" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="db-body"/>
+            <ellipse cx="25" cy="60" rx="12" ry="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="db-bottom"/>
+            <text x="20" y="28" font-size="6" fill="var(--text-muted)">DB</text>
+            <!-- Save icon flash -->
+            <path d="M21 48L29 48L29 54L25 58L21 54Z" fill="var(--brand)" class="save-flash" opacity="0"/>
+            <!-- Steps row -->
+            <rect x="55" y="28" width="30" height="22" rx="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="sr-step1"/>
+            <text x="62" y="23" font-size="6" fill="var(--text-muted)">Step1</text>
+            <rect x="95" y="28" width="30" height="22" rx="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="sr-step2"/>
+            <text x="102" y="23" font-size="6" fill="var(--text-muted)">Step2</text>
+            <rect x="135" y="28" width="30" height="22" rx="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="sr-step3"/>
+            <text x="142" y="23" font-size="6" fill="var(--text-muted)">Step3</text>
+            <!-- Arrows between steps -->
+            <path d="M85 39L95 39" stroke="var(--brand)" stroke-width="1.5" class="sr-arrow12"/>
+            <path d="M125 39L135 39" stroke="var(--brand)" stroke-width="1.5" class="sr-arrow23"/>
+            <!-- Save arrows to DB -->
+            <path d="M70 50L70 60L25 60" stroke="var(--brand)" stroke-width="1" stroke-dasharray="2 2" class="sr-save1"/>
+            <path d="M110 50L110 65L25 65" stroke="var(--brand)" stroke-width="1" stroke-dasharray="2 2" class="sr-save2"/>
+            <!-- Glitch overlay on Step2 -->
+            <rect x="93" y="26" width="34" height="26" rx="4" fill="oklch(65% 0.2 30 / 0.5)" stroke="none" class="sr-glitch" opacity="0"/>
+            <!-- Reload from DB to Step2 (skip Step1) -->
+            <path d="M25 70L25 80L110 80L110 50" stroke="var(--brand-high)" stroke-width="2" fill="none" class="sr-reload" opacity="0"/>
+          </svg>
+        </div>
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10 2L4 11H9L8 18L16 9H11L10 2Z" fill="var(--brand)" class="geo-icon geo-state"/>
+          </svg>
+        </div>
         <div class="feature-name">State Recovery</div>
         <p class="feature-desc">
           Each step's result is persisted before moving on. On restart, completed steps are replayed from storage — never re-executed.
         </p>
+        <div class="feature-tag">Crash at 3am? Resume from step 4, not step 1</div>
       </div>
       <div class="feature-card reveal reveal-delay-2">
-        <div class="feature-icon">🔄</div>
+        <div class="feature-animation">
+          <svg width="100%" height="100" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Task node -->
+            <circle cx="20" cy="30" r="8" fill="var(--brand)" stroke="var(--brand-dim)" stroke-width="1.5" class="retry-node"/>
+            <text x="17" y="55" font-size="5" fill="var(--text-muted)">Task</text>
+            <!-- Fail flash -->
+            <circle cx="20" cy="30" r="10" fill="oklch(65% 0.2 30 / 0.5)" class="fail-flash" opacity="0"/>
+            <!-- Retry 1 -->
+            <circle cx="60" cy="30" r="8" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="retry1"/>
+            <text x="55" y="55" font-size="5" fill="var(--text-muted)">Retry1</text>
+            <!-- Timer 1 (short) -->
+            <circle cx="60" cy="70" r="5" stroke="var(--brand)" stroke-width="1" fill="none" class="timer1"/>
+            <text x="55" y="85" font-size="4" fill="var(--text-faint)">1s</text>
+            <!-- Retry 2 -->
+            <circle cx="100" cy="30" r="8" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="retry2"/>
+            <text x="95" y="55" font-size="5" fill="var(--text-muted)">Retry2</text>
+            <!-- Timer 2 (longer) -->
+            <circle cx="100" cy="70" r="5" stroke="var(--brand)" stroke-width="1" fill="none" class="timer2"/>
+            <text x="94" y="85" font-size="4" fill="var(--text-faint)">2s</text>
+            <!-- Retry 3 -->
+            <circle cx="140" cy="30" r="8" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="retry3"/>
+            <text x="135" y="55" font-size="5" fill="var(--text-muted)">Retry3</text>
+            <!-- Timer 3 (much longer) -->
+            <circle cx="140" cy="70" r="5" stroke="var(--brand)" stroke-width="1" fill="none" class="timer3"/>
+            <text x="132" y="85" font-size="4" fill="var(--text-faint)">4s</text>
+            <!-- Success -->
+            <circle cx="180" cy="30" r="8" fill="var(--brand)" stroke="var(--brand-dim)" stroke-width="1.5" class="success-node"/>
+            <text x="175" y="55" font-size="5" fill="var(--brand)">Done!</text>
+            <!-- Connecting lines -->
+            <path d="M28 30L52 30" stroke="var(--brand)" stroke-width="1" stroke-dasharray="2 2" class="conn1"/>
+            <path d="M68 30L92 30" stroke="var(--brand)" stroke-width="1" stroke-dasharray="2 2" class="conn2"/>
+            <path d="M108 30L132 30" stroke="var(--brand)" stroke-width="1" stroke-dasharray="2 2" class="conn3"/>
+            <path d="M148 30L172 30" stroke="var(--brand)" stroke-width="1.5" class="conn4"/>
+          </svg>
+        </div>
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10 2C14.4183 2 18 5.58172 18 10C18 14.4183 14.4183 18 10 18C5.58172 18 2 14.4183 2 10C2 8.15288 2.76538 6.43158 4.1005 5.22266" stroke="var(--brand)" stroke-width="2" stroke-linecap="round" class="geo-icon geo-retry"/>
+            <path d="M4 2L4 6H8" stroke="var(--brand)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
         <div class="feature-name">Smart Retries</div>
         <p class="feature-desc">
           Per-step retry policies with fixed, linear, or exponential backoff. Configure max attempts, delay, and jitter independently per step.
         </p>
+        <div class="feature-tag">Transient network blip? Self-heals before anyone notices</div>
       </div>
       <div class="feature-card reveal reveal-delay-3">
-        <div class="feature-icon">⚙️</div>
+        <div class="feature-animation">
+          <svg width="100%" height="100" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Task Queue (vertical) -->
+            <rect x="10" y="10" width="20" height="10" rx="2" fill="var(--brand)" class="queue-task q1"/>
+            <rect x="10" y="25" width="20" height="10" rx="2" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1" class="queue-task q2"/>
+            <rect x="10" y="40" width="20" height="10" rx="2" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1" class="queue-task q3"/>
+            <rect x="10" y="55" width="20" height="10" rx="2" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1" class="queue-task q4"/>
+            <text x="13" y="8" font-size="5" fill="var(--text-muted)">Queue</text>
+            <!-- Workers -->
+            <rect x="160" y="10" width="20" height="15" rx="3" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="cw-worker w1"/>
+            <text x="164" y="8" font-size="5" fill="var(--text-muted)">W1</text>
+            <rect x="160" y="40" width="20" height="15" rx="3" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="cw-worker w2"/>
+            <text x="164" y="38" font-size="5" fill="var(--text-muted)">W2</text>
+            <rect x="160" y="70" width="20" height="15" rx="3" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="cw-worker w3"/>
+            <text x="164" y="68" font-size="5" fill="var(--text-muted)">W3</text>
+            <!-- Glowing data lines (tasks flowing) -->
+            <path d="M30 15L160 17" stroke="var(--brand)" stroke-width="2" fill="none" class="flow-line f1"/>
+            <path d="M30 30L160 47" stroke="var(--brand)" stroke-width="2" fill="none" class="flow-line f2"/>
+            <path d="M30 45L160 77" stroke="var(--brand)" stroke-width="2" fill="none" class="flow-line f3"/>
+            <!-- Horizontal scaling indicator -->
+            <text x="100" y="92" font-size="5" fill="var(--brand)" class="scale-text">Horizontal Scaling</text>
+          </svg>
+        </div>
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="10" cy="10" r="4" stroke="var(--brand)" stroke-width="2" class="geo-icon geo-worker"/>
+            <path d="M10 2V4M10 16V18M2 10H4M16 10H18M4.22 4.22L5.64 5.64M14.36 14.36L15.78 15.78M4.22 15.78L5.64 14.36M14.36 5.64L15.78 4.22" stroke="var(--brand)" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
         <div class="feature-name">Concurrent Workers</div>
         <p class="feature-desc">
           Multiple workers compete for tasks using <code>SKIP LOCKED</code> — zero contention, no coordination required, horizontal scaling out of the box.
         </p>
+        <div class="feature-tag">Add more replicas. No config, no coordinator, no drama</div>
       </div>
       <div class="feature-card reveal reveal-delay-4">
-        <div class="feature-icon">⏱️</div>
+        <div class="feature-animation">
+          <svg width="100%" height="100" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Progress bar background -->
+            <rect x="10" y="40" width="180" height="12" rx="6" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1"/>
+            <!-- Deadline marker (red zone) -->
+            <rect x="110" y="40" width="80" height="12" rx="6" fill="oklch(65% 0.2 30 / 0.3)" class="deadline-zone"/>
+            <text x="150" y="35" font-size="6" fill="oklch(65% 0.2 30)" text-anchor="middle">Deadline</text>
+            <!-- Progress fill (shrinking) -->
+            <rect x="10" y="40" width="180" height="12" rx="6" fill="var(--brand)" class="progress-fill"/>
+            <!-- Glowing orb -->
+            <circle cx="20" cy="46" r="4" fill="white" class="glowing-orb"/>
+            <!-- Workflow process -->
+            <rect x="15" y="20" width="40" height="12" rx="3" fill="var(--brand)" class="workflow-process"/>
+            <text x="35" y="16" font-size="5" fill="var(--text-muted)" text-anchor="middle">Workflow</text>
+            <!-- Dissolve text -->
+            <text x="100" y="80" font-size="6" fill="var(--text-muted)" text-anchor="middle" class="reset-text" opacity="0">Resetting...</text>
+          </svg>
+        </div>
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="10" cy="10" r="8" stroke="var(--brand)" stroke-width="2" class="geo-icon geo-timeout"/>
+            <path d="M10 6V10L13 12" stroke="var(--brand)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="geo-time-hand"/>
+          </svg>
+        </div>
         <div class="feature-name">Timeouts &amp; Deadlines</div>
         <p class="feature-desc">
           Set per-workflow timeouts declaratively. A workflow that exceeds its deadline is cancelled cleanly — no stuck tasks, no leaked resources.
         </p>
+        <div class="feature-tag">No zombie tasks eating DB connections at 100% CPU</div>
       </div>
       <div class="feature-card reveal reveal-delay-5">
-        <div class="feature-icon">🔒</div>
+        <div class="feature-animation">
+          <svg width="100%" height="100" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Processor Gate -->
+            <rect x="70" y="20" width="25" height="55" rx="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="processor-gate"/>
+            <text x="77" y="45" font-size="5" fill="var(--brand)">Gate</text>
+            <!-- Execution ID check -->
+            <rect x="105" y="20" width="25" height="55" rx="4" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="exec-id"/>
+            <text x="110" y="45" font-size="4" fill="var(--text-muted)">Exec ID</text>
+            <!-- Done box -->
+            <rect x="140" y="20" width="25" height="55" rx="4" fill="var(--brand)" stroke="var(--brand-dim)" stroke-width="1.5" class="id-done"/>
+            <text x="145" y="45" font-size="5" fill="white">Done</text>
+
+            <!-- Req 1 (first passes) -->
+            <circle cx="15" cy="30" r="6" fill="var(--brand)" class="id-req1"/>
+            <text x="9" y="25" font-size="5" fill="var(--text-muted)">Req1</text>
+            <path d="M21 30L70 30" stroke="var(--brand)" stroke-width="1.5" class="path1"/>
+            <path d="M95 30L105 30" stroke="var(--brand)" stroke-width="1.5" class="path1"/>
+            <path d="M130 30L140 30" stroke="var(--brand)" stroke-width="1.5" class="path1"/>
+
+            <!-- Req 2 (blocked) -->
+            <circle cx="15" cy="65" r="6" fill="var(--brand)" class="id-req2"/>
+            <text x="9" y="60" font-size="5" fill="var(--text-muted)">Req1</text>
+            <path d="M21 65L70 65" stroke="var(--brand)" stroke-width="1.5" class="path2"/>
+            <!-- Blocked barrier -->
+            <line x1="95" y1="48" x2="95" y2="75" stroke="oklch(65% 0.2 30)" stroke-width="3" stroke-linecap="round" class="barrier"/>
+            <text x="98" y="70" font-size="5" fill="oklch(65% 0.2 30)">Blocked</text>
+          </svg>
+        </div>
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="4" y="9" width="12" height="8" rx="2" stroke="var(--brand)" stroke-width="2" class="geo-icon geo-idempotent"/>
+            <path d="M7 9V6C7 4.34315 8.34315 3 10 3V3C11.6569 3 13 4.34315 13 6V9" stroke="var(--brand)" stroke-width="2" stroke-linecap="round" class="geo-lock-bolt"/>
+          </svg>
+        </div>
         <div class="feature-name">Idempotency Built-in</div>
         <p class="feature-desc">
           Execution IDs prevent duplicate scheduling. A charge step that already succeeded will never fire again — even if the scheduler is called twice.
         </p>
+        <div class="feature-tag">Double-charge bug in prod? That's a chargeback. Not anymore</div>
       </div>
       <div class="feature-card reveal reveal-delay-6">
-        <div class="feature-icon">📡</div>
+        <div class="feature-animation">
+          <svg width="100%" height="100" viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Workflow process -->
+            <rect x="10" y="20" width="30" height="15" rx="3" fill="var(--brand)" class="wf-start"/>
+            <text x="20" y="15" font-size="5" fill="var(--text-muted)">Start</text>
+            <!-- Wait node (turns yellow) -->
+            <rect x="50" y="20" width="30" height="15" rx="3" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1.5" class="wait-node"/>
+            <text x="60" y="15" font-size="5" fill="var(--text-muted)">Wait</text>
+            <!-- Resume node -->
+            <rect x="90" y="20" width="30" height="15" rx="3" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1" class="wf-resume"/>
+            <text x="100" y="15" font-size="5" fill="var(--text-muted)">Resume</text>
+            <!-- Completion -->
+            <rect x="130" y="20" width="30" height="15" rx="3" fill="var(--brand-low)" stroke="var(--brand)" stroke-width="1" class="wf-done"/>
+            <text x="140" y="15" font-size="5" fill="var(--text-muted)">Done</text>
+            <!-- Arrows -->
+            <path d="M40 27L50 27" stroke="var(--brand)" stroke-width="1.5" class="arr1"/>
+            <path d="M80 27L90 27" stroke="var(--brand)" stroke-width="1.5" stroke-dasharray="2 2" class="arr2"/>
+            <path d="M120 27L130 27" stroke="var(--brand)" stroke-width="1.5" class="arr3"/>
+            <!-- Dashed line from Wait node -->
+            <path d="M65 35L65 50" stroke="var(--brand)" stroke-width="1" stroke-dasharray="2 2" class="dashed-line"/>
+            <!-- Webhook icon (external signal) -->
+            <circle cx="65" cy="60" r="8" fill="var(--brand)" class="webhook-icon"/>
+            <text x="60" y="80" font-size="4" fill="var(--text-muted)">Webhook</text>
+            <!-- Signal line -->
+            <path d="M65 52L65 48" stroke="var(--brand)" stroke-width="1.5" class="signal-line"/>
+          </svg>
+        </div>
+        <div class="feature-icon">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="10" cy="10" r="2" fill="var(--brand)" class="geo-icon geo-event"/>
+            <circle cx="10" cy="10" r="5" stroke="var(--brand)" stroke-width="1.5" stroke-linecap="round" class="geo-wave geo-wave-1"/>
+            <circle cx="10" cy="10" r="8" stroke="var(--brand)" stroke-width="1.5" stroke-linecap="round" class="geo-wave geo-wave-2"/>
+          </svg>
+        </div>
         <div class="feature-name">Events &amp; Async Waits</div>
         <p class="feature-desc">
           Workflows can durably wait for external signals — webhooks, human approvals, or other services — with configurable timeouts and automatic resumption.
         </p>
+        <div class="feature-tag">Pause 3 days for human approval. Resume in milliseconds</div>
       </div>
     </div>
   </div>
@@ -1395,6 +2009,23 @@
     { threshold: 0.12 }
   );
   document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
+
+  // ── Feature card scroll animations ──────────────────────────
+  const featureObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in-view');
+        }
+      });
+    },
+    { threshold: 0.2, rootMargin: '0px 0px -50px 0px' }
+  );
+  document.querySelectorAll('.feature-card').forEach((card, i) => {
+    // First card is already in-view by default
+    if (i === 0) return;
+    featureObserver.observe(card);
+  });
 </script>
 
 </body>
