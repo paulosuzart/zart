@@ -47,10 +47,14 @@ struct HealthCheckOutput {
     results: Vec<ServiceResult>,
 }
 
-// ── Step definition using #[zart_step] ────────────────────────────────────────
+// ── Step definition ───────────────────────────────────────────────────────────
 
 /// A health check step that simulates checking a service.
-#[zart_step("check-service")]
+///
+/// The `{service}` placeholder expands at runtime, producing unique step names
+/// ("check-auth-api", "check-payments", …) so parallel instances in the same
+/// `wait_all` each get a distinct task ID.
+#[zart_step("check-{service}")]
 async fn check_service(service: String) -> Result<ServiceResult, StepError> {
     println!(
         "[check-{}] Attempt {}",
