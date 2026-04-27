@@ -68,6 +68,10 @@ test-observability:
     cargo test -p zart-api healthz
     cargo test -p zart-api readyz
 
+# Run unit tests for zart-core (shared core primitives)
+test-core:
+    cargo test -p zart-core
+
 # ── Lint ───────────────────────────────────────────────────────────────────────
 
 # Run clippy on all crates with strict settings

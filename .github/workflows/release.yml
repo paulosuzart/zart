@@ -139,6 +139,7 @@ jobs:
 
       - name: Package validation (leaf crates)
         run: |
+          cargo package -p zart-core --allow-dirty --no-verify
           cargo package -p zart-scheduler --allow-dirty --no-verify
 
       - name: Dry-run publish
@@ -151,6 +152,7 @@ jobs:
           # on zart-macros/zart-scheduler which don't exist on crates.io yet — they are
           # validated implicitly when published in order during a real release.
           cargo publish -p zart-macros --dry-run --allow-dirty --no-verify
+          cargo publish -p zart-core --dry-run --allow-dirty --no-verify
           cargo publish -p zart-scheduler --dry-run --allow-dirty
 
       - name: Publish crates
@@ -168,6 +170,8 @@ jobs:
             return 1
           }
           publish_crate zart-macros --no-verify
+          sleep 30
+          publish_crate zart-core --no-verify
           sleep 30
           publish_crate zart-scheduler
           sleep 30
