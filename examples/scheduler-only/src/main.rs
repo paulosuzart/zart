@@ -30,10 +30,8 @@ impl ScheduledTask for SendWelcomeEmail {
         instance: &TaskInstance,
         ops: &mut ExecutionOps<'_>,
     ) -> Result<(), SchedulerTaskError> {
-        let input: WelcomeEmailInput =
-            serde_json::from_value(instance.data.clone()).map_err(|e| {
-                SchedulerTaskError::Failed(format!("failed to parse input: {e}"))
-            })?;
+        let input: WelcomeEmailInput = serde_json::from_value(instance.data.clone())
+            .map_err(|e| SchedulerTaskError::Failed(format!("failed to parse input: {e}")))?;
 
         println!(
             "  [send-welcome-email] Sending welcome email to {} ({})",
@@ -60,9 +58,7 @@ impl ScheduledTask for SendWelcomeEmail {
         .await
         .map_err(SchedulerTaskError::Storage)?;
 
-        println!(
-            "  [send-welcome-email] Email sent, scheduled onboarding-cleanup"
-        );
+        println!("  [send-welcome-email] Email sent, scheduled onboarding-cleanup");
 
         // Complete with a result payload
         ops.complete(Some(json!({
@@ -94,9 +90,8 @@ impl ScheduledTask for OnboardingCleanup {
         instance: &TaskInstance,
         ops: &mut ExecutionOps<'_>,
     ) -> Result<(), SchedulerTaskError> {
-        let input: CleanupInput = serde_json::from_value(instance.data.clone()).map_err(|e| {
-            SchedulerTaskError::Failed(format!("failed to parse input: {e}"))
-        })?;
+        let input: CleanupInput = serde_json::from_value(instance.data.clone())
+            .map_err(|e| SchedulerTaskError::Failed(format!("failed to parse input: {e}")))?;
 
         println!(
             "  [onboarding-cleanup] Running cleanup action '{}' for user {}",
@@ -122,9 +117,7 @@ impl ScheduledTask for OnboardingCleanup {
         .await
         .map_err(SchedulerTaskError::Storage)?;
 
-        println!(
-            "  [onboarding-cleanup] Cleanup done, scheduled generate-report"
-        );
+        println!("  [onboarding-cleanup] Cleanup done, scheduled generate-report");
 
         ops.complete(Some(json!({
             "status": "cleaned",
@@ -154,9 +147,8 @@ impl ScheduledTask for GenerateReport {
         instance: &TaskInstance,
         ops: &mut ExecutionOps<'_>,
     ) -> Result<(), SchedulerTaskError> {
-        let input: ReportInput = serde_json::from_value(instance.data.clone()).map_err(|e| {
-            SchedulerTaskError::Failed(format!("failed to parse input: {e}"))
-        })?;
+        let input: ReportInput = serde_json::from_value(instance.data.clone())
+            .map_err(|e| SchedulerTaskError::Failed(format!("failed to parse input: {e}")))?;
 
         println!(
             "  [generate-report] Generating '{}' report for user {}",
@@ -196,7 +188,10 @@ impl ScheduledTask for ScheduledGreeting {
             .and_then(|v| v.as_str())
             .unwrap_or("World");
 
-        println!("  [scheduled-greeting] Hello, {}! (task {})", name, instance.task_id);
+        println!(
+            "  [scheduled-greeting] Hello, {}! (task {})",
+            name, instance.task_id
+        );
 
         ops.complete(None)
             .await
@@ -219,13 +214,12 @@ async fn wait_for_task_completion(
             return Err(format!("timeout waiting for task {task_id}"));
         }
 
-        let row: Option<(String, Option<Value>)> = sqlx::query_as(
-            "SELECT status::text, result FROM zart_tasks WHERE task_id = $1",
-        )
-        .bind(task_id)
-        .fetch_optional(scheduler.pool())
-        .await
-        .map_err(|e| e.to_string())?;
+        let row: Option<(String, Option<Value>)> =
+            sqlx::query_as("SELECT status::text, result FROM zart_tasks WHERE task_id = $1")
+                .bind(task_id)
+                .fetch_optional(scheduler.pool())
+                .await
+                .map_err(|e| e.to_string())?;
 
         if let Some((status, result)) = row {
             if status == "completed" {
@@ -329,9 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Demo 3: Schedule multiple independent tasks ---
 
     println!("\n--- Demo 3: Independent Parallel Tasks ---");
-    let ids: Vec<_> = (0..3)
-        .map(|i| format!("parallel-{}", i))
-        .collect();
+    let ids: Vec<_> = (0..3).map(|i| format!("parallel-{}", i)).collect();
     for id in &ids {
         scheduler
             .schedule_now(
