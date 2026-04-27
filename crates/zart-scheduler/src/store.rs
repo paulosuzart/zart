@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 
+use crate::Recurrence;
 use crate::StorageError;
 use crate::types::{CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult};
 
@@ -28,6 +29,25 @@ pub trait TaskScheduler: Send + Sync {
 
     /// Schedule a task for execution at a specific point in time.
     async fn schedule_at(&self, params: ScheduleAtParams) -> Result<ScheduleResult, StorageError>;
+
+    /// Schedule a recurring task that automatically reschedules based on the recurrence rule.
+    async fn schedule_recurring(
+        &self,
+        task_id: &str,
+        task_name: &str,
+        recurrence: Recurrence,
+        data: serde_json::Value,
+    ) -> Result<ScheduleResult, StorageError> {
+        self.schedule_at(ScheduleAtParams {
+            task_id: task_id.to_string(),
+            task_name: task_name.to_string(),
+            execution_time: chrono::Utc::now(),
+            data,
+            recurrence: Some(recurrence),
+            metadata: serde_json::Value::Null,
+        })
+        .await
+    }
 
     /// Schedule a task within the caller's transaction.
     ///

@@ -313,7 +313,7 @@ async fn dispatch_task(
         if result.is_ok() && !ops.outcome_set() {
             let next = recurrence
                 .as_ref()
-                .and_then(|r| r.next_after(chrono::Utc::now()));
+                .and_then(|r| r.next_after(task.execution_time));
             if let Some(next_time) = next {
                 ops.reschedule(next_time)
                     .await

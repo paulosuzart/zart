@@ -79,9 +79,10 @@ impl TaskScheduler for PostgresTaskScheduler {
             i32,
             Option<serde_json::Value>,
             serde_json::Value,
+            DateTime<Utc>,
         )> = sqlx::query_as(&format!(
             r#"
-                SELECT task_id, task_name, data, state, attempt, recurrence, metadata
+                SELECT task_id, task_name, data, state, attempt, recurrence, metadata, execution_time
                 FROM {tasks}
                 WHERE status = 'scheduled'
                   AND execution_time <= $1
@@ -106,7 +107,9 @@ impl TaskScheduler for PostgresTaskScheduler {
 
         let mut fetched = Vec::with_capacity(rows.len());
 
-        for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in rows {
+        for (task_id, task_name, data, state, attempt, recurrence_json, metadata, execution_time) in
+            rows
+        {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
@@ -140,6 +143,7 @@ impl TaskScheduler for PostgresTaskScheduler {
                 lock_token,
                 recurrence,
                 metadata,
+                execution_time,
             });
         }
 

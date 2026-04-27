@@ -66,6 +66,9 @@ pub struct FetchedTask {
     /// Execution model metadata (mode, run_id, step_name, step_type, etc.).
     /// Empty object `{}` for legacy tasks that predate the new execution model.
     pub metadata: serde_json::Value,
+    /// The time this task was originally scheduled to execute.
+    /// Used for computing next cron execution times.
+    pub execution_time: DateTime<Utc>,
 }
 
 impl std::fmt::Display for FetchedTask {
