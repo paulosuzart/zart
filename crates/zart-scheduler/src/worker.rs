@@ -254,6 +254,7 @@ async fn dispatch_task(
         }
     };
 
+    let recurrence = task.recurrence.clone();
     let instance = TaskInstance {
         task_id: task.task_id.clone(),
         task_name: task.task_name.clone(),
@@ -308,10 +309,20 @@ async fn dispatch_task(
         let mut ops = ExecutionOps::new(conn, scheduler.clone(), &task.task_id, &task.lock_token);
         let result = handler.execute(&instance, &mut ops).await;
         // Default: complete with no result if the handler returned Ok without setting an outcome.
+        // For recurring tasks, reschedule instead of completing so the row stays live.
         if result.is_ok() && !ops.outcome_set() {
-            ops.complete(None)
-                .await
-                .map_err(SchedulerTaskError::Storage)
+            let next = recurrence
+                .as_ref()
+                .and_then(|r| r.next_after(chrono::Utc::now()));
+            if let Some(next_time) = next {
+                ops.reschedule(next_time)
+                    .await
+                    .map_err(SchedulerTaskError::Storage)
+            } else {
+                ops.complete(None)
+                    .await
+                    .map_err(SchedulerTaskError::Storage)
+            }
         } else {
             result
         }

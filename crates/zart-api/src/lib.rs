@@ -29,7 +29,7 @@
 //!
 //! ```rust,no_run
 //! use zart_api::ApiServer;
-//! use zart::{DurableScheduler, TaskRegistry, into_durable_api};
+//! use zart::{DurableRegistry, DurableScheduler, into_durable_api};
 //! use std::sync::Arc;
 //!
 //! # async fn example() {
