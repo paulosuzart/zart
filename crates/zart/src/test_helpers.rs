@@ -29,6 +29,7 @@ use zart_scheduler::TaskScheduler;
 
 /// A single scheduler method invocation captured by [`RecordingScheduler`].
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Call {
     ScheduleAt {
         task_id: String,
@@ -63,6 +64,7 @@ impl Call {
     pub fn is_mark_completed(&self) -> bool {
         matches!(self, Self::MarkCompleted { .. })
     }
+    #[allow(dead_code)]
     pub fn is_mark_failed(&self) -> bool {
         matches!(self, Self::MarkFailed { .. })
     }
