@@ -203,28 +203,91 @@ impl ScheduledTask for ZartTask {
                 source: StepError::StepExecuted { ref step },
                 ..
             }) => {
-                info!(step = %step, "Step executed — returning ZartStepCompletion");
-                let tx = match trx_impl::take_step_trx().await {
-                    Some(t) => t,
-                    None => self
-                        .scheduler
-                        .begin()
-                        .await
-                        .map_err(SchedulerTaskError::Storage)?,
+                info!(step = %step, "Step executed — selecting CompletionHandler");
+                let (tx, hint) = match trx_impl::take_step_trx().await {
+                    Some((t, h)) => (t, h),
+                    None => {
+                        let tx = self
+                            .scheduler
+                            .begin()
+                            .await
+                            .map_err(SchedulerTaskError::Storage)?;
+                        (tx, None)
+                    }
                 };
-                let next_body_task_id = format!("{}:body:after:{}", run_id, step);
-                let next_body = ScheduleAtParams {
-                    task_id: next_body_task_id,
-                    task_name: crate::TASK_NAME.to_string(),
-                    execution_time: chrono::Utc::now(),
-                    data: instance.data.clone(),
-                    recurrence: None,
-                    metadata: zart_core::TaskMetadata::body(&run_id, &execution_id).to_json_value(),
-                };
-                Ok(Box::new(crate::step_completion::ZartStepCompletion {
-                    tx,
-                    next_body,
-                }))
+
+                // Select the correct CompletionHandler based on the hint.
+                match hint {
+                    Some(trx_impl::StepCompletionHint::WaitGroupChild { group_step_name }) => {
+                        info!(step = %step, "Returning ZartWaitGroupChildCompletion");
+                        let child_step_task_id = instance.task_id.clone();
+                        let child_step_id = format!("{}:step:{}", run_id, step);
+                        let next_body_task_id =
+                            format!("{}:body:after:{}", run_id, group_step_name);
+                        let params = zart_core::types::CompleteWaitGroupChildParams {
+                            run_id: run_id.clone(),
+                            execution_id: execution_id.clone(),
+                            group_step_name,
+                            child_step_task_id,
+                            child_step_id,
+                            child_result: serde_json::Value::Null,
+                            lock_token: instance.lock_token.clone(),
+                            attempt_number: instance.attempt as usize,
+                            next_body_task_id,
+                            data: instance.data.clone(),
+                        };
+                        Ok(Box::new(
+                            crate::step_completion::ZartWaitGroupChildCompletion {
+                                storage: self.storage.clone(),
+                                tx,
+                                params,
+                            },
+                        ))
+                    }
+                    Some(trx_impl::StepCompletionHint::WaitGroupChildFailure {
+                        group_step_name,
+                        error,
+                    }) => {
+                        info!(step = %step, "Returning ZartWaitGroupFailureCompletion");
+                        let child_step_task_id = instance.task_id.clone();
+                        let child_step_id = format!("{}:step:{}", run_id, step);
+                        let params = zart_core::types::FailWaitGroupChildParams {
+                            run_id: run_id.clone(),
+                            group_step_name,
+                            child_step_task_id,
+                            child_step_id,
+                            error,
+                            lock_token: instance.lock_token.clone(),
+                            attempt_number: instance.attempt as usize,
+                        };
+                        Ok(Box::new(
+                            crate::step_completion::ZartWaitGroupFailureCompletion {
+                                storage: self.storage.clone(),
+                                tx,
+                                params,
+                                execution_id: execution_id.clone(),
+                            },
+                        ))
+                    }
+                    _ => {
+                        // RegularStep or no hint
+                        info!(step = %step, "Returning ZartStepCompletion");
+                        let next_body_task_id = format!("{}:body:after:{}", run_id, step);
+                        let next_body = ScheduleAtParams {
+                            task_id: next_body_task_id,
+                            task_name: crate::TASK_NAME.to_string(),
+                            execution_time: chrono::Utc::now(),
+                            data: instance.data.clone(),
+                            recurrence: None,
+                            metadata: zart_core::TaskMetadata::body(&run_id, &execution_id)
+                                .to_json_value(),
+                        };
+                        Ok(Box::new(crate::step_completion::ZartStepCompletion {
+                            tx,
+                            next_body,
+                        }))
+                    }
+                }
             }
             Err(TaskError::StepFailed {
                 source: StepError::Scheduled { ref step, .. },

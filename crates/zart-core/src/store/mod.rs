@@ -253,6 +253,36 @@ pub trait WaitGroupStore: Send + Sync {
     /// Recover wait-group orphans where the group triggered but the body task
     /// was never inserted. Returns the number of recovered body tasks.
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError>;
+
+    /// Complete a wait-group child and decrement the parent's `wg_remaining`
+    /// within the caller's transaction.
+    ///
+    /// Returns `true` if this child triggered the threshold.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn complete_wait_group_child_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        params: CompleteWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        Err(StorageError::NotImplemented(
+            "complete_wait_group_child_in_tx",
+        ))
+    }
+
+    /// Record a wait-group child failure within the caller's transaction.
+    ///
+    /// Returns `true` only for the first failing child that flips
+    /// `wg_first_failed` from false to true.
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn fail_wait_group_child_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        params: FailWaitGroupChildParams,
+    ) -> Result<bool, StorageError> {
+        Err(StorageError::NotImplemented("fail_wait_group_child_in_tx"))
+    }
 }
 
 // ── EventStore ────────────────────────────────────────────────────────────────

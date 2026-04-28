@@ -196,6 +196,29 @@ impl TaskScheduler for PostgresTaskScheduler {
         result: Option<serde_json::Value>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
+        // For recurring tasks with no explicit result, reschedule instead of completing —
+        // mirrors what OnComplete::complete() does via ExecutionOps.
+        if result.is_none() {
+            let row: Option<(Option<serde_json::Value>, DateTime<Utc>)> = sqlx::query_as(&format!(
+                "SELECT recurrence, execution_time FROM {tasks} WHERE task_id = $1 AND worker_id = $2",
+                tasks = self.table_names.tasks(),
+            ))
+            .bind(task_id)
+            .bind(lock_token)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+            if let Some((Some(rec_json), exec_time)) = row
+                && let Ok(recurrence) = serde_json::from_value::<crate::Recurrence>(rec_json)
+                && let Some(next_time) = recurrence.next_after(exec_time)
+            {
+                return self
+                    .update_task_state(task_id, serde_json::Value::Null, next_time, lock_token)
+                    .await;
+            }
+        }
+
         let mut conn = self
             .pool
             .acquire()

@@ -9,7 +9,7 @@
 //! 1. The step calls `zart::trx(&pool)` inside its `run()` method.
 //! 2. The framework detects the registered transaction after `run()` returns.
 //! 3. If present, the framework uses the same transaction for
-//!    `complete_step_and_schedule_body`, then commits it.
+//!    step completion, then commits it.
 //! 4. If `run()` returns an error, the framework rolls back the transaction.
 //!
 //! # Contract
@@ -43,13 +43,34 @@ use zart_scheduler::StorageError;
 
 use crate::error::StepError;
 
+/// Hint stored alongside the transaction to help ZartTask choose
+/// the correct CompletionHandler variant.
+#[derive(Debug, Clone)]
+pub(crate) enum StepCompletionHint {
+    /// Wait-group child succeeded — decrement counter, maybe resume group.
+    WaitGroupChild { group_step_name: String },
+    /// Wait-group child failed — record failure, maybe fail execution.
+    WaitGroupChildFailure {
+        group_step_name: String,
+        error: String,
+    },
+}
+
+/// Slot holding a transaction and an optional completion hint.
+/// Stored in the STEP_TRX task-local.
+#[derive(Debug)]
+pub(crate) struct StepTrxSlot {
+    pub tx: Option<sqlx::Transaction<'static, sqlx::Postgres>>,
+    pub hint: Option<StepCompletionHint>,
+}
+
 // Type aliases for clarity.
-type TrxMutex = tokio::sync::Mutex<Option<sqlx::Transaction<'static, sqlx::Postgres>>>;
+type TrxMutex = tokio::sync::Mutex<StepTrxSlot>;
 type TrxArc = std::sync::Arc<TrxMutex>;
 
 // A transaction registered for the current step invocation.
 // Each step invocation wraps execution in `with_step_trx`, which scopes
-// a fresh `Arc<tokio::sync::Mutex<Option<Transaction>>>` into this task-local.
+// a fresh `Arc<tokio::sync::Mutex<StepTrxSlot>>` into this task-local.
 tokio::task_local! {
     pub(crate) static STEP_TRX: TrxArc;
 }
@@ -101,7 +122,10 @@ pub async fn trx(pool: &sqlx::PgPool) -> Result<ZartTrx, StepError> {
         reason: format!("failed to begin transaction: {e}"),
     })?;
 
-    *guard = Some(tx);
+    *guard = StepTrxSlot {
+        tx: Some(tx),
+        hint: None,
+    };
 
     Ok(ZartTrx { _arc: arc, guard })
 }
@@ -109,7 +133,7 @@ pub async fn trx(pool: &sqlx::PgPool) -> Result<ZartTrx, StepError> {
 /// A handle to a transaction registered via [`trx`].
 ///
 /// Implements `Deref` and `DerefMut` targeting
-/// `sqlx::Transaction<'static, Postgres>` so it can be passed directly to
+/// `sqlx::Transaction<'static, sqlx::Postgres>` so it can be passed directly to
 /// `sqlx::query(...).execute(&mut **tx)`.
 ///
 /// # Lifecycle
@@ -133,7 +157,7 @@ pub struct ZartTrx {
     _arc: TrxArc,
     /// Holds the exclusive lock for the duration of run().
     /// Dropped (lock released) when run() returns.
-    guard: tokio::sync::OwnedMutexGuard<Option<sqlx::Transaction<'static, sqlx::Postgres>>>,
+    guard: tokio::sync::OwnedMutexGuard<StepTrxSlot>,
 }
 
 impl std::ops::Deref for ZartTrx {
@@ -141,6 +165,7 @@ impl std::ops::Deref for ZartTrx {
 
     fn deref(&self) -> &Self::Target {
         self.guard
+            .tx
             .as_ref()
             .expect("ZartTrx deref: transaction not present")
     }
@@ -149,6 +174,7 @@ impl std::ops::Deref for ZartTrx {
 impl std::ops::DerefMut for ZartTrx {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.guard
+            .tx
             .as_mut()
             .expect("ZartTrx deref_mut: transaction not present")
     }
@@ -162,13 +188,16 @@ pub(crate) async fn with_step_trx<F, R>(f: F) -> R
 where
     F: std::future::Future<Output = R>,
 {
-    let arc: TrxArc = Arc::new(tokio::sync::Mutex::new(None));
+    let arc: TrxArc = Arc::new(tokio::sync::Mutex::new(StepTrxSlot {
+        tx: None,
+        hint: None,
+    }));
     STEP_TRX.scope(arc, f).await
 }
 
 /// Take the registered transaction (if any) from the task-local.
 ///
-/// Returns `Some(tx)` if `trx()` was called during the step invocation,
+/// Returns `Some((tx, hint))` if `trx()` was called during the step invocation,
 /// or `None` if the step did not register a transaction or the task-local
 /// wasn't initialized (backward compat with non-postgres builds).
 ///
@@ -177,26 +206,42 @@ where
 /// the framework calls `take_step_trx()`, the step's `run()` has already
 /// returned and `ZartTrx` (which held the lock) has been dropped, so the
 /// mutex is always uncontended.
-pub(crate) async fn take_step_trx() -> Option<sqlx::Transaction<'static, sqlx::Postgres>> {
+pub(crate) async fn take_step_trx() -> Option<(
+    sqlx::Transaction<'static, sqlx::Postgres>,
+    Option<StepCompletionHint>,
+)> {
     let arc = STEP_TRX.try_with(Arc::clone).ok()?;
     let mut guard = arc.lock_owned().await;
-    guard.take()
+    let slot = guard.tx.take();
+    slot.map(|tx| (tx, guard.hint.take()))
 }
 
 /// Store a transaction in the task-local (for use by `take_step_trx()`).
 ///
 /// Used when a fresh transaction is created (because `trx()` was not called)
 /// and the framework needs to make it available to `ZartTask::execute()`.
+/// Preserves any existing completion hint.
 pub(crate) async fn store_step_trx(tx: sqlx::Transaction<'static, sqlx::Postgres>) {
     if let Ok(arc) = STEP_TRX.try_with(Arc::clone) {
         let mut guard = arc.lock_owned().await;
-        *guard = Some(tx);
+        guard.tx = Some(tx);
+        // hint is preserved - it was set by store_step_completion_hint()
+    }
+}
+
+/// Store a completion hint alongside the transaction in the task-local.
+///
+/// Called by `complete_target_step` to tell ZartTask which CompletionHandler to use.
+pub(crate) async fn store_step_completion_hint(hint: StepCompletionHint) {
+    if let Ok(arc) = STEP_TRX.try_with(Arc::clone) {
+        let mut guard = arc.lock_owned().await;
+        guard.hint = Some(hint);
     }
 }
 
 /// Roll back and discard the registered transaction (if any).
 pub(crate) async fn rollback_trx() -> Result<(), StorageError> {
-    if let Some(tx) = take_step_trx().await {
+    if let Some((tx, _)) = take_step_trx().await {
         tx.rollback().await.map_err(|e| {
             StorageError::Database(Box::new(sqlx::Error::Protocol(format!(
                 "transaction rollback failed: {e}"

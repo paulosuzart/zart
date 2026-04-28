@@ -97,7 +97,7 @@ pub async fn start_execution_sql(
 ///
 /// Returns `Err(StepError::StepExecuted { step })` as a plain signal
 /// after writing the step SQL.
-pub async fn complete_step_and_schedule_body_sql(
+pub async fn write_step_completion_sql(
     conn: &mut PgConnection,
     params: &CompleteStepAndScheduleBodyParams,
     names: &TableNames,

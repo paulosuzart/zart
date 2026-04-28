@@ -8,7 +8,7 @@ use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
 use crate::retry::RetryConfig;
 use crate::step_ops;
-use crate::step_types::{CompletionOutcome, CompletionSpec, StepDefId, StepRequest, StepResult};
+use crate::step_types::{StepDefId, StepRequest, StepResult};
 use crate::store::StorageBackend;
 use crate::timeout::TimeoutScope;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,7 @@ pub struct TaskContext {
     /// The underlying scheduler (used for step store operations).
     pub(crate) scheduler: Arc<dyn StorageBackend>,
     /// Task-queue scheduler (used for task lifecycle operations).
+    #[allow(dead_code)]
     pub(crate) task_scheduler: Arc<dyn TaskScheduler>,
     /// Unique identifier of the enclosing durable execution.
     execution_id: String,
@@ -515,6 +516,7 @@ impl TaskContext {
                     return Ok(());
                 }
 
+                // Handle wait-group child failure: store hint and return StepExecuted.
                 if step_def_id == StepDefId::WaitGroupChild {
                     let wait_group_step_name = self
                         .data()
@@ -523,32 +525,26 @@ impl TaskContext {
                         .map(str::to_string);
 
                     if let Some(group_step_name) = wait_group_step_name {
-                        let spec = CompletionSpec {
-                            step_task_id: self.task_id.clone(),
-                            step_id: self.task_id.clone(),
-                            step_name: step_name.to_string(),
-                            worker_id: self.lock_token.clone(),
-                            run_id: self.run_id().to_string(),
-                            execution_id: self.execution_id().to_string(),
-                            data: self.data().clone(),
-                            attempt_number: retry_attempt + 1,
-                            result: StepResult::Transition,
-                            wait_group_step_name: Some(group_step_name),
-                            outcome: CompletionOutcome::Failure {
+                        // Store the failure hint for ZartTask to pick up.
+                        crate::trx_impl::store_step_completion_hint(
+                            crate::trx_impl::StepCompletionHint::WaitGroupChildFailure {
+                                group_step_name: group_step_name.clone(),
                                 error: err.to_string(),
                             },
-                        };
+                        )
+                        .await;
 
-                        step_def_id
-                            .completion_behavior(&spec.outcome)
-                            .complete(&*self.scheduler, &*self.task_scheduler, spec)
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: step_name.to_string(),
-                                reason: e.to_string(),
-                            })?;
+                        // Write step SQL (failure) and park tx in STEP_TRX.
+                        self.complete_step_and_schedule_body(
+                            serde_json::json!({ "error": err.to_string() }),
+                            crate::step_types::ResultKind::Err,
+                            retry_attempt + 1,
+                        )
+                        .await?;
 
-                        return Ok(());
+                        return Err(StepError::StepExecuted {
+                            step: step_name.to_string(),
+                        });
                     }
                 }
 
@@ -556,37 +552,49 @@ impl TaskContext {
             }
         };
 
-        let wait_group_step_name = if step_def_id == StepDefId::WaitGroupChild {
-            self.data()
+        // Handle wait-group child success: store hint and return StepExecuted.
+        if step_def_id == StepDefId::WaitGroupChild {
+            let wait_group_step_name = self
+                .data()
                 .get("wg_step_name")
                 .and_then(|v| v.as_str())
-                .map(str::to_string)
-        } else {
-            None
+                .map(str::to_string);
+
+            if let Some(group_step_name) = wait_group_step_name {
+                // Store the success hint for ZartTask to pick up.
+                crate::trx_impl::store_step_completion_hint(
+                    crate::trx_impl::StepCompletionHint::WaitGroupChild {
+                        group_step_name: group_step_name.clone(),
+                    },
+                )
+                .await;
+
+                // Write step SQL and park tx in STEP_TRX.
+                self.complete_step_and_schedule_body(
+                    serde_json::json!(null),
+                    crate::step_types::ResultKind::Ok,
+                    retry_attempt + 1,
+                )
+                .await?;
+
+                return Err(StepError::StepExecuted {
+                    step: step_name.to_string(),
+                });
+            }
+        }
+
+        // Regular step: write step SQL and park tx in STEP_TRX.
+        let result_json = match step_result {
+            StepResult::Executed(v) | StepResult::Cached(v) => v,
+            StepResult::Transition => serde_json::Value::Null,
         };
 
-        let spec = CompletionSpec {
-            step_task_id: self.task_id.clone(),
-            step_id: self.task_id.clone(),
-            step_name: step_name.to_string(),
-            worker_id: self.lock_token.clone(),
-            run_id: self.run_id().to_string(),
-            execution_id: self.execution_id().to_string(),
-            data: self.data().clone(),
-            attempt_number: retry_attempt + 1,
-            result: step_result,
-            wait_group_step_name,
-            outcome: CompletionOutcome::Success,
-        };
-
-        step_def_id
-            .completion_behavior(&spec.outcome)
-            .complete(&*self.scheduler, &*self.task_scheduler, spec)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        self.complete_step_and_schedule_body(
+            result_json,
+            crate::step_types::ResultKind::Ok,
+            retry_attempt + 1,
+        )
+        .await?;
 
         Err(StepError::StepExecuted {
             step: step_name.to_string(),

@@ -2,13 +2,12 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use std::sync::Arc;
+use zart_core::types::{CompleteWaitGroupChildParams, FailWaitGroupChildParams};
 use zart_scheduler::{CompletionHandler, ExecutionOps, Recurrence, ScheduleAtParams, StorageError};
 
-/// Completion handler for Path 1 (regular step execution).
-///
-/// The step SQL is already written into `tx`; `complete` appends scheduler
-/// bookkeeping (mark step task complete + schedule body continuation) and
-/// commits, making everything atomic in one round-trip.
+use crate::store::StorageBackend;
+
 pub(crate) struct ZartStepCompletion {
     pub tx: sqlx::Transaction<'static, sqlx::Postgres>,
     pub next_body: ScheduleAtParams,
@@ -24,5 +23,52 @@ impl CompletionHandler for ZartStepCompletion {
     ) -> Result<(), StorageError> {
         ops.complete_in_tx(self.tx, None, vec![self.next_body])
             .await
+    }
+}
+
+pub(crate) struct ZartWaitGroupChildCompletion {
+    pub storage: Arc<dyn StorageBackend>,
+    pub tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    pub params: CompleteWaitGroupChildParams,
+}
+
+#[async_trait]
+impl CompletionHandler for ZartWaitGroupChildCompletion {
+    async fn complete(
+        mut self: Box<Self>,
+        ops: ExecutionOps,
+        _recurrence: Option<&Recurrence>,
+        _execution_time: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        self.storage
+            .complete_wait_group_child_in_tx(&mut self.tx, self.params)
+            .await?;
+
+        ops.complete_in_tx(self.tx, None, vec![]).await
+    }
+}
+
+pub(crate) struct ZartWaitGroupFailureCompletion {
+    pub storage: Arc<dyn StorageBackend>,
+    pub tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    pub params: FailWaitGroupChildParams,
+    #[allow(dead_code)]
+    pub execution_id: String,
+}
+
+#[async_trait]
+impl CompletionHandler for ZartWaitGroupFailureCompletion {
+    async fn complete(
+        mut self: Box<Self>,
+        ops: ExecutionOps,
+        _recurrence: Option<&Recurrence>,
+        _execution_time: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let _was_first = self
+            .storage
+            .fail_wait_group_child_in_tx(&mut self.tx, self.params)
+            .await?;
+
+        ops.complete_in_tx(self.tx, None, vec![]).await
     }
 }

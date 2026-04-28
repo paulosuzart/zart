@@ -11,7 +11,7 @@ use zart_core::types::{
 };
 
 use super::PostgresStorage;
-use super::sql_helpers::{complete_step_and_schedule_body_sql, schedule_step_sql};
+use super::sql_helpers::{schedule_step_sql, write_step_completion_sql};
 
 #[async_trait]
 impl StepStore for PostgresStorage {
@@ -275,7 +275,7 @@ impl StepStore for PostgresStorage {
     ) -> Result<(), StorageError> {
         // Get the transaction from STEP_TRX (user called zart::trx()) or open a fresh one.
         let mut tx = match crate::trx_impl::take_step_trx().await {
-            Some(tx) => tx,
+            Some((t, _hint)) => t,
             None => self
                 .pool
                 .begin()
@@ -284,7 +284,7 @@ impl StepStore for PostgresStorage {
         };
 
         // Write step SQL only — does not commit. Returns StepError::StepExecuted as signal.
-        let result = complete_step_and_schedule_body_sql(&mut tx, &params, &self.table_names).await;
+        let result = write_step_completion_sql(&mut tx, &params, &self.table_names).await;
 
         // Store tx in STEP_TRX so ZartTask::execute() can retrieve it for ZartStepCompletion.
         crate::trx_impl::store_step_trx(tx).await;
