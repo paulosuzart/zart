@@ -92,7 +92,11 @@ pub trait TaskScheduler: Send + Sync {
         Err(StorageError::NotImplemented("update_task_state_in_tx"))
     }
 
-    /// Mark a task as successfully completed.
+    /// Mark a task as successfully completed (auto-commit, no transaction).
+    ///
+    /// Prefer `mark_completed_in_tx` when step SQL writes must be atomic with
+    /// the completion update. This method acquires its own connection and
+    /// commits immediately — use it only from non-transactional paths or tests.
     async fn mark_completed(
         &self,
         task_id: &str,

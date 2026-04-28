@@ -22,10 +22,10 @@ use sqlx::PgConnection;
 
 use crate::error::StorageError;
 use crate::types::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
-    EventDeliveryResult, ExecutionRecord, ExecutionRunRecord, ExecutionStats,
-    FailWaitGroupChildParams, ListExecutionsParams, RescheduleStepForRetryParams, ScheduleResult,
-    ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
+    CompleteStepNoResumeParams, CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord,
+    ExecutionRunRecord, ExecutionStats, FailWaitGroupChildParams, ListExecutionsParams,
+    RescheduleStepForRetryParams, ScheduleResult, ScheduleStepParams, StepAttemptRow, StepKind,
+    StepLookup, StepRow, UpsertWaitGroupStepParams, WriteStepCompletionParams,
 };
 
 // ── ExecutionStore ────────────────────────────────────────────────────────────
@@ -172,24 +172,21 @@ pub trait StepStore: Send + Sync {
         params: ScheduleStepParams,
     ) -> Result<ScheduleResult, StorageError>;
 
-    /// Atomically complete a step+task and schedule the next body task.
-    async fn complete_step_and_schedule_body(
-        &self,
-        params: CompleteStepAndScheduleBodyParams,
-    ) -> Result<(), StorageError>;
-
-    /// Complete a step and schedule the next body task within the caller's transaction.
+    /// Write step completion SQL (INSERT step_attempts, UPDATE steps) within the caller's
+    /// transaction.
+    ///
+    /// Does NOT schedule the next body task and does NOT commit. The caller owns the
+    /// transaction lifecycle and is responsible for scheduling body continuation via
+    /// `ExecutionOps::complete_in_tx`.
     ///
     /// Default implementation returns `NotImplemented`.
     #[allow(unused_variables)]
-    async fn complete_step_and_schedule_body_in_tx(
+    async fn write_step_completion_in_tx(
         &self,
         conn: &mut PgConnection,
-        params: CompleteStepAndScheduleBodyParams,
+        params: WriteStepCompletionParams,
     ) -> Result<(), StorageError> {
-        Err(StorageError::NotImplemented(
-            "complete_step_and_schedule_body_in_tx",
-        ))
+        Err(StorageError::NotImplemented("write_step_completion_in_tx"))
     }
 
     /// Atomically complete a step+task without scheduling a body continuation.

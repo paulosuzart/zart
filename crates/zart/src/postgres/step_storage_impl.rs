@@ -5,9 +5,9 @@ use chrono::Utc;
 use zart_core::StorageError;
 use zart_core::store::StepStore;
 use zart_core::types::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StepAttemptRow, StepAttemptStatus, StepKind, StepLookup,
-    StepResultKind, StepRow, StepStatus, TaskStatus,
+    CompleteStepNoResumeParams, RescheduleStepForRetryParams, ScheduleResult, ScheduleStepParams,
+    StepAttemptRow, StepAttemptStatus, StepKind, StepLookup, StepResultKind, StepRow, StepStatus,
+    TaskStatus, WriteStepCompletionParams,
 };
 
 use super::PostgresStorage;
@@ -269,32 +269,12 @@ impl StepStore for PostgresStorage {
         })
     }
 
-    async fn complete_step_and_schedule_body(
+    async fn write_step_completion_in_tx(
         &self,
-        params: CompleteStepAndScheduleBodyParams,
+        conn: &mut sqlx::PgConnection,
+        params: WriteStepCompletionParams,
     ) -> Result<(), StorageError> {
-        // Get the transaction from STEP_TRX (user called zart::trx()) or open a fresh one.
-        let mut tx = match crate::trx_impl::take_step_trx().await {
-            Some((t, _hint)) => t,
-            None => self
-                .pool
-                .begin()
-                .await
-                .map_err(|e| StorageError::Database(Box::new(e)))?,
-        };
-
-        // Write step SQL only — does not commit. Returns StepError::StepExecuted as signal.
-        let result = write_step_completion_sql(&mut tx, &params, &self.table_names).await;
-
-        // Store tx in STEP_TRX so ZartTask::execute() can retrieve it for ZartStepCompletion.
-        crate::trx_impl::store_step_trx(tx).await;
-
-        match result {
-            // StepExecuted is the normal signal: step SQL written, tx ready in STEP_TRX.
-            Err(crate::error::StepError::StepExecuted { .. }) => Ok(()),
-            Err(e) => Err(StorageError::Database(Box::new(e))),
-            Ok(()) => Ok(()),
-        }
+        write_step_completion_sql(conn, &params, &self.table_names).await
     }
 
     async fn complete_step_no_resume(

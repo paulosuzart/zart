@@ -6,11 +6,24 @@
 //!
 //! # How it works
 //!
-//! 1. The step calls `zart::trx(&pool)` inside its `run()` method.
-//! 2. The framework detects the registered transaction after `run()` returns.
-//! 3. If present, the framework uses the same transaction for
-//!    step completion, then commits it.
-//! 4. If `run()` returns an error, the framework rolls back the transaction.
+//! Each step invocation runs inside a `STEP_TRX` task-local scope that holds a
+//! [`StepTrxSlot`]. The slot has two independent fields:
+//!
+//! - `tx`: an optional `Transaction` registered by the step via `zart::trx()`.
+//! - `hint`: a [`StepCompletionHint`] written by `TaskContext` when it finishes
+//!   executing the step lambda, carrying result JSON, result kind, and attempt
+//!   number.
+//!
+//! After `run()` returns, `ZartTask::execute()` calls `take_step_trx()` which
+//! drains **both** fields atomically and returns them as `(Option<tx>, Option<hint>)`.
+//! The hint is always available regardless of whether the step called `zart::trx()`.
+//!
+//! `ZartTask::execute()` then:
+//! 1. Uses the caller-provided `tx` or opens a fresh transaction.
+//! 2. Builds the appropriate `CompletionHandler` from the hint.
+//! 3. Returns the handler; the worker calls `complete()` to write step SQL and
+//!    commit atomically.
+//! 4. On error, `rollback_trx()` drains and rolls back any pending transaction.
 //!
 //! # Contract
 //!
@@ -44,15 +57,27 @@ use zart_scheduler::StorageError;
 use crate::error::StepError;
 
 /// Hint stored alongside the transaction to help ZartTask choose
-/// the correct CompletionHandler variant.
+/// the correct CompletionHandler variant and supply result data for step SQL.
 #[derive(Debug, Clone)]
 pub(crate) enum StepCompletionHint {
+    /// Regular step (or sleep/wait-for-event) — schedule next body task.
+    RegularStep {
+        result: serde_json::Value,
+        result_kind: crate::step_types::ResultKind,
+        attempt_number: usize,
+    },
     /// Wait-group child succeeded — decrement counter, maybe resume group.
-    WaitGroupChild { group_step_name: String },
+    WaitGroupChild {
+        group_step_name: String,
+        result: serde_json::Value,
+        result_kind: crate::step_types::ResultKind,
+        attempt_number: usize,
+    },
     /// Wait-group child failed — record failure, maybe fail execution.
     WaitGroupChildFailure {
         group_step_name: String,
         error: String,
+        attempt_number: usize,
     },
 }
 
@@ -195,38 +220,28 @@ where
     STEP_TRX.scope(arc, f).await
 }
 
-/// Take the registered transaction (if any) from the task-local.
+/// Take the registered transaction and completion hint from the task-local.
 ///
-/// Returns `Some((tx, hint))` if `trx()` was called during the step invocation,
-/// or `None` if the step did not register a transaction or the task-local
-/// wasn't initialized (backward compat with non-postgres builds).
+/// Returns `(Some(tx), hint)` if `trx()` was called, `(None, hint)` if the step
+/// stored a hint but no user transaction, or `(None, None)` if the task-local
+/// was never initialized. The hint is always taken regardless of tx presence so
+/// the caller can read result data even when no user transaction was registered.
 ///
 /// This function is `async` because `OwnedMutexGuard` is acquired via
 /// `lock_owned().await`. In practice the await **never blocks**: by the time
 /// the framework calls `take_step_trx()`, the step's `run()` has already
 /// returned and `ZartTrx` (which held the lock) has been dropped, so the
 /// mutex is always uncontended.
-pub(crate) async fn take_step_trx() -> Option<(
-    sqlx::Transaction<'static, sqlx::Postgres>,
+pub(crate) async fn take_step_trx() -> (
+    Option<sqlx::Transaction<'static, sqlx::Postgres>>,
     Option<StepCompletionHint>,
-)> {
-    let arc = STEP_TRX.try_with(Arc::clone).ok()?;
+) {
+    let arc = match STEP_TRX.try_with(Arc::clone) {
+        Ok(a) => a,
+        Err(_) => return (None, None),
+    };
     let mut guard = arc.lock_owned().await;
-    let slot = guard.tx.take();
-    slot.map(|tx| (tx, guard.hint.take()))
-}
-
-/// Store a transaction in the task-local (for use by `take_step_trx()`).
-///
-/// Used when a fresh transaction is created (because `trx()` was not called)
-/// and the framework needs to make it available to `ZartTask::execute()`.
-/// Preserves any existing completion hint.
-pub(crate) async fn store_step_trx(tx: sqlx::Transaction<'static, sqlx::Postgres>) {
-    if let Ok(arc) = STEP_TRX.try_with(Arc::clone) {
-        let mut guard = arc.lock_owned().await;
-        guard.tx = Some(tx);
-        // hint is preserved - it was set by store_step_completion_hint()
-    }
+    (guard.tx.take(), guard.hint.take())
 }
 
 /// Store a completion hint alongside the transaction in the task-local.
@@ -241,7 +256,8 @@ pub(crate) async fn store_step_completion_hint(hint: StepCompletionHint) {
 
 /// Roll back and discard the registered transaction (if any).
 pub(crate) async fn rollback_trx() -> Result<(), StorageError> {
-    if let Some((tx, _)) = take_step_trx().await {
+    let (opt_tx, _hint) = take_step_trx().await;
+    if let Some(tx) = opt_tx {
         tx.rollback().await.map_err(|e| {
             StorageError::Database(Box::new(sqlx::Error::Protocol(format!(
                 "transaction rollback failed: {e}"

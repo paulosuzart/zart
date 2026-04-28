@@ -12,17 +12,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use zart_core::StorageError;
 use zart_core::store::pause_storage::PauseStorage;
 use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
 use zart_core::types::{
-    CompleteAndScheduleParams, CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-    CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
-    ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
-    RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult, ScheduleStepParams,
-    StepAttemptRow, StepKind, StepLookup, StepResultKind, StepRow, TaskStatus,
-    UpsertWaitGroupStepParams,
+    CompleteAndScheduleParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
+    EventDeliveryResult, ExecutionRecord, ExecutionRunRecord, ExecutionStats,
+    FailWaitGroupChildParams, FetchedTask, ListExecutionsParams, RescheduleStepForRetryParams,
+    ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepAttemptRow, StepKind, StepLookup,
+    StepResultKind, StepRow, TaskStatus, UpsertWaitGroupStepParams,
 };
-use zart_core::{StorageError, TaskMetadata};
 use zart_scheduler::TaskScheduler;
 
 // ── Recorded call enum ─────────────────────────────────────────────────────────
@@ -340,25 +339,6 @@ impl StepStore for RecordingScheduler {
             task_id,
             execution_time,
         })
-    }
-
-    async fn complete_step_and_schedule_body(
-        &self,
-        params: CompleteStepAndScheduleBodyParams,
-    ) -> Result<(), StorageError> {
-        let mut calls = self.calls.lock().unwrap();
-        calls.push(Call::MarkCompleted {
-            task_id: params.step_task_id,
-        });
-        let body_metadata =
-            TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
-        calls.push(Call::ScheduleAt {
-            task_id: params.next_body_task_id,
-            execution_time: Utc::now(),
-            metadata: body_metadata,
-        });
-        let _ = (params.result, params.lock_token);
-        Ok(())
     }
 
     async fn complete_step_no_resume(
