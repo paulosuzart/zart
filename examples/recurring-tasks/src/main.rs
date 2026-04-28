@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use zart_scheduler::{
-    ExecutionOps, PostgresTaskScheduler, Recurrence, ScheduledTask, SchedulerTaskError,
-    TaskInstance, TaskRegistry, TaskScheduler, Worker, WorkerConfig,
+    CompletionHandler, OnComplete, PostgresTaskScheduler, Recurrence, ScheduledTask,
+    SchedulerTaskError, TaskInstance, TaskRegistry, TaskScheduler, Worker, WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -20,8 +20,7 @@ impl ScheduledTask for HeartbeatCheck {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        _ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         println!(
             "[heartbeat-check] Running at {} (task: {})",
             Utc::now().to_rfc3339(),
@@ -29,8 +28,8 @@ impl ScheduledTask for HeartbeatCheck {
         );
         // Simulate work
         sleep(Duration::from_millis(100)).await;
-        // No explicit complete/reschedule: worker auto-reschedules
-        Ok(())
+        // No explicit complete/reschedule: OnComplete::done() auto-reschedules for recurring tasks
+        Ok(OnComplete::done())
     }
 }
 
@@ -45,15 +44,14 @@ impl ScheduledTask for DailyReport {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        _ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         println!(
             "[daily-report] Generating report at {} (task: {})",
             Utc::now().to_rfc3339(),
             instance.task_id
         );
         sleep(Duration::from_millis(100)).await;
-        Ok(())
+        Ok(OnComplete::done())
     }
 }
 

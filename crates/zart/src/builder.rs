@@ -43,7 +43,12 @@ impl WorkerBuilder {
         let durable_registry = Arc::new(registry);
 
         // Create the ZartTask handler that knows how to dispatch to durable executions
-        let zart_task = ZartTask::new(self.storage.clone(), durable_registry);
+        // ZartTask now also needs the scheduler for TaskContext creation
+        let zart_task = ZartTask::new(
+            self.storage.clone(),
+            self.scheduler.clone(),
+            durable_registry,
+        );
 
         // Register ZartTask as the sole handler for the "__zart__" task name
         let mut scheduler_registry = SchedulerRegistry::new();

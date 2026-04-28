@@ -3,20 +3,33 @@ use crate::error::{ExecutionFailure, StepError, TaskError};
 use crate::execution_model::ExecutionMode;
 use crate::registry::DurableRegistry;
 use crate::store::StorageBackend;
+use crate::trx_impl;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 use zart_core::TaskMetadata;
-use zart_scheduler::{ExecutionOps, ScheduledTask, SchedulerTaskError, TaskInstance};
+use zart_scheduler::{
+    CompletionHandler, ScheduleAtParams, ScheduledTask, SchedulerTaskError, TaskInstance,
+    TaskScheduler,
+};
 
 pub struct ZartTask {
     storage: Arc<dyn StorageBackend>,
+    scheduler: Arc<dyn TaskScheduler>,
     registry: Arc<DurableRegistry>,
 }
 
 impl ZartTask {
-    pub fn new(storage: Arc<dyn StorageBackend>, registry: Arc<DurableRegistry>) -> Self {
-        Self { storage, registry }
+    pub fn new(
+        storage: Arc<dyn StorageBackend>,
+        scheduler: Arc<dyn TaskScheduler>,
+        registry: Arc<DurableRegistry>,
+    ) -> Self {
+        Self {
+            storage,
+            scheduler,
+            registry,
+        }
     }
 }
 
@@ -25,17 +38,13 @@ impl ScheduledTask for ZartTask {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         // 1. Parse metadata and extract handler name
         let typed_meta: Option<TaskMetadata> = match instance.metadata.get("mode") {
             Some(_) => match TaskMetadata::from_json_value(instance.metadata.clone()) {
                 Ok(m) => Some(m),
                 Err(e) => {
                     error!(error = %e, task_id = %instance.task_id, "Failed to parse task metadata");
-                    ops.complete(None)
-                        .await
-                        .map_err(SchedulerTaskError::Storage)?;
                     return Err(SchedulerTaskError::HandlerPanic(
                         "invalid metadata".to_string(),
                     ));
@@ -87,9 +96,6 @@ impl ScheduledTask for ZartTask {
         //    the task row is corrupt and we cannot dispatch it.
         if !has_execution {
             warn!(task_id = %instance.task_id, "ZartTask received a task without execution context");
-            ops.complete(None)
-                .await
-                .map_err(SchedulerTaskError::Storage)?;
             return Err(SchedulerTaskError::HandlerPanic(
                 "missing execution context".to_string(),
             ));
@@ -98,9 +104,6 @@ impl ScheduledTask for ZartTask {
             Ok(Some(exec)) => exec,
             Ok(None) => {
                 warn!(execution_id = %execution_id, "Execution record not found — task may be stale");
-                ops.complete(None)
-                    .await
-                    .map_err(SchedulerTaskError::Storage)?;
                 return Err(SchedulerTaskError::HandlerPanic(format!(
                     "execution {execution_id} not found"
                 )));
@@ -139,30 +142,30 @@ impl ScheduledTask for ZartTask {
             match handler.on_failure(instance.data.clone(), failure).await {
                 Ok(output) => {
                     info!("on_failure recovered from execution deadline");
-                    ops.complete(Some(output.clone()))
-                        .await
-                        .map_err(SchedulerTaskError::Storage)?;
-                    let _ = self.storage.complete_execution(&execution_id, output).await;
+                    let _ = self
+                        .storage
+                        .complete_execution(&execution_id, output.clone())
+                        .await;
+                    return Ok(Box::new(zart_scheduler::completion::OnComplete {
+                        result: Some(output),
+                        schedule_next: vec![],
+                    }));
                 }
                 Err(recovery_err) => {
                     error!(error = %recovery_err, "on_failure did not recover execution deadline");
-                    ops.complete(None)
-                        .await
-                        .map_err(SchedulerTaskError::Storage)?;
                     let _ = self.storage.fail_execution(&execution_id).await;
                     return Err(SchedulerTaskError::HandlerPanic(format!(
                         "deadline exceeded: {recovery_err}"
                     )));
                 }
             }
-            return Ok(());
         }
 
         // 4. Build TaskContext
         let ctx = Arc::new(
             TaskContext::new(
                 self.storage.clone(),
-                ops.scheduler().clone(),
+                self.scheduler.clone(),
                 execution_id.clone(),
                 handler_name.to_string(),
                 instance.lock_token.clone(),
@@ -175,37 +178,63 @@ impl ScheduledTask for ZartTask {
             .with_execution_deadline(execution_deadline),
         );
 
-        // 5. Execute handler
-        let result = handler.execute(ctx.clone(), instance.data.clone()).await;
+        // 5. Execute handler within STEP_TRX scope so `zart::trx()` can register a transaction.
+        let result = trx_impl::with_step_trx(async {
+            handler.execute(ctx.clone(), instance.data.clone()).await
+        })
+        .await;
 
-        // 6. Handle results via ExecutionOps
+        // 6. Handle results — return appropriate CompletionHandler
         match result {
             Ok(val) => {
                 info!("Task completed successfully");
-                ops.complete(Some(val.clone()))
-                    .await
-                    .map_err(SchedulerTaskError::Storage)?;
                 if has_execution {
-                    let _ = self.storage.complete_execution(&execution_id, val).await;
+                    let _ = self
+                        .storage
+                        .complete_execution(&execution_id, val.clone())
+                        .await;
                 }
+                Ok(Box::new(zart_scheduler::completion::OnComplete {
+                    result: Some(val),
+                    schedule_next: vec![],
+                }))
             }
             Err(TaskError::StepFailed {
                 source: StepError::StepExecuted { ref step },
                 ..
             }) => {
-                info!(step = %step, "Step executed in step mode — completion was transactional");
-                // The step-completion path already committed its own transaction and cleared
-                // worker_id. Tell the worker not to attempt a second complete/mark_failed.
-                ops.mark_handled();
+                info!(step = %step, "Step executed — returning ZartStepCompletion");
+                let tx = match trx_impl::take_step_trx().await {
+                    Some(t) => t,
+                    None => self
+                        .scheduler
+                        .begin()
+                        .await
+                        .map_err(SchedulerTaskError::Storage)?,
+                };
+                let next_body_task_id = format!("{}:body:after:{}", run_id, step);
+                let next_body = ScheduleAtParams {
+                    task_id: next_body_task_id,
+                    task_name: crate::TASK_NAME.to_string(),
+                    execution_time: chrono::Utc::now(),
+                    data: instance.data.clone(),
+                    recurrence: None,
+                    metadata: zart_core::TaskMetadata::body(&run_id, &execution_id).to_json_value(),
+                };
+                Ok(Box::new(crate::step_completion::ZartStepCompletion {
+                    tx,
+                    next_body,
+                }))
             }
             Err(TaskError::StepFailed {
                 source: StepError::Scheduled { ref step, .. },
                 ..
             }) => {
                 info!(step = %step, "Body step scheduled — marking body task complete");
-                ops.complete(None)
-                    .await
-                    .map_err(SchedulerTaskError::Storage)?;
+                Ok(Box::new(zart_scheduler::completion::OnComplete {
+                    result: None,
+                    schedule_next: vec![],
+                }))
             }
             Err(err) => {
                 let failure = build_execution_failure(&err, instance);
@@ -215,27 +244,26 @@ impl ScheduledTask for ZartTask {
                             info!(
                                 "on_failure recovered — completing execution with synthetic result"
                             );
-                            ops.complete(Some(output.clone()))
-                                .await
-                                .map_err(SchedulerTaskError::Storage)?;
-                            let _ = self.storage.complete_execution(&execution_id, output).await;
+                            let _ = self
+                                .storage
+                                .complete_execution(&execution_id, output.clone())
+                                .await;
+                            return Ok(Box::new(zart_scheduler::completion::OnComplete {
+                                result: Some(output),
+                                schedule_next: vec![],
+                            }));
                         }
                         Err(recovery_err) => {
                             error!(error = %recovery_err, "on_failure did not recover the execution");
                         }
                     }
                 }
-                ops.complete(None)
-                    .await
-                    .map_err(SchedulerTaskError::Storage)?;
                 if has_execution {
                     let _ = self.storage.fail_execution(&execution_id).await;
                 }
-                return Err(SchedulerTaskError::HandlerPanic(err.to_string()));
+                Err(SchedulerTaskError::HandlerPanic(err.to_string()))
             }
         }
-
-        Ok(())
     }
 }
 

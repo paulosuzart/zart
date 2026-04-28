@@ -16,6 +16,7 @@
 //! Each task is a row in the database that gets picked up by a worker via
 //! `SKIP LOCKED`, executed, and either completed, failed, or rescheduled.
 
+pub mod completion;
 pub mod error;
 pub mod ops;
 pub mod postgres;
@@ -27,11 +28,13 @@ pub mod types;
 pub mod worker;
 pub mod worker_config;
 
+pub use completion::{OnComplete, OnReschedule, WithTransaction};
 pub use error::StorageError;
 pub use ops::ExecutionOps;
 pub use recurrence::Recurrence;
 pub use registry::TaskRegistry;
 pub use store::TaskScheduler;
+pub use task::CompletionHandler;
 pub use task::{ScheduledTask, SchedulerTaskError, TaskInstance};
 pub use types::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, TaskStatus,

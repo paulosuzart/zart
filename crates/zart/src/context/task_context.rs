@@ -334,13 +334,10 @@ impl TaskContext {
                     )
                 };
 
-                // Transactional step completion (Scenario 2): wrap the step execution
-                // AND completion with the STEP_TRX task-local so `zart::trx()` can
-                // register a transaction for atomic completion.
-                crate::trx_impl::with_step_trx::<
-                    _,
-                    Result<crate::error::StepOutcome<S::Output, S::Error>, StepError>,
-                >(async {
+                // Step execution with timeout handling.
+                // The STEP_TRX task-local is now set up by ZartTask::execute()
+                // so that `zart::trx()` can register a transaction.
+                {
                     let (json, kind) = if let Some(timeout_dur) = timeout_duration {
                         if matches!(timeout_scope, TimeoutScope::Global) {
                             if let Some(deadline) = self.step_deadline {
@@ -468,8 +465,7 @@ impl TaskContext {
                     Err(StepError::StepExecuted {
                         step: step_name_owned,
                     })
-                })
-                .await
+                }
             }
         }
     }
@@ -597,13 +593,11 @@ impl TaskContext {
         })
     }
 
-    /// Complete a step row and schedule the next body segment in one transaction.
+    /// Write step SQL and park the transaction in STEP_TRX for ZartTask to retrieve.
     ///
-    /// Used in step mode when the target step lambda completes (success or error).
-    ///
-    /// If a transaction was registered via `zart::trx()`, it will be used for
-    /// the completion writes and then committed. Otherwise, a new transaction
-    /// is created.
+    /// Uses the user's transaction from STEP_TRX if `zart::trx()` was called;
+    /// otherwise the storage opens a fresh one. Does not commit — the commit
+    /// happens atomically with scheduler bookkeeping inside ZartStepCompletion.
     async fn complete_step_and_schedule_body(
         &self,
         result: serde_json::Value,
@@ -634,29 +628,8 @@ impl TaskContext {
             data: self.data().clone(),
         };
 
-        // Check if a transaction was registered via zart::trx().
-        // SAFETY: contention-free — ZartTrx (which held the lock) was dropped
-        // when the step lambda returned, before this function is called.
-        if let Some(mut tx) = crate::trx_impl::take_step_trx().await {
-            self.scheduler
-                .complete_step_and_schedule_body_in_tx(&mut tx, spec)
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: self.task_id.clone(),
-                    reason: e.to_string(),
-                })?;
-
-            // Commit the user-registered transaction.
-            crate::trx_impl::commit_trx(tx)
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: self.task_id.clone(),
-                    reason: format!("failed to commit step transaction: {e}"),
-                })?;
-            return Ok(());
-        }
-
-        // Default path: framework opens its own transaction.
+        // The storage impl takes the user's tx from STEP_TRX (or opens a fresh one),
+        // writes step SQL, and parks the tx back in STEP_TRX for ZartStepCompletion.
         self.scheduler
             .complete_step_and_schedule_body(spec)
             .await

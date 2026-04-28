@@ -140,7 +140,9 @@ async fn list_executions_returns_started_executions() {
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn recurring_fixed_delay_task_runs_multiple_times() {
     use zart_scheduler::TaskRegistry as SchedulerRegistry;
-    use zart_scheduler::{ExecutionOps, ScheduledTask, SchedulerTaskError, TaskInstance};
+    use zart_scheduler::{
+        CompletionHandler, OnComplete, ScheduledTask, SchedulerTaskError, TaskInstance,
+    };
 
     struct CounterScheduledTask {
         count: Arc<std::sync::atomic::AtomicUsize>,
@@ -151,10 +153,9 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
         async fn execute(
             &self,
             _instance: &TaskInstance,
-            _ops: &mut ExecutionOps<'_>,
-        ) -> Result<(), SchedulerTaskError> {
+        ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
             self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
+            Ok(OnComplete::done())
         }
     }
 

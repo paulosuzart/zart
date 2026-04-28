@@ -183,6 +183,17 @@ pub(crate) async fn take_step_trx() -> Option<sqlx::Transaction<'static, sqlx::P
     guard.take()
 }
 
+/// Store a transaction in the task-local (for use by `take_step_trx()`).
+///
+/// Used when a fresh transaction is created (because `trx()` was not called)
+/// and the framework needs to make it available to `ZartTask::execute()`.
+pub(crate) async fn store_step_trx(tx: sqlx::Transaction<'static, sqlx::Postgres>) {
+    if let Ok(arc) = STEP_TRX.try_with(Arc::clone) {
+        let mut guard = arc.lock_owned().await;
+        *guard = Some(tx);
+    }
+}
+
 /// Roll back and discard the registered transaction (if any).
 pub(crate) async fn rollback_trx() -> Result<(), StorageError> {
     if let Some(tx) = take_step_trx().await {
@@ -193,15 +204,4 @@ pub(crate) async fn rollback_trx() -> Result<(), StorageError> {
         })?;
     }
     Ok(())
-}
-
-/// Commit the registered transaction (if any).
-pub(crate) async fn commit_trx(
-    tx: sqlx::Transaction<'static, sqlx::Postgres>,
-) -> Result<(), StorageError> {
-    tx.commit().await.map_err(|e| {
-        StorageError::Database(Box::new(sqlx::Error::Protocol(format!(
-            "transaction commit failed: {e}"
-        ))))
-    })
 }

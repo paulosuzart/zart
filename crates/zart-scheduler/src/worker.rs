@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::PgConnection;
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, instrument, warn};
@@ -11,7 +10,7 @@ use tracing::{Instrument, error, info, instrument, warn};
 use crate::ops::ExecutionOps;
 use crate::registry::TaskRegistry;
 use crate::store::TaskScheduler;
-use crate::task::{SchedulerTaskError, TaskInstance};
+use crate::task::{CompletionHandler, TaskInstance};
 use crate::types::FetchedTask;
 use crate::worker_config::WorkerConfig;
 
@@ -24,12 +23,15 @@ use crate::worker_config::WorkerConfig;
 /// # Dispatch model
 ///
 /// For each fetched task the worker:
-/// 1. Opens a database transaction via `TaskScheduler::begin`.
-/// 2. Creates an [`ExecutionOps`] wrapping the transaction connection.
-/// 3. Calls the registered handler's `execute(instance, ops)`.
-/// 4. Commits on `Ok(())` (defaulting to `ops.complete(None)` if the handler
-///    did not call any ops method), or rolls back on `Err` and calls
-///    `mark_failed` outside the transaction.
+/// 1. Calls the registered handler's `execute(instance)` — no transaction is opened.
+/// 2. The handler returns a [`CompletionHandler`] that encapsulates the outcome.
+/// 3. The worker constructs [`ExecutionOps`] and delegates to
+///    `completion.complete(ops, recurrence, execution_time)`.
+/// 4. On error (from `execute` or `complete`), calls `mark_failed`.
+///
+/// The worker never opens a transaction; [`ExecutionOps`] opens them lazily
+/// when needed, and [`CompletionHandler`] implementations may provide their
+/// own transaction via [`crate::completion::WithTransaction`].
 ///
 /// # Heartbeating
 ///
@@ -254,7 +256,6 @@ async fn dispatch_task(
         }
     };
 
-    let recurrence = task.recurrence.clone();
     let instance = TaskInstance {
         task_id: task.task_id.clone(),
         task_name: task.task_name.clone(),
@@ -288,13 +289,13 @@ async fn dispatch_task(
         }
     });
 
-    // Begin transaction
-    let mut tx = match scheduler.begin().await {
-        Ok(tx) => tx,
+    // 1. Execute — no transaction opened by the worker
+    let completion: Box<dyn CompletionHandler> = match handler.execute(&instance).await {
+        Ok(c) => c,
         Err(e) => {
             hb_cancel.cancel();
             let _ = hb_handle.await;
-            error!(error = %e, "Failed to begin transaction for task dispatch");
+            // Handler is responsible for cleaning up its own tx before returning Err.
             let _ = scheduler
                 .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
                 .await;
@@ -302,52 +303,20 @@ async fn dispatch_task(
         }
     };
 
-    // Execute handler with ExecutionOps scoped to the transaction connection.
-    // The inner block releases the borrow on `tx` so we can commit/rollback after.
-    let execute_result: Result<(), SchedulerTaskError> = {
-        let conn: &mut PgConnection = &mut tx;
-        let mut ops = ExecutionOps::new(conn, scheduler.clone(), &task.task_id, &task.lock_token);
-        let result = handler.execute(&instance, &mut ops).await;
-        // Default: complete with no result if the handler returned Ok without setting an outcome.
-        // For recurring tasks, reschedule instead of completing so the row stays live.
-        if result.is_ok() && !ops.outcome_set() {
-            let next = recurrence
-                .as_ref()
-                .and_then(|r| r.next_after(task.execution_time));
-            if let Some(next_time) = next {
-                ops.reschedule(next_time)
-                    .await
-                    .map_err(SchedulerTaskError::Storage)
-            } else {
-                ops.complete(None)
-                    .await
-                    .map_err(SchedulerTaskError::Storage)
-            }
-        } else {
-            result
-        }
-    };
-
-    // Stop heartbeat — handler has returned.
+    // 2. Stop heartbeat — handler has returned
     hb_cancel.cancel();
     let _ = hb_handle.await;
 
-    match execute_result {
-        Ok(()) => {
-            if let Err(e) = tx.commit().await {
-                error!(error = %e, "Failed to commit task transaction");
-            } else {
-                info!("Task committed successfully");
-            }
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            if let Err(fe) = scheduler
-                .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
-                .await
-            {
-                error!(error = %fe, "Failed to mark task failed after rollback");
-            }
-        }
+    // 3. Build ops and delegate entirely to the completion handler.
+    //    The worker opens no transaction; ExecutionOps does so lazily when needed.
+    let ops = ExecutionOps::new(scheduler.clone(), &task.task_id, &task.lock_token);
+    if let Err(e) = completion
+        .complete(ops, task.recurrence.as_ref(), task.execution_time)
+        .await
+    {
+        error!(error = %e, "Completion handler failed");
+        let _ = scheduler
+            .mark_failed(&task.task_id, &e.to_string(), None, &task.lock_token)
+            .await;
     }
 }

@@ -11,7 +11,6 @@ use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgConnection;
 use zart_core::StorageError;
-use zart_core::task_metadata::TaskMetadata;
 use zart_core::types::{CompleteStepAndScheduleBodyParams, ScheduleAtParams, ScheduleResult};
 use zart_scheduler::TaskScheduler;
 
@@ -91,17 +90,18 @@ pub async fn start_execution_sql(
     Ok(())
 }
 
-/// Atomically complete a step+task, record the attempt, and schedule the next body task.
+/// Write step SQL only (step_attempts insert, steps update).
 ///
-/// Task-queue writes (marking the step task completed, inserting the body task) are
-/// performed via `task_scheduler.mark_completed_in_tx` and `task_scheduler.schedule_at_in_tx`
-/// so that no task-queue SQL lives in this crate.
+/// Does NOT call scheduler bookkeeping (`mark_completed_in_tx`, `schedule_at_in_tx`).
+/// Does NOT commit — the caller owns the transaction lifecycle.
+///
+/// Returns `Err(StepError::StepExecuted { step })` as a plain signal
+/// after writing the step SQL.
 pub async fn complete_step_and_schedule_body_sql(
     conn: &mut PgConnection,
     params: &CompleteStepAndScheduleBodyParams,
     names: &TableNames,
-    task_scheduler: &dyn TaskScheduler,
-) -> Result<(), StorageError> {
+) -> Result<(), crate::error::StepError> {
     let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
     sqlx::query(&format!(
         r#"
@@ -117,7 +117,10 @@ pub async fn complete_step_and_schedule_body_sql(
     .bind(&params.result)
     .execute(&mut *conn)
     .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?;
+    .map_err(|e| crate::error::StepError::Failed {
+        step: params.step_id.clone(),
+        reason: format!("failed to insert step attempt: {e}"),
+    })?;
 
     sqlx::query(&format!(
         r#"
@@ -131,34 +134,15 @@ pub async fn complete_step_and_schedule_body_sql(
     .bind(&params.step_id)
     .execute(&mut *conn)
     .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?;
+    .map_err(|e| crate::error::StepError::Failed {
+        step: params.step_id.clone(),
+        reason: format!("failed to update step: {e}"),
+    })?;
 
-    // Mark the step task as completed via the task_scheduler delegate (no task-queue SQL in this crate).
-    task_scheduler
-        .mark_completed_in_tx(
-            conn,
-            &params.step_task_id,
-            Some(params.result.clone()),
-            &params.lock_token,
-        )
-        .await?;
-
-    // Schedule the next body task via the task_scheduler delegate.
-    task_scheduler
-        .schedule_at_in_tx(
-            conn,
-            ScheduleAtParams {
-                task_id: params.next_body_task_id.clone(),
-                task_name: crate::TASK_NAME.to_string(),
-                execution_time: Utc::now(),
-                data: params.data.clone(),
-                recurrence: None,
-                metadata: TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value(),
-            },
-        )
-        .await?;
-
-    Ok(())
+    // Signal that the step was executed — ZartTask will return a ZartStepCompletion handler.
+    Err(crate::error::StepError::StepExecuted {
+        step: params.step_id.clone(),
+    })
 }
 
 /// Insert a task row for a step (task_id + step row) within a caller-owned transaction.
