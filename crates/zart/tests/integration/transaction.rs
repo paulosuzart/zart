@@ -1,4 +1,5 @@
 /// Phase 6: Spec 0023 — Transaction participation tests.
+/// Phase 8: Spec 0042 — ZartTask Path 2 (wait-group child) atomicity test.
 use super::helpers::*;
 use std::borrow::Cow;
 use std::time::Duration;
@@ -468,4 +469,126 @@ async fn trx_atomic_step_write_rolls_back_on_step_error() {
         val.is_none(),
         "ledger write should be rolled back after step error; got: {val:?}"
     );
+}
+
+// ── Scenario 3: ZartTask Path 2 — wait-group child atomicity ─────────────
+
+/// ZartTask Path 2: a wait-group child step that calls `zart::trx()` commits
+/// its domain SQL and the scheduler bookkeeping in a single transaction.
+///
+/// The test runs a handler with two parallel steps, each writing a unique row
+/// to the ledger via `zart::trx()`. Both rows must be visible after the
+/// execution completes.
+#[tokio::test]
+#[ignore = "requires PostgreSQL — run with: just test-integration"]
+async fn wait_group_child_atomic_commit_domain_sql_and_bookkeeping() {
+    let scheduler = setup().await;
+    let pool = scheduler.pool().clone();
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS zart_test_ledger \
+         (key TEXT PRIMARY KEY, value BIGINT NOT NULL DEFAULT 0)",
+    )
+    .execute(&pool)
+    .await
+    .expect("create ledger table");
+
+    let key_a = format!("wg-child-a-{}", Uuid::new_v4());
+    let key_b = format!("wg-child-b-{}", Uuid::new_v4());
+
+    struct WgLedgerStep {
+        pool: sqlx::PgPool,
+        ledger_key: String,
+    }
+
+    #[async_trait::async_trait]
+    impl ZartStep for WgLedgerStep {
+        type Output = serde_json::Value;
+        type Error = TestStepError;
+
+        fn step_name(&self) -> Cow<'static, str> {
+            Cow::Owned(format!("wg-ledger-{}", self.ledger_key))
+        }
+
+        async fn run(&self) -> Result<Self::Output, Self::Error> {
+            let mut tx = zart::trx(&self.pool)
+                .await
+                .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+            sqlx::query("INSERT INTO zart_test_ledger (key, value) VALUES ($1, 1)")
+                .bind(&self.ledger_key)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| TestStepError::Simple(e.to_string()))?;
+
+            Ok(serde_json::json!({ "key": self.ledger_key }))
+        }
+    }
+
+    struct WgAtomicHandler {
+        pool: sqlx::PgPool,
+        key_a: String,
+        key_b: String,
+    }
+
+    #[async_trait::async_trait]
+    impl DurableExecution for WgAtomicHandler {
+        type Data = serde_json::Value;
+        type Output = serde_json::Value;
+
+        async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+            let h1 = zart::schedule(WgLedgerStep {
+                pool: self.pool.clone(),
+                ledger_key: self.key_a.clone(),
+            });
+            let h2 = zart::schedule(WgLedgerStep {
+                pool: self.pool.clone(),
+                ledger_key: self.key_b.clone(),
+            });
+            let results = zart::wait(vec![h1, h2]).await?;
+            Ok(serde_json::json!({ "count": results.len() }))
+        }
+    }
+
+    let mut registry = DurableRegistry::new();
+    registry.register(
+        "wg-atomic-handler",
+        WgAtomicHandler {
+            pool: pool.clone(),
+            key_a: key_a.clone(),
+            key_b: key_b.clone(),
+        },
+    );
+
+    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let exec_id = format!("wg-atomic-{}", Uuid::new_v4());
+    sched
+        .start(&exec_id, "wg-atomic-handler", serde_json::json!({}))
+        .await
+        .expect("start failed");
+
+    let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+    let result = sched
+        .wait_completion::<serde_json::Value>(&exec_id, Duration::from_secs(15), None)
+        .await;
+    worker.stop();
+
+    assert!(
+        result.is_ok(),
+        "execution should complete successfully: {result:?}"
+    );
+
+    for key in [&key_a, &key_b] {
+        let val: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM zart_test_ledger WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&pool)
+                .await
+                .expect("ledger query failed");
+        assert_eq!(
+            val,
+            Some(1),
+            "ledger write for key '{key}' should be committed after wait-group child step"
+        );
+    }
 }

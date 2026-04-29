@@ -11,8 +11,7 @@ use chrono::Utc;
 use serde_json::Value;
 use sqlx::PgConnection;
 use zart_core::StorageError;
-use zart_core::task_metadata::TaskMetadata;
-use zart_core::types::{CompleteStepAndScheduleBodyParams, ScheduleAtParams, ScheduleResult};
+use zart_core::types::{ScheduleAtParams, ScheduleResult, WriteStepCompletionParams};
 use zart_scheduler::TaskScheduler;
 
 use super::table_names::TableNames;
@@ -91,16 +90,14 @@ pub async fn start_execution_sql(
     Ok(())
 }
 
-/// Atomically complete a step+task, record the attempt, and schedule the next body task.
+/// Write step SQL only (step_attempts insert, steps update) within a caller-owned transaction.
 ///
-/// Task-queue writes (marking the step task completed, inserting the body task) are
-/// performed via `task_scheduler.mark_completed_in_tx` and `task_scheduler.schedule_at_in_tx`
-/// so that no task-queue SQL lives in this crate.
-pub async fn complete_step_and_schedule_body_sql(
+/// Does NOT schedule the next body task.
+/// Does NOT commit — the caller owns the transaction lifecycle.
+pub async fn write_step_completion_sql(
     conn: &mut PgConnection,
-    params: &CompleteStepAndScheduleBodyParams,
+    params: &WriteStepCompletionParams,
     names: &TableNames,
-    task_scheduler: &dyn TaskScheduler,
 ) -> Result<(), StorageError> {
     let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
     sqlx::query(&format!(
@@ -132,31 +129,6 @@ pub async fn complete_step_and_schedule_body_sql(
     .execute(&mut *conn)
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-    // Mark the step task as completed via the task_scheduler delegate (no task-queue SQL in this crate).
-    task_scheduler
-        .mark_completed_in_tx(
-            conn,
-            &params.step_task_id,
-            Some(params.result.clone()),
-            &params.lock_token,
-        )
-        .await?;
-
-    // Schedule the next body task via the task_scheduler delegate.
-    task_scheduler
-        .schedule_at_in_tx(
-            conn,
-            ScheduleAtParams {
-                task_id: params.next_body_task_id.clone(),
-                task_name: crate::TASK_NAME.to_string(),
-                execution_time: Utc::now(),
-                data: params.data.clone(),
-                recurrence: None,
-                metadata: TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value(),
-            },
-        )
-        .await?;
 
     Ok(())
 }

@@ -2,17 +2,16 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use sqlx::PgConnection;
 use zart_core::StorageError;
 use zart_core::store::StepStore;
 use zart_core::types::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StepAttemptRow, StepAttemptStatus, StepKind, StepLookup,
-    StepResultKind, StepRow, StepStatus, TaskStatus,
+    CompleteStepNoResumeParams, RescheduleStepForRetryParams, ScheduleResult, ScheduleStepParams,
+    StepAttemptRow, StepAttemptStatus, StepKind, StepLookup, StepResultKind, StepRow, StepStatus,
+    TaskStatus, WriteStepCompletionParams,
 };
 
 use super::PostgresStorage;
-use super::sql_helpers::{complete_step_and_schedule_body_sql, schedule_step_sql};
+use super::sql_helpers::{schedule_step_sql, write_step_completion_sql};
 
 #[async_trait]
 impl StepStore for PostgresStorage {
@@ -270,37 +269,12 @@ impl StepStore for PostgresStorage {
         })
     }
 
-    async fn complete_step_and_schedule_body(
+    async fn write_step_completion_in_tx(
         &self,
-        params: CompleteStepAndScheduleBodyParams,
+        conn: &mut sqlx::PgConnection,
+        params: WriteStepCompletionParams,
     ) -> Result<(), StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        complete_step_and_schedule_body_sql(
-            &mut tx,
-            &params,
-            &self.table_names,
-            &*self.task_scheduler,
-        )
-        .await?;
-
-        tx.commit()
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
-        Ok(())
-    }
-
-    async fn complete_step_and_schedule_body_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        params: CompleteStepAndScheduleBodyParams,
-    ) -> Result<(), StorageError> {
-        complete_step_and_schedule_body_sql(conn, &params, &self.table_names, &*self.task_scheduler)
-            .await
+        write_step_completion_sql(conn, &params, &self.table_names).await
     }
 
     async fn complete_step_no_resume(

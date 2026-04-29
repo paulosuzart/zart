@@ -247,22 +247,6 @@ impl ZartStep for ChargeCardStepWithResult {
     }
 }
 
-struct FailingChargeCardStep;
-
-#[async_trait::async_trait]
-impl ZartStep for FailingChargeCardStep {
-    type Output = u32;
-    type Error = TestStepError;
-    fn step_name(&self) -> Cow<'static, str> {
-        Cow::Borrowed("charge-card")
-    }
-    async fn run(&self) -> Result<Self::Output, Self::Error> {
-        Err(TestStepError::Failed {
-            reason: "card declined".to_string(),
-        })
-    }
-}
-
 struct StepOne;
 
 #[async_trait::async_trait]
@@ -386,40 +370,7 @@ async fn body_mode_inflight_step_returns_scheduled_without_inserting_duplicate()
     );
 }
 
-// ── step mode: target and non-target steps ────────────────────────────────
-
-#[tokio::test]
-async fn step_mode_target_step_executes_lambda_and_atomically_completes() {
-    let (scheduler, calls) = RecordingScheduler::builder().build();
-    let ctx = make_step_ctx(scheduler, "charge-card");
-
-    let result = ctx.execute_step(ChargeCardStep).await;
-
-    assert!(
-        matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
-        "target step must return StepExecuted (transactional completion)"
-    );
-
-    let log = calls.lock().unwrap();
-    assert_eq!(
-        log.iter().filter(|c| c.is_schedule_at()).count(),
-        1,
-        "one body task scheduled via transaction"
-    );
-
-    let cas: Vec<_> = log.iter().filter(|c| c.is_mark_completed()).collect();
-    assert_eq!(
-        cas.len(),
-        1,
-        "mark_completed called exactly once (transactional completion)"
-    );
-
-    if let Call::MarkCompleted { task_id } = &cas[0] {
-        assert_eq!(task_id, "exec-1:step:charge-card");
-    } else {
-        panic!("unexpected call variant");
-    }
-}
+// ── step mode: non-target steps ───────────────────────────────────────────
 
 #[tokio::test]
 async fn step_mode_nontarget_step_reads_cache_with_zero_writes() {
@@ -539,106 +490,6 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
     assert_eq!(log.iter().filter(|c| c.is_mark_completed()).count(), 0);
 }
 
-// ── step mode: wait_all child execution ───────────────────────────────────
-
-#[tokio::test]
-async fn wait_all_step_mode_target_child_calls_mark_completed_once_not_complete_and_schedule() {
-    let (scheduler, calls) = RecordingScheduler::builder().build();
-
-    let ctx = TaskContext::new(
-        scheduler.clone() as std::sync::Arc<dyn StorageBackend>,
-        scheduler as std::sync::Arc<dyn zart_scheduler::TaskScheduler>,
-        "exec-1",
-        "test-task",
-        "lock-tok",
-        serde_json::json!({
-            "wg_step_name": "__wg__all__test"
-        }),
-    )
-    .with_task_id("exec-1:step:step-b".to_string())
-    .with_execution_mode(ExecutionMode::Step {
-        target_step: "step-b".to_string(),
-        step_type: crate::execution_model::StepKind::Step,
-        retry_attempt: 0,
-        retry_config: None,
-    });
-
-    struct WaitAllStepA;
-    struct WaitAllStepB;
-    struct WaitAllStepC;
-    #[async_trait::async_trait]
-    impl ZartStep for WaitAllStepA {
-        type Output = u32;
-        type Error = TestStepError;
-        fn step_name(&self) -> Cow<'static, str> {
-            Cow::Borrowed("step-a")
-        }
-        async fn run(&self) -> Result<Self::Output, Self::Error> {
-            Ok(0)
-        }
-    }
-    #[async_trait::async_trait]
-    impl ZartStep for WaitAllStepB {
-        type Output = u32;
-        type Error = TestStepError;
-        fn step_name(&self) -> Cow<'static, str> {
-            Cow::Borrowed("step-b")
-        }
-        async fn run(&self) -> Result<Self::Output, Self::Error> {
-            Ok(2)
-        }
-    }
-    #[async_trait::async_trait]
-    impl ZartStep for WaitAllStepC {
-        type Output = u32;
-        type Error = TestStepError;
-        fn step_name(&self) -> Cow<'static, str> {
-            Cow::Borrowed("step-c")
-        }
-        async fn run(&self) -> Result<Self::Output, Self::Error> {
-            Ok(0)
-        }
-    }
-
-    let h1 = ctx.schedule_step(WaitAllStepA);
-    let h2 = ctx.schedule_step(WaitAllStepB);
-    let h3 = ctx.schedule_step(WaitAllStepC);
-    let result = ctx.wait_all(vec![h1, h2, h3]).await;
-
-    assert!(
-        matches!(result, Err(StepError::StepExecuted { ref step }) if step == "step-b"),
-        "wait_all child must return StepExecuted"
-    );
-
-    let log = calls.lock().unwrap();
-
-    let mc: Vec<_> = log
-        .iter()
-        .filter_map(|c| {
-            if let Call::MarkCompleted { task_id, .. } = c {
-                Some(task_id.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(
-        mc.len(),
-        1,
-        "complete_step_no_resume delegates to mark_completed once"
-    );
-    assert_eq!(mc[0], "exec-1:step:step-b");
-
-    // wait_all child completion marks the child step completed transactionally.
-    // Body scheduling is routed through wait-group completion behavior.
-    assert_eq!(
-        log.iter().filter(|c| c.is_mark_completed()).count(),
-        1,
-        "wait_all child marks itself completed via transaction"
-    );
-    assert_eq!(log.iter().filter(|c| c.is_schedule_at()).count(), 0);
-}
-
 // ── body mode: sleep ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -683,9 +534,8 @@ async fn sleep_body_mode_inserts_one_sleep_task_with_exact_wake_time() {
     );
 }
 
-// ── execute_step with retry: new execution model ──────────────────────────
+// ── execute_step with retry ───────────────────────────────────────────────
 
-/// Helper: make a step-mode context with a retry config embedded.
 fn make_step_ctx_with_retry(
     scheduler: std::sync::Arc<crate::test_helpers::RecordingScheduler>,
     target: &str,
@@ -753,107 +603,6 @@ async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
             serde_json::from_value(metadata["retry_config"].clone()).unwrap();
         assert_eq!(embedded.max_attempts, 3);
     }
-}
-
-/// When the step fails and retries remain, dispatch-owned retry handling must call
-/// `reschedule_step_for_retry` (which records as MarkFailed) and return `StepExecuted`.
-#[tokio::test]
-async fn step_mode_failure_with_retries_remaining_schedules_retry() {
-    let (scheduler, calls) = RecordingScheduler::builder().build();
-    let ctx = make_step_ctx_with_retry(
-        scheduler,
-        "charge-card",
-        0,
-        RetryConfig::fixed(3, Duration::from_secs(10)),
-    );
-
-    let result = ctx.execute_step(FailingChargeCardStep).await;
-
-    assert!(
-        matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
-        "must return StepExecuted so the worker skips its own mark_failed"
-    );
-
-    let log = calls.lock().unwrap();
-    let failures: Vec<_> = log.iter().filter(|c| c.is_mark_failed()).collect();
-    assert_eq!(
-        failures.len(),
-        1,
-        "exactly one mark_failed call for the retry (via reschedule_step_for_retry)"
-    );
-
-    if let Call::MarkFailed {
-        task_id,
-        next_execution_time,
-        ..
-    } = &failures[0]
-    {
-        assert_eq!(task_id, "exec-1:step:charge-card");
-        assert!(
-            next_execution_time.is_some(),
-            "retry must carry a future execution_time for the delay"
-        );
-    }
-}
-
-/// When all retries are exhausted the step completes with result_kind='rx' and
-/// returns `StepExecuted` (body will receive `StepOutcome::ZartErr(RetryExhausted)` on replay).
-#[tokio::test]
-async fn step_mode_failure_retries_exhausted_completes_with_rx_kind() {
-    let (scheduler, calls) = RecordingScheduler::builder().build();
-    let ctx = make_step_ctx_with_retry(
-        scheduler,
-        "charge-card",
-        3,
-        RetryConfig::fixed(3, Duration::from_secs(10)),
-    );
-
-    let result = ctx.execute_step(FailingChargeCardStep).await;
-
-    assert!(
-        matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
-        "must return StepExecuted after completing with rx kind"
-    );
-
-    let log = calls.lock().unwrap();
-    // Should have called complete_step_and_schedule_body (which records MarkCompleted + ScheduleAt).
-    let completions: Vec<_> = log.iter().filter(|c| c.is_mark_completed()).collect();
-    assert_eq!(
-        completions.len(),
-        1,
-        "exhausted retries must call complete_step_and_schedule_body"
-    );
-}
-
-/// A successful step in step mode must NOT trigger a retry.
-#[tokio::test]
-async fn step_mode_success_with_retry_config_completes_normally() {
-    let (scheduler, calls) = RecordingScheduler::builder().build();
-    let ctx = make_step_ctx_with_retry(
-        scheduler,
-        "charge-card",
-        0,
-        RetryConfig::fixed(3, Duration::from_secs(10)),
-    );
-
-    let result = ctx.execute_step(ChargeCardStep).await;
-
-    assert!(
-        matches!(result, Err(StepError::StepExecuted { ref step }) if step == "charge-card"),
-        "successful step must return StepExecuted"
-    );
-
-    let log = calls.lock().unwrap();
-    assert_eq!(
-        log.iter().filter(|c| c.is_mark_failed()).count(),
-        0,
-        "no mark_failed on success"
-    );
-    assert_eq!(
-        log.iter().filter(|c| c.is_mark_completed()).count(),
-        1,
-        "complete_and_schedule called once to commit step and schedule next body"
-    );
 }
 
 #[tokio::test]

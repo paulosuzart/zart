@@ -139,6 +139,7 @@ pub mod postgres;
 pub mod registry;
 pub mod retry;
 pub mod service;
+pub(crate) mod step_completion;
 pub mod step_ops;
 pub mod step_types;
 pub mod store;

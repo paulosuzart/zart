@@ -44,6 +44,10 @@ path = "transactions/src/main.rs"
 name = "example-scheduler-only"
 path = "scheduler-only/src/main.rs"
 
+[[bin]]
+name = "example-recurring-tasks"
+path = "recurring-tasks/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }

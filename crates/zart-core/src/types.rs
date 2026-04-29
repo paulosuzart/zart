@@ -66,6 +66,9 @@ pub struct FetchedTask {
     /// Execution model metadata (mode, run_id, step_name, step_type, etc.).
     /// Empty object `{}` for legacy tasks that predate the new execution model.
     pub metadata: serde_json::Value,
+    /// The time this task was originally scheduled to execute.
+    /// Used for computing next cron execution times.
+    pub execution_time: DateTime<Utc>,
 }
 
 impl std::fmt::Display for FetchedTask {
@@ -430,20 +433,17 @@ pub struct ScheduleStepParams {
     pub retry_config: Option<serde_json::Value>,
 }
 
-/// Parameters for step completion + body resume.
+/// Parameters for writing step completion SQL (INSERT step_attempts, UPDATE steps).
+///
+/// Passed to `StepStore::write_step_completion_in_tx`. Does not schedule the next
+/// body task — that responsibility belongs to the caller via `ops.complete_in_tx`.
 #[derive(Debug, Clone)]
-pub struct CompleteStepAndScheduleBodyParams {
-    pub step_task_id: String,
+pub struct WriteStepCompletionParams {
     pub step_id: String,
+    pub attempt_number: usize,
     pub result: serde_json::Value,
     /// Outcome discriminant stored in `zart_steps.result_kind`.
     pub result_kind: StepResultKind,
-    pub lock_token: String,
-    pub attempt_number: usize,
-    pub next_body_task_id: String,
-    pub run_id: String,
-    pub execution_id: String,
-    pub data: serde_json::Value,
 }
 
 /// Parameters for step completion without body resume.
