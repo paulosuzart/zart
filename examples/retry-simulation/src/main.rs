@@ -12,7 +12,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
 use zart::PostgresStorage;
@@ -58,10 +57,7 @@ struct NormalStepResult {
 
 /// Step that intentionally fails on first attempt, succeeds on retry.
 #[zart_step("intentional-failure", retry = "fixed(3, 1s)")]
-async fn intentional_failure_step(
-    name: String,
-    attempt_counter: Arc<AtomicUsize>,
-) -> Result<RetryStepResult, StepError> {
+async fn intentional_failure_step(name: String) -> Result<RetryStepResult, StepError> {
     let info = zart::context();
     let current = info.current_attempt;
     let max = info.max_retries;
@@ -71,8 +67,6 @@ async fn intentional_failure_step(
         "[intentional-failure] Attempt #{} (0-indexed) | is_retry={} | max_retries={:?}",
         current, is_retry, max
     );
-
-    attempt_counter.fetch_add(1, Ordering::SeqCst);
 
     if current == 0 {
         let msg = format!(
@@ -118,25 +112,17 @@ impl DurableExecution for RetrySimulationTask {
     type Output = RetrySimulationOutput;
 
     async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
-        let attempt_counter = Arc::new(AtomicUsize::new(0));
+        // NOTE: Avoid println! in durable body - these will re-execute on each retry,
+        // causing duplicate log output. Use step-level logging via zart::context() instead.
 
-        println!("\n=== Retry Accessors Demo ===\n");
-        println!("Before retry (in body mode):");
-        println!("  - zart::context() is available anywhere");
-        println!("  - Each step gets its own retry metadata via zart::context()");
+        let result = intentional_failure_step(data.name.clone()).await?;
 
-        let result = intentional_failure_step(data.name.clone(), attempt_counter.clone()).await?;
-
-        let total_attempts = attempt_counter.load(Ordering::SeqCst);
+        // current_attempt is 0-indexed: attempt 0 = 1st try, attempt 1 = 2nd try, etc.
+        let total_attempts = result.attempt_number + 1;
         let mut attempts_log = vec![format!(
             "intentional-failure: succeeded on attempt #{} ({} retries)",
             result.attempt_number, result.attempt_number
         )];
-
-        println!("\nAfter retry completion:");
-        println!("  - Total attempts made: {}", total_attempts);
-        println!("  - Succeeded on attempt #{}", result.attempt_number);
-        println!("  - Number of retries: {}", result.attempt_number);
 
         let normal_result = normal_step(data.name.clone()).await?;
         attempts_log.push(format!("normal-step: {}", normal_result.message));
