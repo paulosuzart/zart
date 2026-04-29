@@ -1,7 +1,7 @@
-//! Standard [`CompletionHandler`](crate::CompletionHandler) implementations.
+//! Standard [`CompletionHandler`] implementations.
 //!
-//! These cover the common completion cases for external [`ScheduledTask`]
-//! (crate::ScheduledTask) implementations. `ZartTask` uses its own private
+//! These cover the common completion cases for external scheduled task
+//! implementations. `ZartTask` uses its own private
 //! handlers defined in the `zart` crate.
 
 use async_trait::async_trait;
