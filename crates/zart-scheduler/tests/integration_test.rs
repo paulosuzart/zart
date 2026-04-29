@@ -249,13 +249,8 @@ mod postgres_tests {
         drop_custom_tables(pool, prefix).await;
 
         // Create in FK-safe forward order.
-        let tables = [
-            "tasks",
-            "executions",
-            "execution_runs",
-            "steps",
-            "step_attempts",
-        ];
+        // Only the scheduler crate's own table — execution tables live in the zart crate.
+        let tables = ["tasks"];
         for base in &tables {
             let custom = format!("{prefix}{base}");
             let zart = format!("zart_{base}");
@@ -273,13 +268,7 @@ mod postgres_tests {
 
     async fn drop_custom_tables(pool: &PgPool, prefix: &str) {
         // Drop in reverse FK order.
-        let tables = [
-            "step_attempts",
-            "steps",
-            "execution_runs",
-            "executions",
-            "tasks",
-        ];
+        let tables = ["tasks"];
         for base in &tables {
             let custom = format!("{prefix}{base}");
             sqlx::query(&format!("DROP TABLE IF EXISTS {custom} CASCADE"))
