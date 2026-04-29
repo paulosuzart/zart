@@ -2,7 +2,6 @@
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::step_types::{CompletionBehavior, CompletionOutcome, CompletionSpec, StepResult};
 use zart::{DurableRegistry, DurableScheduler, step_types::StepDefId};
 use zart_core::TaskMetadata;
 use zart_core::store::{EventStore as _, StepStore as _, WaitGroupStore as _};
@@ -408,7 +407,7 @@ async fn completion_behaviors_execute_with_real_backend() {
 
     let schedule = scheduler
         .schedule_step(ScheduleStepParams {
-            task_id: format!("{execution_id}:step:comp-step"),
+            task_id: format!("{run_id}:step:comp-step"),
             task_name: task_name.to_string(),
             run_id: run_id.clone(),
             step_name: "comp-step".to_string(),
@@ -433,31 +432,44 @@ async fn completion_behaviors_execute_with_real_backend() {
         .await
         .expect("poll_due failed");
 
-    let step_lock = fetched
-        .iter()
-        .find(|t| t.task_id == schedule.task_id)
-        .map(|t| t.lock_token.clone())
-        .expect("scheduled step task not fetched");
+    // Ensure the step task was fetched (we don't need the lock token for write_step_completion_in_tx).
+    assert!(
+        fetched.iter().any(|t| t.task_id == schedule.task_id),
+        "scheduled step task not fetched"
+    );
 
-    let spec = CompletionSpec {
-        step_task_id: schedule.task_id.clone(),
+    let step_params = zart_core::types::WriteStepCompletionParams {
         step_id: schedule.task_id.clone(),
-        step_name: "comp-step".to_string(),
-        worker_id: step_lock,
-        run_id: format!("{execution_id}:run:0"),
-        execution_id: execution_id.clone(),
-        data: serde_json::json!({}),
         attempt_number: 1,
-        result: StepResult::Executed(serde_json::json!({"ok": true})),
-        wait_group_step_name: None,
-        outcome: CompletionOutcome::Success,
+        result: serde_json::json!({"ok": true}),
+        result_kind: zart_core::types::StepResultKind::Ok,
     };
 
-    let behavior = zart::step_types::completion::ScheduleNextBody;
-    behavior
-        .complete(&*scheduler, &*scheduler.task_scheduler(), spec)
+    let mut tx = scheduler.pool().begin().await.expect("begin tx failed");
+
+    scheduler
+        .write_step_completion_in_tx(&mut tx, step_params)
         .await
-        .expect("ScheduleNextBody::complete failed");
+        .expect("write_step_completion_in_tx failed");
+
+    let next_body_task_id = format!("{run_id}:body:after:comp-step");
+    scheduler
+        .task_scheduler()
+        .schedule_at_in_tx(
+            &mut tx,
+            zart_core::types::ScheduleAtParams {
+                task_id: next_body_task_id.clone(),
+                task_name: "__zart__".to_string(),
+                execution_time: chrono::Utc::now(),
+                data: serde_json::json!({}),
+                recurrence: None,
+                metadata: zart_core::TaskMetadata::body(&run_id, &execution_id).to_json_value(),
+            },
+        )
+        .await
+        .expect("schedule_at_in_tx failed");
+
+    tx.commit().await.expect("commit failed");
 
     let due = scheduler
         .task_scheduler()

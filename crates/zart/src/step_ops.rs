@@ -10,8 +10,8 @@
 use crate::store::StorageBackend;
 use zart_core::task_metadata::StepMetaType;
 use zart_core::types::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, RescheduleStepForRetryParams,
-    ScheduleResult, ScheduleStepParams, StepKind, StepResultKind,
+    CompleteStepNoResumeParams, RescheduleStepForRetryParams, ScheduleResult, ScheduleStepParams,
+    StepKind,
 };
 use zart_core::{StorageError, TaskMetadata};
 
@@ -26,22 +26,6 @@ pub struct StepTaskSpec<'a> {
     /// Deadline for this step (used when timeout_scope == Global).
     /// When set, written to task metadata as an RFC3339 timestamp.
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Parameters for [`complete_step_and_schedule_body`].
-pub struct ResumeBodySpec<'a> {
-    pub step_task_id: &'a str,
-    pub step_id: &'a str,
-    pub result: serde_json::Value,
-    /// Outcome discriminant.
-    pub result_kind: crate::step_types::ResultKind,
-    pub lock_token: &'a str,
-    pub next_body_task_id: &'a str,
-    pub run_id: &'a str,
-    pub execution_id: &'a str,
-    pub data: serde_json::Value,
-    /// 1-indexed attempt number for recording in `zart_step_attempts`.
-    pub attempt_number: usize,
 }
 
 /// Parameters for [`schedule_wait_group_child_task`].
@@ -187,27 +171,6 @@ pub async fn schedule_wait_all_child(
     schedule_wait_group_child_task(scheduler, spec).await
 }
 
-/// Atomically complete a step task and schedule the next body segment.
-pub async fn complete_step_and_schedule_body(
-    scheduler: &dyn StorageBackend,
-    spec: ResumeBodySpec<'_>,
-) -> Result<(), StorageError> {
-    scheduler
-        .complete_step_and_schedule_body(CompleteStepAndScheduleBodyParams {
-            step_task_id: spec.step_task_id.to_string(),
-            step_id: spec.step_id.to_string(),
-            result: spec.result,
-            result_kind: StepResultKind::from(spec.result_kind),
-            lock_token: spec.lock_token.to_string(),
-            attempt_number: spec.attempt_number,
-            next_body_task_id: spec.next_body_task_id.to_string(),
-            run_id: spec.run_id.to_string(),
-            execution_id: spec.execution_id.to_string(),
-            data: spec.data,
-        })
-        .await
-}
-
 /// Complete a wait_all child step without scheduling a body continuation.
 ///
 /// Wait-group completion behavior handles parent progression.
@@ -324,11 +287,10 @@ mod tests {
     use zart_core::store::pause_storage::PauseStorage;
     use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
     use zart_core::types::{
-        CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams,
-        CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord, ExecutionRunRecord,
-        ExecutionStats, FailWaitGroupChildParams, FetchedTask, ListExecutionsParams,
-        RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow, StepKind, StepLookup,
-        StepRow, UpsertWaitGroupStepParams,
+        CompleteStepNoResumeParams, CompleteWaitGroupChildParams, EventDeliveryResult,
+        ExecutionRecord, ExecutionRunRecord, ExecutionStats, FailWaitGroupChildParams, FetchedTask,
+        ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, StepAttemptRow,
+        StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
     };
     use zart_core::{StorageError, TaskMetadata};
     use zart_scheduler::TaskScheduler;
@@ -517,12 +479,6 @@ mod tests {
             })
         }
 
-        async fn complete_step_and_schedule_body(
-            &self,
-            _: CompleteStepAndScheduleBodyParams,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
         async fn complete_step_no_resume(
             &self,
             _: CompleteStepNoResumeParams,

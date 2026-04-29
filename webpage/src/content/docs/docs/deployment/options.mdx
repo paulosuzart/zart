@@ -21,15 +21,11 @@ async fn main() -> anyhow::Result<()> {
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
     let sched = Arc::new(PostgresStorage::new(pool));
 
-    // Register all your task handlers
-    let mut registry = DurableRegistry::new();
-    registry.register("onboarding", OnboardingTask::new());
-    registry.register("checkout",   CheckoutTask::new());
-    registry.register("report-gen", ReportTask::new());
-
-    // Build the worker
+    // Build the worker with fluent registration
     let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-        .registry(registry)
+        .register_durable_task("onboarding", OnboardingTask::new())
+        .register_durable_task("checkout",   CheckoutTask::new())
+        .register_durable_task("report-gen", ReportTask::new())
         .config(zart::WorkerConfig {
             poll_interval:        Duration::from_secs(5),
             max_tasks_per_poll:   10,

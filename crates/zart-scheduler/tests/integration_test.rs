@@ -5,6 +5,7 @@
 //! or via: `just test-integration`
 
 mod postgres_tests {
+    use chrono::{DateTime, Utc};
     use sqlx::PgPool;
     use uuid::Uuid;
     use zart_scheduler::{PostgresTaskScheduler, TaskScheduler};
@@ -361,5 +362,62 @@ mod postgres_tests {
             .expect("mark_completed failed");
 
         drop_custom_tables(&pool, prefix).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn postgres_recurring_task_reschedules() {
+        let (pool, scheduler) = setup().await;
+        let task_id = format!("test-recurring-{}", Uuid::new_v4());
+
+        // Schedule a recurring task with FixedDelay of 1 second
+        let result = scheduler
+            .schedule_recurring(
+                &task_id,
+                "recurring-test-task",
+                zart_scheduler::Recurrence::FixedDelay { duration_ms: 1000 },
+                serde_json::json!({}),
+            )
+            .await
+            .expect("schedule_recurring failed");
+
+        assert_eq!(result.task_id, task_id);
+
+        // Poll for the initial execution
+        let tasks = scheduler
+            .poll_due(chrono::Utc::now(), 100)
+            .await
+            .expect("poll_due failed");
+        let fetched = tasks
+            .iter()
+            .find(|t| t.task_id == task_id)
+            .expect("recurring task not found");
+
+        // Simulate worker completing the task (no explicit reschedule)
+        scheduler
+            .mark_completed(&task_id, None, &fetched.lock_token)
+            .await
+            .expect("mark_completed failed");
+
+        // Check that the task was rescheduled: execution_time should be in the future
+        let (next_exec,): (Option<DateTime<Utc>>,) =
+            sqlx::query_as("SELECT execution_time FROM zart_tasks WHERE task_id = $1")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query failed");
+
+        assert!(
+            next_exec.is_some(),
+            "recurring task should have a next execution time after completion"
+        );
+        let next_exec = next_exec.unwrap();
+        assert!(
+            next_exec > chrono::Utc::now(),
+            "next execution time should be in the future"
+        );
+
+        // Cleanup
+        cleanup(&pool, &[task_id.as_str()]).await;
     }
 }

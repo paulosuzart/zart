@@ -1,108 +1,115 @@
-//! Imperative execution operations available to a task during its execution slot.
+//! Execution operations available to a [`CompletionHandler`](crate::CompletionHandler).
+//!
+//! `ExecutionOps` is constructed by the worker and passed to
+//! [`CompletionHandler::complete`](crate::CompletionHandler::complete).
+//! It provides granular bookkeeping methods that handlers call to persist
+//! task outcomes. Handlers may open fresh transactions or reuse one they
+//! already hold.
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::PgConnection;
+use sqlx::Postgres;
 use std::sync::Arc;
 
 use crate::error::StorageError;
 use crate::store::TaskScheduler;
-use crate::types::{ScheduleAtParams, ScheduleResult};
+use crate::types::ScheduleAtParams;
 
-/// Scheduler operations available to a [`ScheduledTask`](crate::ScheduledTask) during execution.
+/// Scheduler operations for completing or rescheduling a task.
 ///
-/// All methods write through the `PgConnection` owned by the worker for this
-/// task slot. The worker commits the connection when `execute` returns `Ok(())`,
-/// or rolls back on `Err`. This means completion, rescheduling, and any chained
-/// task scheduling are all atomic within the same transaction.
+/// Constructed by the worker after [`ScheduledTask::execute`](crate::ScheduledTask::execute)
+/// returns a [`CompletionHandler`](crate::CompletionHandler). The handler calls
+/// these methods — rather than the scheduler directly — to perform bookkeeping.
 ///
-/// # Usage
+/// # Transaction handling
 ///
-/// Tasks call `ops.complete(result)` when done, `ops.reschedule(at)` for an
-/// intentional re-run, and `ops.schedule(params)` to enqueue a follow-up task —
-/// all within the same transaction.
-///
-/// If `execute` returns `Ok(())` without calling any of these methods, the
-/// worker defaults to `ops.complete(None)` before committing.
-pub struct ExecutionOps<'a> {
-    conn: &'a mut PgConnection,
+/// - `complete` / `reschedule` open a fresh transaction internally and commit.
+/// - `complete_in_tx` / `reschedule_in_tx` accept an already-open transaction,
+///   append bookkeeping writes, then commit.
+pub struct ExecutionOps {
     scheduler: Arc<dyn TaskScheduler>,
-    task_id: &'a str,
-    lock_token: &'a str,
-    /// Tracks whether `complete` or `reschedule` was called.
-    /// The worker defaults to `complete(None)` on `Ok(())` if neither was called.
-    outcome_set: bool,
+    task_id: String,
+    lock_token: String,
 }
 
-impl<'a> ExecutionOps<'a> {
-    pub(crate) fn new(
-        conn: &'a mut PgConnection,
-        scheduler: Arc<dyn TaskScheduler>,
-        task_id: &'a str,
-        lock_token: &'a str,
-    ) -> Self {
+impl ExecutionOps {
+    pub(crate) fn new(scheduler: Arc<dyn TaskScheduler>, task_id: &str, lock_token: &str) -> Self {
         Self {
-            conn,
             scheduler,
-            task_id,
-            lock_token,
-            outcome_set: false,
+            task_id: task_id.to_string(),
+            lock_token: lock_token.to_string(),
         }
     }
 
-    /// Whether `complete` or `reschedule` has already been called.
-    pub(crate) fn outcome_set(&self) -> bool {
-        self.outcome_set
-    }
-
-    /// Signal that this task's outcome was already committed by a separate path
-    /// (e.g. step-task completion via `complete_step_and_schedule_body`).
-    ///
-    /// Sets `outcome_set` so the worker skips the default `complete(None)` call,
-    /// avoiding a lock-token mismatch against a row that was already cleared.
-    pub fn mark_handled(&mut self) {
-        self.outcome_set = true;
-    }
-
-    /// Returns a clone of the scheduler associated with these operations.
-    pub fn scheduler(&self) -> Arc<dyn TaskScheduler> {
-        self.scheduler.clone()
-    }
-
-    /// Mark this task completed with an optional result value.
-    ///
-    /// Writes the completion record to the shared connection. The worker commits
-    /// after `execute` returns `Ok(())`.
-    pub async fn complete(&mut self, result: Option<Value>) -> Result<(), StorageError> {
+    /// Complete the task: opens a fresh transaction, marks complete,
+    /// schedules any follow-up tasks, then commits.
+    pub async fn complete(
+        &self,
+        result: Option<Value>,
+        schedule_next: Vec<ScheduleAtParams>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.scheduler.begin().await?;
         self.scheduler
-            .mark_completed_in_tx(self.conn, self.task_id, result, self.lock_token)
+            .mark_completed_in_tx(&mut tx, &self.task_id, result, &self.lock_token)
             .await?;
-        self.outcome_set = true;
+        for params in schedule_next {
+            self.scheduler.schedule_at_in_tx(&mut tx, params).await?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
     }
 
-    /// Reschedule this task for a future execution time.
+    /// Complete using a provided transaction.
     ///
-    /// Use for intentional delays or retry-with-backoff inside the task.
-    /// The new execution is written to the shared connection and committed
-    /// atomically with any other writes in this slot.
-    pub async fn reschedule(&mut self, at: DateTime<Utc>) -> Result<(), StorageError> {
+    /// Appends `mark_completed_in_tx` and any `schedule_at_in_tx` entries,
+    /// then commits. The caller must not use `tx` after this call.
+    pub async fn complete_in_tx(
+        &self,
+        mut tx: sqlx::Transaction<'static, Postgres>,
+        result: Option<Value>,
+        schedule_next: Vec<ScheduleAtParams>,
+    ) -> Result<(), StorageError> {
         self.scheduler
-            .update_task_state_in_tx(self.conn, self.task_id, Value::Null, at, self.lock_token)
+            .mark_completed_in_tx(&mut tx, &self.task_id, result, &self.lock_token)
             .await?;
-        self.outcome_set = true;
+        for params in schedule_next {
+            self.scheduler.schedule_at_in_tx(&mut tx, params).await?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
     }
 
-    /// Schedule a new task within the same transaction (task chaining).
+    /// Reschedule the task: opens a fresh transaction, updates task state,
+    /// then commits.
+    pub async fn reschedule(&self, at: DateTime<Utc>) -> Result<(), StorageError> {
+        let mut tx = self.scheduler.begin().await?;
+        self.scheduler
+            .update_task_state_in_tx(&mut tx, &self.task_id, Value::Null, at, &self.lock_token)
+            .await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
+
+    /// Reschedule using a provided transaction.
     ///
-    /// Allows one task to atomically enqueue a successor before completing.
-    /// The successor is inserted to the shared connection and committed together
-    /// with the current task's completion.
-    pub async fn schedule(
-        &mut self,
-        params: ScheduleAtParams,
-    ) -> Result<ScheduleResult, StorageError> {
-        self.scheduler.schedule_at_in_tx(self.conn, params).await
+    /// Appends the state update then commits.
+    pub async fn reschedule_in_tx(
+        &self,
+        mut tx: sqlx::Transaction<'static, Postgres>,
+        at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        self.scheduler
+            .update_task_state_in_tx(&mut tx, &self.task_id, Value::Null, at, &self.lock_token)
+            .await?;
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
     }
 }

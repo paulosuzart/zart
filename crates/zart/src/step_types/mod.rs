@@ -4,12 +4,9 @@
 //! step dispatch. All orchestration lives in behavior implementations and the
 //! dispatch layer; `TaskContext` only expresses intent.
 
-use crate::store::StorageBackend;
 use async_trait::async_trait;
-use zart_core::StorageError;
 use zart_core::TaskMetadata;
 use zart_core::task_metadata::StepMetaType;
-use zart_scheduler::TaskScheduler;
 
 use crate::context::{PendingFn, TaskContext};
 use crate::error::StepError;
@@ -200,15 +197,6 @@ impl From<zart_core::types::StepResultKind> for ResultKind {
     }
 }
 
-/// Distinguishes success/failure completion routing.
-///
-/// Used by completion implementations that need to branch behavior.
-#[derive(Debug, Clone)]
-pub enum CompletionOutcome {
-    Success,
-    Failure { error: String },
-}
-
 /// Wait-group semantics used by TaskContext wait APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitGroupKind {
@@ -265,26 +253,6 @@ impl WaitGroupKind {
     }
 }
 
-/// Payload provided to completion behaviors.
-#[derive(Debug, Clone)]
-pub struct CompletionSpec {
-    pub step_task_id: String,
-    pub step_id: String,
-    pub step_name: String,
-    pub worker_id: String,
-    pub run_id: String,
-    pub execution_id: String,
-    pub data: serde_json::Value,
-    pub attempt_number: usize,
-    pub result: StepResult,
-
-    /// Optional wait-group parent step name.
-    pub wait_group_step_name: Option<String>,
-
-    /// Success/failure routing info.
-    pub outcome: CompletionOutcome,
-}
-
 /// Body-mode behavior contract.
 #[async_trait]
 pub trait BodyBehavior: Send + Sync {
@@ -311,20 +279,6 @@ pub trait StepBehavior: Send + Sync {
         step_name: &str,
         lambda: Option<PendingFn>,
     ) -> Result<StepResult, StepError>;
-}
-
-/// Completion behavior contract.
-#[async_trait]
-pub trait CompletionBehavior: Send + Sync {
-    /// Called after step behavior returns `Ok`.
-    ///
-    /// Must atomically complete step task and schedule next work when needed.
-    async fn complete(
-        &self,
-        scheduler: &dyn StorageBackend,
-        task_scheduler: &dyn TaskScheduler,
-        spec: CompletionSpec,
-    ) -> Result<(), StorageError>;
 }
 
 /// Thin step-definition routing enum.
@@ -406,27 +360,9 @@ impl StepDefId {
             Self::WaitGroupBarrier => &step::ExecuteLambda,
         }
     }
-
-    pub fn completion_behavior(
-        self,
-        outcome: &CompletionOutcome,
-    ) -> &'static dyn CompletionBehavior {
-        match self {
-            Self::Step => &completion::ScheduleNextBody,
-            Self::Sleep => &completion::ScheduleNextBody,
-            Self::WaitForEvent => &completion::FailExecutionOnDeadline,
-            Self::WaitGroupChild => match outcome {
-                CompletionOutcome::Success => &completion::DecrementAndMaybeResume,
-                CompletionOutcome::Failure { .. } => &completion::FailWaitGroup,
-            },
-            // WaitGroupBarrier has no step-mode completion.
-            Self::WaitGroupBarrier => &completion::ScheduleNextBody,
-        }
-    }
 }
 
 pub mod body;
-pub mod completion;
 pub mod step;
 
 #[cfg(test)]

@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 use uuid::Uuid;
 use zart_scheduler::{
-    ExecutionOps, PostgresTaskScheduler, ScheduledTask, SchedulerTaskError, TaskInstance,
-    TaskRegistry, TaskScheduler, Worker, WorkerConfig,
+    CompletionHandler, OnComplete, PostgresTaskScheduler, ScheduledTask, SchedulerTaskError,
+    TaskInstance, TaskRegistry, TaskScheduler, Worker, WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -28,8 +28,7 @@ impl ScheduledTask for SendWelcomeEmail {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         let input: WelcomeEmailInput = serde_json::from_value(instance.data.clone())
             .map_err(|e| SchedulerTaskError::Failed(format!("failed to parse input: {e}")))?;
 
@@ -47,27 +46,26 @@ impl ScheduledTask for SendWelcomeEmail {
             "user_id": input.user_id,
             "action": "remove-pending-flag"
         });
-        ops.schedule(zart_scheduler::ScheduleAtParams {
+        let schedule_next = vec![zart_scheduler::ScheduleAtParams {
             task_id: cleanup_id,
             task_name: "onboarding-cleanup".to_string(),
             execution_time: Utc::now(),
             data: cleanup_data,
             recurrence: None,
             metadata: Value::Null,
-        })
-        .await
-        .map_err(SchedulerTaskError::Storage)?;
+        }];
 
         println!("  [send-welcome-email] Email sent, scheduled onboarding-cleanup");
 
-        // Complete with a result payload
-        ops.complete(Some(json!({
-            "status": "sent",
-            "user_id": input.user_id,
-            "email": input.email
-        })))
-        .await
-        .map_err(SchedulerTaskError::Storage)
+        // Complete with a result payload and schedule follow-up
+        Ok(Box::new(OnComplete {
+            result: Some(json!({
+                "status": "sent",
+                "user_id": input.user_id,
+                "email": input.email
+            })),
+            schedule_next,
+        }))
     }
 }
 
@@ -88,8 +86,7 @@ impl ScheduledTask for OnboardingCleanup {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         let input: CleanupInput = serde_json::from_value(instance.data.clone())
             .map_err(|e| SchedulerTaskError::Failed(format!("failed to parse input: {e}")))?;
 
@@ -106,25 +103,24 @@ impl ScheduledTask for OnboardingCleanup {
             "user_id": input.user_id,
             "report_type": "onboarding-complete"
         });
-        ops.schedule(zart_scheduler::ScheduleAtParams {
+        let schedule_next = vec![zart_scheduler::ScheduleAtParams {
             task_id: report_id,
             task_name: "generate-report".to_string(),
             execution_time: Utc::now(),
             data: report_data,
             recurrence: None,
             metadata: Value::Null,
-        })
-        .await
-        .map_err(SchedulerTaskError::Storage)?;
+        }];
 
         println!("  [onboarding-cleanup] Cleanup done, scheduled generate-report");
 
-        ops.complete(Some(json!({
-            "status": "cleaned",
-            "user_id": input.user_id
-        })))
-        .await
-        .map_err(SchedulerTaskError::Storage)
+        Ok(Box::new(OnComplete {
+            result: Some(json!({
+                "status": "cleaned",
+                "user_id": input.user_id
+            })),
+            schedule_next,
+        }))
     }
 }
 
@@ -145,8 +141,7 @@ impl ScheduledTask for GenerateReport {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         let input: ReportInput = serde_json::from_value(instance.data.clone())
             .map_err(|e| SchedulerTaskError::Failed(format!("failed to parse input: {e}")))?;
 
@@ -159,13 +154,14 @@ impl ScheduledTask for GenerateReport {
 
         println!("  [generate-report] Report generated");
 
-        ops.complete(Some(json!({
-            "status": "generated",
-            "user_id": input.user_id,
-            "report_type": input.report_type
-        })))
-        .await
-        .map_err(SchedulerTaskError::Storage)
+        Ok(Box::new(OnComplete {
+            result: Some(json!({
+                "status": "generated",
+                "user_id": input.user_id,
+                "report_type": input.report_type
+            })),
+            schedule_next: vec![],
+        }))
     }
 }
 
@@ -180,8 +176,7 @@ impl ScheduledTask for ScheduledGreeting {
     async fn execute(
         &self,
         instance: &TaskInstance,
-        ops: &mut ExecutionOps<'_>,
-    ) -> Result<(), SchedulerTaskError> {
+    ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
         let name = instance
             .data
             .get("name")
@@ -193,9 +188,7 @@ impl ScheduledTask for ScheduledGreeting {
             name, instance.task_id
         );
 
-        ops.complete(None)
-            .await
-            .map_err(SchedulerTaskError::Storage)
+        Ok(OnComplete::done())
     }
 }
 

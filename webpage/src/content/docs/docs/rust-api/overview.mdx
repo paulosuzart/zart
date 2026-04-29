@@ -89,11 +89,8 @@ async fn main() -> anyhow::Result<()> {
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
     let sched = Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = DurableRegistry::new();
-    registry.register("onboarding", Onboarding);
-
     let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-        .registry(registry)
+        .register_durable_task("onboarding", Onboarding)
         .config(zart::WorkerConfig::default())
         .build();
 

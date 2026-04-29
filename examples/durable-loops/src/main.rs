@@ -178,9 +178,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = DurableRegistry::new();
-    registry.register("report-batch", ReportBatchTask);
-
     let execution_id = format!("report-batch-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
@@ -203,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let worker = Arc::new(
         zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-            .registry(registry)
+            .register_durable_task("report-batch", ReportBatchTask)
             .config(config)
             .build(),
     );

@@ -116,9 +116,6 @@ impl DurableExecution for ReportBatchTask {
 ## Running the workflow
 
 ```rust
-let mut registry = DurableRegistry::new();
-registry.register("report-batch", ReportBatchTask);
-
 let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 durable
     .start_for::<ReportBatchTask>(&execution_id, "report-batch", &BatchInput {

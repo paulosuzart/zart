@@ -20,11 +20,10 @@ use zart_core::StorageError;
 use zart_core::store::pause_storage::PauseStorage;
 use zart_core::store::{EventStore, ExecutionStore, StepStore, WaitGroupStore};
 use zart_core::types::{
-    CompleteStepAndScheduleBodyParams, CompleteStepNoResumeParams, CompleteWaitGroupChildParams,
-    EventDeliveryResult, ExecutionRecord, ExecutionRunRecord, ExecutionStats,
-    FailWaitGroupChildParams, FetchedTask, ListExecutionsParams, RescheduleStepForRetryParams,
-    ScheduleAtParams, ScheduleResult, ScheduleStepParams, StepAttemptRow, StepKind, StepLookup,
-    StepRow, UpsertWaitGroupStepParams,
+    CompleteStepNoResumeParams, CompleteWaitGroupChildParams, EventDeliveryResult, ExecutionRecord,
+    ExecutionRunRecord, ExecutionStats, FailWaitGroupChildParams, FetchedTask,
+    ListExecutionsParams, RescheduleStepForRetryParams, ScheduleAtParams, ScheduleResult,
+    ScheduleStepParams, StepAttemptRow, StepKind, StepLookup, StepRow, UpsertWaitGroupStepParams,
 };
 use zart_macros::zart_durable;
 use zart_scheduler::TaskScheduler;
@@ -219,12 +218,6 @@ impl StepStore for MockScheduler {
             task_id: params.task_id,
             execution_time: params.execution_time,
         })
-    }
-    async fn complete_step_and_schedule_body(
-        &self,
-        _: CompleteStepAndScheduleBodyParams,
-    ) -> Result<(), StorageError> {
-        Ok(())
     }
     async fn complete_step_no_resume(
         &self,

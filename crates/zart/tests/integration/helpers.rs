@@ -66,7 +66,7 @@ pub fn spawn_worker(
     };
     let worker = Arc::new(
         WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
-            .registry(registry)
+            .durable_registry(registry)
             .config(config)
             .build(),
     );

@@ -79,9 +79,10 @@ impl TaskScheduler for PostgresTaskScheduler {
             i32,
             Option<serde_json::Value>,
             serde_json::Value,
+            DateTime<Utc>,
         )> = sqlx::query_as(&format!(
             r#"
-                SELECT task_id, task_name, data, state, attempt, recurrence, metadata
+                SELECT task_id, task_name, data, state, attempt, recurrence, metadata, execution_time
                 FROM {tasks}
                 WHERE status = 'scheduled'
                   AND execution_time <= $1
@@ -106,7 +107,9 @@ impl TaskScheduler for PostgresTaskScheduler {
 
         let mut fetched = Vec::with_capacity(rows.len());
 
-        for (task_id, task_name, data, state, attempt, recurrence_json, metadata) in rows {
+        for (task_id, task_name, data, state, attempt, recurrence_json, metadata, execution_time) in
+            rows
+        {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
@@ -140,6 +143,7 @@ impl TaskScheduler for PostgresTaskScheduler {
                 lock_token,
                 recurrence,
                 metadata,
+                execution_time,
             });
         }
 
@@ -192,6 +196,29 @@ impl TaskScheduler for PostgresTaskScheduler {
         result: Option<serde_json::Value>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
+        // For recurring tasks with no explicit result, reschedule instead of completing —
+        // mirrors what OnComplete::complete() does via ExecutionOps.
+        if result.is_none() {
+            let row: Option<(Option<serde_json::Value>, DateTime<Utc>)> = sqlx::query_as(&format!(
+                "SELECT recurrence, execution_time FROM {tasks} WHERE task_id = $1 AND worker_id = $2",
+                tasks = self.table_names.tasks(),
+            ))
+            .bind(task_id)
+            .bind(lock_token)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+            if let Some((Some(rec_json), exec_time)) = row
+                && let Ok(recurrence) = serde_json::from_value::<crate::Recurrence>(rec_json)
+                && let Some(next_time) = recurrence.next_after(exec_time)
+            {
+                return self
+                    .update_task_state(task_id, serde_json::Value::Null, next_time, lock_token)
+                    .await;
+            }
+        }
+
         let mut conn = self
             .pool
             .acquire()

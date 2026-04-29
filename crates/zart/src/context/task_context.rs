@@ -8,13 +8,12 @@ use crate::error::StepError;
 use crate::execution_model::ExecutionMode;
 use crate::retry::RetryConfig;
 use crate::step_ops;
-use crate::step_types::{CompletionOutcome, CompletionSpec, StepDefId, StepRequest, StepResult};
+use crate::step_types::{StepDefId, StepRequest, StepResult};
 use crate::store::StorageBackend;
 use crate::timeout::TimeoutScope;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::instrument;
-use zart_core::types::StepResultKind;
 use zart_scheduler::TaskScheduler;
 
 use super::state::{PendingFn, StepHandle};
@@ -32,6 +31,7 @@ pub struct TaskContext {
     /// The underlying scheduler (used for step store operations).
     pub(crate) scheduler: Arc<dyn StorageBackend>,
     /// Task-queue scheduler (used for task lifecycle operations).
+    #[allow(dead_code)]
     pub(crate) task_scheduler: Arc<dyn TaskScheduler>,
     /// Unique identifier of the enclosing durable execution.
     execution_id: String,
@@ -334,13 +334,10 @@ impl TaskContext {
                     )
                 };
 
-                // Transactional step completion (Scenario 2): wrap the step execution
-                // AND completion with the STEP_TRX task-local so `zart::trx()` can
-                // register a transaction for atomic completion.
-                crate::trx_impl::with_step_trx::<
-                    _,
-                    Result<crate::error::StepOutcome<S::Output, S::Error>, StepError>,
-                >(async {
+                // Step execution with timeout handling.
+                // The STEP_TRX task-local is now set up by ZartTask::execute()
+                // so that `zart::trx()` can register a transaction.
+                {
                     let (json, kind) = if let Some(timeout_dur) = timeout_duration {
                         if matches!(timeout_scope, TimeoutScope::Global) {
                             if let Some(deadline) = self.step_deadline {
@@ -442,8 +439,14 @@ impl TaskContext {
                             } else {
                                 RK::Err
                             };
-                        self.complete_step_and_schedule_body(json, outcome_kind, retry_attempt + 1)
-                            .await?;
+                        crate::trx_impl::store_step_completion_hint(
+                            crate::trx_impl::StepCompletionHint::RegularStep {
+                                result: json,
+                                result_kind: outcome_kind,
+                                attempt_number: retry_attempt + 1,
+                            },
+                        )
+                        .await;
                         return Err(StepError::StepExecuted {
                             step: step_name_owned,
                         });
@@ -456,20 +459,31 @@ impl TaskContext {
                                 step: step_name_owned.clone(),
                                 reason: format!("failed to rollback step transaction: {e}"),
                             })?;
-                        self.complete_step_and_schedule_body(json, RK::TimedOut, retry_attempt + 1)
-                            .await?;
+                        crate::trx_impl::store_step_completion_hint(
+                            crate::trx_impl::StepCompletionHint::RegularStep {
+                                result: json,
+                                result_kind: RK::TimedOut,
+                                attempt_number: retry_attempt + 1,
+                            },
+                        )
+                        .await;
                         return Err(StepError::StepExecuted {
                             step: step_name_owned,
                         });
                     }
 
-                    self.complete_step_and_schedule_body(json, kind, retry_attempt + 1)
-                        .await?;
+                    crate::trx_impl::store_step_completion_hint(
+                        crate::trx_impl::StepCompletionHint::RegularStep {
+                            result: json,
+                            result_kind: kind,
+                            attempt_number: retry_attempt + 1,
+                        },
+                    )
+                    .await;
                     Err(StepError::StepExecuted {
                         step: step_name_owned,
                     })
-                })
-                .await
+                }
             }
         }
     }
@@ -519,6 +533,7 @@ impl TaskContext {
                     return Ok(());
                 }
 
+                // Handle wait-group child failure: store hint and return StepExecuted.
                 if step_def_id == StepDefId::WaitGroupChild {
                     let wait_group_step_name = self
                         .data()
@@ -527,32 +542,18 @@ impl TaskContext {
                         .map(str::to_string);
 
                     if let Some(group_step_name) = wait_group_step_name {
-                        let spec = CompletionSpec {
-                            step_task_id: self.task_id.clone(),
-                            step_id: self.task_id.clone(),
-                            step_name: step_name.to_string(),
-                            worker_id: self.lock_token.clone(),
-                            run_id: self.run_id().to_string(),
-                            execution_id: self.execution_id().to_string(),
-                            data: self.data().clone(),
-                            attempt_number: retry_attempt + 1,
-                            result: StepResult::Transition,
-                            wait_group_step_name: Some(group_step_name),
-                            outcome: CompletionOutcome::Failure {
+                        crate::trx_impl::store_step_completion_hint(
+                            crate::trx_impl::StepCompletionHint::WaitGroupChildFailure {
+                                group_step_name: group_step_name.clone(),
                                 error: err.to_string(),
+                                attempt_number: retry_attempt + 1,
                             },
-                        };
+                        )
+                        .await;
 
-                        step_def_id
-                            .completion_behavior(&spec.outcome)
-                            .complete(&*self.scheduler, &*self.task_scheduler, spec)
-                            .await
-                            .map_err(|e| StepError::Failed {
-                                step: step_name.to_string(),
-                                reason: e.to_string(),
-                            })?;
-
-                        return Ok(());
+                        return Err(StepError::StepExecuted {
+                            step: step_name.to_string(),
+                        });
                     }
                 }
 
@@ -560,110 +561,53 @@ impl TaskContext {
             }
         };
 
-        let wait_group_step_name = if step_def_id == StepDefId::WaitGroupChild {
-            self.data()
+        // Handle wait-group child success: store hint and return StepExecuted.
+        if step_def_id == StepDefId::WaitGroupChild {
+            let wait_group_step_name = self
+                .data()
                 .get("wg_step_name")
                 .and_then(|v| v.as_str())
-                .map(str::to_string)
-        } else {
-            None
+                .map(str::to_string);
+
+            if let Some(group_step_name) = wait_group_step_name {
+                let result_json = match step_result {
+                    StepResult::Executed(ref v) | StepResult::Cached(ref v) => v.clone(),
+                    StepResult::Transition => serde_json::Value::Null,
+                };
+                crate::trx_impl::store_step_completion_hint(
+                    crate::trx_impl::StepCompletionHint::WaitGroupChild {
+                        group_step_name: group_step_name.clone(),
+                        result: result_json,
+                        result_kind: crate::step_types::ResultKind::Ok,
+                        attempt_number: retry_attempt + 1,
+                    },
+                )
+                .await;
+
+                return Err(StepError::StepExecuted {
+                    step: step_name.to_string(),
+                });
+            }
+        }
+
+        // Regular step (or sleep/wait-for-event): store hint, no storage writes.
+        let result_json = match step_result {
+            StepResult::Executed(v) | StepResult::Cached(v) => v,
+            StepResult::Transition => serde_json::Value::Null,
         };
 
-        let spec = CompletionSpec {
-            step_task_id: self.task_id.clone(),
-            step_id: self.task_id.clone(),
-            step_name: step_name.to_string(),
-            worker_id: self.lock_token.clone(),
-            run_id: self.run_id().to_string(),
-            execution_id: self.execution_id().to_string(),
-            data: self.data().clone(),
-            attempt_number: retry_attempt + 1,
-            result: step_result,
-            wait_group_step_name,
-            outcome: CompletionOutcome::Success,
-        };
-
-        step_def_id
-            .completion_behavior(&spec.outcome)
-            .complete(&*self.scheduler, &*self.task_scheduler, spec)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        crate::trx_impl::store_step_completion_hint(
+            crate::trx_impl::StepCompletionHint::RegularStep {
+                result: result_json,
+                result_kind: crate::step_types::ResultKind::Ok,
+                attempt_number: retry_attempt + 1,
+            },
+        )
+        .await;
 
         Err(StepError::StepExecuted {
             step: step_name.to_string(),
         })
-    }
-
-    /// Complete a step row and schedule the next body segment in one transaction.
-    ///
-    /// Used in step mode when the target step lambda completes (success or error).
-    ///
-    /// If a transaction was registered via `zart::trx()`, it will be used for
-    /// the completion writes and then committed. Otherwise, a new transaction
-    /// is created.
-    async fn complete_step_and_schedule_body(
-        &self,
-        result: serde_json::Value,
-        kind: crate::step_types::ResultKind,
-        attempt_number: usize,
-    ) -> Result<(), StepError> {
-        use zart_core::types::CompleteStepAndScheduleBodyParams;
-
-        let step_task_id = self.task_id.clone();
-        let step_id = self.task_id.clone();
-        let step_name = self
-            .task_id
-            .strip_prefix(&format!("{}:step:", self.run_id()))
-            .unwrap_or(&self.task_id)
-            .to_string();
-        let next_body_task_id = format!("{}:body:after:{}", self.run_id(), step_name);
-
-        let spec = CompleteStepAndScheduleBodyParams {
-            run_id: self.run_id().to_string(),
-            execution_id: self.execution_id().to_string(),
-            step_task_id,
-            step_id,
-            result,
-            result_kind: StepResultKind::from(kind),
-            lock_token: self.lock_token.clone(),
-            attempt_number,
-            next_body_task_id,
-            data: self.data().clone(),
-        };
-
-        // Check if a transaction was registered via zart::trx().
-        // SAFETY: contention-free — ZartTrx (which held the lock) was dropped
-        // when the step lambda returned, before this function is called.
-        if let Some(mut tx) = crate::trx_impl::take_step_trx().await {
-            self.scheduler
-                .complete_step_and_schedule_body_in_tx(&mut tx, spec)
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: self.task_id.clone(),
-                    reason: e.to_string(),
-                })?;
-
-            // Commit the user-registered transaction.
-            crate::trx_impl::commit_trx(tx)
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: self.task_id.clone(),
-                    reason: format!("failed to commit step transaction: {e}"),
-                })?;
-            return Ok(());
-        }
-
-        // Default path: framework opens its own transaction.
-        self.scheduler
-            .complete_step_and_schedule_body(spec)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: self.task_id.clone(),
-                reason: e.to_string(),
-            })
     }
 
     /// Register a [`ZartStep`] for parallel execution without waiting for it to complete.
