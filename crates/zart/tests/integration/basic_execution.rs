@@ -16,7 +16,7 @@ async fn durable_execution_runs_sequential_steps() {
     registry.register("sequential-task", SequentialTask);
 
     let execution_id = format!("test-seq-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     durable
         .start(&execution_id, "sequential-task", serde_json::json!({}))
@@ -46,7 +46,7 @@ async fn failed_step_causes_execution_to_fail() {
     registry.register("failing-task", FailingTask);
 
     let execution_id = format!("test-fail-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     durable
         .start(&execution_id, "failing-task", serde_json::json!({}))
@@ -80,7 +80,7 @@ async fn step_retries_on_transient_failure() {
     );
 
     let execution_id = format!("test-retry-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     durable
         .start(&execution_id, "transient-fail-task", serde_json::json!({}))
@@ -107,7 +107,7 @@ async fn step_retries_on_transient_failure() {
 async fn list_executions_returns_started_executions() {
     let scheduler = setup().await;
 
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let base_id = Uuid::new_v4().to_string();
     let id_a = format!("test-list-a-{base_id}");
@@ -172,7 +172,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
 
     let task_id = format!("recurring-{}", Uuid::new_v4());
     scheduler
-        .task_scheduler()
+        .scheduler()
         .schedule_at(zart_scheduler::ScheduleAtParams {
             task_id: task_id.clone(),
             task_name: "counter-task".to_string(),
@@ -193,7 +193,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
         ..Default::default()
     };
     let worker = Arc::new(Worker::new(
-        scheduler.task_scheduler(),
+        scheduler.scheduler(),
         Arc::new(scheduler_registry),
         config,
     ));
@@ -249,7 +249,7 @@ async fn step_exhausts_retries_and_fails_execution() {
     registry.register("always-fail-task", AlwaysFailTask);
 
     let execution_id = format!("test-exhaust-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     durable
         .start(&execution_id, "always-fail-task", serde_json::json!({}))
@@ -274,7 +274,7 @@ async fn cancel_stops_execution_before_it_runs() {
     let scheduler = setup().await;
 
     let execution_id = format!("test-cancel-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     durable
         .start(&execution_id, "sequential-task", serde_json::json!({}))
@@ -291,7 +291,8 @@ async fn cancel_stops_execution_before_it_runs() {
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn start_uses_single_internal_transaction() {
     let scheduler = setup().await;
-    let sched = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let storage = scheduler.storage();
+    let sched = DurableScheduler::from_backend(scheduler.as_ref());
 
     let exec_id = format!("start-atomic-{}", Uuid::new_v4());
     let result = sched
@@ -299,7 +300,7 @@ async fn start_uses_single_internal_transaction() {
         .await
         .expect("start failed");
 
-    let exec = scheduler
+    let exec = storage
         .get_execution(&exec_id)
         .await
         .expect("get_execution failed");

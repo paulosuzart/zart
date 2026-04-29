@@ -61,17 +61,18 @@
 //! Register the handler, start a worker, and fire an execution:
 //!
 //! ```text
-//! let scheduler = /* connect to postgres */;
-//! let sched     = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
-//! let worker    = WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
-//!                     .register_durable_task("onboard-user", OnboardUser)
-//!                     .build();
+//! let pg     = PgBackend::new(pool);
+//! pg.run_migrations().await?;
+//! let sched  = DurableScheduler::from_backend(&pg);
+//! let worker = WorkerBuilder::from_backend(&pg)
+//!                  .register_durable_task("onboard-user", OnboardUser)
+//!                  .build();
 //!
 //! // Start the execution from anywhere in your application.
 //! sched.start_for::<OnboardUser>("onboard-alice", "onboard-user", &user_id).await?;
 //!
 //! // Optionally wait for the result.
-//! let workspace_id = sched.wait_for::<OnboardUser>("onboard-alice", timeout, None).await?;
+//! let workspace_id = sched.wait_for::<OnboardUser>("onboard-alice", timeout).await?;
 //! ```
 //!
 //! # Core concepts
@@ -167,8 +168,9 @@ pub use error::{
     ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
 };
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
-pub use postgres::PostgresStorage;
+pub use postgres::{PgBackend, PostgresStorage};
 pub use registry::{DurableExecution, DurableRegistry};
+pub use store::Backend;
 pub use zart_scheduler::{Worker, WorkerConfig};
 // Re-export execution-side types so callers don't need zart-core directly.
 pub use retry::RetryConfig;

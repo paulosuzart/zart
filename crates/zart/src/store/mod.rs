@@ -42,3 +42,21 @@ impl<
 > StorageBackend for T
 {
 }
+
+// ── Backend ───────────────────────────────────────────────────────────────────
+
+/// Unified backend abstraction combining execution-side storage and
+/// task-queue scheduling.
+///
+/// Pause/resume support comes for free: `StorageBackend` includes `PauseStorage`
+/// as a supertrait, so any `Backend` provides pause through `storage()`.
+///
+/// Implemented by [`crate::postgres::PgBackend`] for production
+/// and by test doubles like `RecordingScheduler` for unit tests.
+///
+/// Use [`crate::DurableScheduler::from_backend`] and [`crate::WorkerBuilder::from_backend`]
+/// to construct fully-wired components from any `Backend`.
+pub trait Backend: Send + Sync {
+    fn storage(&self) -> std::sync::Arc<dyn StorageBackend>;
+    fn scheduler(&self) -> std::sync::Arc<dyn zart_scheduler::TaskScheduler>;
+}

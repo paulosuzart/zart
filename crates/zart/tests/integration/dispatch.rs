@@ -4,7 +4,6 @@ use std::time::Duration;
 use uuid::Uuid;
 use zart::{DurableRegistry, DurableScheduler, step_types::StepDefId};
 use zart_core::TaskMetadata;
-use zart_core::store::{EventStore as _, StepStore as _, WaitGroupStore as _};
 use zart_core::types::{
     CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
     UpsertWaitGroupStepParams,
@@ -59,18 +58,19 @@ async fn stepdefid_from_task_metadata_correct() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn wait_group_complete_concurrent_schedules_body_once() {
-    let scheduler = setup().await;
+    let pg = setup().await;
+    let storage = pg.storage();
 
     let execution_id = format!("test-wg-concurrent-{}", Uuid::new_v4());
     let run_id = format!("{execution_id}:run:0");
     let task_name = "wg-task";
 
-    scheduler
+    storage
         .start_execution(&execution_id, task_name, serde_json::json!({}))
         .await
         .expect("start_execution failed");
 
-    scheduler
+    storage
         .upsert_wait_group_step(UpsertWaitGroupStepParams {
             run_id: run_id.clone(),
             group_step_name: "__wg__all__concurrent".to_string(),
@@ -83,7 +83,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
     let child1_task_id = format!("{run_id}:step:child-1");
     let child2_task_id = format!("{run_id}:step:child-2");
 
-    scheduler
+    storage
         .schedule_step(ScheduleStepParams {
             task_id: child1_task_id.clone(),
             task_name: task_name.to_string(),
@@ -106,7 +106,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .await
         .expect("schedule child-1 failed");
 
-    scheduler
+    storage
         .schedule_step(ScheduleStepParams {
             task_id: child2_task_id.clone(),
             task_name: task_name.to_string(),
@@ -129,8 +129,8 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .await
         .expect("schedule child-2 failed");
 
-    let fetched = scheduler
-        .task_scheduler()
+    let fetched = pg
+        .scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -148,7 +148,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
 
     let next_body_task_id = format!("{run_id}:body:after:__wg__all__concurrent");
 
-    let s1 = scheduler.clone();
+    let s1 = storage.clone();
     let run_id_1 = run_id.clone();
     let child1_task_id_clone = child1_task_id.clone();
     let next_body_task_id_1 = next_body_task_id.clone();
@@ -169,7 +169,7 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
         .await
     });
 
-    let s2 = scheduler.clone();
+    let s2 = storage.clone();
     let run_id_2 = run_id.clone();
     let execution_id_2 = execution_id.clone();
     let child2_task_id_clone = child2_task_id.clone();
@@ -197,8 +197,8 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
 
     assert!(t1 ^ t2, "exactly one child should trigger body scheduling");
 
-    let fetched = scheduler
-        .task_scheduler()
+    let fetched = pg
+        .scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -212,18 +212,19 @@ async fn wait_group_complete_concurrent_schedules_body_once() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn wait_group_failure_first_only_fails_execution_once() {
-    let scheduler = setup().await;
+    let pg = setup().await;
+    let storage = pg.storage();
 
     let execution_id = format!("test-wg-fail-{}", Uuid::new_v4());
     let run_id = format!("{execution_id}:run:0");
     let task_name = "wg-fail-task";
 
-    scheduler
+    storage
         .start_execution(&execution_id, task_name, serde_json::json!({}))
         .await
         .expect("start_execution failed");
 
-    scheduler
+    storage
         .upsert_wait_group_step(UpsertWaitGroupStepParams {
             run_id: run_id.clone(),
             group_step_name: "__wg__all__fail".to_string(),
@@ -236,7 +237,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
     let fail1_task_id = format!("{run_id}:step:fail-1");
     let fail2_task_id = format!("{run_id}:step:fail-2");
 
-    scheduler
+    storage
         .schedule_step(ScheduleStepParams {
             task_id: fail1_task_id.clone(),
             task_name: task_name.to_string(),
@@ -259,7 +260,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
         .await
         .expect("schedule fail-1 failed");
 
-    scheduler
+    storage
         .schedule_step(ScheduleStepParams {
             task_id: fail2_task_id.clone(),
             task_name: task_name.to_string(),
@@ -282,8 +283,8 @@ async fn wait_group_failure_first_only_fails_execution_once() {
         .await
         .expect("schedule fail-2 failed");
 
-    let fetched = scheduler
-        .task_scheduler()
+    let fetched = pg
+        .scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -299,7 +300,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
         .map(|t| t.lock_token.clone())
         .expect("fail-2 task not fetched");
 
-    let first = scheduler
+    let first = storage
         .fail_wait_group_child(FailWaitGroupChildParams {
             run_id: run_id.clone(),
             group_step_name: "__wg__all__fail".to_string(),
@@ -312,7 +313,7 @@ async fn wait_group_failure_first_only_fails_execution_once() {
         .await
         .expect("fail_wait_group_child first failed");
 
-    let second = scheduler
+    let second = storage
         .fail_wait_group_child(FailWaitGroupChildParams {
             run_id: run_id.clone(),
             group_step_name: "__wg__all__fail".to_string(),
@@ -329,12 +330,12 @@ async fn wait_group_failure_first_only_fails_execution_once() {
     assert!(!second, "second failure must not win CAS");
 
     if first {
-        scheduler
+        storage
             .fail_execution(&execution_id)
             .await
             .expect("fail_execution failed");
     }
-    let exec = scheduler
+    let exec = storage
         .get_execution(&execution_id)
         .await
         .expect("get_execution failed")
@@ -345,8 +346,9 @@ async fn wait_group_failure_first_only_fails_execution_once() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn deliver_event_happy_path_and_idempotency() {
-    let scheduler = setup().await;
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let pg = setup().await;
+    let storage = pg.storage();
+    let durable = DurableScheduler::from_backend(pg.as_ref());
 
     let execution_id = format!("test-deliver-event-{}", Uuid::new_v4());
     durable
@@ -356,11 +358,11 @@ async fn deliver_event_happy_path_and_idempotency() {
 
     let mut registry = DurableRegistry::new();
     registry.register("wait-event-task", WaitEventTask);
-    let (worker, _handle) = spawn_worker(scheduler.clone(), registry);
+    let (worker, _handle) = spawn_worker(pg.clone(), registry);
 
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    let r1 = scheduler
+    let r1 = storage
         .deliver_event(
             &execution_id,
             "approve",
@@ -368,7 +370,7 @@ async fn deliver_event_happy_path_and_idempotency() {
         )
         .await
         .expect("deliver_event #1 failed");
-    let r2 = scheduler
+    let r2 = storage
         .deliver_event(
             &execution_id,
             "approve",
@@ -394,18 +396,19 @@ async fn deliver_event_happy_path_and_idempotency() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn completion_behaviors_execute_with_real_backend() {
-    let scheduler = setup().await;
+    let pg = setup().await;
+    let storage = pg.storage();
 
     let execution_id = format!("test-completion-{}", Uuid::new_v4());
     let run_id = format!("{execution_id}:run:0");
     let task_name = "completion-task";
 
-    scheduler
+    storage
         .start_execution(&execution_id, task_name, serde_json::json!({}))
         .await
         .expect("start_execution failed");
 
-    let schedule = scheduler
+    let schedule = storage
         .schedule_step(ScheduleStepParams {
             task_id: format!("{run_id}:step:comp-step"),
             task_name: task_name.to_string(),
@@ -426,8 +429,8 @@ async fn completion_behaviors_execute_with_real_backend() {
         .await
         .expect("schedule_step failed");
 
-    let fetched = scheduler
-        .task_scheduler()
+    let fetched = pg
+        .scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");
@@ -445,16 +448,15 @@ async fn completion_behaviors_execute_with_real_backend() {
         result_kind: zart_core::types::StepResultKind::Ok,
     };
 
-    let mut tx = scheduler.pool().begin().await.expect("begin tx failed");
+    let mut tx = pg.pool().begin().await.expect("begin tx failed");
 
-    scheduler
+    storage
         .write_step_completion_in_tx(&mut tx, step_params)
         .await
         .expect("write_step_completion_in_tx failed");
 
     let next_body_task_id = format!("{run_id}:body:after:comp-step");
-    scheduler
-        .task_scheduler()
+    pg.scheduler()
         .schedule_at_in_tx(
             &mut tx,
             zart_core::types::ScheduleAtParams {
@@ -471,8 +473,8 @@ async fn completion_behaviors_execute_with_real_backend() {
 
     tx.commit().await.expect("commit failed");
 
-    let due = scheduler
-        .task_scheduler()
+    let due = pg
+        .scheduler()
         .poll_due(chrono::Utc::now(), 200)
         .await
         .expect("poll_due failed");

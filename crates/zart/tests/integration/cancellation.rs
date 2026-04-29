@@ -24,7 +24,7 @@ async fn cancelled_execution_not_overwritten_when_handler_succeeds() {
     );
 
     let execution_id = format!("test-cancel-race-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
     durable
         .start(&execution_id, "gated-task", serde_json::json!({}))
         .await
@@ -66,7 +66,7 @@ async fn cancelled_execution_not_requeued_on_step_scheduled() {
     );
 
     let execution_id = format!("test-cancel-step-race-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
     durable
         .start(&execution_id, "gated-step-task", serde_json::json!({}))
         .await
