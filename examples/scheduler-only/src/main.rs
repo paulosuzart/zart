@@ -247,7 +247,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
 
     let scheduler = Arc::new(PostgresTaskScheduler::new(pool));
-    scheduler.run_migrations().await?;
 
     // Register task handlers
     let mut registry = TaskRegistry::new();

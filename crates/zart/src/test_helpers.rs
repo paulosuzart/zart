@@ -234,10 +234,6 @@ impl TaskScheduler for RecordingScheduler {
         Ok(())
     }
 
-    async fn run_migrations(&self) -> Result<(), StorageError> {
-        Ok(())
-    }
-
     async fn complete_and_schedule(
         &self,
         _params: CompleteAndScheduleParams,

@@ -17,14 +17,15 @@ mod postgres_tests {
             .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string())
     }
 
-    /// Build a pool, run migrations, and return both.
+    /// Build a pool, create a scheduler, and return both.
+    /// Schema is expected to be provisioned via `PgBackend::run_migrations()`
+    /// or by applying the SQL file before running tests.
     async fn setup() -> (PgPool, PostgresTaskScheduler) {
         let pool = PgPool::connect(&pg_url())
             .await
             .expect("failed to connect to PostgreSQL");
 
         let scheduler = PostgresTaskScheduler::new(pool.clone());
-        scheduler.run_migrations().await.expect("migrations failed");
 
         (pool, scheduler)
     }
@@ -285,14 +286,8 @@ mod postgres_tests {
             .await
             .expect("failed to connect to PostgreSQL");
 
-        // Run default migrations to ensure zart_* tables and ENUMs exist.
-        let default_scheduler = PostgresTaskScheduler::new(pool.clone());
-        default_scheduler
-            .run_migrations()
-            .await
-            .expect("migrations failed");
-
-        // Create custom-prefixed tables for this test.
+        // Schema is expected to be provisioned beforehand,
+        // ensuring zart_* tables and ENUMs exist.
         let prefix = "custtest_";
         setup_custom_tables(&pool, prefix).await;
 

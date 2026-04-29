@@ -23,6 +23,25 @@
 //! let worker = WorkerBuilder::from_backend(&pg).build();
 //! # }
 //! ```
+//! [`PostgresStorage`] implements `StorageBackend`, covering all execution-side
+//! tables (`zart_executions`, `zart_execution_runs`, `zart_steps`,
+//! `zart_step_attempts`, `zart_wait_groups`, `zart_events`, `zart_pause_rules`).
+//!
+//! # Usage
+//!
+//! ```rust,no_run
+//! # async fn example() {
+//! use sqlx::PgPool;
+//! use zart::{DurableScheduler, WorkerBuilder, postgres::PgBackend};
+//!
+//! let pool = PgPool::connect("postgres://localhost/mydb").await.unwrap();
+//! let pg = PgBackend::new(pool);
+//! pg.run_migrations().await.unwrap();
+//!
+//! let durable = DurableScheduler::from_backend(&pg);
+//! let worker = WorkerBuilder::from_backend(&pg).build();
+//! # }
+//! ```
 
 mod admin_storage_impl;
 mod event_storage_impl;
@@ -125,11 +144,8 @@ impl PostgresStorage {
 
     /// Run all migrations for this crate's unified migration set.
     ///
-    /// This covers both scheduler tables (mirrored from `zart-scheduler`) and execution
-    /// tables in a single sequential set. See `migrations/0001_scheduler.sql` — that file
-    /// is intentionally byte-identical to `zart-scheduler/migrations/0001_scheduler.sql`
-    /// so their SQLx checksums agree when both migration paths share `_sqlx_migrations`.
-    /// The test `migration_files_are_in_sync` enforces this invariant.
+    /// This covers both scheduler tables and execution tables in a single
+    /// sequential set. Idempotent — safe to call multiple times.
     pub(crate) async fn run_all_migrations(&self) -> Result<(), StorageError> {
         sqlx::migrate!("./migrations")
             .run(&self.pool)
@@ -143,7 +159,7 @@ impl PostgresStorage {
         note = "Use `PgBackend::run_migrations()` instead, which runs both scheduler and execution migrations."
     )]
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        self.task_scheduler.run_migrations().await
+        self.run_all_migrations().await
     }
 }
 
@@ -204,15 +220,6 @@ impl PgBackend {
     /// Applies `zart/migrations/` as a single sequential set: `0001_scheduler.sql`
     /// (task-queue tables) followed by `0002_execution.sql` (durable-execution tables).
     /// Idempotent — safe to call multiple times.
-    ///
-    /// ## Migration file ownership
-    ///
-    /// `0001_scheduler.sql` here is a byte-identical mirror of
-    /// `zart-scheduler/migrations/0001_scheduler.sql`. Both paths share the same
-    /// `_sqlx_migrations` tracking table, so the checksums must agree.
-    /// If you ever need to use `zart-scheduler` standalone first and later switch to
-    /// `PgBackend`, the checksum match means the v1 migration is recognised as already
-    /// applied and skipped. The test `migration_files_are_in_sync` enforces this.
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
         self.storage.run_all_migrations().await
     }
@@ -225,36 +232,5 @@ impl Backend for PgBackend {
 
     fn scheduler(&self) -> Arc<dyn TaskScheduler> {
         self.scheduler.clone()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// `zart/migrations/0001_scheduler.sql` must stay byte-identical to
-    /// `zart-scheduler/migrations/0001_scheduler.sql` so that both migration paths
-    /// (standalone scheduler and PgBackend) produce the same SQLx checksum for version 1
-    /// and therefore share `_sqlx_migrations` without conflicts.
-    ///
-    /// If this test fails, copy the canonical file from `zart-scheduler` into `zart`.
-    #[test]
-    fn migration_files_are_in_sync() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
-        let zart = root.join("crates/zart/migrations/0001_scheduler.sql");
-        let scheduler = root.join("crates/zart-scheduler/migrations/0001_scheduler.sql");
-
-        let zart_content =
-            std::fs::read(&zart).unwrap_or_else(|e| panic!("cannot read {}: {e}", zart.display()));
-        let scheduler_content = std::fs::read(&scheduler)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", scheduler.display()));
-
-        assert_eq!(
-            zart_content, scheduler_content,
-            "migration files are out of sync — copy zart-scheduler/migrations/0001_scheduler.sql \
-             into zart/migrations/0001_scheduler.sql"
-        );
     }
 }

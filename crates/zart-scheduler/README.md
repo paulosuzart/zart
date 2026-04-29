@@ -21,6 +21,25 @@ This crate sits at the base of the Zart stack. It defines the storage-backend tr
 zart-scheduler = "0.1"
 ```
 
+## Schema Setup
+
+`zart-scheduler` does **not** bundle in-process migrations. The schema is managed by the `zart` crate:
+
+```rust
+use zart::PgBackend;
+
+let pg = PgBackend::new(pool);
+pg.run_migrations().await?; // creates both scheduler and execution tables
+```
+
+If you use `zart-scheduler` **standalone** (without the full `zart` backend), apply the reference SQL manually:
+
+```sh
+psql -f crates/zart-scheduler/sql/0001_scheduler.sql your_database
+```
+
+> **Note:** If you customize table names via `TableNames`, the bundled SQL won't match — you need to provision your own schema.
+
 ## Recurring Tasks
 
 `zart-scheduler` supports recurring tasks via the `Recurrence` enum:
