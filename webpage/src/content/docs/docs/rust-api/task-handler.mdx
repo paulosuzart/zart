@@ -33,14 +33,29 @@ The `run` method receives the deserialized payload. All workflow operations are 
 
 When `timeout()` returns `Some(duration)`, the framework computes a deadline as `scheduled_at + duration` when the execution is first started. The worker checks this deadline before dispatching each task. If the deadline has passed, the worker invokes `on_failure(ExecutionDeadlineExceeded)` instead of executing the task.
 
-## DurableRegistry
+## Registration
 
-Register all handlers before starting a worker. The string name is how you reference the workflow when scheduling.
+Register handlers using the fluent builder API. The string name is how you reference the workflow when scheduling.
+
+```rust
+let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+    .register_durable_task("onboarding", OnboardingTask)
+    .register_durable_task("checkout",   CheckoutTask)
+    .config(zart::WorkerConfig::default())
+    .build();
+```
+
+Alternatively, build a `DurableRegistry` separately and pass it to the builder:
 
 ```rust
 let mut registry = DurableRegistry::new();
 registry.register("onboarding", OnboardingTask);
 registry.register("checkout",   CheckoutTask);
+
+let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+    .durable_registry(registry)
+    .config(zart::WorkerConfig::default())
+    .build();
 ```
 
 <Aside type="caution">

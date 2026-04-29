@@ -27,7 +27,8 @@ async fn checkout(order: Order) -> Result<Receipt, zart::error::TaskError> {
 
 // Macro generates `struct Checkout;` and `impl DurableExecution for Checkout`
 // Register with:
-registry.register("checkout", Checkout);
+//   .register_durable_task("checkout", Checkout)
+// in the WorkerBuilder chain
 ```
 
 **Parameters:**

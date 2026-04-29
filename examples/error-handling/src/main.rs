@@ -316,9 +316,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let sched = std::sync::Arc::new(PostgresStorage::new(pool));
 
-    let mut registry = DurableRegistry::new();
-    registry.register("error-handling-demo", ProcessOrder);
-
     let execution_id = format!("error-handling-{}", Uuid::new_v4());
     let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
@@ -343,7 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let worker = std::sync::Arc::new(
         zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-            .registry(registry)
+            .register_durable_task("error-handling-demo", ProcessOrder)
             .config(config)
             .build(),
     );

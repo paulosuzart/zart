@@ -229,10 +229,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Task: zart::cli_demo::CliDemoTask");
     println!();
 
-    // Register and run the handler
-    let mut registry = DurableRegistry::new();
-    registry.register("zart::cli_demo::CliDemoTask", CliDemoTask);
-
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(500),
         max_tasks_per_poll: 10,
@@ -243,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-        .registry(registry)
+        .register_durable_task("zart::cli_demo::CliDemoTask", CliDemoTask)
         .config(config)
         .build();
 
