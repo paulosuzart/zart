@@ -179,8 +179,13 @@ impl ScheduledTask for ZartTask {
         );
 
         // 5. Execute handler within STEP_TRX scope so `zart::trx()` can register a transaction.
-        let result = trx_impl::with_step_trx(async {
-            handler.execute(ctx.clone(), instance.data.clone()).await
+        //    We also capture the (tx, hint) inside the scope because STEP_TRX is only
+        //    available while `with_step_trx` is on the stack — once it returns the
+        //    task-local is gone and `take_step_trx` would return `(None, None)`.
+        let (result, step_trx, step_hint) = trx_impl::with_step_trx(async {
+            let res = handler.execute(ctx.clone(), instance.data.clone()).await;
+            let (tx, hint) = trx_impl::take_step_trx().await;
+            (res, tx, hint)
         })
         .await;
 
@@ -204,8 +209,7 @@ impl ScheduledTask for ZartTask {
                 ..
             }) => {
                 info!(step = %step, "Step executed — selecting CompletionHandler");
-                let (opt_tx, hint) = trx_impl::take_step_trx().await;
-                let tx = match opt_tx {
+                let tx = match step_trx {
                     Some(t) => t,
                     None => self
                         .scheduler
@@ -217,7 +221,7 @@ impl ScheduledTask for ZartTask {
                 let step_id = instance.task_id.clone();
 
                 // Select the correct CompletionHandler based on the hint.
-                match hint {
+                match step_hint {
                     Some(trx_impl::StepCompletionHint::WaitGroupChild {
                         group_step_name,
                         result,
@@ -232,7 +236,7 @@ impl ScheduledTask for ZartTask {
                         let step_params = zart_core::types::WriteStepCompletionParams {
                             step_id,
                             attempt_number,
-                            result,
+                            result: result.clone(),
                             result_kind: zart_core::types::StepResultKind::from(result_kind),
                         };
                         let params = zart_core::types::CompleteWaitGroupChildParams {
@@ -241,7 +245,7 @@ impl ScheduledTask for ZartTask {
                             group_step_name,
                             child_step_task_id,
                             child_step_id,
-                            child_result: serde_json::Value::Null,
+                            child_result: result,
                             lock_token: instance.lock_token.clone(),
                             attempt_number: instance.attempt as usize,
                             next_body_task_id,

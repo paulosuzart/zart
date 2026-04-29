@@ -570,10 +570,14 @@ impl TaskContext {
                 .map(str::to_string);
 
             if let Some(group_step_name) = wait_group_step_name {
+                let result_json = match step_result {
+                    StepResult::Executed(ref v) | StepResult::Cached(ref v) => v.clone(),
+                    StepResult::Transition => serde_json::Value::Null,
+                };
                 crate::trx_impl::store_step_completion_hint(
                     crate::trx_impl::StepCompletionHint::WaitGroupChild {
                         group_step_name: group_step_name.clone(),
-                        result: serde_json::Value::Null,
+                        result: result_json,
                         result_kind: crate::step_types::ResultKind::Ok,
                         attempt_number: retry_attempt + 1,
                     },

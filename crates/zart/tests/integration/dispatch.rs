@@ -407,7 +407,7 @@ async fn completion_behaviors_execute_with_real_backend() {
 
     let schedule = scheduler
         .schedule_step(ScheduleStepParams {
-            task_id: format!("{execution_id}:step:comp-step"),
+            task_id: format!("{run_id}:step:comp-step"),
             task_name: task_name.to_string(),
             run_id: run_id.clone(),
             step_name: "comp-step".to_string(),
