@@ -33,6 +33,7 @@ Responsible for persisting and claiming executions. Implements `SKIP LOCKED` pol
 | `TaskScheduler` | Trait (in `zart-scheduler`) — poll for due tasks, mark complete/failed |
 | `PostgresTaskScheduler` | Concrete — PostgreSQL-backed task queue (`zart_tasks`) |
 | `PostgresStorage` | Concrete — execution-side storage (`zart_executions`, `zart_steps`, …) |
+| `PgBackend` | Facade — owns both `PostgresStorage` and `PostgresTaskScheduler` |
 | `Worker` | Drives the poll loop, dispatches to the internal `TaskRegistry` |
 | `WorkerBuilder` | Builder for `Worker`; wires `DurableRegistry` into the internal `TaskRegistry` |
 | `DurableRegistry` | User-facing registry — maps task-name strings to handler instances |
@@ -87,14 +88,14 @@ No new invocation syntax, no context objects to thread through your code. `send_
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-    let sched = Arc::new(PostgresStorage::new(pool));
+    let pg = zart::PgBackend::new(pool);
 
-    let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+    let worker = zart::WorkerBuilder::from_backend(&pg)
         .register_durable_task("onboarding", Onboarding)
         .config(zart::WorkerConfig::default())
         .build();
 
-    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+    let durable = DurableScheduler::from_backend(&pg);
 
     // Schedule an execution
     durable
@@ -107,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 <Aside type="tip">
-In most applications the scheduler is shared via `Arc<PostgresStorage>` so both the web server (scheduling) and the worker (executing) share the same instance.
+In most applications `PgBackend` is created once and shared via `Arc` so both the web server (scheduling) and the worker (executing) use the same backend.
 </Aside>
 
 ## Free Functions Reference

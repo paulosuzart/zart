@@ -116,7 +116,7 @@ impl DurableExecution for ReportBatchTask {
 ## Running the workflow
 
 ```rust
-let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 durable
     .start_for::<ReportBatchTask>(&execution_id, "report-batch", &BatchInput {
         batch_name: "2024-annual".into(),

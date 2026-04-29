@@ -50,9 +50,10 @@ pub use table_names::{TableNames, TableNamesError};
 /// `WaitGroupStore`, `EventStore`, and `PauseStorage`. Task-queue operations
 /// are delegated to an internal [`PostgresTaskScheduler`].
 ///
-/// Create one with [`PostgresStorage::new`], passing in an already-built
-/// `sqlx::PgPool`. Call [`run_migrations`](Self::run_migrations) before first
-/// use to ensure the schema is up to date.
+/// For most users, [`PgBackend`] is the preferred entry point — it owns both
+/// the storage and the scheduler in a single struct and exposes
+/// [`PgBackend::run_migrations`]. Use [`PostgresStorage`] directly only when
+/// you need fine-grained control over the scheduler instance.
 pub struct PostgresStorage {
     pool: PgPool,
     table_names: TableNames,

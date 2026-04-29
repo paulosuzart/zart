@@ -110,7 +110,7 @@ impl DurableExecution for RetrySimulationTask {
 ## Running the workflow
 
 ```rust
-let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 durable
     .start_for::<RetrySimulationTask>(&execution_id, "retry-simulation", &RetrySimulationInput {
         name: "retry-demo".into(),

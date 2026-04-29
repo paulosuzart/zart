@@ -28,7 +28,7 @@ Every durable execution is identified by a **unique execution ID** that doubles 
 ```rust
 use zart::prelude::*;
 
-let durable = DurableScheduler::new(storage.clone(), storage.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 
 // Schedule a new execution (idempotent)
 durable
