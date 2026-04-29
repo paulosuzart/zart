@@ -94,9 +94,6 @@ async fn approval_task(data: ApprovalRequest) -> Result<ApprovalOutput, TaskErro
 ## Starting the workflow and delivering the event
 
 ```rust
-let mut registry = DurableRegistry::new();
-registry.register("approval-task", ApprovalTask);
-
 let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 let execution_id = "approval-demo-1";
 

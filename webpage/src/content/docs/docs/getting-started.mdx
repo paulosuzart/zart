@@ -87,9 +87,6 @@ async fn main() -> anyhow::Result<()> {
     let sched = Arc::new(PostgresStorage::new(pool));
     sched.run_migrations().await?;
 
-    let mut registry = DurableRegistry::new();
-    registry.register("onboarding", Onboarding);
-
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
@@ -101,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
 
     let worker = Arc::new(
         zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-            .registry(registry)
+            .register_durable_task("onboarding", Onboarding)
             .config(config)
             .build(),
     );

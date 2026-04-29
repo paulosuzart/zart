@@ -139,9 +139,6 @@ async fn brewery_finder(data: FinderInput) -> Result<FinderOutput, TaskError> {
 
 ```rust
 // Register the macro-generated handler (struct name is PascalCase of the fn name)
-let mut registry = DurableRegistry::new();
-registry.register("brewery-finder", BreweryFinder);
-
 let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
 
 // Start and wait for typed output — no manual deserialization needed

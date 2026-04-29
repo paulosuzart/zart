@@ -166,7 +166,7 @@ Workers can be added or removed at any time. There is no leader election, no Zoo
 
 ```rust
 let worker = zart::WorkerBuilder::new(storage.clone(), storage.task_scheduler())
-    .registry(registry)
+    .register_durable_task("onboarding", Onboarding)
     .config(zart::WorkerConfig {
         poll_interval:        Duration::from_secs(5),
         max_tasks_per_poll:   10,
@@ -258,7 +258,7 @@ Handler returns → heartbeat cancelled → result persisted
 
 ```rust
 let worker = zart::WorkerBuilder::new(storage.clone(), storage.task_scheduler())
-    .registry(registry)
+    .register_durable_task("onboarding", Onboarding)
     .config(zart::WorkerConfig {
         orphan_timeout:     Duration::from_secs(300),   // 5 minutes
         heartbeat_interval: None,                        // auto: orphan_timeout / 3
