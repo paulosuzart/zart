@@ -287,15 +287,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
-    let mut registry = DurableRegistry::new();
-    registry.register(TASK_ORDER, OrderProcessingTask);
-    registry.register(TASK_PIPELINE, DataPipelineTask);
-
     let cancellation = CancellationToken::new();
 
     let worker = Arc::new(
         WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-            .registry(registry)
+            .register_durable_task(TASK_ORDER, OrderProcessingTask)
+            .register_durable_task(TASK_PIPELINE, DataPipelineTask)
             .config(WorkerConfig {
                 poll_interval: Duration::from_millis(200),
                 max_tasks_per_poll: 10,

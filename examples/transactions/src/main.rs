@@ -244,9 +244,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Run the worker ───────────────────────────────────────────────────
     println!("--- Running Worker (Scenario 2: zart::trx in deduct-balance step) ---\n");
 
-    let mut registry = DurableRegistry::new();
-    registry.register("onboard-user", OnboardUser);
-
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
         max_tasks_per_poll: 10,
@@ -257,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let worker = Arc::new(
         zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-            .registry(registry)
+            .register_durable_task("onboard-user", OnboardUser)
             .config(config)
             .build(),
     );

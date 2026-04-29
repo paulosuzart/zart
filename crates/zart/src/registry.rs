@@ -211,18 +211,23 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 /// # Example
 ///
 /// ```rust,ignore
-/// use std::sync::Arc;
-/// use zart::{DurableRegistry, Worker, WorkerConfig};
+/// use zart::WorkerBuilder;
 ///
+/// // Fluent API (recommended):
+/// let worker = WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+///     .register_durable_task("fulfill-order",  FulfillOrder)
+///     .register_durable_task("onboard-user",   OnboardUser)
+///     .register_durable_task("send-invoice",   SendInvoice)
+///     .build();
+///
+/// // Or build a registry separately:
 /// let mut registry = DurableRegistry::new();
 /// registry.register("fulfill-order",  FulfillOrder);
 /// registry.register("onboard-user",   OnboardUser);
-/// registry.register("send-invoice",   SendInvoice);
 ///
-/// // Wrap once; clone the Arc for each worker.
-/// let registry = Arc::new(registry);
-///
-/// let worker = Worker::new(scheduler.clone(), Arc::clone(&registry), WorkerConfig::default());
+/// let worker = WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+///     .durable_registry(registry)
+///     .build();
 /// ```
 pub struct DurableRegistry {
     handlers: HashMap<String, Box<dyn RegisteredTask>>,

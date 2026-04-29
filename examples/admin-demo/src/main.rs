@@ -365,8 +365,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
-    let mut registry = DurableRegistry::new();
-    registry.register("zart::admin_demo::AdminDemoTask", AdminDemoTask);
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(100),
         max_tasks_per_poll: 10,
@@ -377,7 +375,7 @@ fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
     };
     let worker = Arc::new(
         zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
-            .registry(registry)
+            .register_durable_task("zart::admin_demo::AdminDemoTask", AdminDemoTask)
             .config(config)
             .build(),
     );

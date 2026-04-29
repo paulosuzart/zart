@@ -61,13 +61,10 @@
 //! Register the handler, start a worker, and fire an execution:
 //!
 //! ```text
-//! let mut registry = DurableRegistry::new();
-//! registry.register("onboard-user", OnboardUser);
-//!
 //! let scheduler = /* connect to postgres */;
 //! let sched     = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
 //! let worker    = WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
-//!                     .registry(registry)
+//!                     .register_durable_task("onboard-user", OnboardUser)
 //!                     .build();
 //!
 //! // Start the execution from anywhere in your application.
