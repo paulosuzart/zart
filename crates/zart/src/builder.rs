@@ -77,9 +77,7 @@ impl WorkerBuilder {
     }
 
     pub fn build(self) -> Worker {
-        let mut scheduler_registry = self
-            .scheduler_registry
-            .unwrap_or_default();
+        let mut scheduler_registry = self.scheduler_registry.unwrap_or_default();
 
         if scheduler_registry.get(TASK_NAME).is_some() {
             panic!(
