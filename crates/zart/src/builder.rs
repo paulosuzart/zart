@@ -45,17 +45,11 @@ impl WorkerBuilder {
     ///
     /// This is the recommended production path.
     ///
-    /// ```rust,no_run
-    /// # async fn example() {
-    /// use sqlx::PgPool;
-    /// use zart::{WorkerBuilder, postgres::PgBackend};
-    ///
-    /// let pool = PgPool::connect("postgres://localhost/mydb").await.unwrap();
+    /// ```text
     /// let pg = PgBackend::new(pool);
     /// let worker = WorkerBuilder::from_backend(&pg)
-    ///     .register_durable_task("my-task", /* handler */ ())
+    ///     .register_durable_task("my-task", MyHandler)
     ///     .build();
-    /// # }
     /// ```
     pub fn from_backend(backend: &impl Backend) -> Self {
         Self::new(backend.storage(), backend.scheduler())

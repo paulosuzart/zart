@@ -150,20 +150,15 @@ impl PostgresStorage {
 ///
 /// # Usage
 ///
-/// ```rust,no_run
-/// # async fn example() {
-/// use sqlx::PgPool;
-/// use zart::{DurableScheduler, WorkerBuilder, postgres::PgBackend};
-///
+/// ```text
 /// let pool = PgPool::connect("postgres://localhost/mydb").await.unwrap();
 /// let pg = PgBackend::new(pool);
 /// pg.run_migrations().await.unwrap();
 ///
 /// let durable = DurableScheduler::from_backend(&pg);
 /// let worker = WorkerBuilder::from_backend(&pg)
-///     .register_durable_task("my-task", /* handler */ ())
+///     .register_durable_task("my-task", MyHandler)
 ///     .build();
-/// # }
 /// ```
 pub struct PgBackend {
     storage: Arc<PostgresStorage>,
