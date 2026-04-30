@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS zart_pause_rules (
     execution_id  TEXT,
     task_name     TEXT,
     step_pattern  TEXT,
+    reason        TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at    TIMESTAMPTZ,
     created_by    TEXT,
@@ -122,17 +123,3 @@ CREATE INDEX IF NOT EXISTS idx_zart_pause_rules_active
     ON zart_pause_rules (execution_id, task_name)
     WHERE deleted_at IS NULL;
 
--- Denormalized snapshot of execution state at pause time.
-CREATE TABLE IF NOT EXISTS zart_pause_snapshots (
-    snapshot_id     TEXT PRIMARY KEY,
-    rule_id         TEXT NOT NULL REFERENCES zart_pause_rules(rule_id),
-    execution_id    TEXT NOT NULL,
-    run_number      INTEGER NOT NULL,
-    completed_steps JSONB NOT NULL,
-    current_data    JSONB,
-    next_step       TEXT,
-    captured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_zart_pause_snapshots_exec
-    ON zart_pause_snapshots (execution_id, captured_at DESC);

@@ -229,6 +229,8 @@ pub struct PauseRequest {
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub triggered_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// Response for a single pause rule.
@@ -249,6 +251,8 @@ pub struct PauseRuleResponse {
     pub created_by: Option<String>,
     #[serde(default)]
     pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// Response for a resume operation.

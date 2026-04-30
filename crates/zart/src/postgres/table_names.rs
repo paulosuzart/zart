@@ -36,7 +36,6 @@ pub struct TableNames {
     steps: String,
     step_attempts: String,
     pause_rules: String,
-    pause_snapshots: String,
 }
 
 impl Default for TableNames {
@@ -63,7 +62,6 @@ impl TableNames {
             steps: config.resolve("steps"),
             step_attempts: config.resolve("step_attempts"),
             pause_rules: config.resolve("pause_rules"),
-            pause_snapshots: config.resolve("pause_snapshots"),
         }
     }
 
@@ -100,10 +98,6 @@ impl TableNames {
     pub(crate) fn pause_rules(&self) -> &str {
         &self.pause_rules
     }
-
-    pub(crate) fn pause_snapshots(&self) -> &str {
-        &self.pause_snapshots
-    }
 }
 
 #[cfg(test)]
@@ -119,7 +113,6 @@ mod tests {
         assert_eq!(n.steps(), "\"zart_steps\"");
         assert_eq!(n.step_attempts(), "\"zart_step_attempts\"");
         assert_eq!(n.pause_rules(), "\"zart_pause_rules\"");
-        assert_eq!(n.pause_snapshots(), "\"zart_pause_snapshots\"");
     }
 
     #[test]
@@ -139,7 +132,6 @@ mod tests {
         assert_eq!(n.tasks(), "\"tenant_a\".\"zart_tasks\"");
         assert_eq!(n.executions(), "\"tenant_a\".\"zart_executions\"");
         assert_eq!(n.steps(), "\"tenant_a\".\"zart_steps\"");
-        assert_eq!(n.pause_snapshots(), "\"tenant_a\".\"zart_pause_snapshots\"");
     }
 
     #[test]

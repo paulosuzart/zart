@@ -15,7 +15,7 @@
 
 pub mod pause_storage;
 
-pub use pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage, PauseStore};
+pub use pause_storage::{PauseRule, PauseRuleFilter, PauseStorage, PauseStore};
 
 use async_trait::async_trait;
 use sqlx::PgConnection;

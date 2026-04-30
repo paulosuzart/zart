@@ -8,8 +8,8 @@
 
 pub use zart_core::store::pause_storage;
 pub use zart_core::store::{
-    EventStore, ExecutionStore, PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage,
-    PauseStore, StepStore, WaitGroupStore,
+    EventStore, ExecutionStore, PauseRule, PauseRuleFilter, PauseStorage, PauseStore, StepStore,
+    WaitGroupStore,
 };
 
 // ── StorageBackend ────────────────────────────────────────────────────────────
