@@ -64,6 +64,17 @@ pub async fn rerun(
         });
     println!("New run number: {}", result.new_run_number);
     println!("Steps to rerun: {}", result.effective_rerun.join(", "));
+    if !result.potentially_stale.is_empty() {
+        eprintln!("\n⚠ Potentially stale preserved steps:");
+        for dep in &result.potentially_stale {
+            eprintln!(
+                "  • '{}' may depend on rerun step(s): {}",
+                dep.preserved_step,
+                dep.possibly_depends_on.join(", ")
+            );
+        }
+        eprintln!("  (Heuristic based on execution order — not a proven dependency)");
+    }
 }
 
 pub async fn runs(durable: DurableScheduler, execution_id: String) {

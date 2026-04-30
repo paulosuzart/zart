@@ -22,8 +22,9 @@ use zart::{DurableScheduler, admin::PauseScope, admin::RerunSpec};
 use crate::{
     models::{
         ErrorResponse, ExecutionDetailResponse, ExecutionResponse, PauseRequest, PauseRuleResponse,
-        RerunRequest, RerunResponse, RestartRequest, RestartResponse, RetryStepRequest,
-        RetryStepResponse, RunRecordResponse, StepAttemptResponse, StepDetailResponse,
+        PotentiallyStaleDepResponse, RerunRequest, RerunResponse, RestartRequest, RestartResponse,
+        RetryStepRequest, RetryStepResponse, RunRecordResponse, StepAttemptResponse,
+        StepDetailResponse,
     },
     state::AdminState,
 };
@@ -113,6 +114,14 @@ async fn rerun(
             let body = RerunResponse {
                 new_run_number: result.new_run_number,
                 effective_rerun: result.effective_rerun,
+                potentially_stale: result
+                    .potentially_stale
+                    .into_iter()
+                    .map(|d| PotentiallyStaleDepResponse {
+                        preserved_step: d.preserved_step,
+                        possibly_depends_on: d.possibly_depends_on,
+                    })
+                    .collect(),
             };
             (StatusCode::OK, Json(body)).into_response()
         }

@@ -182,6 +182,16 @@ impl ExecutionStore for MockScheduler {
     ) -> Result<String, StorageError> {
         Ok(String::new())
     }
+    async fn restart_run_with_step_copy(
+        &self,
+        _: &str,
+        _: Option<serde_json::Value>,
+        _: &str,
+        _: Option<&str>,
+        _: &[String],
+    ) -> Result<String, StorageError> {
+        Ok(String::new())
+    }
 }
 
 #[async_trait]

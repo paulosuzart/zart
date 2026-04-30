@@ -186,6 +186,16 @@ pub struct RestartResponse {
 pub struct RerunResponse {
     pub new_run_number: u32,
     pub effective_rerun: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub potentially_stale: Vec<PotentiallyStaleDepResponse>,
+}
+
+/// A preserved step that may have a stale dependency on a rerun step.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PotentiallyStaleDepResponse {
+    pub preserved_step: String,
+    pub possibly_depends_on: Vec<String>,
 }
 
 /// A single run record returned from the runs list.
