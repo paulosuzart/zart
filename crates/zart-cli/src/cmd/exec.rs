@@ -1,8 +1,8 @@
-use zart::DurableScheduler;
+use zart::{DurableScheduler, PgBackend};
 
 pub async fn migrate(pool: sqlx::PgPool) {
-    let scheduler = zart::PostgresStorage::new(pool);
-    scheduler.run_migrations().await.unwrap_or_else(|e| {
+    let pg = PgBackend::new(pool);
+    pg.run_migrations().await.unwrap_or_else(|e| {
         eprintln!("error: migrations failed: {e}");
         std::process::exit(1);
     });

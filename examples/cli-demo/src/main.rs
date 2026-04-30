@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 //! CLI Interaction Demo — Long-running durable execution for CLI admin commands demonstration.
 //!
 //! This example starts a durable execution with multiple steps and sleeps to provide
@@ -23,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use zart::prelude::*;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -208,13 +207,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresStorage::new(pool.clone()));
-
-    let durable = Arc::new(DurableScheduler::with_pause(
-        sched.clone(),
-        sched.task_scheduler(),
-        sched.clone(),
-    ));
+    let pg = PgBackend::new(pool);
+    let durable = Arc::new(DurableScheduler::from_backend(&pg));
 
     // Start the durable execution
     durable
@@ -238,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+    let worker = zart::WorkerBuilder::from_backend(&pg)
         .register_durable_task("zart::cli_demo::CliDemoTask", CliDemoTask)
         .config(config)
         .build();

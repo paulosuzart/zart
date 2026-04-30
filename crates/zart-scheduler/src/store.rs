@@ -148,9 +148,6 @@ pub trait TaskScheduler: Send + Sync {
     /// Delete a task record permanently.
     async fn delete_task(&self, task_id: &str) -> Result<(), StorageError>;
 
-    /// Run database migrations required by this backend.
-    async fn run_migrations(&self) -> Result<(), StorageError>;
-
     /// Begin a new database transaction.
     ///
     /// Returns a `'static` transaction — the connection is acquired from the

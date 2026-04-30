@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 //! Error Handling Example
 //!
 //! Demonstrates the full spectrum of zart error handling:
@@ -15,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use zart::error::{ExecutionFailure, StepOutcome, TaskError};
 use zart::prelude::*;
 use zart::{zart_durable, zart_step};
@@ -314,10 +313,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = std::sync::Arc::new(PostgresStorage::new(pool));
+    let pg = PgBackend::new(pool);
 
     let execution_id = format!("error-handling-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+    let durable = DurableScheduler::from_backend(&pg);
 
     let input = OrderInput {
         account_id: "acct-123".to_string(),
@@ -339,7 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let worker = std::sync::Arc::new(
-        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        zart::WorkerBuilder::from_backend(&pg)
             .register_durable_task("error-handling-demo", ProcessOrder)
             .config(config)
             .build(),

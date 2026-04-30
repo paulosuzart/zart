@@ -211,10 +211,12 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 /// # Example
 ///
 /// ```rust,ignore
-/// use zart::WorkerBuilder;
+/// use zart::{WorkerBuilder, PgBackend};
+///
+/// let pg = PgBackend::new(pool);
 ///
 /// // Fluent API (recommended):
-/// let worker = WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+/// let worker = WorkerBuilder::from_backend(&pg)
 ///     .register_durable_task("fulfill-order",  FulfillOrder)
 ///     .register_durable_task("onboard-user",   OnboardUser)
 ///     .register_durable_task("send-invoice",   SendInvoice)
@@ -225,7 +227,7 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 /// registry.register("fulfill-order",  FulfillOrder);
 /// registry.register("onboard-user",   OnboardUser);
 ///
-/// let worker = WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+/// let worker = WorkerBuilder::from_backend(&pg)
 ///     .durable_registry(registry)
 ///     .build();
 /// ```

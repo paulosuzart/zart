@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 //! Zart UI demo — long-running backend for the Admin UI.
 //!
 //! Starts a PostgresScheduler, registers two task types, seeds a handful of
@@ -23,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart_api::{AppState, admin_router};
@@ -280,17 +279,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Connecting to database…");
     let pool = sqlx::PgPool::connect(&db_url).await?;
 
-    let sched = Arc::new(PostgresStorage::new(pool.clone()));
+    let pg = PgBackend::new(pool);
     tracing::info!("Migrations applied");
 
-    let durable = Arc::new(DurableScheduler::new(sched.clone(), sched.task_scheduler()));
+    let durable = Arc::new(DurableScheduler::from_backend(&pg));
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
     let cancellation = CancellationToken::new();
 
     let worker = Arc::new(
-        WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        WorkerBuilder::from_backend(&pg)
             .register_durable_task(TASK_ORDER, OrderProcessingTask)
             .register_durable_task(TASK_PIPELINE, DataPipelineTask)
             .config(WorkerConfig {

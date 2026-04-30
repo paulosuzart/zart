@@ -379,10 +379,6 @@ mod tests {
         async fn delete_task(&self, _task_id: &str) -> Result<(), StorageError> {
             Ok(())
         }
-
-        async fn run_migrations(&self) -> Result<(), StorageError> {
-            Ok(())
-        }
     }
 
     #[async_trait]

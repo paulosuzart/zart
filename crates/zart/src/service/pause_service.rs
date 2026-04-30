@@ -2,26 +2,29 @@
 //!
 //! [`PauseService`] encapsulates all pause-rule management logic, extracted
 //! from [`crate::durable::DurableScheduler`]. It holds a reference to
-//! [`PauseStorage`] and maps storage errors to [`SchedulerError`].
+//! [`crate::store::StorageBackend`] (which includes `PauseStorage` as a supertrait)
+//! and maps storage errors to [`SchedulerError`].
 
 use std::sync::Arc;
 
 use zart_core::StorageError;
-use zart_core::store::pause_storage::{PauseRule, PauseRuleFilter, PauseStorage};
+use zart_core::store::pause_storage::{PauseRule, PauseRuleFilter};
 
 use crate::admin::{PauseRule as DurablePauseRule, PauseScope, ResumeResult};
 use crate::error::SchedulerError;
+use crate::store::StorageBackend;
 
 /// Manages pause rules for durable executions.
 ///
 /// Held by [`crate::durable::DurableScheduler`] alongside [`super::ExecutionService`].
+/// Pause is always enabled — `StorageBackend` includes `PauseStorage` as a supertrait.
 pub struct PauseService {
-    store: Arc<dyn PauseStorage>,
+    store: Arc<dyn StorageBackend>,
 }
 
 impl PauseService {
-    /// Create a `PauseService` backed by the given pause storage.
-    pub fn new(store: Arc<dyn PauseStorage>) -> Self {
+    /// Create a `PauseService` backed by the given storage backend.
+    pub fn new(store: Arc<dyn StorageBackend>) -> Self {
         Self { store }
     }
 

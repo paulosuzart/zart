@@ -13,12 +13,13 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore]
 async fn admin_retry_step_clears_deadline_so_retried_step_can_run() {
-    let scheduler = setup().await;
+    let pg = setup().await;
+    let storage = pg.storage();
 
     let execution_id = format!("admin-deadline-retry-{}", Uuid::new_v4());
     let run_id = format!("{execution_id}:run:0");
 
-    scheduler
+    storage
         .start_execution(&execution_id, "test-task", serde_json::json!({}))
         .await
         .expect("start_execution failed");
@@ -66,7 +67,7 @@ async fn admin_retry_step_clears_deadline_so_retried_step_can_run() {
     .await
     .expect("insert step failed");
 
-    let new_task_id = scheduler
+    let new_task_id = storage
         .retry_dead_step(&run_id, "slow-step", Some("test"))
         .await
         .expect("retry_dead_step failed");

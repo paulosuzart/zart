@@ -23,13 +23,14 @@ Admin operations are **non-destructive**. Every action preserves history via app
 
 ## Embedded Rust API
 
-All admin operations are methods on `DurableScheduler`. You need a scheduler with pause storage configured for pause/resume:
+All admin operations are methods on `DurableScheduler`. Pause/resume is always enabled:
 
 ```rust
 use zart::DurableScheduler;
 use zart::admin::{RerunSpec, PauseScope};
 
-let durable = DurableScheduler::with_pause(sched.clone(), sched.task_scheduler(), sched.clone());
+let pg = PgBackend::new(pool);
+let durable = DurableScheduler::from_backend(&pg);
 ```
 
 ### Retry a Dead Step

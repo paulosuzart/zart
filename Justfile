@@ -31,6 +31,7 @@ test-integration:
     just test-integration-core
 
 test-integration-core:
+    just migrate
     cargo test -p zart-scheduler --test integration_test -- --include-ignored --test-threads=1
     cargo test -p zart --test integration -- --include-ignored --test-threads=1
 

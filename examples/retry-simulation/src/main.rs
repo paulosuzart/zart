@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart::zart_step;
@@ -156,10 +156,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresStorage::new(pool));
+    let pg = PgBackend::new(pool);
 
     let execution_id = format!("retry-sim-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+    let durable = DurableScheduler::from_backend(&pg);
 
     let input = RetrySimulationInput {
         name: "retry-demo".to_string(),
@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let worker = Arc::new(
-        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        zart::WorkerBuilder::from_backend(&pg)
             .register_durable_task("retry-simulation", RetrySimulationTask)
             .config(config)
             .build(),

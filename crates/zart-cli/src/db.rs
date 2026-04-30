@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use zart::DurableScheduler;
+use zart::{DurableScheduler, PgBackend};
 
 /// Return a raw connection pool (used by `migrate`).
 pub async fn pool(db_url: Option<String>) -> sqlx::PgPool {
@@ -7,20 +6,17 @@ pub async fn pool(db_url: Option<String>) -> sqlx::PgPool {
     connect(&url).await
 }
 
-/// Connect without pause storage (used by execution lifecycle commands).
+/// Connect and return a DurableScheduler backed by PgBackend.
 pub async fn simple(db_url: Option<String>) -> DurableScheduler {
     let url = require_db_url(db_url);
     let pool = connect(&url).await;
-    let scheduler = Arc::new(zart::PostgresStorage::new(pool));
-    DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler())
+    let pg = PgBackend::new(pool);
+    DurableScheduler::from_backend(&pg)
 }
 
-/// Connect with pause storage enabled (used by all admin commands).
+/// Connect and return a DurableScheduler backed by PgBackend (pause always enabled).
 pub async fn admin(db_url: Option<String>) -> DurableScheduler {
-    let url = require_db_url(db_url);
-    let pool = connect(&url).await;
-    let scheduler = Arc::new(zart::PostgresStorage::new(pool));
-    DurableScheduler::with_pause(scheduler.clone(), scheduler.task_scheduler(), scheduler)
+    simple(db_url).await
 }
 
 fn require_db_url(url: Option<String>) -> String {
