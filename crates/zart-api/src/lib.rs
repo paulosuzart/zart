@@ -41,6 +41,8 @@
 
 pub mod admin_routes;
 pub mod models;
+#[cfg(feature = "openapi")]
+pub mod openapi;
 pub mod routes;
 pub mod server;
 pub mod state;
@@ -48,3 +50,6 @@ pub mod state;
 pub use admin_routes::admin_router;
 pub use server::ApiServer;
 pub use state::{AdminState, AppState};
+
+#[cfg(feature = "openapi")]
+pub use openapi::ZartApiDoc;
