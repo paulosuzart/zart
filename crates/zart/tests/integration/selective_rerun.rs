@@ -152,8 +152,8 @@ async fn selective_rerun_copies_preserved_steps_to_new_run() {
     let new_run_id = format!("{execution_id}:run:{}", rerun_result.new_run_number);
 
     // Query the new run's steps directly to verify the copy.
-    let rows: Vec<(String, String, Option<serde_json::Value>)> =
-        sqlx::query_as("SELECT step_name, status::text, result FROM zart_steps WHERE run_id = $1")
+    let rows: Vec<(String, StepStatus, Option<serde_json::Value>)> =
+        sqlx::query_as("SELECT step_name, status, result FROM zart_steps WHERE run_id = $1")
             .bind(&new_run_id)
             .fetch_all(pg.pool())
             .await
@@ -162,7 +162,11 @@ async fn selective_rerun_copies_preserved_steps_to_new_run() {
     let find_step = |name: &str| rows.iter().find(|(n, _, _)| n == name).cloned();
 
     let (_, status_a, result_a) = find_step("step-a").expect("step-a should be in new run");
-    assert_eq!(status_a, "completed", "step-a should be completed");
+    assert_eq!(
+        status_a,
+        StepStatus::Completed,
+        "step-a should be completed"
+    );
     assert_eq!(
         result_a.as_ref().and_then(|v| v.as_str()),
         Some("result-a"),
@@ -170,7 +174,11 @@ async fn selective_rerun_copies_preserved_steps_to_new_run() {
     );
 
     let (_, status_c, result_c) = find_step("step-c").expect("step-c should be in new run");
-    assert_eq!(status_c, "completed", "step-c should be completed");
+    assert_eq!(
+        status_c,
+        StepStatus::Completed,
+        "step-c should be completed"
+    );
     assert_eq!(
         result_c.as_ref().and_then(|v| v.as_str()),
         Some("result-c"),

@@ -85,18 +85,17 @@ async fn admin_retry_step_clears_deadline_so_retried_step_can_run() {
         "retry_dead_step should have removed the 'deadline' key, but got: {meta}"
     );
 
-    let step_status: Option<String> = sqlx::query_scalar(
-        r#"SELECT status::text FROM zart_steps WHERE step_name = $1 AND run_id = $2"#,
-    )
-    .bind("slow-step")
-    .bind(&run_id)
-    .fetch_one(&pool)
-    .await
-    .expect("query step status failed");
+    let step_status: Option<StepStatus> =
+        sqlx::query_scalar(r#"SELECT status FROM zart_steps WHERE step_name = $1 AND run_id = $2"#)
+            .bind("slow-step")
+            .bind(&run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("query step status failed");
 
     assert_eq!(
         step_status,
-        Some("scheduled".to_string()),
+        Some(StepStatus::Scheduled),
         "step should be scheduled after admin retry"
     );
 }
