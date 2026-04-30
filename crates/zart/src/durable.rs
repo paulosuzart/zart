@@ -653,9 +653,9 @@ impl DurableScheduler {
     /// step results are **copied** from the old run into the new run so the handler
     /// sees them as already completed without re-executing them.
     ///
-    /// The copy is atomic with run creation in the sense that it happens immediately
-    /// after `restart_run` returns. If the copy fails the new run still exists but
-    /// preserved steps will fall back to re-execution (safe, not silent data loss).
+    /// The copy is atomic with run creation: both the new run and the preserved
+    /// step rows (including attempt history) are committed in a single database
+    /// transaction. Either both succeed or neither is visible.
     ///
     /// # Behavior
     ///
@@ -664,12 +664,12 @@ impl DurableScheduler {
     /// - **`spec.preserve`** steps are carried forward — their completed results are
     ///   copied into the new run so the body skips re-executing them.
     /// - All other completed steps are preserved by default.
-    /// - Step *attempt* history from the old run is not copied — only the final
-    ///   completed result is visible in the new run.
+    /// - Step **attempt history** from the old run is also copied into the new run.
     ///
     /// # Returns
     ///
-    /// `RerunResult` with the new run number and effective rerun set.
+    /// `RerunResult` with the new run number, effective rerun set, and
+    /// `potentially_stale` advisory warnings.
     pub async fn rerun_steps(
         &self,
         execution_id: &str,

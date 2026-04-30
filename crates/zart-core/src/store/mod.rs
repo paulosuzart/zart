@@ -112,6 +112,26 @@ pub trait ExecutionStore: Send + Sync {
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError>;
 
+    /// Atomically restart a run and copy completed step rows (with attempt history)
+    /// from the old run into the new one.
+    ///
+    /// Equivalent to calling `restart_run` + `copy_steps_to_run` in a single
+    /// database transaction. Either both succeed or neither is visible.
+    ///
+    /// Default implementation returns `NotImplemented` — backends that support
+    /// transactions should override this.
+    #[allow(unused_variables)]
+    async fn restart_run_with_step_copy(
+        &self,
+        execution_id: &str,
+        new_payload: Option<serde_json::Value>,
+        trigger: &str,
+        triggered_by: Option<&str>,
+        preserved_step_names: &[String],
+    ) -> Result<String, StorageError> {
+        Err(StorageError::NotImplemented("restart_run_with_step_copy"))
+    }
+
     /// Create a new run for an execution and return the new `run_id`.
     ///
     /// This is a fine-grained primitive: it inserts the run row but does NOT

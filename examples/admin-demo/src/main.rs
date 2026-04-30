@@ -316,6 +316,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("  New run number: {}", result.new_run_number);
         println!("  Effective rerun: {}", result.effective_rerun.join(", "));
+        if !result.potentially_stale.is_empty() {
+            println!("  Potentially stale preserved steps:");
+            for dep in &result.potentially_stale {
+                println!(
+                    "    • '{}' may depend on: {}",
+                    dep.preserved_step,
+                    dep.possibly_depends_on.join(", ")
+                );
+            }
+        }
 
         // Run worker for the rerun
         let worker = spawn_worker(&pg);

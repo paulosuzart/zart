@@ -83,17 +83,25 @@ let result = durable
 
 println!("New run: {}", result.new_run_number);
 println!("Rerunning: {}", result.effective_rerun.join(", "));
+
+for dep in &result.potentially_stale {
+    println!(
+        "⚠ '{}' may depend on: {}",
+        dep.preserved_step,
+        dep.possibly_depends_on.join(", ")
+    );
+}
 ```
 
 :::note[How preserved steps work]
-Preserved step results are **copied** from the old run into the new run immediately after the new run is created. When the body replays, it sees those steps as already completed and skips re-executing them — no extra code required in your handler.
+Preserved step results are **copied** from the old run into the new run atomically within the same database transaction as the new run creation. When the body replays, it sees those steps as already completed and skips re-executing them — no extra code required in your handler.
 
-- The copy happens right after `restart_run` returns; if it fails, the new run still exists and preserved steps fall back to re-execution (safe).
-- Step *attempt* history from the old run is **not** copied — only the final completed result is visible in the new run.
+- The copy is atomic: either the new run **and** preserved steps are committed together, or neither is visible.
+- Step **attempt history** is also copied — preserved steps show their full attempt trace in the new run.
 - The copy is idempotent (`ON CONFLICT DO NOTHING`), so calling it twice is safe.
 :::
 
-It's your responsibility to decide which steps can be safely preserved. If a preserved step depends on the output of a rerun step, its cached result may be stale.
+It's your responsibility to decide which steps can be safely preserved. If a preserved step depends on the output of a rerun step, its cached result may be stale. The `rerun_steps` response includes a `potentially_stale` advisory field that flags preserved steps scheduled after a rerun step (a heuristic based on execution order, not proven data dependencies).
 
 ### Pause / Resume
 

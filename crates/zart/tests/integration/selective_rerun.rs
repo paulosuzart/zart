@@ -190,6 +190,31 @@ async fn selective_rerun_copies_preserved_steps_to_new_run() {
         "step-b should NOT be in new run before replay"
     );
 
+    // ── Phase 3b: verify attempt rows were also copied for preserved steps ──
+
+    let attempt_rows: Vec<(String,)> =
+        sqlx::query_as("SELECT step_id FROM zart_step_attempts WHERE step_id LIKE $1")
+            .bind(format!("{new_run_id}%"))
+            .fetch_all(pg.pool())
+            .await
+            .expect("query new run attempts failed");
+
+    let attempt_step_ids: Vec<&str> = attempt_rows.iter().map(|(id,)| id.as_str()).collect();
+    let has_step_a_attempts = attempt_step_ids
+        .iter()
+        .any(|id| id.contains(":step:step-a"));
+    let has_step_c_attempts = attempt_step_ids
+        .iter()
+        .any(|id| id.contains(":step:step-c"));
+    assert!(
+        has_step_a_attempts,
+        "step-a should have attempt rows in new run"
+    );
+    assert!(
+        has_step_c_attempts,
+        "step-c should have attempt rows in new run"
+    );
+
     // ── Phase 4: run the new run to completion ────────────────────────────────
 
     let (worker2, _handle2) = spawn_worker(pg.clone(), make_registry(step_b_counter.clone()));

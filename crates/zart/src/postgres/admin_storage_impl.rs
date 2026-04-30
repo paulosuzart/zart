@@ -13,6 +13,7 @@ use zart_core::task_metadata::TaskMetadata;
 use zart_core::types::{ExecutionStatus, ScheduleAtParams, StepStatus};
 
 use super::PostgresStorage;
+use super::sql_helpers::copy_steps_and_attempts_sql;
 
 impl PostgresStorage {
     /// Atomically validate a step is `dead`, create a retry task, and reset the run.
@@ -141,12 +142,17 @@ impl PostgresStorage {
     }
 
     /// Archive the current run and start a fresh one, scheduling a new body task.
+    ///
+    /// When `preserved_step_names` is non-empty, completed step rows (and their
+    /// attempt history) are copied from the old run into the new run inside the
+    /// same transaction, making the restart + copy atomic.
     pub(super) async fn do_restart_run(
         &self,
         execution_id: &str,
         new_payload: Option<serde_json::Value>,
         trigger: &str,
         triggered_by: Option<&str>,
+        preserved_step_names: &[String],
     ) -> Result<String, StorageError> {
         let mut tx = self
             .pool
@@ -307,6 +313,17 @@ impl PostgresStorage {
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        if !preserved_step_names.is_empty() {
+            copy_steps_and_attempts_sql(
+                &mut tx,
+                &current_run_id,
+                &new_run_id,
+                preserved_step_names,
+                &self.table_names,
+            )
+            .await?;
+        }
 
         let body_task_id = format!("{new_run_id}:body:start");
         self.task_scheduler
