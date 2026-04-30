@@ -153,7 +153,7 @@ async fn selective_rerun_copies_preserved_steps_to_new_run() {
 
     // Query the new run's steps directly to verify the copy.
     let rows: Vec<(String, String, Option<serde_json::Value>)> =
-        sqlx::query_as("SELECT step_name, status, result FROM zart_steps WHERE run_id = $1")
+        sqlx::query_as("SELECT step_name, status::text, result FROM zart_steps WHERE run_id = $1")
             .bind(&new_run_id)
             .fetch_all(pg.pool())
             .await
