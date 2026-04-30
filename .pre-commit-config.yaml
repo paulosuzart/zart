@@ -1,0 +1,20 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fmt-check
+        name: Format check
+        entry: just fmt-check
+        language: system
+        pass_filenames: false
+
+      - id: lint
+        name: Clippy lint
+        entry: just lint
+        language: system
+        pass_filenames: false
+
+      - id: doc-check
+        name: Doc check
+        entry: just doc-check
+        language: system
+        pass_filenames: false
