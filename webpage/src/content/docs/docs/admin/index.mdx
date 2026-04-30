@@ -83,6 +83,14 @@ let result = durable
 
 println!("New run: {}", result.new_run_number);
 println!("Rerunning: {}", result.effective_rerun.join(", "));
+
+for dep in &result.potentially_stale {
+    println!(
+        "⚠ '{}' may depend on: {}",
+        dep.preserved_step,
+        dep.possibly_depends_on.join(", ")
+    );
+}
 ```
 
 :::note[How preserved steps work]
