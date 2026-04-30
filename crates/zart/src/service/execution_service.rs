@@ -162,6 +162,9 @@ impl ExecutionService {
             .map(|s| s.step_name.clone())
             .collect();
 
+        // Not in the same transaction as restart_run: if this call fails the new
+        // run exists with no preserved steps and they will simply re-execute,
+        // which is safe but not atomic. Intentional — see spec-0046 risk table.
         if !preserved.is_empty() {
             self.storage
                 .copy_steps_to_run(&run_id, &new_run_id, &preserved)

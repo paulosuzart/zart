@@ -542,11 +542,11 @@ impl StepStore for PostgresStorage {
                 (step_id, run_id, step_name, step_kind, task_id,
                  status, result, result_kind, retry_config, completed_at)
             SELECT
-                replace(step_id, $1, $2),
+                concat($2, substring(step_id from length($1) + 1)),
                 $2,
                 step_name,
                 step_kind,
-                replace(task_id, $1, $2),
+                concat($2, substring(task_id from length($1) + 1)),
                 status,
                 result,
                 result_kind,
