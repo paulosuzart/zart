@@ -526,4 +526,46 @@ impl StepStore for PostgresStorage {
             )
             .collect())
     }
+
+    async fn copy_steps_to_run(
+        &self,
+        from_run_id: &str,
+        to_run_id: &str,
+        step_names: &[String],
+    ) -> Result<(), StorageError> {
+        if step_names.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(&format!(
+            r#"
+            INSERT INTO {steps}
+                (step_id, run_id, step_name, step_kind, task_id,
+                 status, result, result_kind, retry_config, completed_at)
+            SELECT
+                replace(step_id, $1, $2),
+                $2,
+                step_name,
+                step_kind,
+                replace(task_id, $1, $2),
+                status,
+                result,
+                result_kind,
+                retry_config,
+                completed_at
+            FROM {steps}
+            WHERE run_id = $1
+              AND step_name = ANY($3)
+              AND status = 'completed'
+            ON CONFLICT (step_id) DO NOTHING
+            "#,
+            steps = self.table_names.steps(),
+        ))
+        .bind(from_run_id)
+        .bind(to_run_id)
+        .bind(step_names)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
 }

@@ -380,6 +380,15 @@ impl StepStore for RecordingScheduler {
         self.calls.lock().unwrap().push(Call::CheckWaitAllChildren);
         Ok(self.wait_all_response.clone())
     }
+
+    async fn copy_steps_to_run(
+        &self,
+        _from: &str,
+        _to: &str,
+        _names: &[String],
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 // ── WaitGroupStore impl ───────────────────────────────────────────────────────

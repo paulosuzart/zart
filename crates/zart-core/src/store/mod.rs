@@ -217,6 +217,26 @@ pub trait StepStore: Send + Sync {
         &self,
         wait_for_task_ids: &[String],
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError>;
+
+    /// Copy completed step rows from `from_run_id` to `to_run_id` for the given names.
+    ///
+    /// Only rows with `status = 'completed'` are copied. Step IDs and task IDs are
+    /// rewritten to use `to_run_id` as the prefix. Result and result_kind are
+    /// preserved verbatim.
+    ///
+    /// Used by selective rerun to carry preserved step results forward without
+    /// re-executing them. Idempotent — `ON CONFLICT DO NOTHING`.
+    ///
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn copy_steps_to_run(
+        &self,
+        from_run_id: &str,
+        to_run_id: &str,
+        step_names: &[String],
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotImplemented("copy_steps_to_run"))
+    }
 }
 
 // ── WaitGroupStore ────────────────────────────────────────────────────────────

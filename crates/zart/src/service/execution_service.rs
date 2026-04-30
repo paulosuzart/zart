@@ -154,6 +154,21 @@ impl ExecutionService {
             )
             .await?;
 
+        let preserved: Vec<String> = steps
+            .iter()
+            .filter(|s| {
+                s.status == StepStatus::Completed && !effective_rerun.contains(&s.step_name)
+            })
+            .map(|s| s.step_name.clone())
+            .collect();
+
+        if !preserved.is_empty() {
+            self.storage
+                .copy_steps_to_run(&run_id, &new_run_id, &preserved)
+                .await
+                .map_err(SchedulerError::Database)?;
+        }
+
         let run_number = new_run_id
             .rsplit_once(":run:")
             .and_then(|(_, n)| n.parse().ok())
