@@ -29,7 +29,7 @@ use crate::{admin_routes, routes};
 
 /// OpenAPI 3.x schema document for the Zart HTTP API.
 ///
-/// Covers both the Main API (`/api/v1/*`) and the Admin API (`/admin/v1/*`).
+/// Covers both the Main API (`/api/v1/*`) and the Admin API (`/zart/admin/v1/*`).
 /// Use the [`utoipa::OpenApi::nest`] pattern to incorporate this schema into
 /// an existing application-level `ApiDoc`.
 #[derive(utoipa::OpenApi)]

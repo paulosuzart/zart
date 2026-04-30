@@ -139,7 +139,7 @@ pub struct ErrorResponse {
 
 // ── Admin Requests ────────────────────────────────────────────────────────────
 
-/// Body for `POST /admin/v1/executions/:id/retry-step`.
+/// Body for `POST /zart/admin/v1/executions/:id/retry-step`.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,7 +149,7 @@ pub struct RetryStepRequest {
     pub triggered_by: Option<String>,
 }
 
-/// Body for `POST /admin/v1/executions/:id/restart`.
+/// Body for `POST /zart/admin/v1/executions/:id/restart`.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,7 +160,7 @@ pub struct RestartRequest {
     pub triggered_by: Option<String>,
 }
 
-/// Body for `POST /admin/v1/executions/:id/rerun`.
+/// Body for `POST /zart/admin/v1/executions/:id/rerun`.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,7 +229,7 @@ pub struct RunRecordResponse {
 
 // ── Pause / Resume Types ──────────────────────────────────────────────────────
 
-/// Body for `POST /admin/v1/pause`.
+/// Body for `POST /zart/admin/v1/pause`.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -303,7 +303,7 @@ impl From<zart::ExecutionStats> for StatsResponse {
     }
 }
 
-/// Response for `GET /admin/v1/executions/:id/detail`.
+/// Response for `GET /zart/admin/v1/executions/:id/detail`.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
