@@ -14,7 +14,7 @@ pub use zart::{
 pub use zart_core::store::{
     EventStore as _, ExecutionStore as _, StepStore as _, WaitGroupStore as _,
 };
-pub use zart_core::types::{EventDeliveryResult, ExecutionStatus};
+pub use zart_core::types::{EventDeliveryResult, ExecutionStatus, StepStatus};
 
 // ── Local step error for test steps ───────────────────────────────────────
 
