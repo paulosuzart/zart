@@ -649,16 +649,23 @@ impl DurableScheduler {
     /// Selectively rerun a subset of steps while preserving others.
     ///
     /// Archives the current run, starts a new run with `trigger = 'selective_rerun'`,
-    /// and schedules a fresh body task. The body replays from the top — completed
-    /// steps are queried from the *previous* run so the handler can skip them.
+    /// and schedules a fresh body task. The body replays from the top — preserved
+    /// step results are **copied** from the old run into the new run so the handler
+    /// sees them as already completed without re-executing them.
+    ///
+    /// The copy is atomic with run creation in the sense that it happens immediately
+    /// after `restart_run` returns. If the copy fails the new run still exists but
+    /// preserved steps will fall back to re-execution (safe, not silent data loss).
     ///
     /// # Behavior
     ///
     /// - **Failed/dead steps** are always rerun (can't be preserved).
     /// - **`spec.force_rerun`** steps are rerun even if currently completed.
-    /// - **`spec.preserve`** steps are carried forward — their results are returned
-    ///   from the previous run instead of scheduling new tasks.
+    /// - **`spec.preserve`** steps are carried forward — their completed results are
+    ///   copied into the new run so the body skips re-executing them.
     /// - All other completed steps are preserved by default.
+    /// - Step *attempt* history from the old run is not copied — only the final
+    ///   completed result is visible in the new run.
     ///
     /// # Returns
     ///

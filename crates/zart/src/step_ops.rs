@@ -502,6 +502,15 @@ mod tests {
         ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
             Ok(vec![])
         }
+
+        async fn copy_steps_to_run(
+            &self,
+            _from: &str,
+            _to: &str,
+            _names: &[String],
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
     }
 
     #[async_trait]
