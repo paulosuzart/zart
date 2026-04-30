@@ -346,11 +346,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 task_name: Some("zart::admin_demo::AdminDemoTask".into()),
                 step_pattern: Some("step-two".into()),
                 triggered_by: Some("demo-pause".to_string()),
+                reason: Some("pausing step-two for demo purposes".to_string()),
                 ..Default::default()
             })
             .await?;
 
-        println!("  Created pause rule: {}", rule.rule_id);
+        println!(
+            "  Created pause rule: {}  reason: {:?}",
+            rule.rule_id, rule.reason
+        );
 
         // List rules
         let rules = durable.list_pause_rules(None).await?;

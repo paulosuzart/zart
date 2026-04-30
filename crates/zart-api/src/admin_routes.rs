@@ -175,6 +175,7 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
         step_pattern: req.step_pattern,
         expires_at: req.expires_at,
         triggered_by: req.triggered_by,
+        reason: req.reason,
     };
 
     match state.scheduler.pause(scope).await {
@@ -188,6 +189,7 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
                 expires_at: rule.scope.expires_at,
                 created_by: rule.scope.triggered_by,
                 deleted_at: rule.deleted_at,
+                reason: rule.reason,
             };
             (StatusCode::CREATED, Json(body)).into_response()
         }
@@ -210,6 +212,7 @@ async fn list_pauses(State(state): State<AdminState>) -> Response {
                     expires_at: r.scope.expires_at,
                     created_by: r.scope.triggered_by,
                     deleted_at: r.deleted_at,
+                    reason: r.reason,
                 })
                 .collect();
             (StatusCode::OK, Json(body)).into_response()

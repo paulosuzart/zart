@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use zart_core::StorageError;
 use zart_core::store::pause_storage::{PauseRule, PauseRuleFilter};
 
 use crate::admin::{PauseRule as DurablePauseRule, PauseScope, ResumeResult};
@@ -36,6 +35,7 @@ impl PauseService {
             execution_id: scope.execution_id.clone(),
             task_name: scope.task_name.clone(),
             step_pattern: scope.step_pattern.clone(),
+            reason: scope.reason.clone(),
             created_at: chrono::Utc::now(),
             expires_at: scope.expires_at,
             created_by: scope.triggered_by.clone(),
@@ -57,9 +57,11 @@ impl PauseService {
                 step_pattern: created.step_pattern,
                 expires_at: created.expires_at,
                 triggered_by: created.created_by,
+                reason: created.reason.clone(),
             },
             created_at: created.created_at,
             deleted_at: created.deleted_at,
+            reason: created.reason,
         })
     }
 
@@ -102,7 +104,7 @@ impl PauseService {
         self.store
             .delete_pause_rule(rule_id, deleted_by)
             .await
-            .map_err(|e: StorageError| SchedulerError::Database(e))
+            .map_err(SchedulerError::Database)
     }
 
     /// List active pause rules.
@@ -126,9 +128,11 @@ impl PauseService {
                     step_pattern: r.step_pattern,
                     expires_at: r.expires_at,
                     triggered_by: r.created_by,
+                    reason: r.reason.clone(),
                 },
                 created_at: r.created_at,
                 deleted_at: r.deleted_at,
+                reason: r.reason,
             })
             .collect())
     }

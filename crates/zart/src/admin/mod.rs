@@ -109,6 +109,8 @@ pub struct PauseScope {
     pub expires_at: Option<DateTime<Utc>>,
     /// Optional operator identifier for audit logging.
     pub triggered_by: Option<String>,
+    /// Optional human-readable reason for this pause (audit annotation).
+    pub reason: Option<String>,
 }
 
 /// A pause rule stored in the database.
@@ -122,6 +124,8 @@ pub struct PauseRule {
     pub created_at: DateTime<Utc>,
     /// When the rule was soft-deleted (None = active).
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Set at create time; may carry context for why the pause was applied.
+    pub reason: Option<String>,
 }
 
 /// Result of a resume operation.

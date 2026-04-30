@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use globset::Glob;
 use zart_core::StorageError;
-use zart_core::store::pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage};
+use zart_core::store::pause_storage::{PauseRule, PauseRuleFilter, PauseStorage};
 
 use super::PostgresStorage;
 
@@ -13,8 +13,8 @@ impl PauseStorage for PostgresStorage {
         sqlx::query(&format!(
             r#"
             INSERT INTO {pause_rules}
-                (rule_id, execution_id, task_name, step_pattern, created_at, expires_at, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (rule_id, execution_id, task_name, step_pattern, reason, created_at, expires_at, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
             pause_rules = self.table_names.pause_rules(),
         ))
@@ -22,6 +22,7 @@ impl PauseStorage for PostgresStorage {
         .bind(&rule.execution_id)
         .bind(&rule.task_name)
         .bind(&rule.step_pattern)
+        .bind(&rule.reason)
         .bind(rule.created_at)
         .bind(rule.expires_at)
         .bind(&rule.created_by)
@@ -64,6 +65,7 @@ impl PauseStorage for PostgresStorage {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             Option<String>,
@@ -71,7 +73,7 @@ impl PauseStorage for PostgresStorage {
             Option<String>,
         )> = sqlx::query_as(&format!(
             r#"
-            SELECT rule_id, execution_id, task_name, step_pattern,
+            SELECT rule_id, execution_id, task_name, step_pattern, reason,
                    created_at, expires_at, created_by, deleted_at, deleted_by
             FROM {pause_rules}
             WHERE ($1::TEXT IS NULL OR execution_id = $1)
@@ -88,7 +90,7 @@ impl PauseStorage for PostgresStorage {
 
         Ok(rows
             .into_iter()
-            .filter(|(_, _, _, _, _, _, _, deleted_at, _)| {
+            .filter(|(_, _, _, _, _, _, _, _, deleted_at, _)| {
                 filter.include_deleted || deleted_at.is_none()
             })
             .map(
@@ -97,6 +99,7 @@ impl PauseStorage for PostgresStorage {
                     execution_id,
                     task_name,
                     step_pattern,
+                    reason,
                     created_at,
                     expires_at,
                     created_by,
@@ -107,6 +110,7 @@ impl PauseStorage for PostgresStorage {
                     execution_id,
                     task_name,
                     step_pattern,
+                    reason,
                     created_at,
                     expires_at,
                     created_by,
@@ -173,29 +177,5 @@ impl PauseStorage for PostgresStorage {
         }
 
         Ok(false)
-    }
-
-    async fn snapshot_pause_state(&self, snapshot: PauseSnapshot) -> Result<(), StorageError> {
-        sqlx::query(&format!(
-            r#"
-            INSERT INTO {pause_snapshots}
-                (snapshot_id, rule_id, execution_id, run_number, completed_steps, current_data, next_step, captured_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            "#,
-            pause_snapshots = self.table_names.pause_snapshots(),
-        ))
-        .bind(&snapshot.snapshot_id)
-        .bind(&snapshot.rule_id)
-        .bind(&snapshot.execution_id)
-        .bind(snapshot.run_number)
-        .bind(&snapshot.completed_steps)
-        .bind(&snapshot.current_data)
-        .bind(&snapshot.next_step)
-        .bind(snapshot.captured_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
-
-        Ok(())
     }
 }
