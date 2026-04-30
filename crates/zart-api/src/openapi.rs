@@ -89,6 +89,24 @@ use crate::{admin_routes, routes};
 )]
 pub struct ZartApiDoc;
 
+/// Build an Axum router that serves the Swagger UI at `/swagger-ui` and the
+/// OpenAPI schema at `/openapi.json`.
+///
+/// Merge this into your existing router to expose the docs without pulling in
+/// `utoipa` or `utoipa-swagger-ui` directly.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let router = my_router().merge(zart_api::openapi::swagger_ui_router());
+/// ```
+pub fn swagger_ui_router() -> axum::Router {
+    use utoipa::OpenApi as _;
+    utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
+        .url("/openapi.json", ZartApiDoc::openapi())
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
