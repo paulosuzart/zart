@@ -14,15 +14,15 @@
 //! GET    /readyz                                   — Readiness probe
 //! GET    /metrics                                  — Prometheus metrics
 //!
-//! GET    /admin/v1/executions/:id/detail           — Full execution detail with steps & attempts
-//! POST   /admin/v1/executions/:id/retry-step       — Retry a dead step
-//! POST   /admin/v1/executions/:id/restart          — Restart an execution
-//! POST   /admin/v1/executions/:id/rerun            — Selective step rerun
-//! GET    /admin/v1/executions/:id/runs             — List runs for an execution
-//! POST   /admin/v1/pause                           — Create a pause rule
-//! GET    /admin/v1/pause                           — List pause rules
-//! POST   /admin/v1/pause/:rule_id                  — Resume (soft-delete) a pause rule
-//! DELETE /admin/v1/pause/:rule_id                  — Delete a pause rule
+//! GET    /zart/admin/v1/executions/:id/detail           — Full execution detail with steps & attempts
+//! POST   /zart/admin/v1/executions/:id/retry-step       — Retry a dead step
+//! POST   /zart/admin/v1/executions/:id/restart          — Restart an execution
+//! POST   /zart/admin/v1/executions/:id/rerun            — Selective step rerun
+//! GET    /zart/admin/v1/executions/:id/runs             — List runs for an execution
+//! POST   /zart/admin/v1/pause                           — Create a pause rule
+//! GET    /zart/admin/v1/pause                           — List pause rules
+//! POST   /zart/admin/v1/pause/:rule_id                  — Resume (soft-delete) a pause rule
+//! DELETE /zart/admin/v1/pause/:rule_id                  — Delete a pause rule
 //! ```
 //!
 //! # Usage

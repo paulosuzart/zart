@@ -65,7 +65,7 @@ impl ApiServer {
 
     /// Build the Axum router with Main API routes and middleware.
     ///
-    /// The Admin API router (`/admin/v1/*`) is not included here; mount it
+    /// The Admin API router (`/zart/admin/v1/*`) is not included here; mount it
     /// separately via [`crate::admin_routes::admin_router`] if needed.
     pub fn router(&self) -> Router {
         let state = AppState::new(self.durable.clone());

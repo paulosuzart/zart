@@ -36,29 +36,38 @@ use crate::{
 pub fn admin_router(scheduler: Arc<DurableScheduler>) -> Router {
     Router::new()
         .route(
-            "/admin/v1/executions/{execution_id}/retry-step",
+            "/zart/admin/v1/executions/{execution_id}/retry-step",
             post(retry_step),
         )
-        .route("/admin/v1/executions/{execution_id}/restart", post(restart))
-        .route("/admin/v1/executions/{execution_id}/rerun", post(rerun))
-        .route("/admin/v1/executions/{execution_id}/runs", get(list_runs))
         .route(
-            "/admin/v1/executions/{execution_id}/detail",
+            "/zart/admin/v1/executions/{execution_id}/restart",
+            post(restart),
+        )
+        .route(
+            "/zart/admin/v1/executions/{execution_id}/rerun",
+            post(rerun),
+        )
+        .route(
+            "/zart/admin/v1/executions/{execution_id}/runs",
+            get(list_runs),
+        )
+        .route(
+            "/zart/admin/v1/executions/{execution_id}/detail",
             get(execution_detail),
         )
-        .route("/admin/v1/pause", post(create_pause))
-        .route("/admin/v1/pause", get(list_pauses))
-        .route("/admin/v1/pause/{rule_id}", post(resume_rule))
-        .route("/admin/v1/pause/{rule_id}", delete(delete_pause_rule))
+        .route("/zart/admin/v1/pause", post(create_pause))
+        .route("/zart/admin/v1/pause", get(list_pauses))
+        .route("/zart/admin/v1/pause/{rule_id}", post(resume_rule))
+        .route("/zart/admin/v1/pause/{rule_id}", delete(delete_pause_rule))
         .with_state(AdminState { scheduler })
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-/// `POST /admin/v1/executions/:id/retry-step` — retry a dead step.
+/// `POST /zart/admin/v1/executions/:id/retry-step` — retry a dead step.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/admin/v1/executions/{execution_id}/retry-step",
+    path = "/zart/admin/v1/executions/{execution_id}/retry-step",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -94,10 +103,10 @@ async fn retry_step(
     }
 }
 
-/// `POST /admin/v1/executions/:id/restart` — restart entire execution.
+/// `POST /zart/admin/v1/executions/:id/restart` — restart entire execution.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/admin/v1/executions/{execution_id}/restart",
+    path = "/zart/admin/v1/executions/{execution_id}/restart",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -125,10 +134,10 @@ async fn restart(
     }
 }
 
-/// `POST /admin/v1/executions/:id/rerun` — selective rerun of steps.
+/// `POST /zart/admin/v1/executions/:id/rerun` — selective rerun of steps.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/admin/v1/executions/{execution_id}/rerun",
+    path = "/zart/admin/v1/executions/{execution_id}/rerun",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -172,10 +181,10 @@ async fn rerun(
     }
 }
 
-/// `GET /admin/v1/executions/:id/runs` — list all runs for an execution.
+/// `GET /zart/admin/v1/executions/:id/runs` — list all runs for an execution.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/admin/v1/executions/{execution_id}/runs",
+    path = "/zart/admin/v1/executions/{execution_id}/runs",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -210,10 +219,10 @@ async fn list_runs(State(state): State<AdminState>, Path(execution_id): Path<Str
     }
 }
 
-/// `POST /admin/v1/pause` — create a pause rule.
+/// `POST /zart/admin/v1/pause` — create a pause rule.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/admin/v1/pause",
+    path = "/zart/admin/v1/pause",
     request_body = PauseRequest,
     responses(
         (status = 201, description = "Pause rule created",          body = PauseRuleResponse),
@@ -263,10 +272,10 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
     }
 }
 
-/// `GET /admin/v1/pause` — list pause rules.
+/// `GET /zart/admin/v1/pause` — list pause rules.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/admin/v1/pause",
+    path = "/zart/admin/v1/pause",
     responses(
         (status = 200, description = "Pause rules",    body = Vec<PauseRuleResponse>),
         (status = 500, description = "Internal error", body = ErrorResponse),
@@ -296,10 +305,10 @@ async fn list_pauses(State(state): State<AdminState>) -> Response {
     }
 }
 
-/// `POST /admin/v1/pause/:rule_id` — soft-delete a pause rule (resume).
+/// `POST /zart/admin/v1/pause/:rule_id` — soft-delete a pause rule (resume).
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/admin/v1/pause/{rule_id}",
+    path = "/zart/admin/v1/pause/{rule_id}",
     params(
         ("rule_id" = String, Path, description = "Pause rule identifier"),
     ),
@@ -324,10 +333,10 @@ async fn resume_rule(State(state): State<AdminState>, Path(rule_id): Path<String
     }
 }
 
-/// `DELETE /admin/v1/pause/:rule_id` — semantically correct DELETE for pause rules.
+/// `DELETE /zart/admin/v1/pause/:rule_id` — semantically correct DELETE for pause rules.
 #[cfg_attr(feature = "openapi", utoipa::path(
     delete,
-    path = "/admin/v1/pause/{rule_id}",
+    path = "/zart/admin/v1/pause/{rule_id}",
     params(
         ("rule_id" = String, Path, description = "Pause rule identifier"),
     ),
@@ -364,10 +373,10 @@ struct DetailQuery {
     run_id: Option<String>,
 }
 
-/// `GET /admin/v1/executions/:id/detail` — full execution detail with steps and attempts.
+/// `GET /zart/admin/v1/executions/:id/detail` — full execution detail with steps and attempts.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/admin/v1/executions/{execution_id}/detail",
+    path = "/zart/admin/v1/executions/{execution_id}/detail",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
         DetailQuery,
