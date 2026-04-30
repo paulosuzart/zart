@@ -66,20 +66,20 @@ export function cancelExecution(id: string) {
 export function getExecutionDetail(id: string, runId?: string) {
   const q = runId ? `?runId=${encodeURIComponent(runId)}` : "";
   return request<ExecutionDetailResponse>(
-    `/admin/v1/executions/${encodeURIComponent(id)}/detail${q}`,
+    `/zart/admin/v1/executions/${encodeURIComponent(id)}/detail${q}`,
   );
 }
 
 export function retryStep(id: string, stepName: string, triggeredBy?: string) {
   return request<{ newTaskId: string }>(
-    `/admin/v1/executions/${encodeURIComponent(id)}/retry-step`,
+    `/zart/admin/v1/executions/${encodeURIComponent(id)}/retry-step`,
     { method: "POST", body: JSON.stringify({ stepName, triggeredBy }) },
   );
 }
 
 export function restartExecution(id: string, payload?: unknown, triggeredBy?: string) {
   return request<{ newRunId: string }>(
-    `/admin/v1/executions/${encodeURIComponent(id)}/restart`,
+    `/zart/admin/v1/executions/${encodeURIComponent(id)}/restart`,
     { method: "POST", body: JSON.stringify({ payload, triggeredBy }) },
   );
 }
@@ -91,7 +91,7 @@ export function rerunSteps(
   triggeredBy?: string,
 ) {
   return request<{ newRunNumber: number; effectiveRerun: string[] }>(
-    `/admin/v1/executions/${encodeURIComponent(id)}/rerun`,
+    `/zart/admin/v1/executions/${encodeURIComponent(id)}/rerun`,
     { method: "POST", body: JSON.stringify({ rerunSteps, preserveSteps, triggeredBy }) },
   );
 }
@@ -115,7 +115,7 @@ export function startExecution(body: {
 }
 
 export function listPauseRules() {
-  return request<PauseRuleResponse[]>("/admin/v1/pause");
+  return request<PauseRuleResponse[]>("/zart/admin/v1/pause");
 }
 
 export function createPauseRule(rule: {
@@ -129,12 +129,12 @@ export function createPauseRule(rule: {
   if (body.expiresAt) {
     body.expiresAt = new Date(body.expiresAt as string).toISOString();
   }
-  return request<PauseRuleResponse>("/admin/v1/pause", {
+  return request<PauseRuleResponse>("/zart/admin/v1/pause", {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
 export function deletePauseRule(ruleId: string) {
-  return request<void>(`/admin/v1/pause/${encodeURIComponent(ruleId)}`, { method: "DELETE" });
+  return request<void>(`/zart/admin/v1/pause/${encodeURIComponent(ruleId)}`, { method: "DELETE" });
 }

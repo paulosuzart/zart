@@ -7,6 +7,7 @@ use zart::{ExecutionRecord, ExecutionSortField, ListExecutionsParams, SortOrder}
 // ── Requests ──────────────────────────────────────────────────────────────────
 
 /// Body for `POST /api/v1/executions`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartExecutionRequest {
@@ -21,6 +22,7 @@ pub struct StartExecutionRequest {
 }
 
 /// Query parameters for `GET /api/v1/executions`.
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams, utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListQuery {
@@ -71,6 +73,7 @@ fn default_limit() -> usize {
 }
 
 /// Query parameters for `GET /api/v1/executions/:id/wait`.
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams, utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitQuery {
@@ -81,6 +84,7 @@ pub struct WaitQuery {
 // ── Responses ─────────────────────────────────────────────────────────────────
 
 /// JSON representation of a durable execution record.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionResponse {
@@ -118,6 +122,7 @@ impl From<ExecutionRecord> for ExecutionResponse {
 }
 
 /// Body returned for a successful start.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartExecutionResponse {
@@ -126,6 +131,7 @@ pub struct StartExecutionResponse {
 }
 
 /// Body for error responses.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
@@ -133,7 +139,8 @@ pub struct ErrorResponse {
 
 // ── Admin Requests ────────────────────────────────────────────────────────────
 
-/// Body for `POST /admin/v1/executions/:id/retry-step`.
+/// Body for `POST /zart/admin/v1/executions/:id/retry-step`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetryStepRequest {
@@ -142,7 +149,8 @@ pub struct RetryStepRequest {
     pub triggered_by: Option<String>,
 }
 
-/// Body for `POST /admin/v1/executions/:id/restart`.
+/// Body for `POST /zart/admin/v1/executions/:id/restart`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestartRequest {
@@ -152,7 +160,8 @@ pub struct RestartRequest {
     pub triggered_by: Option<String>,
 }
 
-/// Body for `POST /admin/v1/executions/:id/rerun`.
+/// Body for `POST /zart/admin/v1/executions/:id/rerun`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RerunRequest {
@@ -167,6 +176,7 @@ pub struct RerunRequest {
 // ── Admin Responses ───────────────────────────────────────────────────────────
 
 /// Body returned for a successful retry-step.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetryStepResponse {
@@ -174,6 +184,7 @@ pub struct RetryStepResponse {
 }
 
 /// Body returned for a successful restart.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestartResponse {
@@ -181,6 +192,7 @@ pub struct RestartResponse {
 }
 
 /// Body returned for a successful rerun.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RerunResponse {
@@ -191,6 +203,7 @@ pub struct RerunResponse {
 }
 
 /// A preserved step that may have a stale dependency on a rerun step.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PotentiallyStaleDepResponse {
@@ -199,6 +212,7 @@ pub struct PotentiallyStaleDepResponse {
 }
 
 /// A single run record returned from the runs list.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecordResponse {
@@ -215,7 +229,8 @@ pub struct RunRecordResponse {
 
 // ── Pause / Resume Types ──────────────────────────────────────────────────────
 
-/// Body for `POST /admin/v1/pause`.
+/// Body for `POST /zart/admin/v1/pause`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PauseRequest {
@@ -234,6 +249,7 @@ pub struct PauseRequest {
 }
 
 /// Response for a single pause rule.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PauseRuleResponse {
@@ -256,6 +272,7 @@ pub struct PauseRuleResponse {
 }
 
 /// Response for a resume operation.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResumeResponse {
@@ -263,6 +280,7 @@ pub struct ResumeResponse {
 }
 
 /// Response for `GET /api/v1/stats`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatsResponse {
@@ -285,7 +303,8 @@ impl From<zart::ExecutionStats> for StatsResponse {
     }
 }
 
-/// Response for `GET /admin/v1/executions/:id/detail`.
+/// Response for `GET /zart/admin/v1/executions/:id/detail`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionDetailResponse {
@@ -295,6 +314,7 @@ pub struct ExecutionDetailResponse {
 }
 
 /// A step with its attempt history.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepDetailResponse {
@@ -312,6 +332,7 @@ pub struct StepDetailResponse {
 }
 
 /// A single step attempt in the detail response.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepAttemptResponse {

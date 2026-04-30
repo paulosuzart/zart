@@ -180,24 +180,24 @@ When using `zart-api`, mount the admin router alongside your API:
 use zart_api::{admin_router, AppState};
 
 let app = Router::new()
-    .nest("/api",   zart_api::api_router(AppState::new(durable)))
-    .nest("/admin", admin_router(scheduler.clone()));
+    .merge(zart_api::routes::api_router(AppState::new(durable)))
+    .merge(admin_router(scheduler.clone()));
 ```
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/admin/v1/executions/:id/retry-step` | Retry a dead step |
-| `POST` | `/admin/v1/executions/:id/restart` | Full restart |
-| `POST` | `/admin/v1/executions/:id/rerun` | Selective rerun |
-| `GET` | `/admin/v1/executions/:id/runs` | List all runs |
-| `POST` | `/admin/v1/pause` | Create a pause rule |
-| `GET` | `/admin/v1/pause` | List pause rules |
-| `POST` | `/admin/v1/pause/:rule_id` | Soft-delete a pause rule |
+| `POST` | `/zart/admin/v1/executions/:id/retry-step` | Retry a dead step |
+| `POST` | `/zart/admin/v1/executions/:id/restart` | Full restart |
+| `POST` | `/zart/admin/v1/executions/:id/rerun` | Selective rerun |
+| `GET` | `/zart/admin/v1/executions/:id/runs` | List all runs |
+| `POST` | `/zart/admin/v1/pause` | Create a pause rule |
+| `GET` | `/zart/admin/v1/pause` | List pause rules |
+| `POST` | `/zart/admin/v1/pause/:rule_id` | Soft-delete a pause rule |
 
 ### Example: retry-step via HTTP
 
 ```bash
-curl -X POST http://localhost:8080/admin/v1/executions/exec-001/retry-step \
+curl -X POST http://localhost:8080/zart/admin/v1/executions/exec-001/retry-step \
   -H "Content-Type: application/json" \
   -d '{"stepName": "charge-card", "triggeredBy": "ops-team"}'
 ```
@@ -205,7 +205,7 @@ curl -X POST http://localhost:8080/admin/v1/executions/exec-001/retry-step \
 ### Example: pause via HTTP
 
 ```bash
-curl -X POST http://localhost:8080/admin/v1/pause \
+curl -X POST http://localhost:8080/zart/admin/v1/pause \
   -H "Content-Type: application/json" \
   -d '{"taskName": "brewery-finder", "stepPattern": "find-breweries"}'
 ```

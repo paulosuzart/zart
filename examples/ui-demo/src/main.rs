@@ -15,6 +15,8 @@
 //!
 //! # 3. Open the UI (see docker-compose.yml ui service or npm run dev)
 //! #    Set the API Server to http://localhost:3000 if running the UI elsewhere
+//!
+//! # 4. Browse the Swagger UI at http://localhost:3000/swagger-ui
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -318,6 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_state = AppState::new(durable.clone() as Arc<dyn zart::DurableApi>);
     let router = zart_api::routes::api_router(api_state)
         .merge(admin_router(durable.clone()))
+        .merge(zart_api::openapi::swagger_ui_router())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive());
 

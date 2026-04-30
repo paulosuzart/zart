@@ -58,11 +58,28 @@ pub fn api_router(state: AppState) -> Router {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// `GET /healthz` — liveness probe.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/healthz",
+    responses(
+        (status = 200, description = "Service is alive"),
+    ),
+    tag = "health"
+))]
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
 /// `GET /readyz` — readiness probe (checks if the service is ready to accept requests).
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/readyz",
+    responses(
+        (status = 200, description = "Service is ready"),
+        (status = 503, description = "Service not ready"),
+    ),
+    tag = "health"
+))]
 async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     // Check if the durable API is available
     if state.durable.is_ready() {
@@ -83,6 +100,16 @@ async fn metrics_handler() -> impl IntoResponse {
 }
 
 /// `GET /api/v1/executions` — list executions with optional filters.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/v1/executions",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "List of executions", body = Vec<ExecutionResponse>),
+        (status = 500, description = "Internal error",     body = ErrorResponse),
+    ),
+    tag = "executions"
+))]
 async fn list_executions(State(state): State<AppState>, Query(q): Query<ListQuery>) -> Response {
     let params = q.into_params();
 
@@ -96,6 +123,19 @@ async fn list_executions(State(state): State<AppState>, Query(q): Query<ListQuer
 }
 
 /// `POST /api/v1/executions` — start a new durable execution.
+///
+/// Idempotent: if `executionId` already exists, returns the existing record with 200.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/api/v1/executions",
+    request_body = StartExecutionRequest,
+    responses(
+        (status = 201, description = "Execution started",                          body = ExecutionResponse),
+        (status = 200, description = "Idempotent replay — execution already exists", body = ExecutionResponse),
+        (status = 500, description = "Internal error",                             body = ErrorResponse),
+    ),
+    tag = "executions"
+))]
 async fn start_execution(
     State(state): State<AppState>,
     Json(req): Json<StartExecutionRequest>,
@@ -121,6 +161,19 @@ async fn start_execution(
 }
 
 /// `GET /api/v1/executions/:execution_id` — get execution status and step progress.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/v1/executions/{execution_id}",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+    ),
+    responses(
+        (status = 200, description = "Execution found",   body = ExecutionResponse),
+        (status = 404, description = "Not found",         body = ErrorResponse),
+        (status = 500, description = "Internal error",    body = ErrorResponse),
+    ),
+    tag = "executions"
+))]
 async fn get_execution(
     State(state): State<AppState>,
     Path(execution_id): Path<String>,
@@ -136,6 +189,19 @@ async fn get_execution(
 }
 
 /// `POST /api/v1/executions/:execution_id/cancel` — cancel a running execution.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/api/v1/executions/{execution_id}/cancel",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+    ),
+    responses(
+        (status = 204, description = "Cancelled"),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "executions"
+))]
 async fn cancel_execution(
     State(state): State<AppState>,
     Path(execution_id): Path<String>,
@@ -150,6 +216,21 @@ async fn cancel_execution(
 /// `GET /api/v1/executions/:execution_id/wait` — long-poll until completion.
 ///
 /// Accepts an optional `timeout_secs` query parameter (max 30, default 30).
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/v1/executions/{execution_id}/wait",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+        WaitQuery,
+    ),
+    responses(
+        (status = 200, description = "Execution completed",  body = ExecutionResponse),
+        (status = 404, description = "Not found",            body = ErrorResponse),
+        (status = 504, description = "Wait timed out",       body = ErrorResponse),
+        (status = 500, description = "Internal error",       body = ErrorResponse),
+    ),
+    tag = "executions"
+))]
 async fn wait_execution(
     State(state): State<AppState>,
     Path(execution_id): Path<String>,
@@ -176,6 +257,21 @@ async fn wait_execution(
 }
 
 /// `POST /api/v1/events/:execution_id/:event_name` — deliver an event.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/api/v1/events/{execution_id}/{event_name}",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+        ("event_name"   = String, Path, description = "Event name"),
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 202, description = "Event accepted"),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "events"
+))]
 async fn offer_event(
     State(state): State<AppState>,
     Path((execution_id, event_name)): Path<(String, String)>,
@@ -195,6 +291,15 @@ async fn offer_event(
 // ── Stats ──────────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/stats` — aggregate execution counts by status.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/v1/stats",
+    responses(
+        (status = 200, description = "Execution statistics", body = StatsResponse),
+        (status = 500, description = "Internal error",       body = ErrorResponse),
+    ),
+    tag = "stats"
+))]
 async fn get_stats(State(state): State<AppState>) -> Response {
     match state.durable.stats().await {
         Ok(stats) => {
