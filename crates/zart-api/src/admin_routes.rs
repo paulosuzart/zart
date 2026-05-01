@@ -31,43 +31,33 @@ use crate::{
 
 /// Construct the versioned admin API router.
 ///
+/// Routes are nested under `prefix` (e.g., `"/zart/admin/v1"`).
+///
 /// Requires a concrete `DurableScheduler` because admin operations use
 /// concrete return types (not object-safe trait methods).
-pub fn admin_router(scheduler: Arc<DurableScheduler>) -> Router {
+pub fn admin_router(scheduler: Arc<DurableScheduler>, prefix: &str) -> Router {
+    let inner = Router::new()
+        .route("/executions/{execution_id}/retry-step", post(retry_step))
+        .route("/executions/{execution_id}/restart", post(restart))
+        .route("/executions/{execution_id}/rerun", post(rerun))
+        .route("/executions/{execution_id}/runs", get(list_runs))
+        .route("/executions/{execution_id}/detail", get(execution_detail))
+        .route("/pause", post(create_pause))
+        .route("/pause", get(list_pauses))
+        .route("/pause/{rule_id}", post(resume_rule))
+        .route("/pause/{rule_id}", delete(delete_pause_rule));
+
     Router::new()
-        .route(
-            "/zart/admin/v1/executions/{execution_id}/retry-step",
-            post(retry_step),
-        )
-        .route(
-            "/zart/admin/v1/executions/{execution_id}/restart",
-            post(restart),
-        )
-        .route(
-            "/zart/admin/v1/executions/{execution_id}/rerun",
-            post(rerun),
-        )
-        .route(
-            "/zart/admin/v1/executions/{execution_id}/runs",
-            get(list_runs),
-        )
-        .route(
-            "/zart/admin/v1/executions/{execution_id}/detail",
-            get(execution_detail),
-        )
-        .route("/zart/admin/v1/pause", post(create_pause))
-        .route("/zart/admin/v1/pause", get(list_pauses))
-        .route("/zart/admin/v1/pause/{rule_id}", post(resume_rule))
-        .route("/zart/admin/v1/pause/{rule_id}", delete(delete_pause_rule))
+        .nest(prefix, inner)
         .with_state(AdminState { scheduler })
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-/// `POST /zart/admin/v1/executions/:id/retry-step` — retry a dead step.
+/// `POST /executions/:id/retry-step` — retry a dead step.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/zart/admin/v1/executions/{execution_id}/retry-step",
+    path = "/executions/{execution_id}/retry-step",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -103,10 +93,10 @@ async fn retry_step(
     }
 }
 
-/// `POST /zart/admin/v1/executions/:id/restart` — restart entire execution.
+/// `POST /executions/:id/restart` — restart entire execution.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/zart/admin/v1/executions/{execution_id}/restart",
+    path = "/executions/{execution_id}/restart",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -134,10 +124,10 @@ async fn restart(
     }
 }
 
-/// `POST /zart/admin/v1/executions/:id/rerun` — selective rerun of steps.
+/// `POST /executions/:id/rerun` — selective rerun of steps.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/zart/admin/v1/executions/{execution_id}/rerun",
+    path = "/executions/{execution_id}/rerun",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -181,10 +171,10 @@ async fn rerun(
     }
 }
 
-/// `GET /zart/admin/v1/executions/:id/runs` — list all runs for an execution.
+/// `GET /executions/:id/runs` — list all runs for an execution.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/zart/admin/v1/executions/{execution_id}/runs",
+    path = "/executions/{execution_id}/runs",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -219,10 +209,10 @@ async fn list_runs(State(state): State<AdminState>, Path(execution_id): Path<Str
     }
 }
 
-/// `POST /zart/admin/v1/pause` — create a pause rule.
+/// `POST /pause` — create a pause rule.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/zart/admin/v1/pause",
+    path = "/pause",
     request_body = PauseRequest,
     responses(
         (status = 201, description = "Pause rule created",          body = PauseRuleResponse),
@@ -272,10 +262,10 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
     }
 }
 
-/// `GET /zart/admin/v1/pause` — list pause rules.
+/// `GET /pause` — list pause rules.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/zart/admin/v1/pause",
+    path = "/pause",
     responses(
         (status = 200, description = "Pause rules",    body = Vec<PauseRuleResponse>),
         (status = 500, description = "Internal error", body = ErrorResponse),
@@ -305,10 +295,10 @@ async fn list_pauses(State(state): State<AdminState>) -> Response {
     }
 }
 
-/// `POST /zart/admin/v1/pause/:rule_id` — soft-delete a pause rule (resume).
+/// `POST /pause/:rule_id` — soft-delete a pause rule (resume).
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/zart/admin/v1/pause/{rule_id}",
+    path = "/pause/{rule_id}",
     params(
         ("rule_id" = String, Path, description = "Pause rule identifier"),
     ),
@@ -333,10 +323,10 @@ async fn resume_rule(State(state): State<AdminState>, Path(rule_id): Path<String
     }
 }
 
-/// `DELETE /zart/admin/v1/pause/:rule_id` — semantically correct DELETE for pause rules.
+/// `DELETE /pause/:rule_id` — semantically correct DELETE for pause rules.
 #[cfg_attr(feature = "openapi", utoipa::path(
     delete,
-    path = "/zart/admin/v1/pause/{rule_id}",
+    path = "/pause/{rule_id}",
     params(
         ("rule_id" = String, Path, description = "Pause rule identifier"),
     ),
@@ -373,10 +363,10 @@ struct DetailQuery {
     run_id: Option<String>,
 }
 
-/// `GET /zart/admin/v1/executions/:id/detail` — full execution detail with steps and attempts.
+/// `GET /executions/:id/detail` — full execution detail with steps and attempts.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/zart/admin/v1/executions/{execution_id}/detail",
+    path = "/executions/{execution_id}/detail",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
         DetailQuery,

@@ -20,18 +20,33 @@ pub struct ApiServer {
     durable: Arc<dyn DurableApi>,
     /// CancellationToken for graceful shutdown.
     cancellation: Option<CancellationToken>,
+    /// Route prefix for the main API (default: `"/api/v1"`).
+    api_prefix: String,
+    /// Route prefix for the admin API (default: `"/zart/admin/v1"`).
+    admin_prefix: String,
     /// Whether to mount Swagger UI (`/swagger-ui`) and schema (`/openapi.json`).
     #[cfg(feature = "openapi")]
     swagger_ui: bool,
 }
 
+fn default_api_prefix() -> String {
+    std::env::var("ZART_API_PREFIX").unwrap_or_else(|_| "/api/v1".to_string())
+}
+
+fn default_admin_prefix() -> String {
+    std::env::var("ZART_ADMIN_PREFIX").unwrap_or_else(|_| "/zart/admin/v1".to_string())
+}
+
 impl ApiServer {
     /// Create a new API server bound to `addr`.
+    #[must_use]
     pub fn new(addr: impl Into<String>, durable: Arc<dyn DurableApi>) -> Self {
         Self {
             addr: addr.into(),
             durable,
             cancellation: None,
+            api_prefix: default_api_prefix(),
+            admin_prefix: default_admin_prefix(),
             #[cfg(feature = "openapi")]
             swagger_ui: false,
         }
@@ -48,9 +63,29 @@ impl ApiServer {
             addr: addr.into(),
             durable,
             cancellation: Some(cancellation),
+            api_prefix: default_api_prefix(),
+            admin_prefix: default_admin_prefix(),
             #[cfg(feature = "openapi")]
             swagger_ui: false,
         }
+    }
+
+    /// Override the main API route prefix (default: `"/api/v1"`).
+    ///
+    /// Takes precedence over the `ZART_API_PREFIX` environment variable.
+    #[must_use]
+    pub fn with_api_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.api_prefix = prefix.into();
+        self
+    }
+
+    /// Override the admin API route prefix (default: `"/zart/admin/v1"`).
+    ///
+    /// Takes precedence over the `ZART_ADMIN_PREFIX` environment variable.
+    #[must_use]
+    pub fn with_admin_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.admin_prefix = prefix.into();
+        self
     }
 
     /// Mount Swagger UI at `/swagger-ui` and serve the OpenAPI schema at `/openapi.json`.
@@ -63,22 +98,25 @@ impl ApiServer {
         self
     }
 
-    /// Build the Axum router with Main API routes and middleware.
+    /// Build the Axum router with main API routes and middleware.
     ///
-    /// The Admin API router (`/zart/admin/v1/*`) is not included here; mount it
-    /// separately via [`crate::admin_routes::admin_router`] if needed.
+    /// Health checks (`/healthz`, `/readyz`) and metrics (`/metrics`) are always
+    /// mounted at the root, unaffected by [`Self::with_api_prefix`].
+    ///
+    /// The admin router is not included; mount it separately via
+    /// [`crate::admin_routes::admin_router`] passing the `admin_prefix` configured
+    /// via [`Self::with_admin_prefix`].
     pub fn router(&self) -> Router {
         let state = AppState::new(self.durable.clone());
         #[allow(unused_mut)]
-        let mut app = routes::api_router(state);
+        let mut app = routes::api_router(state, &self.api_prefix);
 
         #[cfg(feature = "openapi")]
         if self.swagger_ui {
-            use crate::openapi::ZartApiDoc;
-            use utoipa::OpenApi as _;
+            use crate::openapi::build_openapi;
             use utoipa_swagger_ui::SwaggerUi;
-            app = app
-                .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", ZartApiDoc::openapi()));
+            let openapi = build_openapi(&self.api_prefix, &self.admin_prefix, None, None);
+            app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", openapi));
         }
 
         app.layer(TraceLayer::new_for_http())
@@ -171,10 +209,37 @@ mod tests {
         let _ = server.router();
     }
 
+    #[test]
+    fn custom_prefixes_accepted() {
+        let server = ApiServer::new("0.0.0.0:8080", Arc::new(NullApi))
+            .with_api_prefix("/v2")
+            .with_admin_prefix("/ops/zart");
+        assert_eq!(server.api_prefix, "/v2");
+        assert_eq!(server.admin_prefix, "/ops/zart");
+        let _ = server.router();
+    }
+
+    #[test]
+    fn default_prefixes_are_correct() {
+        let server = ApiServer::new("0.0.0.0:8080", Arc::new(NullApi));
+        // env var may or may not be set; just verify the field is populated
+        assert!(!server.api_prefix.is_empty());
+        assert!(!server.admin_prefix.is_empty());
+    }
+
     #[cfg(feature = "openapi")]
     #[test]
     fn with_swagger_ui_builds_router() {
         let server = ApiServer::new("0.0.0.0:8080", Arc::new(NullApi)).with_swagger_ui();
+        let _ = server.router();
+    }
+
+    #[cfg(feature = "openapi")]
+    #[test]
+    fn swagger_ui_with_custom_prefix_builds_router() {
+        let server = ApiServer::new("0.0.0.0:8080", Arc::new(NullApi))
+            .with_api_prefix("/v2")
+            .with_swagger_ui();
         let _ = server.router();
     }
 }

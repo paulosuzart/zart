@@ -96,7 +96,7 @@ doc:
 
 # Generate documentation without opening (for CI)
 doc-check:
-    cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # ── Docker / Database ──────────────────────────────────────────────────────────
 

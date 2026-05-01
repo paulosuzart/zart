@@ -24,35 +24,35 @@ use crate::{
 const MAX_WAIT_SECS: u64 = 30;
 
 /// Construct the versioned API router with the given application state.
-pub fn api_router(state: AppState) -> Router {
-    let router = Router::new()
+///
+/// Routes are nested under `prefix` (e.g., `"/api/v1"`). Health checks and
+/// metrics are mounted at the root, outside the prefix.
+pub fn api_router(state: AppState, prefix: &str) -> Router {
+    let inner = Router::new()
         // Execution management
-        .route("/api/v1/executions", get(list_executions))
-        .route("/api/v1/executions", post(start_execution))
-        .route("/api/v1/executions/{execution_id}", get(get_execution))
-        .route(
-            "/api/v1/executions/{execution_id}/cancel",
-            post(cancel_execution),
-        )
-        .route(
-            "/api/v1/executions/{execution_id}/wait",
-            get(wait_execution),
-        )
+        .route("/executions", get(list_executions))
+        .route("/executions", post(start_execution))
+        .route("/executions/{execution_id}", get(get_execution))
+        .route("/executions/{execution_id}/cancel", post(cancel_execution))
+        .route("/executions/{execution_id}/wait", get(wait_execution))
         // Stats
-        .route("/api/v1/stats", get(get_stats))
+        .route("/stats", get(get_stats))
         // Event delivery
-        .route(
-            "/api/v1/events/{execution_id}/{event_name}",
-            post(offer_event),
-        )
-        // Health checks
+        .route("/events/{execution_id}/{event_name}", post(offer_event));
+
+    #[allow(unused_mut)]
+    let mut app = Router::new()
+        .nest(prefix, inner)
+        // Health checks are root-level, unaffected by prefix
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz));
 
     #[cfg(feature = "metrics")]
-    let router = router.route("/metrics", get(metrics_handler));
+    {
+        app = app.route("/metrics", get(metrics_handler));
+    }
 
-    router.with_state(state)
+    app.with_state(state)
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -99,10 +99,10 @@ async fn metrics_handler() -> impl IntoResponse {
     )
 }
 
-/// `GET /api/v1/executions` — list executions with optional filters.
+/// `GET /executions` — list executions with optional filters.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/api/v1/executions",
+    path = "/executions",
     params(ListQuery),
     responses(
         (status = 200, description = "List of executions", body = Vec<ExecutionResponse>),
@@ -122,12 +122,12 @@ async fn list_executions(State(state): State<AppState>, Query(q): Query<ListQuer
     }
 }
 
-/// `POST /api/v1/executions` — start a new durable execution.
+/// `POST /executions` — start a new durable execution.
 ///
 /// Idempotent: if `executionId` already exists, returns the existing record with 200.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/api/v1/executions",
+    path = "/executions",
     request_body = StartExecutionRequest,
     responses(
         (status = 201, description = "Execution started",                          body = ExecutionResponse),
@@ -160,10 +160,10 @@ async fn start_execution(
     }
 }
 
-/// `GET /api/v1/executions/:execution_id` — get execution status and step progress.
+/// `GET /executions/:execution_id` — get execution status and step progress.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/api/v1/executions/{execution_id}",
+    path = "/executions/{execution_id}",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -188,10 +188,10 @@ async fn get_execution(
     }
 }
 
-/// `POST /api/v1/executions/:execution_id/cancel` — cancel a running execution.
+/// `POST /executions/:execution_id/cancel` — cancel a running execution.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/api/v1/executions/{execution_id}/cancel",
+    path = "/executions/{execution_id}/cancel",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
     ),
@@ -213,12 +213,12 @@ async fn cancel_execution(
     }
 }
 
-/// `GET /api/v1/executions/:execution_id/wait` — long-poll until completion.
+/// `GET /executions/:execution_id/wait` — long-poll until completion.
 ///
 /// Accepts an optional `timeout_secs` query parameter (max 30, default 30).
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/api/v1/executions/{execution_id}/wait",
+    path = "/executions/{execution_id}/wait",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
         WaitQuery,
@@ -256,10 +256,10 @@ async fn wait_execution(
     }
 }
 
-/// `POST /api/v1/events/:execution_id/:event_name` — deliver an event.
+/// `POST /events/:execution_id/:event_name` — deliver an event.
 #[cfg_attr(feature = "openapi", utoipa::path(
     post,
-    path = "/api/v1/events/{execution_id}/{event_name}",
+    path = "/events/{execution_id}/{event_name}",
     params(
         ("execution_id" = String, Path, description = "Execution identifier"),
         ("event_name"   = String, Path, description = "Event name"),
@@ -290,10 +290,10 @@ async fn offer_event(
 
 // ── Stats ──────────────────────────────────────────────────────────────────
 
-/// `GET /api/v1/stats` — aggregate execution counts by status.
+/// `GET /stats` — aggregate execution counts by status.
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
-    path = "/api/v1/stats",
+    path = "/stats",
     responses(
         (status = 200, description = "Execution statistics", body = StatsResponse),
         (status = 500, description = "Internal error",       body = ErrorResponse),
@@ -393,7 +393,7 @@ mod tests {
 
     fn test_app() -> axum::Router {
         let state = AppState::new(Arc::new(NullApi));
-        api_router(state).layer(tower_http::trace::TraceLayer::new_for_http())
+        api_router(state, "/api/v1").layer(tower_http::trace::TraceLayer::new_for_http())
     }
 
     #[tokio::test]
