@@ -160,9 +160,8 @@ fn resolve_skip(provided: Option<&[&str]>, default: &[&str]) -> Vec<String> {
 
 /// Build a fully-prefixed [`utoipa::openapi::OpenApi`] value.
 ///
-/// Uses [`ApiOnlyDoc`] and [`AdminOnlyDoc`] to structurally separate path
-/// groups, then applies prefixes via [`PrefixRewriter`] (a [`utoipa::Modify`]
-/// implementation).
+/// Structurally separates API and admin path groups, then applies prefixes via
+/// an internal [`utoipa::Modify`] implementation.
 ///
 /// `api_skip` and `admin_skip` list paths that should stay at the root (no
 /// prefix applied). When `None`, the compiled defaults are used
