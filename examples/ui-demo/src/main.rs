@@ -318,9 +318,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Merge the public API router with the admin router under one server.
     let api_state = AppState::new(durable.clone() as Arc<dyn zart::DurableApi>);
-    let router = zart_api::routes::api_router(api_state)
-        .merge(admin_router(durable.clone()))
-        .merge(zart_api::openapi::swagger_ui_router())
+    let router = zart_api::routes::api_router(api_state, "/api/v1")
+        .merge(admin_router(durable.clone(), "/zart/admin/v1"))
+        .merge(zart_api::openapi::swagger_ui_router(
+            "/api/v1",
+            "/zart/admin/v1",
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive());
 
