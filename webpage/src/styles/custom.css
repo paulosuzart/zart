@@ -39,6 +39,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Ensure dark mode background is applied */
+:root[data-theme='dark'] body {
+  background-color: var(--sl-color-bg);
+}
+
 /* Tighten heading tracking slightly */
 h1, h2, h3, h4 {
   letter-spacing: -0.02em;
@@ -98,6 +103,18 @@ pre, code,
   letter-spacing: -0.02em;
 }
 
+/* Light mode sidebar active links - light purple */
+a[aria-current='page'] {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  border-inline-start-color: var(--sl-color-accent);
+}
+
+.right-sidebar a[aria-current='true'] {
+  color: var(--sl-color-accent-high);
+}
+
+/* Dark mode sidebar active links */
 [data-theme='dark'] a[aria-current='page'] {
   background: var(--sl-color-accent-low);
   color: var(--sl-color-accent-high);
