@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 use zart_scheduler::{
     CompletionHandler, OnComplete, PostgresTaskScheduler, ScheduledTask, SchedulerTaskError,
-    TaskInstance, TaskRegistry, TaskScheduler, Worker, WorkerConfig,
+    TaskInstance, TaskRegistry, TaskScheduler, TaskStatus, Worker, WorkerConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -207,18 +207,18 @@ async fn wait_for_task_completion(
             return Err(format!("timeout waiting for task {task_id}"));
         }
 
-        let row: Option<(String, Option<Value>)> =
-            sqlx::query_as("SELECT status::text, result FROM zart_tasks WHERE task_id = $1")
+        let row: Option<(TaskStatus, Option<Value>)> =
+            sqlx::query_as("SELECT status, result FROM zart_tasks WHERE task_id = $1")
                 .bind(task_id)
                 .fetch_optional(scheduler.pool())
                 .await
                 .map_err(|e| e.to_string())?;
 
         if let Some((status, result)) = row {
-            if status == "completed" {
+            if status == TaskStatus::Completed {
                 return Ok(result);
             }
-            if status == "failed" {
+            if status == TaskStatus::Failed {
                 return Err(format!("task {task_id} failed"));
             }
         }
@@ -247,7 +247,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
 
     let scheduler = Arc::new(PostgresTaskScheduler::new(pool));
-    scheduler.run_migrations().await?;
 
     // Register task handlers
     let mut registry = TaskRegistry::new();

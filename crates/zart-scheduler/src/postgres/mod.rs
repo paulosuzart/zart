@@ -4,10 +4,11 @@
 //! implemented with `SELECT … FOR UPDATE SKIP LOCKED` so multiple workers
 //! can poll concurrently without processing the same task twice.
 //!
-//! # Migrations
+//! # Schema setup
 //!
-//! Call `PostgresTaskScheduler::run_migrations` (or `just migrate`) once before
-//! starting workers. It applies the embedded SQL files under `migrations/`.
+//! Run `PgBackend::run_migrations()` (from the `zart` crate) or apply
+//! `sql/0001_scheduler.sql` manually before starting workers to create
+//! the required tables.
 
 mod scheduler_impl;
 mod sql_helpers;
@@ -24,8 +25,9 @@ pub use table_names::{TableNames, TableNamesError};
 /// `zart::PostgresStorage`.
 ///
 /// Create one with [`PostgresTaskScheduler::new`], passing in an already-built
-/// `sqlx::PgPool`. Call `run_migrations` before first use to ensure the
-/// schema is up to date.
+/// `sqlx::PgPool`. Ensure the schema has been provisioned via
+/// `PgBackend::run_migrations()` (from the `zart` crate) or by applying
+/// `sql/0001_scheduler.sql` manually before first use.
 ///
 /// To use custom table names (e.g. to avoid collisions or support multi-tenancy),
 /// use [`PostgresTaskScheduler::with_table_names`] together with [`TableNames`].

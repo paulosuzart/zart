@@ -309,13 +309,6 @@ impl TaskScheduler for PostgresTaskScheduler {
         Ok(())
     }
 
-    async fn run_migrations(&self) -> Result<(), StorageError> {
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
-            .await
-            .map_err(|e| StorageError::Migration(e.to_string()))
-    }
-
     async fn recover_orphans(
         &self,
         stale_timeout: std::time::Duration,

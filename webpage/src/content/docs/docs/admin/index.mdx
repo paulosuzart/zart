@@ -23,13 +23,14 @@ Admin operations are **non-destructive**. Every action preserves history via app
 
 ## Embedded Rust API
 
-All admin operations are methods on `DurableScheduler`. You need a scheduler with pause storage configured for pause/resume:
+All admin operations are methods on `DurableScheduler`. Pause/resume is always enabled:
 
 ```rust
 use zart::DurableScheduler;
 use zart::admin::{RerunSpec, PauseScope};
 
-let durable = DurableScheduler::with_pause(sched.clone(), sched.task_scheduler(), sched.clone());
+let pg = PgBackend::new(pool);
+let durable = DurableScheduler::from_backend(&pg);
 ```
 
 ### Retry a Dead Step
@@ -82,9 +83,25 @@ let result = durable
 
 println!("New run: {}", result.new_run_number);
 println!("Rerunning: {}", result.effective_rerun.join(", "));
+
+for dep in &result.potentially_stale {
+    println!(
+        "⚠ '{}' may depend on: {}",
+        dep.preserved_step,
+        dep.possibly_depends_on.join(", ")
+    );
+}
 ```
 
-It's your responsibility to decide which steps can be safely preserved. If a preserved step depends on the output of a rerun step, its result may be stale.
+:::note[How preserved steps work]
+Preserved step results are **copied** from the old run into the new run atomically within the same database transaction as the new run creation. When the body replays, it sees those steps as already completed and skips re-executing them — no extra code required in your handler.
+
+- The copy is atomic: either the new run **and** preserved steps are committed together, or neither is visible.
+- Step **attempt history** is also copied — preserved steps show their full attempt trace in the new run.
+- The copy is idempotent (`ON CONFLICT DO NOTHING`), so calling it twice is safe.
+:::
+
+It's your responsibility to decide which steps can be safely preserved. If a preserved step depends on the output of a rerun step, its cached result may be stale. The `rerun_steps` response includes a `potentially_stale` advisory field that flags preserved steps scheduled after a rerun step (a heuristic based on execution order, not proven data dependencies).
 
 ### Pause / Resume
 
@@ -163,24 +180,24 @@ When using `zart-api`, mount the admin router alongside your API:
 use zart_api::{admin_router, AppState};
 
 let app = Router::new()
-    .nest("/api",   zart_api::api_router(AppState::new(durable)))
-    .nest("/admin", admin_router(scheduler.clone()));
+    .merge(zart_api::routes::api_router(AppState::new(durable)))
+    .merge(admin_router(scheduler.clone()));
 ```
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/admin/v1/executions/:id/retry-step` | Retry a dead step |
-| `POST` | `/admin/v1/executions/:id/restart` | Full restart |
-| `POST` | `/admin/v1/executions/:id/rerun` | Selective rerun |
-| `GET` | `/admin/v1/executions/:id/runs` | List all runs |
-| `POST` | `/admin/v1/pause` | Create a pause rule |
-| `GET` | `/admin/v1/pause` | List pause rules |
-| `POST` | `/admin/v1/pause/:rule_id` | Soft-delete a pause rule |
+| `POST` | `/zart/admin/v1/executions/:id/retry-step` | Retry a dead step |
+| `POST` | `/zart/admin/v1/executions/:id/restart` | Full restart |
+| `POST` | `/zart/admin/v1/executions/:id/rerun` | Selective rerun |
+| `GET` | `/zart/admin/v1/executions/:id/runs` | List all runs |
+| `POST` | `/zart/admin/v1/pause` | Create a pause rule |
+| `GET` | `/zart/admin/v1/pause` | List pause rules |
+| `POST` | `/zart/admin/v1/pause/:rule_id` | Soft-delete a pause rule |
 
 ### Example: retry-step via HTTP
 
 ```bash
-curl -X POST http://localhost:8080/admin/v1/executions/exec-001/retry-step \
+curl -X POST http://localhost:8080/zart/admin/v1/executions/exec-001/retry-step \
   -H "Content-Type: application/json" \
   -d '{"stepName": "charge-card", "triggeredBy": "ops-team"}'
 ```
@@ -188,7 +205,7 @@ curl -X POST http://localhost:8080/admin/v1/executions/exec-001/retry-step \
 ### Example: pause via HTTP
 
 ```bash
-curl -X POST http://localhost:8080/admin/v1/pause \
+curl -X POST http://localhost:8080/zart/admin/v1/pause \
   -H "Content-Type: application/json" \
   -d '{"taskName": "brewery-finder", "stepPattern": "find-breweries"}'
 ```

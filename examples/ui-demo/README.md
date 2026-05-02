@@ -11,11 +11,14 @@ Starts a `PostgresScheduler`, registers two task types, seeds a handful of execu
 docker compose up -d postgres
 
 # Run the backend
-cargo run -p ui-demo
+cargo run -p example-ui-demo
 
 # Open the Admin UI (in a separate terminal)
 cd zart-ui && npm run dev
 # Set the API Server to http://localhost:3000
+
+# Browse the Swagger UI
+open http://localhost:3000/swagger-ui
 ```
 
 Requires `DATABASE_URL` to point at a running PostgreSQL instance.

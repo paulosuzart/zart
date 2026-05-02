@@ -17,7 +17,9 @@ use std::sync::Arc;
 use crate::store::StorageBackend;
 use zart_core::types::StepStatus;
 
-use crate::admin::{ExecutionDetail, RerunResult, RerunSpec, StepWithAttempts};
+use crate::admin::{
+    ExecutionDetail, PotentiallyStaleDep, RerunResult, RerunSpec, StepWithAttempts,
+};
 use crate::error::SchedulerError;
 
 /// Provides business-level admin operations over a [`StorageBackend`].
@@ -122,7 +124,6 @@ impl ExecutionService {
 
         let steps = self.storage.list_steps(&run_id).await?;
 
-        // Always rerun dead steps; add force_rerun on top.
         let mut effective_rerun: HashSet<String> = spec.force_rerun.iter().cloned().collect();
         for step in &steps {
             if step.status == StepStatus::Dead {
@@ -130,7 +131,6 @@ impl ExecutionService {
             }
         }
 
-        // Remove preserved steps that are completed (dead steps can't be preserved).
         let preserve_set: HashSet<&str> = spec.preserve.iter().map(|s| s.as_str()).collect();
         let step_status_map: HashMap<&str, &StepStatus> = steps
             .iter()
@@ -144,24 +144,36 @@ impl ExecutionService {
             }
         }
 
-        let new_run_id = self
+        let preserved: Vec<String> = steps
+            .iter()
+            .filter(|s| {
+                s.status == StepStatus::Completed && !effective_rerun.contains(&s.step_name)
+            })
+            .map(|s| s.step_name.clone())
+            .collect();
+
+        let _new_run_id = self
             .storage
-            .restart_run(
+            .restart_run_with_step_copy(
                 execution_id,
                 None,
                 "selective_rerun",
                 spec.triggered_by.as_deref(),
+                &preserved,
             )
             .await?;
 
-        let run_number = new_run_id
+        let run_number = _new_run_id
             .rsplit_once(":run:")
             .and_then(|(_, n)| n.parse().ok())
             .unwrap_or(0);
 
+        let potentially_stale = compute_potentially_stale(&steps, &effective_rerun, &preserved);
+
         Ok(RerunResult {
             new_run_number: run_number,
             effective_rerun: effective_rerun.into_iter().collect(),
+            potentially_stale,
         })
     }
 
@@ -222,4 +234,45 @@ impl ExecutionService {
             steps,
         })
     }
+}
+
+fn compute_potentially_stale(
+    steps: &[zart_core::types::StepRow],
+    effective_rerun: &HashSet<String>,
+    preserved: &[String],
+) -> Vec<PotentiallyStaleDep> {
+    if effective_rerun.is_empty() || preserved.is_empty() {
+        return vec![];
+    }
+
+    let latest_rerun_scheduled = steps
+        .iter()
+        .filter(|s| effective_rerun.contains(&s.step_name))
+        .map(|s| s.scheduled_at)
+        .max();
+
+    let cutoff = match latest_rerun_scheduled {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    let preserved_set: HashSet<&str> = preserved.iter().map(|s| s.as_str()).collect();
+
+    steps
+        .iter()
+        .filter(|s| preserved_set.contains(s.step_name.as_str()) && s.scheduled_at > cutoff)
+        .map(|s| {
+            let deps: Vec<String> = steps
+                .iter()
+                .filter(|r| {
+                    effective_rerun.contains(&r.step_name) && r.scheduled_at < s.scheduled_at
+                })
+                .map(|r| r.step_name.clone())
+                .collect();
+            PotentiallyStaleDep {
+                preserved_step: s.step_name.clone(),
+                possibly_depends_on: deps,
+            }
+        })
+        .collect()
 }

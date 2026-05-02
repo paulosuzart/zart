@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 zart = { path = "../../crates/zart" }
-zart-api = { path = "../../crates/zart-api" }
+zart-api = { path = "../../crates/zart-api", features = ["openapi"] }
 zart-scheduler = { path = "../../crates/zart-scheduler" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

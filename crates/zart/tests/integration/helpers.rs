@@ -6,14 +6,15 @@ pub use std::sync::{
 };
 pub use std::time::Duration;
 /// Shared helpers and test step definitions for integration tests.
-pub use zart::PostgresStorage;
+pub use zart::postgres::PgBackend;
 pub use zart::{
-    DurableRegistry, RetryConfig, Worker, WorkerBuilder, WorkerConfig, context::ZartStep,
+    Backend, DurableRegistry, RetryConfig, Worker, WorkerBuilder, WorkerConfig, context::ZartStep,
     error::TaskError, registry::DurableExecution,
 };
-pub use zart_core::store::ExecutionStore as _;
-pub use zart_core::types::{EventDeliveryResult, ExecutionStatus};
-pub use zart_scheduler::TaskScheduler as _;
+pub use zart_core::store::{
+    EventStore as _, ExecutionStore as _, StepStore as _, WaitGroupStore as _,
+};
+pub use zart_core::types::{EventDeliveryResult, ExecutionStatus, StepStatus};
 
 // ── Local step error for test steps ───────────────────────────────────────
 
@@ -43,17 +44,17 @@ pub fn pg_url() -> String {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string())
 }
 
-pub async fn setup() -> Arc<PostgresStorage> {
+pub async fn setup() -> Arc<PgBackend> {
     let pool = sqlx::PgPool::connect(&pg_url())
         .await
         .expect("failed to connect to PostgreSQL");
-    let scheduler = Arc::new(PostgresStorage::new(pool));
-    scheduler.run_migrations().await.expect("migrations failed");
-    scheduler
+    let pg = Arc::new(PgBackend::new(pool));
+    pg.run_migrations().await.expect("migrations failed");
+    pg
 }
 
 pub fn spawn_worker(
-    scheduler: Arc<PostgresStorage>,
+    pg: Arc<PgBackend>,
     registry: DurableRegistry,
 ) -> (Arc<Worker>, tokio::task::JoinHandle<()>) {
     let config = WorkerConfig {
@@ -65,7 +66,7 @@ pub fn spawn_worker(
         ..Default::default()
     };
     let worker = Arc::new(
-        WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
+        WorkerBuilder::from_backend(pg.as_ref())
             .durable_registry(registry)
             .config(config)
             .build(),

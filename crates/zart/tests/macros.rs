@@ -126,10 +126,6 @@ impl TaskScheduler for MockScheduler {
     async fn delete_task(&self, _task_id: &str) -> Result<(), StorageError> {
         Ok(())
     }
-
-    async fn run_migrations(&self) -> Result<(), StorageError> {
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -183,6 +179,16 @@ impl ExecutionStore for MockScheduler {
         _: Option<serde_json::Value>,
         _: &str,
         _: Option<&str>,
+    ) -> Result<String, StorageError> {
+        Ok(String::new())
+    }
+    async fn restart_run_with_step_copy(
+        &self,
+        _: &str,
+        _: Option<serde_json::Value>,
+        _: &str,
+        _: Option<&str>,
+        _: &[String],
     ) -> Result<String, StorageError> {
         Ok(String::new())
     }
@@ -245,6 +251,15 @@ impl StepStore for MockScheduler {
         _: &[String],
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
         Ok(vec![])
+    }
+
+    async fn copy_steps_to_run(
+        &self,
+        _from: &str,
+        _to: &str,
+        _names: &[String],
+    ) -> Result<(), StorageError> {
+        Ok(())
     }
 }
 

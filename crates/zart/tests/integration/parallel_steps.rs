@@ -13,7 +13,7 @@ async fn parallel_steps_all_complete_and_sum_results() {
     registry.register("parallel-task", ParallelTask);
 
     let execution_id = format!("test-par-{}", Uuid::new_v4());
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     durable
         .start(&execution_id, "parallel-task", serde_json::json!({}))

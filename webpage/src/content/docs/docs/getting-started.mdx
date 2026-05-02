@@ -60,12 +60,11 @@ sqlx          = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 
 ```rust
 use sqlx::PgPool;
-use zart::PostgresStorage;
-use std::sync::Arc;
+use zart::PgBackend;
 
 let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-let sched = Arc::new(PostgresStorage::new(pool));
-sched.run_migrations().await?;
+let pg = PgBackend::new(pool);
+pg.run_migrations().await?;
 ```
 
 This creates the `zart_tasks`, `zart_executions`, `zart_execution_runs`, `zart_steps`, `zart_step_attempts`, and `zart_pause_rules` tables. Migrations are idempotent — safe to run on every deploy.
@@ -84,8 +83,8 @@ use zart::prelude::*;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-    let sched = Arc::new(PostgresStorage::new(pool));
-    sched.run_migrations().await?;
+    let pg = zart::PgBackend::new(pool);
+    pg.run_migrations().await?;
 
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(200),
@@ -97,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let worker = Arc::new(
-        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        zart::WorkerBuilder::from_backend(&pg)
             .register_durable_task("onboarding", Onboarding)
             .config(config)
             .build(),
@@ -116,7 +115,7 @@ The worker polls PostgreSQL for due tasks and dispatches them to registered hand
 Call this from anywhere — a web handler, a background task, a test:
 
 ```rust
-let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 
 durable
     .start_for::<Onboarding>(

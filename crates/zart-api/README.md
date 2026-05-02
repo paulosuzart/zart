@@ -15,10 +15,10 @@ GET    /api/v1/executions/:id/wait                Long-poll until completion
 POST   /api/v1/events/:id/:event_name             Deliver an external event
 GET    /api/v1/stats                              Aggregate counts by status
 
-GET    /admin/v1/executions/:id/detail            Full detail with steps and attempts
-POST   /admin/v1/executions/:id/retry-step        Retry a dead step
-POST   /admin/v1/executions/:id/restart           Restart an execution from scratch
-POST   /admin/v1/executions/:id/rerun             Selective step rerun
+GET    /zart/admin/v1/executions/:id/detail            Full detail with steps and attempts
+POST   /zart/admin/v1/executions/:id/retry-step        Retry a dead step
+POST   /zart/admin/v1/executions/:id/restart           Restart an execution from scratch
+POST   /zart/admin/v1/executions/:id/rerun             Selective step rerun
 
 GET    /healthz                                   Liveness probe
 GET    /readyz                                    Readiness probe
@@ -30,6 +30,7 @@ GET    /metrics                                   Prometheus metrics (requires `
 | Flag | Description |
 |------|-------------|
 | `metrics` | Enables the `/metrics` Prometheus endpoint |
+| `openapi` | Annotates all endpoints with utoipa; exports `ZartApiDoc` and `swagger_ui_router()` |
 
 ## Learn more
 

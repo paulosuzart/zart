@@ -23,9 +23,12 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
+utoipa             = { version = "5", features = ["axum_extras", "chrono", "uuid"], optional = true }
+utoipa-swagger-ui  = { version = "9", features = ["axum"],                          optional = true }
 
 [features]
 metrics = ["zart/metrics"]
+openapi = ["utoipa", "utoipa-swagger-ui"]
 
 [dev-dependencies]
 tokio.workspace = true

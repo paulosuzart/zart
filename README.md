@@ -208,7 +208,12 @@ All state lives in PostgreSQL tables (`zart_tasks`, `zart_steps`, `zart_step_att
 
 ## Development
 
+> **Prerequisites:** Install [prek](https://github.com/shenxiangzhuang/prek) (`brew install prek` on macOS), then run `prek install` once after cloning to activate pre-commit hooks for format, lint, and doc checks.
+
 ```bash
+# Install pre-commit hooks (one-time setup)
+prek install
+
 # Start PostgreSQL
 docker compose up -d
 

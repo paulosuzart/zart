@@ -133,6 +133,87 @@ pub async fn write_step_completion_sql(
     Ok(())
 }
 
+/// Copy completed step rows and their attempt history from `from_run_id` to `to_run_id`.
+///
+/// Only rows with `status = 'completed'` are copied. Step IDs, task IDs, and
+/// attempt IDs are rewritten to use `to_run_id` as the prefix. Result and
+/// result_kind are preserved verbatim. Idempotent — `ON CONFLICT DO NOTHING`.
+pub async fn copy_steps_and_attempts_sql(
+    conn: &mut PgConnection,
+    from_run_id: &str,
+    to_run_id: &str,
+    step_names: &[String],
+    names: &TableNames,
+) -> Result<(), StorageError> {
+    if step_names.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query(&format!(
+        r#"
+        INSERT INTO {steps}
+            (step_id, run_id, step_name, step_kind, task_id,
+             status, result, result_kind, retry_config, completed_at)
+        SELECT
+            concat($2, substring(step_id from length($1) + 1)),
+            $2,
+            step_name,
+            step_kind,
+            concat($2, substring(task_id from length($1) + 1)),
+            status,
+            result,
+            result_kind,
+            retry_config,
+            completed_at
+        FROM {steps}
+        WHERE run_id = $1
+          AND step_name = ANY($3)
+          AND status = 'completed'
+        ON CONFLICT (step_id) DO NOTHING
+        "#,
+        steps = names.steps(),
+    ))
+    .bind(from_run_id)
+    .bind(to_run_id)
+    .bind(step_names)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+    sqlx::query(&format!(
+        r#"
+        INSERT INTO {step_attempts}
+            (attempt_id, step_id, attempt_number, started_at, completed_at,
+             status, result, error)
+        SELECT
+            concat($2, substring(a.attempt_id from length($1) + 1)),
+            concat($2, substring(a.step_id from length($1) + 1)),
+            a.attempt_number,
+            a.started_at,
+            a.completed_at,
+            a.status,
+            a.result,
+            a.error
+        FROM {step_attempts} a
+        WHERE a.step_id IN (
+            SELECT step_id FROM {steps}
+            WHERE run_id = $1 AND step_name = ANY($3)
+        )
+        ON CONFLICT (attempt_id) DO NOTHING
+        "#,
+        step_attempts = names.step_attempts(),
+        steps = names.steps(),
+    ))
+    .bind(from_run_id)
+    .bind(to_run_id)
+    .bind(step_names)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+    Ok(())
+}
+
 /// Insert a task row for a step (task_id + step row) within a caller-owned transaction.
 ///
 /// Used by `StepStore::schedule_step`.

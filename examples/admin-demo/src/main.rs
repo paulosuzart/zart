@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 use zart::ExecutionStatus;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use zart::admin::{PauseScope, RerunSpec};
 use zart::error::{SchedulerError, TaskError};
 use zart::prelude::*;
@@ -125,14 +125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
 
     let pool = sqlx::PgPool::connect(&db_url).await?;
-    let sched = Arc::new(PostgresStorage::new(pool.clone()));
-
-    // Use with_pause so we can demo pause/resume too.
-    let durable = Arc::new(DurableScheduler::with_pause(
-        sched.clone(),
-        sched.task_scheduler(),
-        sched.clone(),
-    ));
+    let pg = PgBackend::new(pool);
+    let durable = Arc::new(DurableScheduler::from_backend(&pg));
 
     // ── 1. Typed wait_completion ──────────────────────────────────────────────
 
@@ -150,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
 
         // Run worker
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
 
         // Typed wait — no manual serde_json::from_value needed!
         let output: AdminDemoOutput = durable
@@ -169,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== 2. start_and_wait_for ===\n");
     {
         let execution_id = format!("admin-start-and-wait-{}", Uuid::new_v4());
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
 
         // Start + wait in one call — types inferred from handler
         let output = durable
@@ -190,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== 3. restart (full restart) ===\n");
     {
         let execution_id = format!("admin-restart-{}", Uuid::new_v4());
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
 
         // Run to completion first
         durable
@@ -218,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Restarted: new run = {new_run_id}");
 
         // Run worker again for the new run
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
         let _ = durable
             .wait(&execution_id, Duration::from_secs(15), None)
             .await?;
@@ -243,7 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== 4. retry_step ===\n");
     {
         let execution_id = format!("admin-retry-{}", Uuid::new_v4());
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
 
         // Start with a failing step — it will go dead (no retries)
         durable
@@ -272,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Step retried: new task = {new_task_id}");
 
                     // Re-run worker to pick up the retried step
-                    let worker = spawn_worker(&sched);
+                    let worker = spawn_worker(&pg);
                     let record = durable
                         .wait(&execution_id, Duration::from_secs(15), None)
                         .await?;
@@ -293,7 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== 5. rerun_steps (selective rerun) ===\n");
     {
         let execution_id = format!("admin-rerun-{}", Uuid::new_v4());
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
 
         // Run to completion
         durable
@@ -322,9 +316,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("  New run number: {}", result.new_run_number);
         println!("  Effective rerun: {}", result.effective_rerun.join(", "));
+        if !result.potentially_stale.is_empty() {
+            println!("  Potentially stale preserved steps:");
+            for dep in &result.potentially_stale {
+                println!(
+                    "    • '{}' may depend on: {}",
+                    dep.preserved_step,
+                    dep.possibly_depends_on.join(", ")
+                );
+            }
+        }
 
         // Run worker for the rerun
-        let worker = spawn_worker(&sched);
+        let worker = spawn_worker(&pg);
         let record = durable
             .wait(&execution_id, Duration::from_secs(15), None)
             .await?;
@@ -342,11 +346,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 task_name: Some("zart::admin_demo::AdminDemoTask".into()),
                 step_pattern: Some("step-two".into()),
                 triggered_by: Some("demo-pause".to_string()),
+                reason: Some("pausing step-two for demo purposes".to_string()),
                 ..Default::default()
             })
             .await?;
 
-        println!("  Created pause rule: {}", rule.rule_id);
+        println!(
+            "  Created pause rule: {}  reason: {:?}",
+            rule.rule_id, rule.reason
+        );
 
         // List rules
         let rules = durable.list_pause_rules(None).await?;
@@ -364,7 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
+fn spawn_worker(pg: &PgBackend) -> Arc<zart::Worker> {
     let config = zart::WorkerConfig {
         poll_interval: Duration::from_millis(100),
         max_tasks_per_poll: 10,
@@ -374,7 +382,7 @@ fn spawn_worker(sched: &Arc<PostgresStorage>) -> Arc<zart::Worker> {
         ..Default::default()
     };
     let worker = Arc::new(
-        zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        zart::WorkerBuilder::from_backend(pg)
             .register_durable_task("zart::admin_demo::AdminDemoTask", AdminDemoTask)
             .config(config)
             .build(),

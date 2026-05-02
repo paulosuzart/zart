@@ -19,6 +19,8 @@ pub struct PauseRule {
     pub task_name: Option<String>,
     /// Glob pattern for step names (e.g. `"send-*"`). None = all steps.
     pub step_pattern: Option<String>,
+    /// Optional human-readable reason for this pause (audit annotation).
+    pub reason: Option<String>,
     /// When the rule was created.
     pub created_at: DateTime<Utc>,
     /// Optional auto-expiry for the pause rule.
@@ -40,22 +42,6 @@ pub struct PauseRuleFilter {
     pub task_name: Option<String>,
     /// Whether to include soft-deleted rules.
     pub include_deleted: bool,
-}
-
-/// Snapshot of execution state captured at pause time.
-///
-/// Denormalized read-only history — not used for resume logic
-/// (`zart_steps` is authoritative).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PauseSnapshot {
-    pub snapshot_id: String,
-    pub rule_id: String,
-    pub execution_id: String,
-    pub run_number: i32,
-    pub completed_steps: serde_json::Value,
-    pub current_data: Option<serde_json::Value>,
-    pub next_step: Option<String>,
-    pub captured_at: DateTime<Utc>,
 }
 
 // ── Trait ──────────────────────────────────────────────────────────────────────
@@ -102,12 +88,6 @@ pub trait PauseStorage: Send + Sync {
     ) -> Result<bool, StorageError> {
         let _ = (execution_id, task_name, step_name);
         Err(StorageError::NotImplemented("is_paused"))
-    }
-
-    /// Capture a snapshot of the current execution state for audit purposes.
-    async fn snapshot_pause_state(&self, snapshot: PauseSnapshot) -> Result<(), StorageError> {
-        let _ = snapshot;
-        Err(StorageError::NotImplemented("snapshot_pause_state"))
     }
 }
 

@@ -95,7 +95,7 @@ impl DurableExecution for HealthCheckTask {
 ## Running the workflow
 
 ```rust
-let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 let output = durable
     .start_and_wait_for::<HealthCheckTask>(
         "health-check-run-1",

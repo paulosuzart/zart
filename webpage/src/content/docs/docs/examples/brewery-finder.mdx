@@ -139,7 +139,7 @@ async fn brewery_finder(data: FinderInput) -> Result<FinderOutput, TaskError> {
 
 ```rust
 // Register the macro-generated handler (struct name is PascalCase of the fn name)
-let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 
 // Start and wait for typed output — no manual deserialization needed
 let output = durable

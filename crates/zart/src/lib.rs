@@ -61,17 +61,18 @@
 //! Register the handler, start a worker, and fire an execution:
 //!
 //! ```text
-//! let scheduler = /* connect to postgres */;
-//! let sched     = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
-//! let worker    = WorkerBuilder::new(scheduler.clone(), scheduler.task_scheduler())
-//!                     .register_durable_task("onboard-user", OnboardUser)
-//!                     .build();
+//! let pg     = PgBackend::new(pool);
+//! pg.run_migrations().await?;
+//! let sched  = DurableScheduler::from_backend(&pg);
+//! let worker = WorkerBuilder::from_backend(&pg)
+//!                  .register_durable_task("onboard-user", OnboardUser)
+//!                  .build();
 //!
 //! // Start the execution from anywhere in your application.
 //! sched.start_for::<OnboardUser>("onboard-alice", "onboard-user", &user_id).await?;
 //!
 //! // Optionally wait for the result.
-//! let workspace_id = sched.wait_for::<OnboardUser>("onboard-alice", timeout, None).await?;
+//! let workspace_id = sched.wait_for::<OnboardUser>("onboard-alice", timeout).await?;
 //! ```
 //!
 //! # Core concepts
@@ -152,8 +153,8 @@ pub const TASK_NAME: &str = "__zart__";
 pub(crate) mod test_helpers;
 
 pub use admin::{
-    AdminOperation, AdminOperationContext, PauseRule, PauseScope, RerunResult, RerunSpec,
-    ResumeResult,
+    AdminOperation, AdminOperationContext, PauseRule, PauseScope, PotentiallyStaleDep, RerunResult,
+    RerunSpec, ResumeResult,
 };
 pub use api::{
     ExecutionInfo, capture, context, now, require, schedule, sleep, sleep_until, step, step_or,
@@ -167,8 +168,9 @@ pub use error::{
     ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
 };
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
-pub use postgres::PostgresStorage;
+pub use postgres::{PgBackend, PostgresStorage};
 pub use registry::{DurableExecution, DurableRegistry};
+pub use store::Backend;
 pub use zart_scheduler::{Worker, WorkerConfig};
 // Re-export execution-side types so callers don't need zart-core directly.
 pub use retry::RetryConfig;
@@ -191,8 +193,8 @@ pub use zart_macros::{capture, z_wait_event, zart_durable, zart_step};
 /// Add `use zart::prelude::*;` to get access to all core types.
 pub mod prelude {
     pub use crate::{
-        AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope, RerunResult,
-        RerunSpec, ResumeResult, WorkerConfig, ZartTrx,
+        AdminOperation, AdminOperationContext, ExecutionInfo, PauseRule, PauseScope,
+        PotentiallyStaleDep, RerunResult, RerunSpec, ResumeResult, WorkerConfig, ZartTrx,
         api_trait::DurableApi,
         builder::WorkerBuilder,
         capture, context,

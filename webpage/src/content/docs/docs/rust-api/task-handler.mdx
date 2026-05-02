@@ -38,7 +38,8 @@ When `timeout()` returns `Some(duration)`, the framework computes a deadline as 
 Register handlers using the fluent builder API. The string name is how you reference the workflow when scheduling.
 
 ```rust
-let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+let pg = zart::PgBackend::new(pool);
+let worker = zart::WorkerBuilder::from_backend(&pg)
     .register_durable_task("onboarding", OnboardingTask)
     .register_durable_task("checkout",   CheckoutTask)
     .config(zart::WorkerConfig::default())
@@ -52,7 +53,7 @@ let mut registry = DurableRegistry::new();
 registry.register("onboarding", OnboardingTask);
 registry.register("checkout",   CheckoutTask);
 
-let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+let worker = zart::WorkerBuilder::from_backend(&pg)
     .durable_registry(registry)
     .config(zart::WorkerConfig::default())
     .build();

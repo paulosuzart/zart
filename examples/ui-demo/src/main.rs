@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 //! Zart UI demo — long-running backend for the Admin UI.
 //!
 //! Starts a PostgresScheduler, registers two task types, seeds a handful of
@@ -16,6 +15,8 @@
 //!
 //! # 3. Open the UI (see docker-compose.yml ui service or npm run dev)
 //! #    Set the API Server to http://localhost:3000 if running the UI elsewhere
+//!
+//! # 4. Browse the Swagger UI at http://localhost:3000/swagger-ui
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use zart::error::TaskError;
 use zart::prelude::*;
 use zart_api::{AppState, admin_router};
@@ -280,17 +281,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Connecting to database…");
     let pool = sqlx::PgPool::connect(&db_url).await?;
 
-    let sched = Arc::new(PostgresStorage::new(pool.clone()));
+    let pg = PgBackend::new(pool);
     tracing::info!("Migrations applied");
 
-    let durable = Arc::new(DurableScheduler::new(sched.clone(), sched.task_scheduler()));
+    let durable = Arc::new(DurableScheduler::from_backend(&pg));
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
     let cancellation = CancellationToken::new();
 
     let worker = Arc::new(
-        WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+        WorkerBuilder::from_backend(&pg)
             .register_durable_task(TASK_ORDER, OrderProcessingTask)
             .register_durable_task(TASK_PIPELINE, DataPipelineTask)
             .config(WorkerConfig {
@@ -317,8 +318,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Merge the public API router with the admin router under one server.
     let api_state = AppState::new(durable.clone() as Arc<dyn zart::DurableApi>);
-    let router = zart_api::routes::api_router(api_state)
-        .merge(admin_router(durable.clone()))
+    let router = zart_api::routes::api_router(api_state, "/api/v1")
+        .merge(admin_router(durable.clone(), "/zart/admin/v1"))
+        .merge(zart_api::openapi::swagger_ui_router(
+            "/api/v1",
+            "/zart/admin/v1",
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive());
 

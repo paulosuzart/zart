@@ -22,39 +22,53 @@ use zart::{DurableScheduler, admin::PauseScope, admin::RerunSpec};
 use crate::{
     models::{
         ErrorResponse, ExecutionDetailResponse, ExecutionResponse, PauseRequest, PauseRuleResponse,
-        RerunRequest, RerunResponse, RestartRequest, RestartResponse, RetryStepRequest,
-        RetryStepResponse, RunRecordResponse, StepAttemptResponse, StepDetailResponse,
+        PotentiallyStaleDepResponse, RerunRequest, RerunResponse, RestartRequest, RestartResponse,
+        RetryStepRequest, RetryStepResponse, RunRecordResponse, StepAttemptResponse,
+        StepDetailResponse,
     },
     state::AdminState,
 };
 
 /// Construct the versioned admin API router.
 ///
+/// Routes are nested under `prefix` (e.g., `"/zart/admin/v1"`).
+///
 /// Requires a concrete `DurableScheduler` because admin operations use
 /// concrete return types (not object-safe trait methods).
-pub fn admin_router(scheduler: Arc<DurableScheduler>) -> Router {
+pub fn admin_router(scheduler: Arc<DurableScheduler>, prefix: &str) -> Router {
+    let inner = Router::new()
+        .route("/executions/{execution_id}/retry-step", post(retry_step))
+        .route("/executions/{execution_id}/restart", post(restart))
+        .route("/executions/{execution_id}/rerun", post(rerun))
+        .route("/executions/{execution_id}/runs", get(list_runs))
+        .route("/executions/{execution_id}/detail", get(execution_detail))
+        .route("/pause", post(create_pause))
+        .route("/pause", get(list_pauses))
+        .route("/pause/{rule_id}", post(resume_rule))
+        .route("/pause/{rule_id}", delete(delete_pause_rule));
+
     Router::new()
-        .route(
-            "/admin/v1/executions/{execution_id}/retry-step",
-            post(retry_step),
-        )
-        .route("/admin/v1/executions/{execution_id}/restart", post(restart))
-        .route("/admin/v1/executions/{execution_id}/rerun", post(rerun))
-        .route("/admin/v1/executions/{execution_id}/runs", get(list_runs))
-        .route(
-            "/admin/v1/executions/{execution_id}/detail",
-            get(execution_detail),
-        )
-        .route("/admin/v1/pause", post(create_pause))
-        .route("/admin/v1/pause", get(list_pauses))
-        .route("/admin/v1/pause/{rule_id}", post(resume_rule))
-        .route("/admin/v1/pause/{rule_id}", delete(delete_pause_rule))
+        .nest(prefix, inner)
         .with_state(AdminState { scheduler })
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-/// `POST /admin/v1/executions/:id/retry-step` — retry a dead step.
+/// `POST /executions/:id/retry-step` — retry a dead step.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/executions/{execution_id}/retry-step",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+    ),
+    request_body = RetryStepRequest,
+    responses(
+        (status = 200, description = "Step retried",   body = RetryStepResponse),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-executions"
+))]
 async fn retry_step(
     State(state): State<AdminState>,
     Path(execution_id): Path<String>,
@@ -79,7 +93,21 @@ async fn retry_step(
     }
 }
 
-/// `POST /admin/v1/executions/:id/restart` — restart entire execution.
+/// `POST /executions/:id/restart` — restart entire execution.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/executions/{execution_id}/restart",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+    ),
+    request_body = RestartRequest,
+    responses(
+        (status = 200, description = "Restarted",      body = RestartResponse),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-executions"
+))]
 async fn restart(
     State(state): State<AdminState>,
     Path(execution_id): Path<String>,
@@ -96,7 +124,21 @@ async fn restart(
     }
 }
 
-/// `POST /admin/v1/executions/:id/rerun` — selective rerun of steps.
+/// `POST /executions/:id/rerun` — selective rerun of steps.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/executions/{execution_id}/rerun",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+    ),
+    request_body = RerunRequest,
+    responses(
+        (status = 200, description = "Rerun started",  body = RerunResponse),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-executions"
+))]
 async fn rerun(
     State(state): State<AdminState>,
     Path(execution_id): Path<String>,
@@ -113,6 +155,14 @@ async fn rerun(
             let body = RerunResponse {
                 new_run_number: result.new_run_number,
                 effective_rerun: result.effective_rerun,
+                potentially_stale: result
+                    .potentially_stale
+                    .into_iter()
+                    .map(|d| PotentiallyStaleDepResponse {
+                        preserved_step: d.preserved_step,
+                        possibly_depends_on: d.possibly_depends_on,
+                    })
+                    .collect(),
             };
             (StatusCode::OK, Json(body)).into_response()
         }
@@ -121,7 +171,20 @@ async fn rerun(
     }
 }
 
-/// `GET /admin/v1/executions/:id/runs` — list all runs for an execution.
+/// `GET /executions/:id/runs` — list all runs for an execution.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/executions/{execution_id}/runs",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+    ),
+    responses(
+        (status = 200, description = "Run list",       body = Vec<RunRecordResponse>),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-executions"
+))]
 async fn list_runs(State(state): State<AdminState>, Path(execution_id): Path<String>) -> Response {
     match state.scheduler.list_runs(&execution_id).await {
         Ok(runs) => {
@@ -146,7 +209,18 @@ async fn list_runs(State(state): State<AdminState>, Path(execution_id): Path<Str
     }
 }
 
-/// `POST /admin/v1/pause` — create a pause rule.
+/// `POST /pause` — create a pause rule.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/pause",
+    request_body = PauseRequest,
+    responses(
+        (status = 201, description = "Pause rule created",          body = PauseRuleResponse),
+        (status = 422, description = "Unprocessable entity",        body = ErrorResponse),
+        (status = 500, description = "Internal error",              body = ErrorResponse),
+    ),
+    tag = "admin-pause"
+))]
 async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequest>) -> Response {
     if let Some(ref expires_at) = req.expires_at
         && *expires_at <= chrono::Utc::now()
@@ -166,6 +240,7 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
         step_pattern: req.step_pattern,
         expires_at: req.expires_at,
         triggered_by: req.triggered_by,
+        reason: req.reason,
     };
 
     match state.scheduler.pause(scope).await {
@@ -179,6 +254,7 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
                 expires_at: rule.scope.expires_at,
                 created_by: rule.scope.triggered_by,
                 deleted_at: rule.deleted_at,
+                reason: rule.reason,
             };
             (StatusCode::CREATED, Json(body)).into_response()
         }
@@ -186,7 +262,16 @@ async fn create_pause(State(state): State<AdminState>, Json(req): Json<PauseRequ
     }
 }
 
-/// `GET /admin/v1/pause` — list pause rules.
+/// `GET /pause` — list pause rules.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/pause",
+    responses(
+        (status = 200, description = "Pause rules",    body = Vec<PauseRuleResponse>),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-pause"
+))]
 async fn list_pauses(State(state): State<AdminState>) -> Response {
     match state.scheduler.list_pause_rules(None).await {
         Ok(rules) => {
@@ -201,6 +286,7 @@ async fn list_pauses(State(state): State<AdminState>) -> Response {
                     expires_at: r.scope.expires_at,
                     created_by: r.scope.triggered_by,
                     deleted_at: r.deleted_at,
+                    reason: r.reason,
                 })
                 .collect();
             (StatusCode::OK, Json(body)).into_response()
@@ -209,7 +295,20 @@ async fn list_pauses(State(state): State<AdminState>) -> Response {
     }
 }
 
-/// `POST /admin/v1/pause/:rule_id` — soft-delete a pause rule (resume).
+/// `POST /pause/:rule_id` — soft-delete a pause rule (resume).
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/pause/{rule_id}",
+    params(
+        ("rule_id" = String, Path, description = "Pause rule identifier"),
+    ),
+    responses(
+        (status = 204, description = "Rule resumed"),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-pause"
+))]
 async fn resume_rule(State(state): State<AdminState>, Path(rule_id): Path<String>) -> Response {
     match state.scheduler.resume_rule_by_id(&rule_id, None).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -224,7 +323,20 @@ async fn resume_rule(State(state): State<AdminState>, Path(rule_id): Path<String
     }
 }
 
-/// `DELETE /admin/v1/pause/:rule_id` — semantically correct DELETE for pause rules.
+/// `DELETE /pause/:rule_id` — semantically correct DELETE for pause rules.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    delete,
+    path = "/pause/{rule_id}",
+    params(
+        ("rule_id" = String, Path, description = "Pause rule identifier"),
+    ),
+    responses(
+        (status = 204, description = "Rule deleted"),
+        (status = 404, description = "Not found",      body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    ),
+    tag = "admin-pause"
+))]
 async fn delete_pause_rule(
     State(state): State<AdminState>,
     Path(rule_id): Path<String>,
@@ -243,6 +355,7 @@ async fn delete_pause_rule(
 }
 
 /// Query parameters for the detail endpoint.
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams, utoipa::ToSchema))]
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DetailQuery {
@@ -250,7 +363,21 @@ struct DetailQuery {
     run_id: Option<String>,
 }
 
-/// `GET /admin/v1/executions/:id/detail` — full execution detail with steps and attempts.
+/// `GET /executions/:id/detail` — full execution detail with steps and attempts.
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/executions/{execution_id}/detail",
+    params(
+        ("execution_id" = String, Path, description = "Execution identifier"),
+        DetailQuery,
+    ),
+    responses(
+        (status = 200, description = "Execution detail", body = ExecutionDetailResponse),
+        (status = 404, description = "Not found",        body = ErrorResponse),
+        (status = 500, description = "Internal error",   body = ErrorResponse),
+    ),
+    tag = "admin-executions"
+))]
 async fn execution_detail(
     State(state): State<AdminState>,
     Path(execution_id): Path<String>,

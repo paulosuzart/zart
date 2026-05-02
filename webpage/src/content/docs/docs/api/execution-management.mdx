@@ -10,10 +10,11 @@ import { Aside } from '@astrojs/starlight/components';
 ## Construction
 
 ```rust
-let durable = DurableScheduler::new(storage.clone(), storage.task_scheduler());
+let pg = PgBackend::new(pool);
+let durable = DurableScheduler::from_backend(&pg);
 ```
 
-The `storage` is typically an `Arc<PostgresStorage>`. The `DurableScheduler` borrows both via `Arc` so it can be shared between your web server (scheduling) and the worker (executing).
+The `PgBackend` owns both execution storage and task scheduling. The `DurableScheduler` borrows both via `Arc` so it can be shared between your web server (scheduling) and the worker (executing).
 
 ## Starting an Execution
 

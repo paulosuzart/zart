@@ -94,7 +94,7 @@ async fn approval_task(data: ApprovalRequest) -> Result<ApprovalOutput, TaskErro
 ## Starting the workflow and delivering the event
 
 ```rust
-let durable = DurableScheduler::new(sched.clone(), sched.task_scheduler());
+let durable = DurableScheduler::from_backend(&pg);
 let execution_id = "approval-demo-1";
 
 // Start the workflow — it will run step 1, then park at wait_for_event

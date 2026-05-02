@@ -165,7 +165,8 @@ Worker C ─── polls ──→ claims exec-005 (skips locked rows)
 Workers can be added or removed at any time. There is no leader election, no ZooKeeper, no coordination service.
 
 ```rust
-let worker = zart::WorkerBuilder::new(storage.clone(), storage.task_scheduler())
+let pg = zart::PgBackend::new(pool);
+let worker = zart::WorkerBuilder::from_backend(&pg)
     .register_durable_task("onboarding", Onboarding)
     .config(zart::WorkerConfig {
         poll_interval:        Duration::from_secs(5),
@@ -181,7 +182,7 @@ let worker = zart::WorkerBuilder::new(storage.clone(), storage.task_scheduler())
 
 ## 7. PostgreSQL Storage
 
-All workflow state is persisted to PostgreSQL via the `zart` crate (`PostgresStorage`). No extra infrastructure — just a database you already have.
+All workflow state is persisted to PostgreSQL via the `zart` crate (`PgBackend`). No extra infrastructure — just a database you already have.
 
 ```toml
 [dependencies]
@@ -257,7 +258,8 @@ Handler returns → heartbeat cancelled → result persisted
 **Configuration:**
 
 ```rust
-let worker = zart::WorkerBuilder::new(storage.clone(), storage.task_scheduler())
+let pg = zart::PgBackend::new(pool);
+let worker = zart::WorkerBuilder::from_backend(&pg)
     .register_durable_task("onboarding", Onboarding)
     .config(zart::WorkerConfig {
         orphan_timeout:     Duration::from_secs(300),   // 5 minutes

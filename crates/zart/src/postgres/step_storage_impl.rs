@@ -526,4 +526,34 @@ impl StepStore for PostgresStorage {
             )
             .collect())
     }
+
+    async fn copy_steps_to_run(
+        &self,
+        from_run_id: &str,
+        to_run_id: &str,
+        step_names: &[String],
+    ) -> Result<(), StorageError> {
+        if step_names.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        super::sql_helpers::copy_steps_and_attempts_sql(
+            &mut tx,
+            from_run_id,
+            to_run_id,
+            step_names,
+            &self.table_names,
+        )
+        .await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(())
+    }
 }

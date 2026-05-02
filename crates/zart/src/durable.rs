@@ -11,11 +11,11 @@ use crate::error::SchedulerError;
 use crate::metrics::EVENTS_DELIVERED_TOTAL;
 use crate::registry::DurableExecution;
 use crate::service::{ExecutionService, PauseService};
-use crate::store::StorageBackend;
+use crate::store::{Backend, StorageBackend};
 use std::sync::Arc;
 use std::time::Duration;
 use zart_core::TaskMetadata;
-use zart_core::store::pause_storage::{PauseRuleFilter, PauseStorage};
+use zart_core::store::pause_storage::PauseRuleFilter;
 use zart_core::types::{ExecutionRecord, ExecutionStatus, ListExecutionsParams};
 use zart_scheduler::{ScheduleAtParams, ScheduleResult, TaskScheduler};
 
@@ -81,35 +81,39 @@ const MAX_WAIT_SECS: u64 = 30;
 pub struct DurableScheduler {
     storage: Arc<dyn StorageBackend>,
     scheduler: Arc<dyn TaskScheduler>,
-    pause_service: Option<PauseService>,
+    pause_service: PauseService,
     execution_service: ExecutionService,
 }
 
 impl DurableScheduler {
-    /// Create a new `DurableScheduler`.
+    /// Create a new `DurableScheduler`. Pause/resume is always enabled.
     pub fn new(storage: Arc<dyn StorageBackend>, scheduler: Arc<dyn TaskScheduler>) -> Self {
         let execution_service = ExecutionService::new(storage.clone());
+        let pause_service = PauseService::new(storage.clone());
         Self {
             storage,
             scheduler,
-            pause_service: None,
+            pause_service,
             execution_service,
         }
     }
 
-    /// Create a new `DurableScheduler` with pause/resume support.
-    pub fn with_pause(
-        storage: Arc<dyn StorageBackend>,
-        scheduler: Arc<dyn TaskScheduler>,
-        pause_storage: Arc<dyn PauseStorage>,
-    ) -> Self {
-        let execution_service = ExecutionService::new(storage.clone());
-        Self {
-            storage,
-            scheduler,
-            pause_service: Some(PauseService::new(pause_storage)),
-            execution_service,
-        }
+    /// Create a `DurableScheduler` from any [`Backend`] implementation.
+    ///
+    /// This is the recommended production path. Pause/resume is always enabled.
+    ///
+    /// ```rust,no_run
+    /// # async fn example() {
+    /// use sqlx::PgPool;
+    /// use zart::{DurableScheduler, postgres::PgBackend};
+    ///
+    /// let pool = PgPool::connect("postgres://localhost/mydb").await.unwrap();
+    /// let pg = PgBackend::new(pool);
+    /// let sched = DurableScheduler::from_backend(&pg);
+    /// # }
+    /// ```
+    pub fn from_backend(backend: &impl Backend) -> Self {
+        Self::new(backend.storage(), backend.scheduler())
     }
 
     /// Start a new durable execution with a raw JSON payload.
@@ -645,20 +649,27 @@ impl DurableScheduler {
     /// Selectively rerun a subset of steps while preserving others.
     ///
     /// Archives the current run, starts a new run with `trigger = 'selective_rerun'`,
-    /// and schedules a fresh body task. The body replays from the top — completed
-    /// steps are queried from the *previous* run so the handler can skip them.
+    /// and schedules a fresh body task. The body replays from the top — preserved
+    /// step results are **copied** from the old run into the new run so the handler
+    /// sees them as already completed without re-executing them.
+    ///
+    /// The copy is atomic with run creation: both the new run and the preserved
+    /// step rows (including attempt history) are committed in a single database
+    /// transaction. Either both succeed or neither is visible.
     ///
     /// # Behavior
     ///
     /// - **Failed/dead steps** are always rerun (can't be preserved).
     /// - **`spec.force_rerun`** steps are rerun even if currently completed.
-    /// - **`spec.preserve`** steps are carried forward — their results are returned
-    ///   from the previous run instead of scheduling new tasks.
+    /// - **`spec.preserve`** steps are carried forward — their completed results are
+    ///   copied into the new run so the body skips re-executing them.
     /// - All other completed steps are preserved by default.
+    /// - Step **attempt history** from the old run is also copied into the new run.
     ///
     /// # Returns
     ///
-    /// `RerunResult` with the new run number and effective rerun set.
+    /// `RerunResult` with the new run number, effective rerun set, and
+    /// `potentially_stale` advisory warnings.
     pub async fn rerun_steps(
         &self,
         execution_id: &str,
@@ -670,31 +681,13 @@ impl DurableScheduler {
     // ── Pause / Resume ────────────────────────────────────────────────────────
 
     /// Create a pause rule.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::PauseStorageNotConfigured`] if pause was not
-    /// enabled via [`Self::with_pause`], or [`SchedulerError::Database`] on failure.
     pub async fn pause(&self, scope: PauseScope) -> Result<PauseRule, SchedulerError> {
-        self.pause_service
-            .as_ref()
-            .ok_or(SchedulerError::PauseStorageNotConfigured)?
-            .pause(scope)
-            .await
+        self.pause_service.pause(scope).await
     }
 
     /// Resume execution by soft-deleting matching pause rules.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::PauseStorageNotConfigured`] if pause was not
-    /// enabled via [`Self::with_pause`], or [`SchedulerError::Database`] on failure.
     pub async fn resume(&self, scope: PauseScope) -> Result<ResumeResult, SchedulerError> {
-        self.pause_service
-            .as_ref()
-            .ok_or(SchedulerError::PauseStorageNotConfigured)?
-            .resume(scope)
-            .await
+        self.pause_service.resume(scope).await
     }
 
     /// Resume by deleting a specific pause rule by ID.
@@ -704,26 +697,15 @@ impl DurableScheduler {
         deleted_by: Option<&str>,
     ) -> Result<bool, SchedulerError> {
         self.pause_service
-            .as_ref()
-            .ok_or(SchedulerError::PauseStorageNotConfigured)?
             .resume_rule_by_id(rule_id, deleted_by)
             .await
     }
 
     /// List active pause rules.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::PauseStorageNotConfigured`] if pause was not
-    /// enabled via [`Self::with_pause`], or [`SchedulerError::Database`] on failure.
     pub async fn list_pause_rules(
         &self,
         filter: Option<PauseRuleFilter>,
     ) -> Result<Vec<PauseRule>, SchedulerError> {
-        self.pause_service
-            .as_ref()
-            .ok_or(SchedulerError::PauseStorageNotConfigured)?
-            .list_rules(filter)
-            .await
+        self.pause_service.list_rules(filter).await
     }
 }

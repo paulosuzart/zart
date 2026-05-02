@@ -89,6 +89,8 @@ pub struct RecordingScheduler {
     pub calls: Arc<Mutex<Vec<Call>>>,
     step_responses: HashMap<(String, String), Option<StepLookup>>,
     wait_all_response: Vec<(String, serde_json::Value)>,
+    /// Weak self-reference set by the builder so `Backend` impl can return `Arc<Self>`.
+    self_ref: Mutex<std::sync::Weak<RecordingScheduler>>,
 }
 
 impl RecordingScheduler {
@@ -144,7 +146,9 @@ impl RecordingSchedulerBuilder {
             calls: calls.clone(),
             step_responses: self.step_responses,
             wait_all_response: self.wait_all_response,
+            self_ref: Mutex::new(std::sync::Weak::new()),
         });
+        *scheduler.self_ref.lock().unwrap() = Arc::downgrade(&scheduler);
         (scheduler, calls)
     }
 }
@@ -230,10 +234,6 @@ impl TaskScheduler for RecordingScheduler {
         Ok(())
     }
 
-    async fn run_migrations(&self) -> Result<(), StorageError> {
-        Ok(())
-    }
-
     async fn complete_and_schedule(
         &self,
         _params: CompleteAndScheduleParams,
@@ -296,6 +296,16 @@ impl ExecutionStore for RecordingScheduler {
         _: Option<serde_json::Value>,
         _: &str,
         _: Option<&str>,
+    ) -> Result<String, StorageError> {
+        Ok(String::new())
+    }
+    async fn restart_run_with_step_copy(
+        &self,
+        _: &str,
+        _: Option<serde_json::Value>,
+        _: &str,
+        _: Option<&str>,
+        _: &[String],
     ) -> Result<String, StorageError> {
         Ok(String::new())
     }
@@ -380,6 +390,15 @@ impl StepStore for RecordingScheduler {
         self.calls.lock().unwrap().push(Call::CheckWaitAllChildren);
         Ok(self.wait_all_response.clone())
     }
+
+    async fn copy_steps_to_run(
+        &self,
+        _from: &str,
+        _to: &str,
+        _names: &[String],
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 // ── WaitGroupStore impl ───────────────────────────────────────────────────────
@@ -454,6 +473,26 @@ impl EventStore for RecordingScheduler {
 // ── PauseStorage impl ─────────────────────────────────────────────────────────
 
 impl PauseStorage for RecordingScheduler {}
+
+// ── Backend impl ──────────────────────────────────────────────────────────────
+
+impl crate::store::Backend for RecordingScheduler {
+    fn storage(&self) -> std::sync::Arc<dyn crate::store::StorageBackend> {
+        self.self_ref
+            .lock()
+            .unwrap()
+            .upgrade()
+            .expect("RecordingScheduler must be created via builder()")
+    }
+
+    fn scheduler(&self) -> std::sync::Arc<dyn zart_scheduler::TaskScheduler> {
+        self.self_ref
+            .lock()
+            .unwrap()
+            .upgrade()
+            .expect("RecordingScheduler must be created via builder()")
+    }
+}
 
 // ── Task-local test helper ─────────────────────────────────────────────────────
 

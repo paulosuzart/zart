@@ -11,7 +11,7 @@ The simplest deployment: run the worker inside your application binary using a b
 
 ```rust
 use zart::prelude::*;
-use zart::PostgresStorage;
+use zart::PgBackend;
 use std::time::Duration;
 use std::sync::Arc;
 use tokio::signal;
@@ -19,10 +19,10 @@ use tokio::signal;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-    let sched = Arc::new(PostgresStorage::new(pool));
+    let pg = Arc::new(PgBackend::new(pool));
 
     // Build the worker with fluent registration
-    let worker = zart::WorkerBuilder::new(sched.clone(), sched.task_scheduler())
+    let worker = zart::WorkerBuilder::from_backend(&*pg)
         .register_durable_task("onboarding", OnboardingTask::new())
         .register_durable_task("checkout",   CheckoutTask::new())
         .register_durable_task("report-gen", ReportTask::new())
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Your web server / app logic runs here alongside the worker
-    run_axum_server(sched).await?;
+    run_axum_server(pg).await?;
 
     // Graceful shutdown
     worker_handle.abort();
@@ -66,7 +66,7 @@ The worker's `tokio` tasks run on the same runtime as your application. `max_con
 
 | Database | Crate | Notes |
 |---|---|---|
-| PostgreSQL 14+ | `zart` (`PostgresStorage`) | Recommended for production. Uses `SKIP LOCKED`, advisory locks, and `LISTEN/NOTIFY` for efficient polling. |
+| PostgreSQL 14+ | `zart` (`PgBackend`) | Recommended for production. Uses `SKIP LOCKED`, advisory locks, and `LISTEN/NOTIFY` for efficient polling. |
 
 ### Connection Pooling
 
@@ -82,7 +82,7 @@ let pool = PgPoolOptions::new()
     .connect(&database_url)
     .await?;
 
-let sched = Arc::new(PostgresStorage::new(pool));
+let pg = PgBackend::new(pool);
 ```
 
 ---
@@ -94,10 +94,10 @@ By default Zart uses `zart_tasks`, `zart_executions`, and the other `zart_*` tab
 ### Custom prefix
 
 ```rust
-use zart::postgres::{PostgresStorage, TableNames};
+use zart::postgres::{PgBackend, TableNames};
 
 let names = TableNames::with_prefix("myapp_")?;  // → myapp_tasks, myapp_executions, …
-let sched = PostgresStorage::with_table_names(pool, names);
+let pg = PgBackend::with_table_names(pool, names);
 ```
 
 ### Schema qualifier
@@ -105,7 +105,7 @@ let sched = PostgresStorage::with_table_names(pool, names);
 ```rust
 let names = TableNames::default().with_schema("tenant_a")?;
 // → "tenant_a"."zart_tasks", "tenant_a"."zart_executions", …
-let sched = PostgresStorage::with_table_names(pool, names);
+let pg = PgBackend::with_table_names(pool, names);
 ```
 
 ### Prefix + schema
@@ -113,7 +113,7 @@ let sched = PostgresStorage::with_table_names(pool, names);
 ```rust
 let names = TableNames::with_prefix("svc_")?.with_schema("myschema")?;
 // → "myschema"."svc_tasks", …
-let sched = PostgresStorage::with_table_names(pool, names);
+let pg = PgBackend::with_table_names(pool, names);
 ```
 
 ### Environment variables
@@ -126,7 +126,7 @@ ZART_TABLE_PREFIX=myapp_ ZART_SCHEMA=tenant_a ./my-worker
 
 ```rust
 let names = TableNames::from_env_or_default()?;
-let sched = PostgresStorage::with_table_names(pool, names);
+let pg = PgBackend::with_table_names(pool, names);
 ```
 
 <Aside type="note">

@@ -431,8 +431,26 @@ impl ExecutionStore for PostgresStorage {
         trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError> {
-        self.do_restart_run(execution_id, new_payload, trigger, triggered_by)
+        self.do_restart_run(execution_id, new_payload, trigger, triggered_by, &[])
             .await
+    }
+
+    async fn restart_run_with_step_copy(
+        &self,
+        execution_id: &str,
+        new_payload: Option<serde_json::Value>,
+        trigger: &str,
+        triggered_by: Option<&str>,
+        preserved_step_names: &[String],
+    ) -> Result<String, StorageError> {
+        self.do_restart_run(
+            execution_id,
+            new_payload,
+            trigger,
+            triggered_by,
+            preserved_step_names,
+        )
+        .await
     }
 
     async fn create_run(

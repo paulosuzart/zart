@@ -71,6 +71,25 @@ pub struct RerunResult {
     pub new_run_number: u32,
     /// Steps that will be rerun (union of force_rerun + auto-failed/dead).
     pub effective_rerun: Vec<String>,
+    /// Advisory warnings about preserved steps that may depend on rerun steps.
+    ///
+    /// Each entry names a preserved step that was scheduled after one or more
+    /// rerun steps, suggesting a possible (but not proven) data dependency.
+    /// The caller decides what to do with these warnings.
+    pub potentially_stale: Vec<PotentiallyStaleDep>,
+}
+
+/// A preserved step that may have a stale dependency on a rerun step.
+///
+/// This is a heuristic based on execution order: steps scheduled *after*
+/// a rerun step likely consumed its output. It does not prove a data
+/// dependency, only a temporal one.
+#[derive(Debug, Clone)]
+pub struct PotentiallyStaleDep {
+    /// Name of the preserved step that may be stale.
+    pub preserved_step: String,
+    /// Rerun steps that were scheduled before this preserved step.
+    pub possibly_depends_on: Vec<String>,
 }
 
 // ── Pause / Resume ────────────────────────────────────────────────────────────
@@ -90,6 +109,8 @@ pub struct PauseScope {
     pub expires_at: Option<DateTime<Utc>>,
     /// Optional operator identifier for audit logging.
     pub triggered_by: Option<String>,
+    /// Optional human-readable reason for this pause (audit annotation).
+    pub reason: Option<String>,
 }
 
 /// A pause rule stored in the database.
@@ -103,6 +124,8 @@ pub struct PauseRule {
     pub created_at: DateTime<Utc>,
     /// When the rule was soft-deleted (None = active).
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Set at create time; may carry context for why the pause was applied.
+    pub reason: Option<String>,
 }
 
 /// Result of a resume operation.

@@ -12,7 +12,7 @@ async fn wait_completion_returns_typed_result() {
     registry.register("zart::tests::integration::TypedTask", TypedTask);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let execution_id = format!("typed-wait-{}", Uuid::new_v4());
     let input = TypedInput { multiplier: 21 };
@@ -40,7 +40,7 @@ async fn wait_completion_with_timeout_returns_typed_result() {
     registry.register("zart::tests::integration::TypedTask", TypedTask);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let execution_id = format!("typed-wait-timeout-{}", Uuid::new_v4());
     let input = TypedInput { multiplier: 10 };
@@ -68,7 +68,7 @@ async fn start_and_wait_for_returns_typed_result() {
     registry.register("zart::tests::integration::TypedTask", TypedTask);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let execution_id = format!("typed-start-and-wait-{}", Uuid::new_v4());
     let input = TypedInput { multiplier: 7 };
@@ -97,7 +97,7 @@ async fn start_and_wait_for_infers_types_from_handler() {
     registry.register("zart::tests::integration::TypedTask", TypedTask);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let execution_id = format!("typed-start-for-{}", Uuid::new_v4());
     let input = TypedInput { multiplier: 5 };
@@ -122,16 +122,17 @@ async fn start_and_wait_for_infers_types_from_handler() {
 #[ignore]
 async fn wait_completion_fails_when_no_result() {
     let scheduler = setup().await;
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let execution_id = format!("typed-wait-no-result-{}", Uuid::new_v4());
 
-    scheduler
+    let storage = scheduler.storage();
+    storage
         .start_execution(&execution_id, "test-task", serde_json::json!({}))
         .await
         .expect("start_execution failed");
 
-    scheduler
+    storage
         .fail_execution(&execution_id)
         .await
         .expect("fail_execution failed");
@@ -159,7 +160,7 @@ async fn wait_completion_fails_on_type_mismatch() {
     registry.register("zart::tests::integration::TypedTask", TypedTask);
 
     let (worker, handle) = spawn_worker(scheduler.clone(), registry);
-    let durable = DurableScheduler::new(scheduler.clone(), scheduler.task_scheduler());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
 
     let execution_id = format!("typed-wait-mismatch-{}", Uuid::new_v4());
     let input = TypedInput { multiplier: 21 };

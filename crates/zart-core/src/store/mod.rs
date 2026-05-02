@@ -15,7 +15,7 @@
 
 pub mod pause_storage;
 
-pub use pause_storage::{PauseRule, PauseRuleFilter, PauseSnapshot, PauseStorage, PauseStore};
+pub use pause_storage::{PauseRule, PauseRuleFilter, PauseStorage, PauseStore};
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
@@ -111,6 +111,26 @@ pub trait ExecutionStore: Send + Sync {
         trigger: &str,
         triggered_by: Option<&str>,
     ) -> Result<String, StorageError>;
+
+    /// Atomically restart a run and copy completed step rows (with attempt history)
+    /// from the old run into the new one.
+    ///
+    /// Equivalent to calling `restart_run` + `copy_steps_to_run` in a single
+    /// database transaction. Either both succeed or neither is visible.
+    ///
+    /// Default implementation returns `NotImplemented` — backends that support
+    /// transactions should override this.
+    #[allow(unused_variables)]
+    async fn restart_run_with_step_copy(
+        &self,
+        execution_id: &str,
+        new_payload: Option<serde_json::Value>,
+        trigger: &str,
+        triggered_by: Option<&str>,
+        preserved_step_names: &[String],
+    ) -> Result<String, StorageError> {
+        Err(StorageError::NotImplemented("restart_run_with_step_copy"))
+    }
 
     /// Create a new run for an execution and return the new `run_id`.
     ///
@@ -217,6 +237,26 @@ pub trait StepStore: Send + Sync {
         &self,
         wait_for_task_ids: &[String],
     ) -> Result<Vec<(String, serde_json::Value)>, StorageError>;
+
+    /// Copy completed step rows from `from_run_id` to `to_run_id` for the given names.
+    ///
+    /// Only rows with `status = 'completed'` are copied. Step IDs and task IDs are
+    /// rewritten to use `to_run_id` as the prefix. Result and result_kind are
+    /// preserved verbatim.
+    ///
+    /// Used by selective rerun to carry preserved step results forward without
+    /// re-executing them. Idempotent — `ON CONFLICT DO NOTHING`.
+    ///
+    /// Default implementation returns `NotImplemented`.
+    #[allow(unused_variables)]
+    async fn copy_steps_to_run(
+        &self,
+        from_run_id: &str,
+        to_run_id: &str,
+        step_names: &[String],
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotImplemented("copy_steps_to_run"))
+    }
 }
 
 // ── WaitGroupStore ────────────────────────────────────────────────────────────
