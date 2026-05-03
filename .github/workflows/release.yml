@@ -139,8 +139,8 @@ jobs:
 
       - name: Package validation (leaf crates)
         run: |
+          cargo package -p zart-macros --allow-dirty --no-verify
           cargo package -p zart-core --allow-dirty --no-verify
-          cargo package -p zart-scheduler --allow-dirty --no-verify
 
       - name: Dry-run publish
         if: ${{ inputs.dry_run }}
