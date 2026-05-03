@@ -1,10 +1,14 @@
 use crate::TASK_NAME;
+use crate::durable::DurableScheduler;
+use crate::recurring::{OverlapPolicy, RecurringDurableTask};
 use crate::registry::{DurableExecution, DurableRegistry};
 use crate::store::{Backend, StorageBackend};
 use crate::task::ZartTask;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use zart_scheduler::{
-    ScheduledTask, TaskRegistry as SchedulerRegistry, TaskScheduler, Worker, WorkerConfig,
+    Recurrence, ScheduleAtParams, ScheduleResult, ScheduledTask, TaskRegistry as SchedulerRegistry,
+    TaskScheduler, Worker, WorkerConfig,
 };
 
 /// Builder for the Zart worker.
@@ -87,6 +91,83 @@ impl WorkerBuilder {
 
     pub fn config(mut self, config: WorkerConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Register a recurring durable execution.
+    ///
+    /// On every occurrence the handler `H` is started as a new durable execution.
+    /// The execution ID is built by replacing `{occurrence}` in `id_template` with
+    /// the current occurrence counter (0-based). The counter is stored in the
+    /// recurring task's `metadata["occurrence"]` field and incremented each fire.
+    ///
+    /// `initial_data` is the JSON payload forwarded to `H::run` on every start.
+    ///
+    /// The recurring task is registered under the internal name
+    /// `"__zart_recurring__:{task_id}"` and scheduled idempotently on build.
+    ///
+    /// # Runtime requirement
+    ///
+    /// This method uses [`tokio::task::block_in_place`] internally to schedule
+    /// the recurring task synchronously during builder construction. It therefore
+    /// **requires a multi-threaded Tokio runtime** — calling it from a
+    /// `current_thread` runtime will panic.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `id_template` does not contain the `{occurrence}` placeholder.
+    /// - Panics if scheduling the initial task fails. Use
+    ///   [`register_scheduler_task`](Self::register_scheduler_task) plus manual
+    ///   scheduling if you need finer error control.
+    pub fn register_recurring_durable<H: DurableExecution + 'static>(
+        mut self,
+        task_id: &str,
+        id_template: &str,
+        recurrence: Recurrence,
+        overlap: OverlapPolicy,
+        initial_data: serde_json::Value,
+    ) -> Self {
+        assert!(
+            id_template.contains("{occurrence}"),
+            "id_template must contain {{occurrence}} placeholder, got: {id_template:?}"
+        );
+
+        let durable_scheduler = Arc::new(DurableScheduler::new(
+            self.storage.clone(),
+            self.scheduler.clone(),
+        ));
+
+        let handler = RecurringDurableTask::<H> {
+            handler_name: task_id.to_string(),
+            id_template: id_template.to_string(),
+            overlap,
+            scheduler: durable_scheduler,
+            _marker: PhantomData,
+        };
+
+        let internal_name = format!("__zart_recurring__:{task_id}");
+        let registry = self
+            .scheduler_registry
+            .get_or_insert_with(SchedulerRegistry::new);
+        registry.register(&internal_name, handler);
+
+        // Schedule the recurring task idempotently (ON CONFLICT DO NOTHING).
+        let scheduler = self.scheduler.clone();
+        let params = ScheduleAtParams {
+            task_id: internal_name.clone(),
+            task_name: internal_name,
+            execution_time: chrono::Utc::now(),
+            data: initial_data,
+            recurrence: Some(recurrence),
+            metadata: serde_json::json!({ "occurrence": 0 }),
+        };
+        // Block on the async schedule call using a one-shot runtime.
+        let _: ScheduleResult = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async move { scheduler.schedule_at(params).await })
+        })
+        .expect("failed to schedule recurring durable task");
+
         self
     }
 

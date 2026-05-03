@@ -134,6 +134,7 @@ pub(crate) mod local;
 pub mod logging;
 pub mod metrics;
 pub mod postgres;
+pub mod recurring;
 pub mod registry;
 pub mod retry;
 pub mod service;
@@ -169,6 +170,7 @@ pub use error::{
 };
 pub use logging::{TracingConfig, init_tracing, init_tracing_with_config};
 pub use postgres::{PgBackend, PostgresStorage};
+pub use recurring::OverlapPolicy;
 pub use registry::{DurableExecution, DurableRegistry};
 pub use store::Backend;
 pub use zart_scheduler::{Worker, WorkerConfig};
@@ -204,6 +206,7 @@ pub mod prelude {
             ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
         },
         now,
+        recurring::OverlapPolicy,
         registry::{DurableExecution, DurableRegistry},
         require,
         retry::RetryConfig,

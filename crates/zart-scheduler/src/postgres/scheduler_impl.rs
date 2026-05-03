@@ -161,33 +161,42 @@ impl TaskScheduler for PostgresTaskScheduler {
         next_execution_time: DateTime<Utc>,
         lock_token: &str,
     ) -> Result<(), StorageError> {
-        let rows_affected = sqlx::query(&format!(
-            r#"
-            UPDATE {tasks}
-            SET state          = $1,
-                execution_time = $2,
-                status         = 'scheduled',
-                locked_at      = NULL,
-                worker_id      = NULL,
-                updated_at     = NOW()
-            WHERE task_id  = $3
-              AND worker_id = $4
-            "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(&state)
-        .bind(next_execution_time)
-        .bind(task_id)
-        .bind(lock_token)
-        .execute(&self.pool)
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
+        update_task_state_sql(
+            &mut conn,
+            task_id,
+            state,
+            next_execution_time,
+            lock_token,
+            &self.table_names,
+            None,
+        )
         .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?
-        .rows_affected();
+    }
 
-        if rows_affected == 0 {
-            return Err(StorageError::LockMismatch(task_id.to_string()));
-        }
-        Ok(())
+    async fn update_task_state_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        task_id: &str,
+        state: serde_json::Value,
+        next_execution_time: DateTime<Utc>,
+        lock_token: &str,
+        metadata_patch: Option<&serde_json::Value>,
+    ) -> Result<(), StorageError> {
+        update_task_state_sql(
+            conn,
+            task_id,
+            state,
+            next_execution_time,
+            lock_token,
+            &self.table_names,
+            metadata_patch,
+        )
+        .await
     }
 
     async fn mark_completed(
@@ -419,25 +428,6 @@ impl TaskScheduler for PostgresTaskScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
         Ok(())
-    }
-
-    async fn update_task_state_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        task_id: &str,
-        state: serde_json::Value,
-        next_execution_time: DateTime<Utc>,
-        lock_token: &str,
-    ) -> Result<(), StorageError> {
-        update_task_state_sql(
-            conn,
-            task_id,
-            state,
-            next_execution_time,
-            lock_token,
-            &self.table_names,
-        )
-        .await
     }
 
     async fn begin(&self) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, StorageError> {

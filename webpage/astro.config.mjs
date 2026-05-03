@@ -63,6 +63,7 @@ export default defineConfig({
             { label: "Error Handling", link: "/docs/concepts/error-handling" },
             { label: "Timeouts & Cancellation", link: "/docs/concepts/timeouts" },
             { label: "Transactions", link: "/docs/concepts/transactions" },
+            { label: "Recurring Durable Executions", link: "/docs/concepts/recurring-durable" },
           ],
         },
 
