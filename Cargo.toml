@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["Zart Contributors"]
 license = "MIT"
@@ -21,10 +21,10 @@ repository = "https://github.com/paulosuzart/zart"
 
 [workspace.dependencies]
 # Internal crates
-zart-core = { path = "crates/zart-core", version = "0.1.1" }
-zart-scheduler = { path = "crates/zart-scheduler", version = "0.1.1" }
-zart = { path = "crates/zart", version = "0.1.1" }
-zart-macros = { path = "crates/zart-macros", version = "0.1.1" }
+zart-core = { path = "crates/zart-core", version = "0.2.0" }
+zart-scheduler = { path = "crates/zart-scheduler", version = "0.2.0" }
+zart = { path = "crates/zart", version = "0.2.0" }
+zart-macros = { path = "crates/zart-macros", version = "0.2.0" }
 
 # Async runtime
 tokio = { version = "1.52.0", features = ["full"] }

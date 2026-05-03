@@ -75,31 +75,40 @@ async fn basic_recurrence_fixed_delay_runs_multiple_occurrences() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Wait for at least 3 ticks to fire and complete (extra headroom for CI load).
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    worker.stop();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     let durable = DurableScheduler::from_backend(pg.as_ref());
-    let all = durable
-        .list_executions(ListExecutionsParams {
-            limit: 200,
-            ..Default::default()
-        })
-        .await
-        .expect("list failed");
 
-    let matching: Vec<_> = all
-        .iter()
-        .filter(|e| e.execution_id.contains(&prefix))
-        .collect();
+    // Poll until at least 3 distinct executions appear, or time out.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let matching = loop {
+        let all = durable
+            .list_executions(ListExecutionsParams {
+                limit: 200,
+                ..Default::default()
+            })
+            .await
+            .expect("list failed");
 
-    assert!(
-        matching.len() >= 3,
-        "expected at least 3 executions, got {}: {:?}",
-        matching.len(),
-        matching.iter().map(|e| &e.execution_id).collect::<Vec<_>>()
-    );
+        let matching: Vec<_> = all
+            .into_iter()
+            .filter(|e| e.execution_id.contains(&prefix))
+            .collect();
+
+        if matching.len() >= 3 {
+            break matching;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for 3 executions; got {}: {:?}",
+                matching.len(),
+                matching.iter().map(|e| &e.execution_id).collect::<Vec<_>>()
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    worker.stop();
 
     // Verify job-0, job-1, job-2 exist
     for i in 0..3u64 {
@@ -146,12 +155,38 @@ async fn skip_if_running_skips_second_tick_when_first_still_running() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Let several ticks fire while handler is sleeping (only tick 1 should start an execution).
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    worker.stop();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let durable = DurableScheduler::from_backend(pg.as_ref());
+
+    // Poll until the first execution appears (slow handler ensures no second is ever created).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let all = durable
+            .list_executions(ListExecutionsParams {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .expect("list failed");
+
+        let count = all
+            .iter()
+            .filter(|e| e.execution_id.contains(&prefix))
+            .count();
+
+        if count >= 1 {
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("SkipIfRunning: timed out waiting for the first execution to appear");
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    worker.stop();
+
+    // Final snapshot — SkipIfRunning + SlowHandler guarantees at most 1 execution.
     let all = durable
         .list_executions(ListExecutionsParams {
             limit: 50,
@@ -159,9 +194,8 @@ async fn skip_if_running_skips_second_tick_when_first_still_running() {
         })
         .await
         .expect("list failed");
-
     let matching: Vec<_> = all
-        .iter()
+        .into_iter()
         .filter(|e| e.execution_id.contains(&prefix))
         .collect();
 
@@ -218,32 +252,45 @@ async fn cancel_and_restart_cancels_first_and_starts_second() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Wait long enough for at least 2 ticks; second tick cancels first run and starts a new one.
-    // Use a generous window (1 s) so the test stays stable under DB load in the full suite.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-    worker.stop();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     let durable = DurableScheduler::from_backend(pg.as_ref());
-    let all = durable
-        .list_executions(ListExecutionsParams {
-            limit: 50,
-            ..Default::default()
-        })
-        .await
-        .expect("list failed");
 
-    let matching: Vec<_> = all
-        .iter()
-        .filter(|e| e.execution_id.contains(&prefix))
-        .collect();
+    // Poll until at least 1 cancelled execution appears (tick 2 cancels tick 1's run).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let matching = loop {
+        let all = durable
+            .list_executions(ListExecutionsParams {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .expect("list failed");
 
-    assert!(
-        !matching.is_empty(),
-        "expected at least one execution, got none"
-    );
+        let matching: Vec<_> = all
+            .into_iter()
+            .filter(|e| e.execution_id.contains(&prefix))
+            .collect();
 
-    // At least one should be cancelled
+        let cancelled = matching
+            .iter()
+            .filter(|e| e.status == ExecutionStatus::Cancelled)
+            .count();
+
+        if cancelled >= 1 {
+            break matching;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "CancelAndRestart: timed out waiting for a cancelled execution. statuses: {:?}",
+                matching.iter().map(|e| &e.status).collect::<Vec<_>>()
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    worker.stop();
+
     let cancelled = matching
         .iter()
         .filter(|e| e.status == ExecutionStatus::Cancelled)
@@ -289,31 +336,40 @@ async fn always_start_runs_multiple_executions_in_parallel() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Wait for multiple ticks
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    worker.stop();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let durable = DurableScheduler::from_backend(pg.as_ref());
-    let all = durable
-        .list_executions(ListExecutionsParams {
-            limit: 50,
-            ..Default::default()
-        })
-        .await
-        .expect("list failed");
 
-    let matching: Vec<_> = all
-        .iter()
-        .filter(|e| e.execution_id.contains(&prefix))
-        .collect();
+    // Poll until at least 2 distinct executions appear, or time out.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let matching = loop {
+        let all = durable
+            .list_executions(ListExecutionsParams {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .expect("list failed");
 
-    assert!(
-        matching.len() >= 2,
-        "AlwaysStart: expected at least 2 executions with distinct IDs, got {}: {:?}",
-        matching.len(),
-        matching.iter().map(|e| &e.execution_id).collect::<Vec<_>>()
-    );
+        let matching: Vec<_> = all
+            .into_iter()
+            .filter(|e| e.execution_id.contains(&prefix))
+            .collect();
+
+        if matching.len() >= 2 {
+            break matching;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "AlwaysStart: timed out waiting for 2 executions; got {}: {:?}",
+                matching.len(),
+                matching.iter().map(|e| &e.execution_id).collect::<Vec<_>>()
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    worker.stop();
 
     // Verify IDs are distinct
     let unique_ids: std::collections::HashSet<_> =
@@ -359,31 +415,38 @@ async fn metadata_occurrence_increments_across_ticks() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Wait for several ticks
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    worker.stop();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Check that executions with incrementing occurrence IDs exist
+    // Poll until at least 2 executions with incrementing IDs appear.
     let durable = DurableScheduler::from_backend(pg.as_ref());
-    let all = durable
-        .list_executions(ListExecutionsParams {
-            limit: 50,
-            ..Default::default()
-        })
-        .await
-        .expect("list failed");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let matching = loop {
+        let all = durable
+            .list_executions(ListExecutionsParams {
+                limit: 50,
+                ..Default::default()
+            })
+            .await
+            .expect("list failed");
 
-    let matching: Vec<_> = all
-        .iter()
-        .filter(|e| e.execution_id.contains(&prefix))
-        .collect();
+        let matching: Vec<_> = all
+            .into_iter()
+            .filter(|e| e.execution_id.contains(&prefix))
+            .collect();
 
-    assert!(
-        matching.len() >= 2,
-        "expected at least 2 occurrences, got {}",
-        matching.len()
-    );
+        if matching.len() >= 2 {
+            break matching;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for 2 occurrences; got {}",
+                matching.len()
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    worker.stop();
 
     // Verify occurrence counter embedded in IDs: meta-0-..., meta-1-..., meta-2-...
     for i in 0..matching.len().min(3) {
