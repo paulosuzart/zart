@@ -78,23 +78,33 @@ impl<H: DurableExecution + Send + Sync> ScheduledTask for RecurringDurableTask<H
                 self.start_execution(&execution_id, &instance.data).await?;
             }
             OverlapPolicy::SkipIfRunning => {
-                // No TOCTOU race here: the scheduler holds a row-level lock on
-                // the `zart_tasks` row for this recurring task. Only one worker
-                // can execute this method for a given tick at a time, so the
-                // `is_running` check and the subsequent `start_execution` are
-                // effectively serialized.
-                if self.is_running(&execution_id).await? {
-                    // Skip — don't increment the occurrence counter.
-                    return Ok(OnComplete::done());
+                // Check the PREVIOUS occurrence's execution — not the current one.
+                // The counter is incremented after a successful start, so `occurrence`
+                // is "the next one to start" and `occurrence - 1` is the last started.
+                // No TOCTOU race: the scheduler holds a row-level lock on the
+                // `zart_tasks` row so only one worker executes this per tick.
+                if occurrence > 0 {
+                    let last_id = self
+                        .id_template
+                        .replace("{occurrence}", &(occurrence - 1).to_string());
+                    if self.is_running(&last_id).await? {
+                        // Previous execution still running — skip this tick.
+                        return Ok(OnComplete::done());
+                    }
                 }
                 self.start_execution(&execution_id, &instance.data).await?;
             }
             OverlapPolicy::CancelAndRestart => {
-                // Cancel any non-terminal execution with this ID.
+                // Cancel the previous occurrence's execution if still running.
                 // Only swallow ExecutionNotFound (no prior run); propagate all other errors.
-                match self.scheduler.cancel(&execution_id).await {
-                    Ok(_) | Err(SchedulerError::ExecutionNotFound(_)) => {}
-                    Err(e) => return Err(SchedulerTaskError::Failed(e.to_string())),
+                if occurrence > 0 {
+                    let last_id = self
+                        .id_template
+                        .replace("{occurrence}", &(occurrence - 1).to_string());
+                    match self.scheduler.cancel(&last_id).await {
+                        Ok(_) | Err(SchedulerError::ExecutionNotFound(_)) => {}
+                        Err(e) => return Err(SchedulerTaskError::Failed(e.to_string())),
+                    }
                 }
                 self.start_execution(&execution_id, &instance.data).await?;
             }

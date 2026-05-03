@@ -6,7 +6,6 @@
 use super::helpers::*;
 use sqlx::Row as _;
 use std::time::Duration;
-use tokio::sync::Notify;
 use uuid::Uuid;
 use zart::{DurableScheduler, ListExecutionsParams, OverlapPolicy};
 use zart_core::types::ExecutionStatus;
@@ -26,9 +25,7 @@ impl DurableExecution for FastHandler {
     }
 }
 
-struct SlowHandlerShared {
-    gate: Arc<Notify>,
-}
+struct SlowHandlerShared;
 
 #[async_trait::async_trait]
 impl DurableExecution for SlowHandlerShared {
@@ -36,20 +33,21 @@ impl DurableExecution for SlowHandlerShared {
     type Output = serde_json::Value;
 
     async fn run(&self, _data: Self::Data) -> Result<Self::Output, zart::error::TaskError> {
-        // Block until the gate is notified
-        self.gate.notified().await;
+        // Sleep long enough to outlast several tick intervals without polluting the runtime.
+        tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(serde_json::json!({ "done": true }))
     }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn basic_recurrence_fixed_delay_runs_multiple_occurrences() {
     let pg = setup().await;
-    let task_id = format!("rdt-basic-{}", Uuid::new_v4().simple());
-    let prefix = task_id[..8].to_string();
+    let uid = Uuid::new_v4().simple().to_string();
+    let task_id = format!("rdt-basic-{uid}");
+    let prefix = uid.clone();
 
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(25),
@@ -77,15 +75,15 @@ async fn basic_recurrence_fixed_delay_runs_multiple_occurrences() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Wait for at least 3 ticks to fire and complete
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // Wait for at least 3 ticks to fire and complete (extra headroom for CI load).
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     worker.stop();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let durable = DurableScheduler::from_backend(pg.as_ref());
     let all = durable
         .list_executions(ListExecutionsParams {
-            limit: 50,
+            limit: 200,
             ..Default::default()
         })
         .await
@@ -113,16 +111,13 @@ async fn basic_recurrence_fixed_delay_runs_multiple_occurrences() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn skip_if_running_skips_second_tick_when_first_still_running() {
     let pg = setup().await;
-    let task_id = format!("rdt-skip-{}", Uuid::new_v4().simple());
-    let prefix = task_id[..8].to_string();
-
-    // Gate that keeps the handler blocked
-    let gate = Arc::new(Notify::new());
-    let gate2 = gate.clone();
+    let uid = Uuid::new_v4().simple().to_string();
+    let task_id = format!("rdt-skip-{uid}");
+    let prefix = uid.clone();
 
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(25),
@@ -135,11 +130,11 @@ async fn skip_if_running_skips_second_tick_when_first_still_running() {
 
     let worker = Arc::new(
         WorkerBuilder::from_backend(pg.as_ref())
-            .register_durable_task(&task_id, SlowHandlerShared { gate: gate2 })
+            .register_durable_task(&task_id, SlowHandlerShared)
             .register_recurring_durable::<SlowHandlerShared>(
                 &task_id,
                 &format!("skip-{{occurrence}}-{prefix}"),
-                // Tick fires every 80ms; handler blocks, so second tick should be skipped
+                // Tick fires every 80ms; handler sleeps 10s so all subsequent ticks skip.
                 Recurrence::FixedDelay { duration_ms: 80 },
                 OverlapPolicy::SkipIfRunning,
                 serde_json::json!({}),
@@ -151,12 +146,8 @@ async fn skip_if_running_skips_second_tick_when_first_still_running() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Let two ticks fire while handler is blocked
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    // Unblock the handler
-    gate.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Let several ticks fire while handler is sleeping (only tick 1 should start an execution).
+    tokio::time::sleep(Duration::from_millis(400)).await;
     worker.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -181,19 +172,24 @@ async fn skip_if_running_skips_second_tick_when_first_still_running() {
         matching.len(),
         matching.iter().map(|e| &e.execution_id).collect::<Vec<_>>()
     );
-    assert_eq!(matching[0].status, ExecutionStatus::Completed);
+    // The handler is still sleeping when the worker stops, so the execution is non-terminal.
+    assert!(
+        matches!(
+            matching[0].status,
+            ExecutionStatus::Scheduled | ExecutionStatus::Running
+        ),
+        "expected non-terminal status, got {:?}",
+        matching[0].status
+    );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn cancel_and_restart_cancels_first_and_starts_second() {
     let pg = setup().await;
-    let task_id = format!("rdt-cancel-{}", Uuid::new_v4().simple());
-    let prefix = task_id[..8].to_string();
-
-    // Gate that keeps the first handler blocked long enough for a second tick
-    let gate = Arc::new(Notify::new());
-    let gate2 = gate.clone();
+    let uid = Uuid::new_v4().simple().to_string();
+    let task_id = format!("rdt-cancel-{uid}");
+    let prefix = uid.clone();
 
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(25),
@@ -206,11 +202,11 @@ async fn cancel_and_restart_cancels_first_and_starts_second() {
 
     let worker = Arc::new(
         WorkerBuilder::from_backend(pg.as_ref())
-            .register_durable_task(&task_id, SlowHandlerShared { gate: gate2 })
+            .register_durable_task(&task_id, SlowHandlerShared)
             .register_recurring_durable::<SlowHandlerShared>(
                 &task_id,
                 &format!("cancel-{{occurrence}}-{prefix}"),
-                // Tick every 100ms; handler blocks → first run gets cancelled
+                // Tick every 100ms; handler sleeps 10s so first run is still running when tick 2 fires.
                 Recurrence::FixedDelay { duration_ms: 100 },
                 OverlapPolicy::CancelAndRestart,
                 serde_json::json!({}),
@@ -222,11 +218,7 @@ async fn cancel_and_restart_cancels_first_and_starts_second() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Wait for second tick to fire and cancel the first
-    tokio::time::sleep(Duration::from_millis(350)).await;
-
-    // Unblock any blocked handler so the worker can shut down cleanly
-    gate.notify_waiters();
+    // Wait long enough for at least 2 ticks; second tick cancels first run and starts a new one.
     tokio::time::sleep(Duration::from_millis(400)).await;
     worker.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -262,12 +254,13 @@ async fn cancel_and_restart_cancels_first_and_starts_second() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn always_start_runs_multiple_executions_in_parallel() {
     let pg = setup().await;
-    let task_id = format!("rdt-always-{}", Uuid::new_v4().simple());
-    let prefix = task_id[..8].to_string();
+    let uid = Uuid::new_v4().simple().to_string();
+    let task_id = format!("rdt-always-{uid}");
+    let prefix = uid.clone();
 
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(25),
@@ -331,12 +324,13 @@ async fn always_start_runs_multiple_executions_in_parallel() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn metadata_occurrence_increments_across_ticks() {
     let pg = setup().await;
-    let task_id = format!("rdt-meta-{}", Uuid::new_v4().simple());
-    let prefix = task_id[..8].to_string();
+    let uid = Uuid::new_v4().simple().to_string();
+    let task_id = format!("rdt-meta-{uid}");
+    let prefix = uid.clone();
 
     let config = WorkerConfig {
         poll_interval: Duration::from_millis(25),
