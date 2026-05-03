@@ -50,6 +50,7 @@ test-integration-full:
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-error-handling
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-transactions
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-scheduler-only
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-recurring-durable
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p example-admin-demo
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} bash examples/cli-demo/demo.sh
     @echo "── All examples completed ────────────────────────────────────────────────"
@@ -234,6 +235,12 @@ example-cli-demo db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} bash examples/cli-demo/demo.sh
 
+# Run the recurring-durable example (overlap policies: SkipIfRunning, CancelAndRestart, AlwaysStart)
+# Usage: just example-recurring-durable [DATABASE_URL]
+example-recurring-durable db_url=example_db_url:
+    just migrate
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-recurring-durable
+
 # Run the admin-demo example (wait_completion, start_and_wait_for, restart, retry_step, rerun, pause/resume)
 # Usage: just example-admin-demo [DATABASE_URL]
 example-admin-demo db_url=example_db_url:
@@ -252,6 +259,7 @@ run-all-examples db_url=example_db_url:
     just example-error-handling {{db_url}}
     just example-transactions {{db_url}}
     just example-scheduler-only {{db_url}}
+    just example-recurring-durable {{db_url}}
     just example-admin-demo {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)
