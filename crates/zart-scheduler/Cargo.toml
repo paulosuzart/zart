@@ -22,7 +22,7 @@ cron.workspace = true
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 sqlx = { workspace = true }
-zart-core = { path = "../zart-core" }
+zart-core.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
