@@ -708,4 +708,19 @@ impl DurableScheduler {
     ) -> Result<Vec<PauseRule>, SchedulerError> {
         self.pause_service.list_rules(filter).await
     }
+
+    /// Stop a recurring durable task registered via
+    /// [`crate::WorkerBuilder::register_recurring_durable`].
+    ///
+    /// Deletes the underlying scheduler task row so no further ticks will fire.
+    /// Any execution that is already in progress continues to run normally.
+    /// The operation is idempotent — calling it on a `task_id` that was never
+    /// registered or has already been stopped returns `Ok(())`.
+    pub async fn stop_recurring(&self, task_id: &str) -> Result<(), SchedulerError> {
+        let internal_name = format!("__zart_recurring__:{task_id}");
+        self.scheduler
+            .delete_task(&internal_name)
+            .await
+            .map_err(SchedulerError::Database)
+    }
 }

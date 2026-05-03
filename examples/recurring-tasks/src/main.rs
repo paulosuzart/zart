@@ -89,7 +89,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_timeout: Duration::from_secs(10),
         ..Default::default()
     };
-    let worker = Arc::new(Worker::new(scheduler.clone(), Arc::new(registry), config));
+    let worker = Arc::new(Worker::new(
+        scheduler.clone(),
+        Arc::new(registry),
+        config,
+        vec![],
+    ));
     let w = worker.clone();
     let handle = tokio::spawn(async move { w.run().await });
 

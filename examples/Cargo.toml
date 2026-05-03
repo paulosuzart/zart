@@ -48,6 +48,10 @@ path = "scheduler-only/src/main.rs"
 name = "example-recurring-tasks"
 path = "recurring-tasks/src/main.rs"
 
+[[bin]]
+name = "example-recurring-durable"
+path = "recurring-durable/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }

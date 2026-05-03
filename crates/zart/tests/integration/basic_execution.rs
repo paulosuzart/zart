@@ -196,6 +196,7 @@ async fn recurring_fixed_delay_task_runs_multiple_times() {
         scheduler.scheduler(),
         Arc::new(scheduler_registry),
         config,
+        vec![],
     ));
     let w = worker.clone();
     let _handle = tokio::spawn(async move { w.run().await });

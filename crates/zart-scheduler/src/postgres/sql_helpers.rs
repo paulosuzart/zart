@@ -126,6 +126,9 @@ pub async fn mark_failed_sql(
 ///
 /// Sets the task back to `'scheduled'` with the given execution time and
 /// clears the lock, so the next worker poll can pick it up again.
+///
+/// If `metadata_patch` is `Some`, its keys are merged into the existing
+/// `metadata` column using the Postgres `||` operator (additive merge).
 pub async fn update_task_state_sql(
     conn: &mut PgConnection,
     task_id: &str,
@@ -133,29 +136,57 @@ pub async fn update_task_state_sql(
     next_execution_time: DateTime<Utc>,
     lock_token: &str,
     names: &TableNames,
+    metadata_patch: Option<&serde_json::Value>,
 ) -> Result<(), StorageError> {
-    let rows_affected = sqlx::query(&format!(
-        r#"
-        UPDATE {tasks}
-        SET state          = $1,
-            execution_time = $2,
-            status         = 'scheduled',
-            locked_at      = NULL,
-            worker_id      = NULL,
-            updated_at     = NOW()
-        WHERE task_id  = $3
-          AND worker_id = $4
-        "#,
-        tasks = names.tasks(),
-    ))
-    .bind(&state)
-    .bind(next_execution_time)
-    .bind(task_id)
-    .bind(lock_token)
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?
-    .rows_affected();
+    let rows_affected = if let Some(patch) = metadata_patch {
+        sqlx::query(&format!(
+            r#"
+            UPDATE {tasks}
+            SET state          = $1,
+                execution_time = $2,
+                status         = 'scheduled',
+                locked_at      = NULL,
+                worker_id      = NULL,
+                updated_at     = NOW(),
+                metadata       = COALESCE(metadata, '{{}}') || $5
+            WHERE task_id  = $3
+              AND worker_id = $4
+            "#,
+            tasks = names.tasks(),
+        ))
+        .bind(&state)
+        .bind(next_execution_time)
+        .bind(task_id)
+        .bind(lock_token)
+        .bind(patch)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected()
+    } else {
+        sqlx::query(&format!(
+            r#"
+            UPDATE {tasks}
+            SET state          = $1,
+                execution_time = $2,
+                status         = 'scheduled',
+                locked_at      = NULL,
+                worker_id      = NULL,
+                updated_at     = NOW()
+            WHERE task_id  = $3
+              AND worker_id = $4
+            "#,
+            tasks = names.tasks(),
+        ))
+        .bind(&state)
+        .bind(next_execution_time)
+        .bind(task_id)
+        .bind(lock_token)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected()
+    };
 
     if rows_affected == 0 {
         return Err(StorageError::LockMismatch(task_id.to_string()));

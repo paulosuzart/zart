@@ -11,7 +11,7 @@ use crate::ops::ExecutionOps;
 use crate::registry::TaskRegistry;
 use crate::store::TaskScheduler;
 use crate::task::{CompletionHandler, TaskInstance};
-use crate::types::FetchedTask;
+use crate::types::{FetchedTask, ScheduleAtParams};
 use crate::worker_config::WorkerConfig;
 
 /// Polls the task queue and dispatches tasks to registered [`ScheduledTask`](crate::ScheduledTask) handlers.
@@ -44,6 +44,8 @@ pub struct Worker {
     config: WorkerConfig,
     shutdown: Arc<Notify>,
     cancellation: CancellationToken,
+    /// Recurring tasks to seed into the DB idempotently at the start of `run()`.
+    pending_recurring: Vec<ScheduleAtParams>,
 }
 
 impl Worker {
@@ -52,6 +54,7 @@ impl Worker {
         scheduler: Arc<dyn TaskScheduler>,
         registry: Arc<TaskRegistry>,
         config: WorkerConfig,
+        pending_recurring: Vec<ScheduleAtParams>,
     ) -> Self {
         Self {
             scheduler,
@@ -59,6 +62,7 @@ impl Worker {
             config,
             shutdown: Arc::new(Notify::new()),
             cancellation: CancellationToken::new(),
+            pending_recurring,
         }
     }
 
@@ -78,6 +82,7 @@ impl Worker {
             config,
             shutdown: Arc::new(Notify::new()),
             cancellation,
+            pending_recurring: Vec::new(),
         }
     }
 
@@ -94,6 +99,13 @@ impl Worker {
             orphan_timeout_secs = self.config.orphan_timeout.as_secs(),
             "Scheduler worker starting"
         );
+
+        // Seed recurring durable tasks idempotently before entering the poll loop.
+        for params in &self.pending_recurring {
+            if let Err(e) = self.scheduler.schedule_at(params.clone()).await {
+                error!(error = %e, task_id = %params.task_id, "Failed to seed recurring task");
+            }
+        }
 
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_tasks));
         let mut poll_count: u32 = 0;

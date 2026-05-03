@@ -1,0 +1,146 @@
+---
+title: Recurring Durable Executions
+description: Schedule durable workflows on a recurring basis with configurable overlap policies.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## What Are Recurring Durable Executions?
+
+A **recurring durable execution** combines the scheduling power of a cron or fixed-delay
+ticker with the full reliability of Zart's durable execution engine. Each tick starts a
+new `DurableExecution` handler — with step checkpointing, retries, admin visibility, and
+result persistence.
+
+### When to use recurring durable vs. plain recurring `ScheduledTask`
+
+| Concern | Plain `ScheduledTask` | Recurring Durable Execution |
+|---|---|---|
+| Step-level fault tolerance | No | Yes — each step is checkpointed |
+| Automatic retries | Manual | Yes — via `RetryConfig` |
+| Admin / UI visibility | Limited | Full execution record |
+| Parallel step support | No | Yes |
+| Appropriate for | Lightweight fire-and-forget | Multi-step workflows that must not be lost |
+
+Use a plain recurring `ScheduledTask` (see [Recurring Scheduler Tasks](/docs/rust-api/overview))
+for lightweight jobs where a single function call is sufficient. Use recurring durable
+executions when you need steps, retries, and observability.
+
+## Quick Start
+
+```rust
+use zart::prelude::*;
+use zart::OverlapPolicy;
+use zart_scheduler::Recurrence;
+use serde_json::json;
+
+// 1. Implement your handler as usual
+struct NightlyReport;
+
+#[async_trait::async_trait]
+impl DurableExecution for NightlyReport {
+    type Data = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        zart::require(FetchInventoryStep).await?;
+        zart::require(WriteReportStep).await?;
+        Ok(json!({ "status": "ok" }))
+    }
+}
+
+// 2. Register and schedule in one call
+let worker = WorkerBuilder::from_backend(&pg)
+    .register_durable_task("nightly-report", NightlyReport)
+    .register_recurring_durable::<NightlyReport>(
+        "nightly-report",                          // task_id (unique per worker)
+        "report-{occurrence}",                     // execution ID template
+        // Fixed delay for local dev / testing:
+        Recurrence::FixedDelay { duration_ms: 5_000 },
+        // Cron for production:
+        // Recurrence::Cron { expression: "0 2 * * *".into(), timezone: "UTC".into() },
+        OverlapPolicy::SkipIfRunning,              // overlap policy (see below)
+        json!({ "warehouse": "EU-1" }),            // initial payload
+    )
+    .build();
+```
+
+<Aside type="tip">
+`register_recurring_durable` schedules the first occurrence immediately and
+idempotently — restarting the worker will not create a duplicate.
+</Aside>
+
+## Overlap Policies
+
+When a new tick fires while a previous execution is still running, the **`OverlapPolicy`**
+controls what happens.
+
+| Policy | Running execution | New occurrence | Canonical use case |
+|---|---|---|---|
+| `SkipIfRunning` | Continues to run | Silently skipped | Batch reports, ETL pipelines |
+| `CancelAndRestart` | Cancelled immediately | Fresh execution starts | Config refresh, cache warming |
+| `AlwaysStart` | Continues to run | Also started | Independent audit windows, per-slot ingestion |
+
+### `SkipIfRunning` (recommended default)
+
+The new tick is a no-op if any execution derived from the same template is currently
+in a `Scheduled` or `Running` state. Choose this when running the current instance to
+completion is more valuable than starting a fresh one.
+
+### `CancelAndRestart`
+
+The running execution is cancelled via `DurableScheduler::cancel` and a new one is
+started with the next occurrence ID. Choose this when you always want the latest state
+and partial work from the old run is undesirable.
+
+### `AlwaysStart`
+
+Every tick unconditionally creates a new execution, even if one is already running.
+Choose this when occurrences are fully independent (e.g. time-windowed audit logs
+that must all complete regardless of overlap).
+
+## Execution ID Templating
+
+The `id_template` parameter supports one substitution token:
+
+| Token | Replaced with |
+|---|---|
+| `{occurrence}` | The 0-based occurrence counter, incremented on every successful dispatch |
+
+Examples:
+- `"report-{occurrence}"` → `"report-0"`, `"report-1"`, `"report-2"`, …
+- `"audit-{occurrence}-eu"` → `"audit-0-eu"`, `"audit-1-eu"`, …
+
+The occurrence counter is stored in the recurring task's `metadata["occurrence"]` field
+in `zart_tasks`. You can query it directly for introspection:
+
+```sql
+SELECT metadata->>'occurrence' AS occurrence
+FROM zart_tasks
+WHERE task_id = '__zart_recurring__:nightly-report';
+```
+
+<Aside type="note">
+Each execution ID must be unique across all executions in the database. Because
+`{occurrence}` increments monotonically, IDs are naturally unique unless you reset the
+database or use the same template for two different recurring tasks.
+</Aside>
+
+## Waiting for an Occurrence to Complete
+
+Use `DurableScheduler::wait` to block until a specific occurrence finishes:
+
+```rust
+let record = durable
+    .wait("report-3", Duration::from_secs(30), None)
+    .await?;
+
+println!("Status: {:?}", record.status);
+println!("Result: {:?}", record.result);
+```
+
+## See Also
+
+- [Durable Execution](/docs/concepts/durable-execution) — core concept and step checkpointing
+- [Rust API Overview](/docs/rust-api/overview) — `WorkerBuilder` and the scheduler layer
+- Spec 0040 — lightweight recurring `ScheduledTask` (no step checkpointing)

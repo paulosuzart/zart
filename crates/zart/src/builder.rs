@@ -1,10 +1,14 @@
 use crate::TASK_NAME;
+use crate::durable::DurableScheduler;
+use crate::recurring::{OverlapPolicy, RecurringDurableTask};
 use crate::registry::{DurableExecution, DurableRegistry};
 use crate::store::{Backend, StorageBackend};
 use crate::task::ZartTask;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use zart_scheduler::{
-    ScheduledTask, TaskRegistry as SchedulerRegistry, TaskScheduler, Worker, WorkerConfig,
+    Recurrence, ScheduleAtParams, ScheduledTask, TaskRegistry as SchedulerRegistry, TaskScheduler,
+    Worker, WorkerConfig,
 };
 
 /// Builder for the Zart worker.
@@ -28,6 +32,7 @@ pub struct WorkerBuilder {
     scheduler_registry: Option<SchedulerRegistry>,
     durable_registry: Option<DurableRegistry>,
     config: WorkerConfig,
+    pending_recurring: Vec<ScheduleAtParams>,
 }
 
 impl WorkerBuilder {
@@ -38,6 +43,7 @@ impl WorkerBuilder {
             scheduler_registry: None,
             durable_registry: None,
             config: WorkerConfig::default(),
+            pending_recurring: Vec::new(),
         }
     }
 
@@ -90,6 +96,68 @@ impl WorkerBuilder {
         self
     }
 
+    /// Register a recurring durable execution.
+    ///
+    /// On every occurrence the handler `H` is started as a new durable execution.
+    /// The execution ID is built by replacing `{occurrence}` in `id_template` with
+    /// the current occurrence counter (0-based). The counter is stored in the
+    /// recurring task's `metadata["occurrence"]` field and incremented each fire.
+    ///
+    /// `initial_data` is the JSON payload forwarded to `H::run` on every start.
+    ///
+    /// The recurring task is registered under the internal name
+    /// `"__zart_recurring__:{task_id}"`. The initial scheduler row is seeded
+    /// idempotently at the start of [`Worker::run`] — no database call is made
+    /// during builder construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id_template` does not contain the `{occurrence}` placeholder.
+    pub fn register_recurring_durable<H: DurableExecution + 'static>(
+        mut self,
+        task_id: &str,
+        id_template: &str,
+        recurrence: Recurrence,
+        overlap: OverlapPolicy,
+        initial_data: serde_json::Value,
+    ) -> Self {
+        assert!(
+            id_template.contains("{occurrence}"),
+            "id_template must contain {{occurrence}} placeholder, got: {id_template:?}"
+        );
+
+        let durable_scheduler = Arc::new(DurableScheduler::new(
+            self.storage.clone(),
+            self.scheduler.clone(),
+        ));
+
+        let handler = RecurringDurableTask::<H> {
+            handler_name: task_id.to_string(),
+            id_template: id_template.to_string(),
+            overlap,
+            scheduler: durable_scheduler,
+            _marker: PhantomData,
+        };
+
+        let internal_name = format!("__zart_recurring__:{task_id}");
+        let registry = self
+            .scheduler_registry
+            .get_or_insert_with(SchedulerRegistry::new);
+        registry.register(&internal_name, handler);
+
+        // Defer scheduling to Worker::run() startup so no DB call happens here.
+        self.pending_recurring.push(ScheduleAtParams {
+            task_id: internal_name.clone(),
+            task_name: internal_name,
+            execution_time: chrono::Utc::now(),
+            data: initial_data,
+            recurrence: Some(recurrence),
+            metadata: serde_json::json!({ "occurrence": 0 }),
+        });
+
+        self
+    }
+
     pub fn build(self) -> Worker {
         let mut scheduler_registry = self.scheduler_registry.unwrap_or_default();
 
@@ -110,7 +178,12 @@ impl WorkerBuilder {
             scheduler_registry.register(TASK_NAME, zart_task);
         }
 
-        Worker::new(self.scheduler, Arc::new(scheduler_registry), self.config)
+        Worker::new(
+            self.scheduler,
+            Arc::new(scheduler_registry),
+            self.config,
+            self.pending_recurring,
+        )
     }
 }
 

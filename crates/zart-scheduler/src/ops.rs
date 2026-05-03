@@ -30,6 +30,7 @@ pub struct ExecutionOps {
     scheduler: Arc<dyn TaskScheduler>,
     task_id: String,
     lock_token: String,
+    pending_metadata: Option<Value>,
 }
 
 impl ExecutionOps {
@@ -38,7 +39,25 @@ impl ExecutionOps {
             scheduler,
             task_id: task_id.to_string(),
             lock_token: lock_token.to_string(),
+            pending_metadata: None,
         }
+    }
+
+    /// Merge `v` into the task's `metadata` column on the next reschedule.
+    ///
+    /// New keys in `v` are added to existing metadata; existing keys are
+    /// overwritten. The merge happens atomically with the reschedule SQL update
+    /// using the Postgres `||` operator.
+    ///
+    /// This is a pure setter — calling it multiple times replaces the previous
+    /// value. The metadata is only applied when `reschedule` or `reschedule_in_tx`
+    /// is called.
+    ///
+    /// **Note:** calling `set_metadata` before `complete` or `complete_in_tx`
+    /// has **no effect** — the pending metadata is only flushed on the
+    /// `reschedule`/`reschedule_in_tx` paths.
+    pub fn set_metadata(&mut self, v: Value) {
+        self.pending_metadata = Some(v);
     }
 
     /// Complete the task: opens a fresh transaction, marks complete,
@@ -85,10 +104,20 @@ impl ExecutionOps {
 
     /// Reschedule the task: opens a fresh transaction, updates task state,
     /// then commits.
+    ///
+    /// If [`set_metadata`](Self::set_metadata) was called, the new metadata is
+    /// merged into the task's `metadata` column using the Postgres `||` operator.
     pub async fn reschedule(&self, at: DateTime<Utc>) -> Result<(), StorageError> {
         let mut tx = self.scheduler.begin().await?;
         self.scheduler
-            .update_task_state_in_tx(&mut tx, &self.task_id, Value::Null, at, &self.lock_token)
+            .update_task_state_in_tx(
+                &mut tx,
+                &self.task_id,
+                Value::Null,
+                at,
+                &self.lock_token,
+                self.pending_metadata.as_ref(),
+            )
             .await?;
         tx.commit()
             .await
@@ -105,7 +134,14 @@ impl ExecutionOps {
         at: DateTime<Utc>,
     ) -> Result<(), StorageError> {
         self.scheduler
-            .update_task_state_in_tx(&mut tx, &self.task_id, Value::Null, at, &self.lock_token)
+            .update_task_state_in_tx(
+                &mut tx,
+                &self.task_id,
+                Value::Null,
+                at,
+                &self.lock_token,
+                self.pending_metadata.as_ref(),
+            )
             .await?;
         tx.commit()
             .await

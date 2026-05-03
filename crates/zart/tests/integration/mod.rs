@@ -11,6 +11,7 @@ mod event_driven;
 #[cfg(test)]
 mod helpers;
 mod parallel_steps;
+mod recurring_durable;
 mod selective_rerun;
 mod transaction;
 mod typed_completion;

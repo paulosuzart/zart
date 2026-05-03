@@ -79,6 +79,9 @@ pub trait TaskScheduler: Send + Sync {
 
     /// Reschedule a task within a caller-owned transaction.
     ///
+    /// If `metadata_patch` is `Some`, its keys are merged into the task's
+    /// existing `metadata` column using the Postgres `||` operator (additive).
+    ///
     /// Default implementation returns `NotImplemented`.
     async fn update_task_state_in_tx(
         &self,
@@ -87,8 +90,16 @@ pub trait TaskScheduler: Send + Sync {
         state: serde_json::Value,
         next_execution_time: DateTime<Utc>,
         lock_token: &str,
+        metadata_patch: Option<&serde_json::Value>,
     ) -> Result<(), StorageError> {
-        let _ = (conn, task_id, state, next_execution_time, lock_token);
+        let _ = (
+            conn,
+            task_id,
+            state,
+            next_execution_time,
+            lock_token,
+            metadata_patch,
+        );
         Err(StorageError::NotImplemented("update_task_state_in_tx"))
     }
 
