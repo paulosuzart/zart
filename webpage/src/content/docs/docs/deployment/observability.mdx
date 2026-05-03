@@ -59,10 +59,10 @@ Prometheus instrumentation is opt-in. Enable the `metrics` Cargo feature to acti
 
 ```toml
 # Cargo.toml
-zart = { version = "0.1", features = ["metrics"] }
+zart = { version = "0.2", features = ["metrics"] }
 
 # If you also use zart-api, enable its matching feature:
-zart-api = { version = "0.1", features = ["metrics"] }
+zart-api = { version = "0.2", features = ["metrics"] }
 ```
 
 Without this feature neither `prometheus` nor `lazy_static` are compiled into your binary. All metric call sites become no-ops and `gather_metrics()` returns an empty string.
