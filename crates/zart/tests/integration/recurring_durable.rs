@@ -415,8 +415,14 @@ async fn metadata_occurrence_increments_across_ticks() {
     let w = worker.clone();
     tokio::spawn(async move { w.run().await });
 
-    // Poll until at least 2 executions with incrementing IDs appear.
+    // Poll until at least 2 executions exist AND the occurrence counter in the
+    // scheduler task row has been persisted as >= 2. Both conditions must hold
+    // together: seeing meta-1 proves tick 1 started, but the completion handler
+    // that writes occurrence=2 may not have committed yet when we break on
+    // matching.len() alone.
     let durable = DurableScheduler::from_backend(pg.as_ref());
+    let scheduler_task_id = format!("__zart_recurring__:{task_id}");
+    let pool = pg.pool().clone();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let matching = loop {
         let all = durable
@@ -433,12 +439,26 @@ async fn metadata_occurrence_increments_across_ticks() {
             .collect();
 
         if matching.len() >= 2 {
-            break matching;
+            let row = sqlx::query("SELECT metadata FROM zart_tasks WHERE task_id = $1")
+                .bind(&scheduler_task_id)
+                .fetch_optional(&pool)
+                .await
+                .expect("db query failed");
+
+            let occurrence = row
+                .as_ref()
+                .and_then(|r| r.try_get::<serde_json::Value, _>("metadata").ok())
+                .and_then(|m| m["occurrence"].as_u64())
+                .unwrap_or(0);
+
+            if occurrence >= 2 {
+                break matching;
+            }
         }
 
         if tokio::time::Instant::now() >= deadline {
             panic!(
-                "timed out waiting for 2 occurrences; got {}",
+                "timed out waiting for 2 occurrences with persisted counter; got {} executions",
                 matching.len()
             );
         }
@@ -456,22 +476,4 @@ async fn metadata_occurrence_increments_across_ticks() {
             "missing execution for occurrence {i}: expected {expected}"
         );
     }
-
-    // Probe the zart_tasks metadata column directly to confirm the occurrence
-    // counter was persisted and incremented.
-    let scheduler_task_id = format!("__zart_recurring__:{task_id}");
-    let pool = pg.pool().clone();
-    let row = sqlx::query("SELECT metadata FROM zart_tasks WHERE task_id = $1")
-        .bind(&scheduler_task_id)
-        .fetch_one(&pool)
-        .await
-        .expect("should find scheduler task row");
-    let metadata: serde_json::Value = row.try_get("metadata").expect("metadata column");
-    let occurrence = metadata["occurrence"]
-        .as_u64()
-        .expect("occurrence must be u64");
-    assert!(
-        occurrence >= 2,
-        "occurrence should have incremented, got {occurrence}"
-    );
 }
