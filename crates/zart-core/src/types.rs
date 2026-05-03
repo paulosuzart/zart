@@ -108,7 +108,7 @@ pub struct StepLookup {
 }
 
 /// Parameters for `StorageBackend::schedule_at`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScheduleAtParams {
     /// Unique identifier for the new task row.
     pub task_id: String,

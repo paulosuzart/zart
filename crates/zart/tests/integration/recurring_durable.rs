@@ -41,7 +41,7 @@ impl DurableExecution for SlowHandlerShared {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn basic_recurrence_fixed_delay_runs_multiple_occurrences() {
     let pg = setup().await;
@@ -111,7 +111,7 @@ async fn basic_recurrence_fixed_delay_runs_multiple_occurrences() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn skip_if_running_skips_second_tick_when_first_still_running() {
     let pg = setup().await;
@@ -183,7 +183,7 @@ async fn skip_if_running_skips_second_tick_when_first_still_running() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn cancel_and_restart_cancels_first_and_starts_second() {
     let pg = setup().await;
@@ -219,9 +219,10 @@ async fn cancel_and_restart_cancels_first_and_starts_second() {
     tokio::spawn(async move { w.run().await });
 
     // Wait long enough for at least 2 ticks; second tick cancels first run and starts a new one.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Use a generous window (1 s) so the test stays stable under DB load in the full suite.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
     worker.stop();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let durable = DurableScheduler::from_backend(pg.as_ref());
     let all = durable
@@ -254,7 +255,7 @@ async fn cancel_and_restart_cancels_first_and_starts_second() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn always_start_runs_multiple_executions_in_parallel() {
     let pg = setup().await;
@@ -324,7 +325,7 @@ async fn always_start_runs_multiple_executions_in_parallel() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]
 async fn metadata_occurrence_increments_across_ticks() {
     let pg = setup().await;

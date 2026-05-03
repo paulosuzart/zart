@@ -7,8 +7,8 @@ use crate::task::ZartTask;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use zart_scheduler::{
-    Recurrence, ScheduleAtParams, ScheduleResult, ScheduledTask, TaskRegistry as SchedulerRegistry,
-    TaskScheduler, Worker, WorkerConfig,
+    Recurrence, ScheduleAtParams, ScheduledTask, TaskRegistry as SchedulerRegistry, TaskScheduler,
+    Worker, WorkerConfig,
 };
 
 /// Builder for the Zart worker.
@@ -32,6 +32,7 @@ pub struct WorkerBuilder {
     scheduler_registry: Option<SchedulerRegistry>,
     durable_registry: Option<DurableRegistry>,
     config: WorkerConfig,
+    pending_recurring: Vec<ScheduleAtParams>,
 }
 
 impl WorkerBuilder {
@@ -42,6 +43,7 @@ impl WorkerBuilder {
             scheduler_registry: None,
             durable_registry: None,
             config: WorkerConfig::default(),
+            pending_recurring: Vec::new(),
         }
     }
 
@@ -104,21 +106,13 @@ impl WorkerBuilder {
     /// `initial_data` is the JSON payload forwarded to `H::run` on every start.
     ///
     /// The recurring task is registered under the internal name
-    /// `"__zart_recurring__:{task_id}"` and scheduled idempotently on build.
-    ///
-    /// # Runtime requirement
-    ///
-    /// This method uses [`tokio::task::block_in_place`] internally to schedule
-    /// the recurring task synchronously during builder construction. It therefore
-    /// **requires a multi-threaded Tokio runtime** — calling it from a
-    /// `current_thread` runtime will panic.
+    /// `"__zart_recurring__:{task_id}"`. The initial scheduler row is seeded
+    /// idempotently at the start of [`Worker::run`] — no database call is made
+    /// during builder construction.
     ///
     /// # Panics
     ///
-    /// - Panics if `id_template` does not contain the `{occurrence}` placeholder.
-    /// - Panics if scheduling the initial task fails. Use
-    ///   [`register_scheduler_task`](Self::register_scheduler_task) plus manual
-    ///   scheduling if you need finer error control.
+    /// Panics if `id_template` does not contain the `{occurrence}` placeholder.
     pub fn register_recurring_durable<H: DurableExecution + 'static>(
         mut self,
         task_id: &str,
@@ -151,22 +145,15 @@ impl WorkerBuilder {
             .get_or_insert_with(SchedulerRegistry::new);
         registry.register(&internal_name, handler);
 
-        // Schedule the recurring task idempotently (ON CONFLICT DO NOTHING).
-        let scheduler = self.scheduler.clone();
-        let params = ScheduleAtParams {
+        // Defer scheduling to Worker::run() startup so no DB call happens here.
+        self.pending_recurring.push(ScheduleAtParams {
             task_id: internal_name.clone(),
             task_name: internal_name,
             execution_time: chrono::Utc::now(),
             data: initial_data,
             recurrence: Some(recurrence),
             metadata: serde_json::json!({ "occurrence": 0 }),
-        };
-        // Block on the async schedule call using a one-shot runtime.
-        let _: ScheduleResult = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { scheduler.schedule_at(params).await })
-        })
-        .expect("failed to schedule recurring durable task");
+        });
 
         self
     }
@@ -191,7 +178,12 @@ impl WorkerBuilder {
             scheduler_registry.register(TASK_NAME, zart_task);
         }
 
-        Worker::new(self.scheduler, Arc::new(scheduler_registry), self.config)
+        Worker::new(
+            self.scheduler,
+            Arc::new(scheduler_registry),
+            self.config,
+            self.pending_recurring,
+        )
     }
 }
 
