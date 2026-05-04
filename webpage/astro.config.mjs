@@ -99,6 +99,7 @@ export default defineConfig({
             { label: "Sleep", link: "/docs/examples/sleep" },
             { label: "Retry Simulation", link: "/docs/examples/retry-simulation" },
             { label: "Radkit LLM Agent", link: "/docs/examples/radkit-agent" },
+            { label: "Scheduler-Only", link: "/docs/examples/scheduler-only" },
           ],
         },
 

@@ -1,0 +1,173 @@
+---
+title: OpenAPI & Route Configuration
+description: Enable Swagger UI for the admin API and customize route prefixes for flexible deployment.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Zart's admin API (`zart-api`) can automatically generate OpenAPI documentation and allows you to customize where it's mounted in your HTTP stack.
+
+## Opt-in OpenAPI / Swagger UI
+
+Enable the `openapi` feature in your `Cargo.toml`:
+
+```toml
+[dependencies]
+zart-api = { version = "0.2", features = ["openapi"] }
+```
+
+### Enabling Swagger UI
+
+Use `ApiServer::with_swagger_ui()` to mount the interactive Swagger UI:
+
+```rust
+use zart_api::{ApiServer, AppState};
+use axum::Router;
+
+let durable = DurableScheduler::from_backend(&pg);
+
+let app = Router::new()
+    .merge(ApiServer::with_swagger_ui(
+        AppState::new(durable),
+        "http://localhost:8080".to_string(), // server URL for OpenAPI spec
+    ));
+```
+
+This mounts:
+
+| Path | Content |
+|---|---|
+| `/zart/admin/v1/docs` | Swagger UI (interactive documentation) |
+| `/zart/admin/v1/openapi.json` | Raw OpenAPI 3.0 spec |
+
+### Swagger UI in Action
+
+Navigate to `http://localhost:8080/zart/admin/v1/docs` to see:
+
+- All admin API endpoints with request/response schemas
+- Try-it-now functionality for testing API calls
+- Full schema documentation for `ExecutionRecord`, `StepRecord`, etc.
+
+<Aside type="tip">
+The OpenAPI spec is generated automatically from `#[utoipa::path]` annotations on all handler functions. You don't need to maintain a separate spec file.
+</Aside>
+
+### Nesting into Your Own API Docs
+
+If you already use `utoipa` for your own API, you can nest Zart's `ZartApiDoc` into your schema:
+
+```rust
+use utoipa::OpenApi;
+use zart_api::ZartApiDoc;
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        // your own handlers...
+    ),
+    nest(
+        (path = "/zart/admin/v1", api = ZartApiDoc)
+    )
+)]
+struct MyApiDoc;
+
+// Serve combined docs
+let doc = MyApiDoc::openapi();
+```
+
+---
+
+## Configurable Route Prefixes
+
+By default, the admin API mounts at `/zart/admin/v1`. Use `ApiServer::route_prefix()` to customize this:
+
+```rust
+let app = ApiServer::new(AppState::new(durable))
+    .route_prefix("/api/v2/admin".to_string())  // now mounts at /api/v2/admin
+    .into_router();
+```
+
+### Common Prefix Patterns
+
+| Prefix | Mounts At | Use Case |
+|---|---|---|
+| `/zart/admin/v1` (default) | `/zart/admin/v1/...` | Standard Zart deployment |
+| `/api/v1/admin` | `/api/v1/admin/...` | Fits into existing API versioning |
+| `/internal/zart` | `/internal/zart/...` | Internal-only admin paths |
+| `/admin` | `/admin/...` | Simple standalone admin |
+
+### Combining with Swagger UI
+
+```rust
+let app = ApiServer::with_swagger_ui(
+        AppState::new(durable),
+        "http://localhost:8080".to_string(),
+    )
+    .route_prefix("/internal/admin".to_string())
+    .into_router();
+```
+
+Now:
+- API: `http://localhost:8080/internal/admin/...`
+- Swagger UI: `http://localhost:8080/internal/admin/docs`
+- OpenAPI spec: `http://localhost:8080/internal/admin/openapi.json`
+
+---
+
+## Full Example
+
+```rust
+use axum::Router;
+use zart_api::{ApiServer, AppState};
+use zart::DurableScheduler;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Setup
+    let pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let durable = Arc::new(DurableScheduler::from_backend(&pg));
+
+    // Build API server with Swagger + custom prefix
+    let app = ApiServer::with_swagger_ui(
+            AppState::new(durable),
+            "http://localhost:8080".to_string(),
+        )
+        .route_prefix("/api/v1".to_string())
+        .into_router();
+
+    // Merge with your own routes
+    let app = app.merge(your_own_routes());
+
+    // Start server
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+```
+
+---
+
+## Feature Flag Reference
+
+| Feature | Default | Effect |
+|---|---|---|
+| `openapi` | off | Enables `with_swagger_ui()`, `ZartApiDoc`, and OpenAPI annotations |
+
+Enable in `Cargo.toml`:
+
+```toml
+zart-api = { version = "0.2", features = ["openapi"] }
+```
+
+<Aside type="note">
+Without the `openapi` feature, `with_swagger_ui()` and `ZartApiDoc` are not available. The basic `ApiServer::new()` still works for mounting the admin API without documentation.
+</Aside>
+
+## See Also
+
+- [**Admin Operations**](/docs/admin/) — retry, restart, rerun operations via HTTP
+- [**HTTP API Endpoints**](/docs/admin/endpoints/) — full endpoint reference
+- [Spec 0050](https://github.com/paulosuzart/zart/blob/main/specs/0050-openapi.md) — OpenAPI design spec
+- [Spec 0051](https://github.com/paulosuzart/zart/blob/main/specs/0051-route-prefix.md) — Route prefix design spec
