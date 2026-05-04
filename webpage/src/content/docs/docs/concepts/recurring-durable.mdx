@@ -5,6 +5,31 @@ description: Schedule durable workflows on a recurring basis with configurable o
 
 import { Aside } from '@astrojs/starlight/components';
 
+## Motivation
+
+Many workflows need to run repeatedly — nightly reports, daily invoice generation,
+cache warmers, heartbeat checks, ETL pipelines. A naive approach uses a cron job
+that calls a script, but this breaks down when:
+
+- The script crashes midway through a multi-step process (invoice sent, but DB
+  not updated)
+- You need visibility into past runs (did the report actually complete?)
+- Steps within the workflow need retries with checkpointing
+- Overlapping runs could cause duplicate side effects (double-charging
+  customers, sending duplicate emails)
+
+**Recurring Durable Executions** combine cron-like scheduling with Zart's durable
+execution engine. Each tick starts a new `DurableExecution` that survives crashes,
+checkpoints each step, and respects **overlap policies** to prevent concurrent
+run chaos.
+
+:::tip[Real-world use case]
+A nightly billing job that charges customers. With `SkipIfRunning`, if Monday's
+run is still going at 2 AM Tuesday, Tuesday's run is skipped — no double
+charges. With `CancelAndRestart`, a config refresh job always runs the latest
+version, cancelling any stale run.
+:::
+
 ## What Are Recurring Durable Executions?
 
 A **recurring durable execution** combines the scheduling power of a cron or fixed-delay
@@ -139,8 +164,36 @@ println!("Status: {:?}", record.status);
 println!("Result: {:?}", record.result);
 ```
 
+## Stopping a Recurring Task
+
+To cancel a recurring task entirely, use `DurableScheduler::stop_recurring`:
+
+```rust
+let durable = DurableScheduler::from_backend(&pg);
+durable.stop_recurring("nightly-report").await?;
+```
+
+This marks the recurring task as inactive. No new occurrences will be scheduled,
+but executions that are already running will complete normally.
+
+## Full Example
+
+For a complete, runnable example demonstrating all three overlap policies
+(`SkipIfRunning`, `CancelAndRestart`, `AlwaysStart`), see the
+[`recurring-durable`](https://github.com/paulosuzart/zart/tree/main/examples/recurring-durable)
+example in the repository.
+
+The example shows three scenarios:
+
+| Scenario | Overlap Policy | What You'll See |
+|---|---|---|
+| Inventory Snapshot | `SkipIfRunning` | Second tick skipped while first runs |
+| Config Refresh | `CancelAndRestart` | Stale run cancelled, fresh one starts |
+| Audit Window | `AlwaysStart` | Multiple runs overlap in parallel |
+
 ## See Also
 
 - [Durable Execution](/docs/concepts/durable-execution) — core concept and step checkpointing
 - [Rust API Overview](/docs/rust-api/overview) — `WorkerBuilder` and the scheduler layer
+- [Examples: Recurring Durable](https://github.com/paulosuzart/zart/tree/main/examples/recurring-durable) — full runnable example
 - Spec 0040 — lightweight recurring `ScheduledTask` (no step checkpointing)

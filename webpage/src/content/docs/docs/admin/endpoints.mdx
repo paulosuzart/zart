@@ -6,16 +6,24 @@ description: REST API reference for managing Zart executions and delivering even
 import { Aside } from '@astrojs/starlight/components';
 
 :::caution[Coming Soon]
-The Zart HTTP API server is currently in development. The endpoints documented here represent the planned interface. Subscribe to the GitHub repository for release announcements.
+The Zart HTTP API server (`zart-api`) is currently in development. The endpoints documented here represent the planned interface. Subscribe to the GitHub repository for release announcements.
+:::
+
+:::tip[Custom Routes & OpenAPI]
+The default mount path is `/zart/admin/v1`, but you can customize it using `ApiServer::route_prefix()`. You can also enable Swagger UI for interactive documentation. See [OpenAPI & Route Configuration](/docs/admin/openapi/) for details.
 :::
 
 The Zart HTTP API server (`zart-server`) exposes a REST interface for scheduling executions, delivering events, and querying status — enabling any language or system to integrate with Zart workflows.
 
 ## Base URL
 
+The default base URL is:
+
 ```
-http://localhost:7700/api/v1
+http://localhost:8080/zart/admin/v1
 ```
+
+You can customize the port and path prefix using `ApiServer::route_prefix()`. For example, to mount at `http://localhost:8080/api/v1/admin`, see [OpenAPI & Route Configuration](/docs/admin/openapi/).
 
 All endpoints return JSON. All request bodies must be `Content-Type: application/json`.
 

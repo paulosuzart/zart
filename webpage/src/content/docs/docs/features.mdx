@@ -126,7 +126,39 @@ See [Wait for Event](/docs/rust-api/wait-for-event/) for full documentation.
 
 ---
 
-## 5. Idempotency
+## 5. Recurring Durable Executions
+
+Schedule durable workflows on a recurring basis using cron expressions or fixed-delay intervals. Each tick starts a new `DurableExecution` with full step checkpointing, retries, and observability.
+
+**Overlap policies** control what happens when a new tick fires while a previous execution is still running:
+
+| Policy | Behavior | Use Case |
+|---|---|---|
+| `SkipIfRunning` | Silently skips the new tick | Nightly reports, ETL pipelines |
+| `CancelAndRestart` | Cancels running execution, starts fresh | Config refresh, cache warming |
+| `AlwaysStart` | Unconditionally starts new execution | Independent audit windows |
+
+```rust
+let worker = WorkerBuilder::from_backend(&pg)
+    .register_durable_task("nightly-report", NightlyReport)
+    .register_recurring_durable::<NightlyReport>(
+        "nightly-report",
+        "report-{occurrence}",
+        Recurrence::Cron { 
+            expression: "0 2 * * *".into(), 
+            timezone: "UTC".into() 
+        },
+        OverlapPolicy::SkipIfRunning,
+        json!({ "warehouse": "EU-1" }),
+    )
+    .build();
+```
+
+See [Recurring Durable Executions](/docs/concepts/recurring-durable) for full documentation.
+
+---
+
+## 6. Idempotency
 
 Zart prevents duplicate executions at the scheduling layer.
 
@@ -152,7 +184,7 @@ stripe.charge_idempotently(&card, amount, &idempotency_key).await?;
 
 ---
 
-## 6. Concurrent Workers
+## 7. Concurrent Workers
 
 Multiple worker instances can run against the same database with zero configuration. Zart uses `SELECT … FOR UPDATE SKIP LOCKED` to claim tasks — each execution is processed by exactly one worker at a time.
 
@@ -180,7 +212,7 @@ let worker = zart::WorkerBuilder::from_backend(&pg)
 
 ---
 
-## 7. PostgreSQL Storage
+## 8. PostgreSQL Storage
 
 All workflow state is persisted to PostgreSQL via the `zart` crate (`PgBackend`). No extra infrastructure — just a database you already have.
 
@@ -191,7 +223,7 @@ zart = "0.1"
 
 ---
 
-## 8. Events
+## 9. Events
 
 External systems can deliver signals to waiting workflows via `offer_event`.
 
@@ -211,7 +243,7 @@ Events time out gracefully — if no event arrives within the specified window, 
 
 ---
 
-## 9. Observability
+## 10. Observability
 
 Every execution and every step attempt is tracked in the database.
 
@@ -237,7 +269,7 @@ Step-level error messages are persisted even for steps that eventually succeed o
 
 ---
 
-## 10. Task Heartbeats
+## 11. Task Heartbeats
 
 Long-running steps — external API calls, data pipelines, video processing — can take minutes or even hours. Without heartbeats, Zart's orphan recovery would detect these tasks as "stuck" and reset them back to `scheduled`, causing duplicate execution.
 
