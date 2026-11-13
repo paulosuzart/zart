@@ -170,8 +170,8 @@ Full documentation, examples, and API reference live at **[zart.run](http://zart
 
 ```toml
 [dependencies]
-zart = "0.1"
-zart-macros = "0.1"
+zart = "0.2.1"
+zart-macros = "0.2.1"
 ```
 
 ```bash

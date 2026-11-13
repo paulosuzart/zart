@@ -3,7 +3,8 @@ title: OpenAPI & Route Configuration
 description: Enable Swagger UI for the admin API and customize route prefixes for flexible deployment.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Code } from '@astrojs/starlight/components';
+import { ZART_VERSION } from '../../../../lib/version';
 
 Zart's admin API (`zart-api`) can automatically generate OpenAPI documentation and allows you to customize where it's mounted in your HTTP stack.
 
@@ -11,10 +12,8 @@ Zart's admin API (`zart-api`) can automatically generate OpenAPI documentation a
 
 Enable the `openapi` feature in your `Cargo.toml`:
 
-```toml
-[dependencies]
-zart-api = { version = "0.2", features = ["openapi"] }
-```
+<Code lang="toml" code={`[dependencies]
+zart-api = { version = "${ZART_VERSION}", features = ["openapi"] }`} />
 
 ### Enabling Swagger UI
 
@@ -157,9 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Enable in `Cargo.toml`:
 
-```toml
-zart-api = { version = "0.2", features = ["openapi"] }
-```
+<Code lang="toml" code={`zart-api = { version = "${ZART_VERSION}", features = ["openapi"] }`} />
 
 <Aside type="note">
 Without the `openapi` feature, `with_swagger_ui()` and `ZartApiDoc` are not available. The basic `ApiServer::new()` still works for mounting the admin API without documentation.
