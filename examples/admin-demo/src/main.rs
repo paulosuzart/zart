@@ -61,7 +61,6 @@ impl DurableExecution for AdminDemoTask {
 
 struct StepOne;
 
-#[async_trait::async_trait]
 impl ZartStep for StepOne {
     type Output = i32;
     type Error = DemoStepError;
@@ -80,7 +79,6 @@ struct StepTwo {
     fail: bool,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for StepTwo {
     type Output = i32;
     type Error = DemoStepError;

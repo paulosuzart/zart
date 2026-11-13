@@ -12,7 +12,6 @@ You can implement `ZartStep` manually for full control, or use the `#[zart_step]
 ## The Trait
 
 ```rust
-#[async_trait]
 pub trait ZartStep {
     /// The output type this step produces.
     type Output: Serialize + DeserializeOwned + Send + Sync;
@@ -36,7 +35,7 @@ pub trait ZartStep {
     fn named(self, id: impl Into<String>) -> NamedStep<Self> where Self: Sized;
 
     /// The step's actual logic. No ctx parameter — use zart::context() for metadata.
-    async fn run(&self) -> Result<Self::Output, StepError>;
+    fn run(&self) -> impl Future<Output = Result<Self::Output, StepError>> + Send;
 }
 ```
 
@@ -61,7 +60,6 @@ Define a struct that captures your step's dependencies, then implement `ZartStep
 
 ```rust
 use zart::prelude::*;
-use async_trait::async_trait;
 use std::borrow::Cow;
 use std::time::Duration;
 
@@ -70,7 +68,6 @@ struct LookupZipStep<'a> {
     zip_code: &'a str,
 }
 
-#[async_trait]
 impl ZartStep for LookupZipStep<'_> {
     type Output = (String, String);
 
@@ -110,7 +107,6 @@ struct ProcessRegionStep {
     region: String,
 }
 
-#[async_trait]
 impl ZartStep for ProcessRegionStep {
     type Output = RegionResult;
 
@@ -265,7 +261,6 @@ struct ValidateRequestStep {
     request: ApprovalRequest,
 }
 
-#[async_trait]
 impl ZartStep for ValidateRequestStep {
     type Output = String;
 
@@ -291,7 +286,6 @@ struct ProcessApprovedStep {
     requester: String,
 }
 
-#[async_trait]
 impl ZartStep for ProcessApprovedStep {
     type Output = String;
 

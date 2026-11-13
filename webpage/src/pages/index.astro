@@ -1846,7 +1846,6 @@
 <span class="cmt">/// Define a step struct — holds your dependencies</span>
 <span class="kw">struct</span> <span class="ty">SendEmailStep</span>&#123; email: <span class="ty">String</span> &#125;
 
-<span class="attr">#[async_trait]</span>
 <span class="kw">impl</span> <span class="ty">ZartStep</span> <span class="kw">for</span> <span class="ty">SendEmailStep</span> &#123;
     <span class="kw">type</span> <span class="ty">Output</span> = ();
     <span class="kw">fn</span> <span class="fn">step_name</span>(&amp;self) -> <span class="ty">Cow</span>&lt;'static, <span class="ty">str</span>&gt; &#123; <span class="ty">Cow</span>::<span class="ty">Borrowed</span>(<span class="str">"send-email"</span>) &#125;

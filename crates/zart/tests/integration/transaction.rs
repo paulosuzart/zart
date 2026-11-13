@@ -178,7 +178,6 @@ struct DoubleTrxStep {
     pool: sqlx::PgPool,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for DoubleTrxStep {
     type Output = serde_json::Value;
     type Error = TestStepError;
@@ -287,7 +286,6 @@ async fn trx_atomic_step_write_and_completion_commit_together() {
         ledger_key: String,
     }
 
-    #[async_trait::async_trait]
     impl ZartStep for AtomicWriteStep {
         type Output = serde_json::Value;
         type Error = TestStepError;
@@ -394,7 +392,6 @@ async fn trx_atomic_step_write_rolls_back_on_step_error() {
         ledger_key: String,
     }
 
-    #[async_trait::async_trait]
     impl ZartStep for FailingWriteStep {
         type Output = serde_json::Value;
         type Error = TestStepError;
@@ -504,7 +501,6 @@ async fn wait_group_child_atomic_commit_domain_sql_and_bookkeeping() {
         ledger_key: String,
     }
 
-    #[async_trait::async_trait]
     impl ZartStep for WgLedgerStep {
         type Output = serde_json::Value;
         type Error = TestStepError;

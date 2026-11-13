@@ -96,7 +96,6 @@ impl DurableExecution for CliDemoTask {
 
 struct PrepareData;
 
-#[async_trait::async_trait]
 impl ZartStep for PrepareData {
     type Output = String;
     type Error = CliDemoStepError;
@@ -117,7 +116,6 @@ struct ProcessResults {
     fail: bool,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for ProcessResults {
     type Output = String;
     type Error = CliDemoStepError;
@@ -139,7 +137,6 @@ impl ZartStep for ProcessResults {
 
 struct Finalize;
 
-#[async_trait::async_trait]
 impl ZartStep for Finalize {
     type Output = String;
     type Error = CliDemoStepError;

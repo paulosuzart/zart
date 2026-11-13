@@ -95,7 +95,6 @@ struct ValidateOrder {
     order_id: String,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for ValidateOrder {
     type Output = bool;
     type Error = DemoError;
@@ -116,7 +115,6 @@ struct ChargePayment {
     fail: bool,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for ChargePayment {
     type Output = u64;
     type Error = DemoError;
@@ -141,7 +139,6 @@ struct SendConfirmation {
     order_id: String,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for SendConfirmation {
     type Output = String;
     type Error = DemoError;
@@ -209,7 +206,6 @@ struct ExtractData {
     record_count: u64,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for ExtractData {
     type Output = u64;
     type Error = DemoError;
@@ -230,7 +226,6 @@ struct TransformAndLoad {
     record_count: u64,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for TransformAndLoad {
     type Output = u64;
     type Error = DemoError;

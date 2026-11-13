@@ -79,7 +79,6 @@ If `tx` rolls back, no execution record or body task will exist — the caller's
 ### Scenario 2: `zart::trx` — Atomic Step Completion
 
 ```rust
-#[async_trait::async_trait]
 impl ZartStep for DeductBalanceStep {
     async fn run(&self) -> Result<Self::Output, Self::Error> {
         let pool = get_pool();
