@@ -90,14 +90,31 @@ async fn lookup_zip(
         .get(format!("https://api.zippopotam.us/us/{zip_code}"))
         .send()
         .await
-        .map_err(|e| StepError::Failed {
-            step: "lookup-zip".to_string(),
-            reason: e.to_string(),
+        .map_err(|e| {
+            eprintln!("  [lookup-zip] request error: {e}");
+            StepError::Failed {
+                step: "lookup-zip".to_string(),
+                reason: e.to_string(),
+            }
         })?;
 
-    let zip_resp: ZipResponse = resp.json().await.map_err(|e| StepError::Failed {
-        step: "lookup-zip".to_string(),
-        reason: format!("failed to parse response: {e}"),
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let reason = format!("HTTP {status}: {body}");
+        eprintln!("  [lookup-zip] error: {reason}");
+        return Err(StepError::Failed {
+            step: "lookup-zip".to_string(),
+            reason,
+        });
+    }
+
+    let zip_resp: ZipResponse = resp.json().await.map_err(|e| {
+        eprintln!("  [lookup-zip] parse error: {e}");
+        StepError::Failed {
+            step: "lookup-zip".to_string(),
+            reason: format!("failed to parse response: {e}"),
+        }
     })?;
 
     let place = zip_resp.places.first().ok_or_else(|| StepError::Failed {
@@ -124,14 +141,31 @@ async fn find_breweries(
         .query(&[("by_city", city)])
         .send()
         .await
-        .map_err(|e| StepError::Failed {
-            step: "find-breweries".to_string(),
-            reason: e.to_string(),
+        .map_err(|e| {
+            eprintln!("  [find-breweries] request error: {e}");
+            StepError::Failed {
+                step: "find-breweries".to_string(),
+                reason: e.to_string(),
+            }
         })?;
 
-    resp.json().await.map_err(|e| StepError::Failed {
-        step: "find-breweries".to_string(),
-        reason: format!("failed to parse response: {e}"),
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let reason = format!("HTTP {status}: {body}");
+        eprintln!("  [find-breweries] error: {reason}");
+        return Err(StepError::Failed {
+            step: "find-breweries".to_string(),
+            reason,
+        });
+    }
+
+    resp.json().await.map_err(|e| {
+        eprintln!("  [find-breweries] parse error: {e}");
+        StepError::Failed {
+            step: "find-breweries".to_string(),
+            reason: format!("failed to parse response: {e}"),
+        }
     })
 }
 
