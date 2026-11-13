@@ -80,7 +80,6 @@ pub fn spawn_worker(
 
 pub struct StepOne;
 
-#[async_trait::async_trait]
 impl ZartStep for StepOne {
     type Output = i32;
     type Error = TestStepError;
@@ -97,7 +96,6 @@ pub struct StepTwo {
     pub step1_result: i32,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for StepTwo {
     type Output = i32;
     type Error = TestStepError;
@@ -150,7 +148,6 @@ impl DurableExecution for TestHandler {
 
 pub struct FailStep;
 
-#[async_trait::async_trait]
 impl ZartStep for FailStep {
     type Output = serde_json::Value;
     type Error = TestStepError;
@@ -185,7 +182,6 @@ pub struct TransientStep {
     pub attempts: Arc<AtomicUsize>,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for TransientStep {
     type Output = String;
     type Error = TestStepError;
@@ -256,7 +252,6 @@ impl DurableExecution for WaitEventTask {
 
 pub struct StepA;
 
-#[async_trait::async_trait]
 impl ZartStep for StepA {
     type Output = i32;
     type Error = TestStepError;
@@ -271,7 +266,6 @@ impl ZartStep for StepA {
 
 pub struct StepB;
 
-#[async_trait::async_trait]
 impl ZartStep for StepB {
     type Output = i32;
     type Error = TestStepError;
@@ -286,7 +280,6 @@ impl ZartStep for StepB {
 
 pub struct StepC;
 
-#[async_trait::async_trait]
 impl ZartStep for StepC {
     type Output = i32;
     type Error = TestStepError;
@@ -338,7 +331,6 @@ impl DurableExecution for GatedTask {
 
 pub struct GatedStep;
 
-#[async_trait::async_trait]
 impl ZartStep for GatedStep {
     type Output = i32;
     type Error = TestStepError;
@@ -401,7 +393,6 @@ pub struct MultiplyStep {
     pub multiplier: i32,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for MultiplyStep {
     type Output = i32;
     type Error = TestStepError;

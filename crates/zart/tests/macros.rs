@@ -427,7 +427,6 @@ struct ProcessStep {
     input: String,
 }
 
-#[async_trait]
 impl ZartStep for ProcessStep {
     type Output = String;
     type Error = TestStepError;
@@ -459,7 +458,6 @@ struct ComputeStep {
     input: u32,
 }
 
-#[async_trait]
 impl ZartStep for ComputeStep {
     type Output = u32;
     type Error = TestStepError;
@@ -523,7 +521,6 @@ async fn loop_handler(data: Vec<u32>) -> Result<u32, TaskError> {
             index: usize,
             value: u32,
         }
-        #[async_trait]
         impl ZartStep for LoopItemStep {
             type Output = u32;
             type Error = TestStepError;

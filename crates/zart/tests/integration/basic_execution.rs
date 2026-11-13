@@ -215,7 +215,6 @@ async fn step_exhausts_retries_and_fails_execution() {
 
     struct AlwaysFailStep;
 
-    #[async_trait::async_trait]
     impl ZartStep for AlwaysFailStep {
         type Output = String;
         type Error = TestStepError;

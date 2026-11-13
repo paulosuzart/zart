@@ -240,7 +240,6 @@ fn generate_zart_step_impl(
     };
 
     Ok(quote! {
-        #[::async_trait::async_trait]
         #impl_header {
             type Output = #output_type;
             type Error = #error_type;

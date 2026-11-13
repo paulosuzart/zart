@@ -9,7 +9,6 @@ use zart::{DurableRegistry, DurableScheduler, admin::RerunSpec};
 
 pub struct StepA;
 
-#[async_trait::async_trait]
 impl ZartStep for StepA {
     type Output = String;
     type Error = TestStepError;
@@ -25,7 +24,6 @@ pub struct StepB {
     pub counter: Arc<AtomicUsize>,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for StepB {
     type Output = String;
     type Error = TestStepError;
@@ -40,7 +38,6 @@ impl ZartStep for StepB {
 
 pub struct StepC;
 
-#[async_trait::async_trait]
 impl ZartStep for StepC {
     type Output = String;
     type Error = TestStepError;
