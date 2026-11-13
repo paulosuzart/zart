@@ -98,7 +98,7 @@ export default defineConfig({
             { label: "Durable Loops", link: "/docs/examples/durable-loops" },
             { label: "Sleep", link: "/docs/examples/sleep" },
             { label: "Retry Simulation", link: "/docs/examples/retry-simulation" },
-            { label: "Radkit LLM Agent", link: "/docs/examples/radkit-agent" },
+            { label: "AutoAgents LLM Agent", link: "/docs/examples/autoagents-agent" },
             { label: "Scheduler-Only", link: "/docs/examples/scheduler-only" },
           ],
         },

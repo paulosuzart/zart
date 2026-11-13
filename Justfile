@@ -36,7 +36,7 @@ test-integration-core:
     cargo test -p zart --test integration -- --include-ignored --test-threads=1
 
 # Run all tests including ignored ones and examples (requires PostgreSQL + internet)
-# Excludes: radkit-agent (needs LLM API key), ui-demo (separate UI pipeline)
+# Excludes: autoagents-agent (needs LLM API key), ui-demo (separate UI pipeline)
 test-integration-full:
     just migrate
     cargo test --workspace -- --include-ignored --test-threads=1
@@ -187,11 +187,11 @@ example-parallel db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-parallel-steps
 
-# Run the radkit-agent example (AI-powered workflow with LLM integration)
-# Usage: just example-radkit-agent [DATABASE_URL]
-example-radkit-agent db_url=example_db_url:
+# Run the autoagents-agent example (AI-powered workflow with LLM integration)
+# Usage: just example-autoagents-agent [DATABASE_URL]
+example-autoagents-agent db_url=example_db_url:
     just migrate
-    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-radkit-agent
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-autoagents-agent
 
 # Run the retry-simulation example (demonstrates intentional failure and automatic retry)
 # Usage: just example-retry-simulation [DATABASE_URL]
@@ -252,7 +252,7 @@ run-all-examples db_url=example_db_url:
     just example-brewery-finder {{db_url}}
     just example-approval {{db_url}}
     just example-parallel {{db_url}}
-    just example-radkit-agent {{db_url}}
+    just example-autoagents-agent {{db_url}}
     just example-retry-simulation {{db_url}}
     just example-durable-loops {{db_url}}
     just example-sleep {{db_url}}

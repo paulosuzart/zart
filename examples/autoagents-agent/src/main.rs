@@ -1,20 +1,24 @@
-//! Radkit Agent Example
+//! AutoAgents Agent Example
 //!
-//! Demonstrates integrating radkit AI agents with durable execution:
-//! 1. Use an LLM to extract location from natural language input
+//! Demonstrates integrating AutoAgents AI agents with durable execution:
+//! 1. Use an LLM agent to extract location from natural language input
 //! 2. Find breweries in that city via Open Brewery DB API
 //! 3. Use an LLM to generate a friendly summary of results
 //!
 //! Features: manual DurableExecution trait, #[zart_step],
-//! radkit LLM integration, dependency injection,
+//! AutoAgents LLM integration, dependency injection,
 //! AI-powered extraction and summarization, structured output.
 
 use async_trait::async_trait;
+use autoagents::core::agent::prebuilt::executor::{BasicAgent, BasicAgentOutput};
+use autoagents::core::agent::task::Task;
+use autoagents::core::agent::{AgentBuilder, DirectAgent};
+use autoagents::llm::LLMProvider;
+use autoagents::llm::backends::google::Google;
+use autoagents::llm::builder::LLMBuilder;
+use autoagents::llm::chat::ChatMessage;
+use autoagents::prelude::{AgentHooks, AgentOutput, AgentOutputT, agent};
 use chrono::Utc;
-use radkit::agent::LlmFunction;
-use radkit::macros::LLMOutput;
-use radkit::models::providers::OpenAILlm;
-use radkit::models::{BaseLlm, Thread};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,12 +67,28 @@ struct AgentOutput {
     generated_at: String,
 }
 
-// ── Radkit LLM types ─────────────────────────────────────────────────────────
+// ── AutoAgents types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, LLMOutput, schemars::JsonSchema)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, AgentOutput)]
 struct LocationExtraction {
+    #[output(description = "City name extracted from the query")]
     city: String,
+    #[output(description = "State or region name extracted from the query")]
     state: String,
+}
+
+#[agent(
+    name = "location_extractor",
+    description = "You are a location extraction assistant. Always return valid JSON with city and state fields.",
+    output = LocationExtraction,
+)]
+#[derive(Default, Clone, AgentHooks)]
+struct LocationExtractor {}
+
+impl From<BasicAgentOutput> for LocationExtraction {
+    fn from(output: BasicAgentOutput) -> Self {
+        output.try_parse().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,17 +101,26 @@ struct BreweryRaw {
     state: Option<String>,
 }
 
-// ── Step definitions ─────────────────────────────────────────────────────────
+// ── Step definitions ──────────────────────────────────────────────────────────
 
 #[zart_step("extract-location", retry = "exponential(3, 2s)")]
 async fn extract_location(
-    llm: Arc<dyn BaseLlm>,
+    llm: Arc<dyn LLMProvider>,
     query: &str,
 ) -> Result<ExtractedLocation, StepError> {
     println!(
         "[extract-location] Attempt {}",
         zart::context().current_attempt + 1
     );
+
+    let agent_handle = AgentBuilder::<_, DirectAgent>::new(BasicAgent::new(LocationExtractor {}))
+        .llm(llm)
+        .build()
+        .await
+        .map_err(|e| StepError::Failed {
+            step: "extract-location".to_string(),
+            reason: format!("failed to build agent: {e}"),
+        })?;
 
     let prompt = format!(
         r#"Extract the city and state from this query. Return valid JSON.
@@ -101,19 +130,29 @@ Query: "{query}"
 Respond with only a JSON object with "city" and "state" fields."#
     );
 
-    let function = LlmFunction::<LocationExtraction>::new_with_system_instructions(
-        llm,
-        "You are a location extraction assistant. \
-         Always return valid JSON with city and state fields.",
-    );
-
-    let result = function
-        .run(Thread::from_user(&prompt))
+    let result = agent_handle
+        .agent
+        .run(Task::new(&prompt))
         .await
-        .map_err(|e| StepError::Failed {
-            step: "extract-location".to_string(),
-            reason: format!("LLM extraction failed: {e}"),
+        .map_err(|e| {
+            eprintln!("  [extract-location] error: {e}");
+            StepError::Failed {
+                step: "extract-location".to_string(),
+                reason: format!("LLM extraction failed: {e}"),
+            }
         })?;
+
+    if result.city.trim().is_empty() || result.state.trim().is_empty() {
+        let reason = format!(
+            "LLM returned incomplete location: city='{}', state='{}'",
+            result.city, result.state
+        );
+        eprintln!("  [extract-location] error: {reason}");
+        return Err(StepError::Failed {
+            step: "extract-location".to_string(),
+            reason,
+        });
+    }
 
     Ok(ExtractedLocation {
         city: result.city,
@@ -168,7 +207,7 @@ async fn transform_results(
 
 #[zart_step("generate-summary", retry = "exponential(3, 2s)")]
 async fn generate_summary(
-    llm: Arc<dyn BaseLlm>,
+    llm: Arc<dyn LLMProvider>,
     query: &str,
     location: &ExtractedLocation,
     breweries: &[BreweryInfo],
@@ -208,25 +247,29 @@ Make it friendly and helpful."#,
         more_text,
     );
 
+    let messages = vec![ChatMessage::user().content(&prompt).build()];
     let response = llm
-        .generate_content(Thread::from_user(&prompt), None)
+        .chat(&messages, None)
         .await
-        .map_err(|e| StepError::Failed {
-            step: "generate-summary".to_string(),
-            reason: format!("LLM summary generation failed: {e}"),
+        .map_err(|e| {
+            eprintln!("  [generate-summary] error: {e}");
+            StepError::Failed {
+                step: "generate-summary".to_string(),
+                reason: format!("LLM summary generation failed: {e}"),
+            }
         })?;
 
-    Ok(response.into_content().joined_texts().unwrap_or_default())
+    Ok(response.text().unwrap_or_default())
 }
 
 // ── Task handler ──────────────────────────────────────────────────────────────
 
-struct RadkitAgent {
-    llm: Arc<dyn BaseLlm>,
+struct AutoAgentsAgent {
+    llm: Arc<dyn LLMProvider>,
 }
 
 #[async_trait]
-impl DurableExecution for RadkitAgent {
+impl DurableExecution for AutoAgentsAgent {
     type Data = AgentInput;
     type Output = AgentOutput;
 
@@ -269,7 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    println!("=== Zart Radkit Agent Example ===\n");
+    println!("=== Zart AutoAgents Agent Example ===\n");
 
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string());
@@ -277,12 +320,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&db_url).await?;
     let pg = PgBackend::new(pool);
 
-    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
-    let llm = Arc::new(OpenAILlm::new("gpt-4o", &api_key));
+    let api_key = std::env::var("GEMINI_API_KEY")
+        .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+        .expect("GEMINI_API_KEY or GOOGLE_API_KEY must be set");
+    let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".to_string());
 
-    let agent = RadkitAgent { llm };
+    let llm: Arc<dyn LLMProvider> = LLMBuilder::<Google>::new()
+        .api_key(api_key)
+        .model(model)
+        .build()?;
 
-    let execution_id = format!("radkit-demo-{}", Uuid::new_v4());
+    let agent = AutoAgentsAgent { llm };
+
+    let execution_id = format!("autoagents-demo-{}", Uuid::new_v4());
     let durable = DurableScheduler::from_backend(&pg);
 
     let input = AgentInput {
@@ -292,7 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting execution '{}'...", execution_id);
     println!("  Query: {}\n", input.query);
     durable
-        .start_for::<RadkitAgent>(&execution_id, "radkit-agent", &input)
+        .start_for::<AutoAgentsAgent>(&execution_id, "autoagents-agent", &input)
         .await?;
 
     let config = zart::WorkerConfig {
@@ -305,7 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let worker = Arc::new(
         zart::WorkerBuilder::from_backend(&pg)
-            .register_durable_task("radkit-agent", agent)
+            .register_durable_task("autoagents-agent", agent)
             .config(config)
             .build(),
     );
