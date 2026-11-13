@@ -22,7 +22,7 @@ pub async fn mark_completed_sql(
     lock_token: &str,
     names: &TableNames,
 ) -> Result<(), StorageError> {
-    let rows_affected = sqlx::query(&format!(
+    let rows_affected = sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         UPDATE {tasks}
         SET status       = 'completed',
@@ -35,7 +35,7 @@ pub async fn mark_completed_sql(
           AND worker_id = $3
         "#,
         tasks = names.tasks(),
-    ))
+    )))
     .bind(&result)
     .bind(task_id)
     .bind(lock_token)
@@ -69,7 +69,7 @@ pub async fn mark_failed_sql(
     };
 
     let rows_affected = if let Some(t) = exec_time {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET status         = $1,
@@ -82,7 +82,7 @@ pub async fn mark_failed_sql(
               AND worker_id = $5
             "#,
             tasks = names.tasks(),
-        ))
+        )))
         .bind(new_status)
         .bind(error)
         .bind(t)
@@ -93,7 +93,7 @@ pub async fn mark_failed_sql(
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected()
     } else {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET status     = $1,
@@ -105,7 +105,7 @@ pub async fn mark_failed_sql(
               AND worker_id = $4
             "#,
             tasks = names.tasks(),
-        ))
+        )))
         .bind(new_status)
         .bind(error)
         .bind(task_id)
@@ -139,7 +139,7 @@ pub async fn update_task_state_sql(
     metadata_patch: Option<&serde_json::Value>,
 ) -> Result<(), StorageError> {
     let rows_affected = if let Some(patch) = metadata_patch {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET state          = $1,
@@ -153,7 +153,7 @@ pub async fn update_task_state_sql(
               AND worker_id = $4
             "#,
             tasks = names.tasks(),
-        ))
+        )))
         .bind(&state)
         .bind(next_execution_time)
         .bind(task_id)
@@ -164,7 +164,7 @@ pub async fn update_task_state_sql(
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected()
     } else {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET state          = $1,
@@ -177,7 +177,7 @@ pub async fn update_task_state_sql(
               AND worker_id = $4
             "#,
             tasks = names.tasks(),
-        ))
+        )))
         .bind(&state)
         .bind(next_execution_time)
         .bind(task_id)
@@ -209,7 +209,7 @@ pub async fn schedule_at_sql(
         .transpose()
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {tasks}
             (task_id, task_name, execution_time, data, recurrence, metadata)
@@ -217,7 +217,7 @@ pub async fn schedule_at_sql(
         ON CONFLICT (task_id) DO NOTHING
         "#,
         tasks = names.tasks(),
-    ))
+    )))
     .bind(&params.task_id)
     .bind(&params.task_name)
     .bind(params.execution_time)

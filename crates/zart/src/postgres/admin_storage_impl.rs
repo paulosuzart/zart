@@ -29,19 +29,20 @@ impl PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let step_row: Option<(String, StepStatus, String)> = sqlx::query_as(&format!(
-            r#"
+        let step_row: Option<(String, StepStatus, String)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                r#"
             SELECT step_id, status, COALESCE(task_id, '')
             FROM {steps}
             WHERE run_id = $1 AND step_name = $2
             "#,
-            steps = self.table_names.steps(),
-        ))
-        .bind(run_id)
-        .bind(step_name)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+                steps = self.table_names.steps(),
+            )))
+            .bind(run_id)
+            .bind(step_name)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let (step_id, current_status, old_task_id) = match step_row {
             None => return Err(StorageError::StepNotFound(step_name.to_string())),
@@ -59,16 +60,17 @@ impl PostgresStorage {
         let task_metadata: serde_json::Value = if old_task_id.is_empty() {
             serde_json::json!({})
         } else {
-            let meta_opt: Option<Option<serde_json::Value>> = sqlx::query_scalar(&format!(
-                r#"
+            let meta_opt: Option<Option<serde_json::Value>> =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    r#"
                 SELECT metadata FROM {tasks} WHERE task_id = $1
                 "#,
-                tasks = self.table_names.tasks(),
-            ))
-            .bind(&old_task_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?;
+                    tasks = self.table_names.tasks(),
+                )))
+                .bind(&old_task_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
             let mut meta = meta_opt.flatten().unwrap_or_else(|| serde_json::json!({}));
             if let Some(obj) = meta.as_object_mut() {
                 obj.remove("deadline");
@@ -82,10 +84,10 @@ impl PostgresStorage {
         );
 
         // Fetch the data for the new task from the old task row.
-        let retry_data: serde_json::Value = sqlx::query_scalar(&format!(
+        let retry_data: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             r#"SELECT data FROM {tasks} WHERE task_id = $1"#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(&old_task_id)
         .fetch_optional(&mut *tx)
         .await
@@ -107,28 +109,28 @@ impl PostgresStorage {
             )
             .await?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {steps}
             SET status = 'scheduled', task_id = $1, retry_attempt = 0, last_error = NULL, completed_at = NULL
             WHERE step_id = $2
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&new_task_id)
         .bind(&step_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {execution_runs}
             SET status = 'running', completed_at = NULL
             WHERE run_id = $1
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(run_id)
         .execute(&mut *tx)
         .await
@@ -161,7 +163,7 @@ impl PostgresStorage {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let current_run: Option<(String, ExecutionStatus, serde_json::Value)> =
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 r#"
             SELECT r.run_id, r.status, r.payload
             FROM {executions} e
@@ -170,7 +172,7 @@ impl PostgresStorage {
             "#,
                 executions = self.table_names.executions(),
                 execution_runs = self.table_names.execution_runs(),
-            ))
+            )))
             .bind(execution_id)
             .fetch_optional(&mut *tx)
             .await
@@ -182,28 +184,28 @@ impl PostgresStorage {
                 let run_id = format!("{execution_id}:run:0");
                 let payload = new_payload.unwrap_or(serde_json::json!({}));
 
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     r#"
                     INSERT INTO {executions} (execution_id, task_name)
                     VALUES ($1, $2)
                     ON CONFLICT (execution_id) DO NOTHING
                     "#,
                     executions = self.table_names.executions(),
-                ))
+                )))
                 .bind(execution_id)
                 .bind("")
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     r#"
                     INSERT INTO {execution_runs}
                         (run_id, execution_id, run_index, payload, trigger, triggered_by)
                     VALUES ($1, $2, 0, $3, $4::execution_trigger, $5)
                     "#,
                     execution_runs = self.table_names.execution_runs(),
-                ))
+                )))
                 .bind(&run_id)
                 .bind(execution_id)
                 .bind(&payload)
@@ -213,14 +215,14 @@ impl PostgresStorage {
                 .await
                 .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-                sqlx::query(&format!(
+                sqlx::query(sqlx::AssertSqlSafe(format!(
                     r#"
                     UPDATE {executions}
                     SET current_run_id = $1
                     WHERE execution_id = $2
                     "#,
                     executions = self.table_names.executions(),
-                ))
+                )))
                 .bind(&run_id)
                 .bind(execution_id)
                 .execute(&mut *tx)
@@ -251,28 +253,28 @@ impl PostgresStorage {
         };
 
         // Archive the current run
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {execution_runs}
             SET status = $1, completed_at = COALESCE(completed_at, NOW())
             WHERE run_id = $2 AND completed_at IS NULL
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(current_status)
         .bind(&current_run_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let max_index: i32 = sqlx::query_scalar(&format!(
+        let max_index: i32 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT COALESCE(MAX(run_index), -1)
             FROM {execution_runs}
             WHERE execution_id = $1
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(execution_id)
         .fetch_one(&mut *tx)
         .await
@@ -282,14 +284,14 @@ impl PostgresStorage {
         let new_run_id = format!("{execution_id}:run:{next_index}");
         let payload = new_payload.unwrap_or(current_payload);
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {execution_runs}
                 (run_id, execution_id, run_index, payload, trigger, triggered_by)
             VALUES ($1, $2, $3, $4, $5::execution_trigger, $6)
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(&new_run_id)
         .bind(execution_id)
         .bind(next_index)
@@ -300,14 +302,14 @@ impl PostgresStorage {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {executions}
             SET current_run_id = $1
             WHERE execution_id = $2
             "#,
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(&new_run_id)
         .bind(execution_id)
         .execute(&mut *tx)

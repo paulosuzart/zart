@@ -80,7 +80,7 @@ impl TaskScheduler for PostgresTaskScheduler {
             Option<serde_json::Value>,
             serde_json::Value,
             DateTime<Utc>,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
                 SELECT task_id, task_name, data, state, attempt, recurrence, metadata, execution_time
                 FROM {tasks}
@@ -91,7 +91,7 @@ impl TaskScheduler for PostgresTaskScheduler {
                 FOR UPDATE SKIP LOCKED
                 "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(now)
         .bind(limit as i64)
         .fetch_all(&mut *tx)
@@ -113,7 +113,7 @@ impl TaskScheduler for PostgresTaskScheduler {
             // Each task gets a unique lock token stored as `worker_id`.
             let lock_token = Uuid::new_v4().to_string();
 
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 r#"
                 UPDATE {tasks}
                 SET status     = 'picked_up',
@@ -124,7 +124,7 @@ impl TaskScheduler for PostgresTaskScheduler {
                 WHERE task_id = $2
                 "#,
                 tasks = self.table_names.tasks(),
-            ))
+            )))
             .bind(&lock_token)
             .bind(&task_id)
             .execute(&mut *tx)
@@ -208,10 +208,10 @@ impl TaskScheduler for PostgresTaskScheduler {
         // For recurring tasks with no explicit result, reschedule instead of completing —
         // mirrors what OnComplete::complete() does via ExecutionOps.
         if result.is_none() {
-            let row: Option<(Option<serde_json::Value>, DateTime<Utc>)> = sqlx::query_as(&format!(
+            let row: Option<(Option<serde_json::Value>, DateTime<Utc>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT recurrence, execution_time FROM {tasks} WHERE task_id = $1 AND worker_id = $2",
                 tasks = self.table_names.tasks(),
-            ))
+            )))
             .bind(task_id)
             .bind(lock_token)
             .fetch_optional(&self.pool)
@@ -289,14 +289,14 @@ impl TaskScheduler for PostgresTaskScheduler {
     }
 
     async fn cancel_task(&self, task_id: &str) -> Result<bool, StorageError> {
-        let rows_affected = sqlx::query(&format!(
+        let rows_affected = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET status = 'cancelled', updated_at = NOW()
             WHERE task_id = $1 AND status = 'scheduled'
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(task_id)
         .execute(&self.pool)
         .await
@@ -307,10 +307,10 @@ impl TaskScheduler for PostgresTaskScheduler {
     }
 
     async fn delete_task(&self, task_id: &str) -> Result<(), StorageError> {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {tasks} WHERE task_id = $1",
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(task_id)
         .execute(&self.pool)
         .await
@@ -325,7 +325,7 @@ impl TaskScheduler for PostgresTaskScheduler {
         let threshold = Utc::now()
             - chrono::Duration::from_std(stale_timeout).unwrap_or(chrono::Duration::seconds(300));
 
-        let result = sqlx::query(&format!(
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET status     = 'scheduled',
@@ -336,7 +336,7 @@ impl TaskScheduler for PostgresTaskScheduler {
               AND locked_at < $1
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(threshold)
         .execute(&self.pool)
         .await
@@ -346,7 +346,7 @@ impl TaskScheduler for PostgresTaskScheduler {
     }
 
     async fn renew_lease(&self, task_id: &str, lock_token: &str) -> Result<bool, StorageError> {
-        let rows_affected = sqlx::query(&format!(
+        let rows_affected = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET locked_at  = NOW(),
@@ -356,7 +356,7 @@ impl TaskScheduler for PostgresTaskScheduler {
               AND status    = 'picked_up'
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(task_id)
         .bind(lock_token)
         .execute(&self.pool)
@@ -377,7 +377,7 @@ impl TaskScheduler for PostgresTaskScheduler {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET status       = 'completed',
@@ -390,7 +390,7 @@ impl TaskScheduler for PostgresTaskScheduler {
               AND worker_id = $3
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(&params.result)
         .bind(&params.completed_task_id)
         .bind(&params.lock_token)
@@ -406,7 +406,7 @@ impl TaskScheduler for PostgresTaskScheduler {
             return Err(StorageError::LockMismatch(params.completed_task_id));
         }
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {tasks}
                 (task_id, task_name, execution_time, data, metadata)
@@ -414,7 +414,7 @@ impl TaskScheduler for PostgresTaskScheduler {
             ON CONFLICT (task_id) DO NOTHING
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(&params.new_task_id)
         .bind(&params.new_task_name)
         .bind(params.new_execution_time)

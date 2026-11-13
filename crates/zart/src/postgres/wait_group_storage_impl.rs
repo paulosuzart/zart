@@ -18,7 +18,7 @@ impl WaitGroupStore for PostgresStorage {
         params: UpsertWaitGroupStepParams,
     ) -> Result<(), StorageError> {
         let step_id = format!("{}:step:{}", params.run_id, params.group_step_name);
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {steps}
                 (step_id, run_id, step_name, step_kind, status,
@@ -29,7 +29,7 @@ impl WaitGroupStore for PostgresStorage {
             ON CONFLICT (step_id) DO NOTHING
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&step_id)
         .bind(&params.run_id)
         .bind(&params.group_step_name)
@@ -96,8 +96,9 @@ impl WaitGroupStore for PostgresStorage {
     }
 
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(&format!(
-            r#"
+        let rows: Vec<(String, String, String, String)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                r#"
             SELECT
                 s.run_id,
                 s.step_name,
@@ -111,20 +112,20 @@ impl WaitGroupStore for PostgresStorage {
               AND s.wg_threshold IS NOT NULL
               AND s.wg_remaining = s.wg_threshold
             "#,
-            steps = self.table_names.steps(),
-            execution_runs = self.table_names.execution_runs(),
-            executions = self.table_names.executions(),
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+                steps = self.table_names.steps(),
+                execution_runs = self.table_names.execution_runs(),
+                executions = self.table_names.executions(),
+            )))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let mut recovered = 0usize;
         for (run_id, step_name, _task_name, execution_id) in rows {
             let next_body_task_id = format!("{run_id}:body:after:{step_name}");
             let body_metadata = TaskMetadata::body(&run_id, &execution_id).to_json_value();
 
-            let inserted = sqlx::query(&format!(
+            let inserted = sqlx::query(sqlx::AssertSqlSafe(format!(
                 r#"
                 INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
                 SELECT $1, $2, NOW(), r.payload, $3
@@ -134,7 +135,7 @@ impl WaitGroupStore for PostgresStorage {
                 "#,
                 tasks = self.table_names.tasks(),
                 execution_runs = self.table_names.execution_runs(),
-            ))
+            )))
             .bind(&next_body_task_id)
             .bind(crate::TASK_NAME)
             .bind(&body_metadata)
@@ -159,14 +160,14 @@ async fn complete_wait_group_child_in_tx_impl(
     table_names: &super::table_names::TableNames,
 ) -> Result<bool, StorageError> {
     let attempt_id = format!("{}:attempt:{}", params.child_step_id, params.attempt_number);
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {step_attempts} (attempt_id, step_id, attempt_number, status, completed_at, result, error)
         VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
         ON CONFLICT (attempt_id) DO NOTHING
         "#,
         step_attempts = table_names.step_attempts(),
-    ))
+    )))
     .bind(&attempt_id)
     .bind(&params.child_step_id)
     .bind(params.attempt_number as i32)
@@ -175,21 +176,21 @@ async fn complete_wait_group_child_in_tx_impl(
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         UPDATE {steps}
         SET status = 'completed', result = $1, completed_at = NOW()
         WHERE step_id = $2
         "#,
         steps = table_names.steps(),
-    ))
+    )))
     .bind(&params.child_result)
     .bind(&params.child_step_id)
     .execute(&mut *conn)
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    let wg_row: Option<(i32, i32)> = sqlx::query_as(&format!(
+    let wg_row: Option<(i32, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         r#"
         UPDATE {steps}
         SET wg_remaining = wg_remaining - 1
@@ -201,7 +202,7 @@ async fn complete_wait_group_child_in_tx_impl(
         RETURNING wg_remaining, wg_threshold
         "#,
         steps = table_names.steps(),
-    ))
+    )))
     .bind(&params.run_id)
     .bind(&params.group_step_name)
     .fetch_optional(&mut *conn)
@@ -216,14 +217,14 @@ async fn complete_wait_group_child_in_tx_impl(
     if triggered {
         let body_metadata =
             TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
             VALUES ($1, $2, NOW(), $3, $4)
             ON CONFLICT (task_id) DO NOTHING
             "#,
             tasks = table_names.tasks(),
-        ))
+        )))
         .bind(&params.next_body_task_id)
         .bind(crate::TASK_NAME)
         .bind(&params.data)
@@ -242,14 +243,14 @@ async fn fail_wait_group_child_in_tx_impl(
     table_names: &super::table_names::TableNames,
 ) -> Result<bool, StorageError> {
     let attempt_id = format!("{}:attempt:{}", params.child_step_id, params.attempt_number);
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {step_attempts} (attempt_id, step_id, attempt_number, status, completed_at, result, error)
         VALUES ($1, $2, $3, 'failed', NOW(), NULL, $4)
         ON CONFLICT (attempt_id) DO NOTHING
         "#,
         step_attempts = table_names.step_attempts(),
-    ))
+    )))
     .bind(&attempt_id)
     .bind(&params.child_step_id)
     .bind(params.attempt_number as i32)
@@ -258,21 +259,21 @@ async fn fail_wait_group_child_in_tx_impl(
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         UPDATE {steps}
         SET status = 'dead', last_error = $1, completed_at = NOW()
         WHERE step_id = $2
         "#,
         steps = table_names.steps(),
-    ))
+    )))
     .bind(&params.error)
     .bind(&params.child_step_id)
     .execute(&mut *conn)
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    let cas_row: Option<(bool,)> = sqlx::query_as(&format!(
+    let cas_row: Option<(bool,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         r#"
         UPDATE {steps}
         SET wg_first_failed = TRUE
@@ -283,7 +284,7 @@ async fn fail_wait_group_child_in_tx_impl(
         RETURNING wg_first_failed
         "#,
         steps = table_names.steps(),
-    ))
+    )))
     .bind(&params.run_id)
     .bind(&params.group_step_name)
     .fetch_optional(&mut *conn)

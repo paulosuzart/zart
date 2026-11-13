@@ -27,14 +27,14 @@ impl StepStore for PostgresStorage {
             StepStatus,
             Option<serde_json::Value>,
             Option<StepResultKind>,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT step_id, status, result, result_kind
             FROM {steps}
             WHERE step_id = $1
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&task_id)
         .fetch_optional(&self.pool)
         .await
@@ -82,7 +82,7 @@ impl StepStore for PostgresStorage {
             Option<bool>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT step_id, run_id, step_name, step_kind, task_id,
                    status, retry_attempt, retry_config, result, last_error,
@@ -92,7 +92,7 @@ impl StepStore for PostgresStorage {
             WHERE run_id = $1 AND step_name = $2
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(run_id)
         .bind(step_name)
         .fetch_optional(&self.pool)
@@ -158,7 +158,7 @@ impl StepStore for PostgresStorage {
             Option<bool>,
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT step_id, run_id, step_name, step_kind, task_id,
                    status, retry_attempt, retry_config, result, last_error,
@@ -169,7 +169,7 @@ impl StepStore for PostgresStorage {
             ORDER BY scheduled_at ASC
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(run_id)
         .fetch_all(&self.pool)
         .await
@@ -241,14 +241,14 @@ impl StepStore for PostgresStorage {
         .await?;
 
         let step_id = format!("{}:step:{}", params.run_id, params.step_name);
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {steps} (step_id, run_id, step_name, step_kind, task_id, retry_config)
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (step_id) DO NOTHING
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&step_id)
         .bind(&params.run_id)
         .bind(&params.step_name)
@@ -288,14 +288,14 @@ impl StepStore for PostgresStorage {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {step_attempts} (attempt_id, step_id, attempt_number, status, completed_at, result, error)
             VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
             ON CONFLICT (attempt_id) DO NOTHING
             "#,
             step_attempts = self.table_names.step_attempts(),
-        ))
+        )))
         .bind(&attempt_id)
         .bind(&params.step_id)
         .bind(params.attempt_number as i32)
@@ -304,12 +304,12 @@ impl StepStore for PostgresStorage {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {steps} SET status = 'completed', result = $1, completed_at = $2 WHERE step_id = $3
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&params.result)
         .bind(Utc::now())
         .bind(&params.step_id)
@@ -317,13 +317,13 @@ impl StepStore for PostgresStorage {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let rows_affected = sqlx::query(&format!(
+        let rows_affected = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks} SET status = 'completed', result = $1, completed_at = NOW(), updated_at = NOW(), locked_at = NULL, worker_id = NULL
             WHERE task_id = $2 AND worker_id = $3
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(&params.result)
         .bind(&params.step_task_id)
         .bind(&params.lock_token)
@@ -356,14 +356,14 @@ impl StepStore for PostgresStorage {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let attempt_id = format!("{}:attempt:{}", params.step_task_id, params.attempt_number);
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {step_attempts} (attempt_id, step_id, attempt_number, status, completed_at, result, error)
             VALUES ($1, $2, $3, 'failed', NOW(), NULL, $4)
             ON CONFLICT (attempt_id) DO NOTHING
             "#,
             step_attempts = self.table_names.step_attempts(),
-        ))
+        )))
         .bind(&attempt_id)
         .bind(&params.step_task_id)
         .bind(params.attempt_number as i32)
@@ -372,25 +372,25 @@ impl StepStore for PostgresStorage {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {steps} SET retry_attempt = $1, last_error = NULL WHERE step_id = $2
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(params.attempt_number as i32 + 1)
         .bind(&params.step_task_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let rows_affected = sqlx::query(&format!(
+        let rows_affected = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks} SET status = 'scheduled', last_error = $1, execution_time = $2, locked_at = NULL, worker_id = NULL, updated_at = NOW()
             WHERE task_id = $3 AND worker_id = $4
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(&params.error)
         .bind(params.retry_time)
         .bind(&params.step_task_id)
@@ -421,7 +421,7 @@ impl StepStore for PostgresStorage {
         result: serde_json::Value,
     ) -> Result<(), StorageError> {
         let step_id = format!("{run_id}:step:{step_name}");
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {steps}
                 (step_id, run_id, step_name, step_kind, status, result, completed_at)
@@ -430,7 +430,7 @@ impl StepStore for PostgresStorage {
             ON CONFLICT (step_id) DO NOTHING
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&step_id)
         .bind(run_id)
         .bind(step_name)
@@ -450,20 +450,21 @@ impl StepStore for PostgresStorage {
             return Ok(vec![]);
         }
 
-        let rows: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(&format!(
-            r#"
+        let rows: Vec<(String, Option<serde_json::Value>)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                r#"
             SELECT task_id, result
             FROM {tasks}
             WHERE task_id = ANY($1)
               AND status  = 'completed'
               AND result  IS NOT NULL
             "#,
-            tasks = self.table_names.tasks(),
-        ))
-        .bind(wait_for_task_ids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+                tasks = self.table_names.tasks(),
+            )))
+            .bind(wait_for_task_ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         Ok(rows
             .into_iter()
@@ -482,7 +483,7 @@ impl StepStore for PostgresStorage {
             StepAttemptStatus,
             Option<serde_json::Value>,
             Option<String>,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT a.attempt_id, a.step_id, a.attempt_number,
                    a.started_at, a.completed_at, a.status, a.result, a.error
@@ -493,7 +494,7 @@ impl StepStore for PostgresStorage {
             "#,
             step_attempts = self.table_names.step_attempts(),
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(run_id)
         .fetch_all(&self.pool)
         .await

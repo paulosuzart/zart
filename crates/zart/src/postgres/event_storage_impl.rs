@@ -23,20 +23,21 @@ impl EventStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let exec_row: Option<(String, serde_json::Value)> = sqlx::query_as(&format!(
-            r#"
+        let exec_row: Option<(String, serde_json::Value)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                r#"
             SELECT e.current_run_id, r.payload
             FROM {executions} e
             JOIN {execution_runs} r ON r.run_id = e.current_run_id
             WHERE e.execution_id = $1
             "#,
-            executions = self.table_names.executions(),
-            execution_runs = self.table_names.execution_runs(),
-        ))
-        .bind(execution_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+                executions = self.table_names.executions(),
+                execution_runs = self.table_names.execution_runs(),
+            )))
+            .bind(execution_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let (run_id, run_payload) = match exec_row {
             None => {
@@ -48,7 +49,7 @@ impl EventStore for PostgresStorage {
             Some(row) => row,
         };
 
-        let completed_row: Option<(String,)> = sqlx::query_as(&format!(
+        let completed_row: Option<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT step_id
             FROM {steps}
@@ -58,7 +59,7 @@ impl EventStore for PostgresStorage {
               AND status = 'completed'
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&run_id)
         .bind(event_name)
         .fetch_optional(&mut *tx)
@@ -72,7 +73,7 @@ impl EventStore for PostgresStorage {
             return Ok(EventDeliveryResult::AlreadyDelivered);
         }
 
-        let step_row: Option<(String,)> = sqlx::query_as(&format!(
+        let step_row: Option<(String,)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT step_id
             FROM {steps}
@@ -82,7 +83,7 @@ impl EventStore for PostgresStorage {
               AND status = 'scheduled'
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&run_id)
         .bind(event_name)
         .fetch_optional(&mut *tx)
@@ -99,7 +100,7 @@ impl EventStore for PostgresStorage {
             Some((sid,)) => sid,
         };
 
-        let updated = sqlx::query(&format!(
+        let updated = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {steps}
             SET status = 'completed',
@@ -109,7 +110,7 @@ impl EventStore for PostgresStorage {
               AND status = 'scheduled'
             "#,
             steps = self.table_names.steps(),
-        ))
+        )))
         .bind(&payload)
         .bind(&step_id)
         .execute(&mut *tx)
@@ -149,7 +150,7 @@ impl EventStore for PostgresStorage {
     }
 
     async fn execution_stats(&self) -> Result<ExecutionStats, StorageError> {
-        let row: (i64, i64, i64, i64, i64) = sqlx::query_as(&format!(
+        let row: (i64, i64, i64, i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT
                 COALESCE(SUM(CASE WHEN r.status = 'scheduled' THEN 1 END), 0),
@@ -162,7 +163,7 @@ impl EventStore for PostgresStorage {
             "#,
             executions = self.table_names.executions(),
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;

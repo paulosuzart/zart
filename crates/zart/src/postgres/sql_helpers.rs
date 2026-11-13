@@ -26,21 +26,21 @@ pub async fn start_execution_sql(
     payload: &Value,
     names: &TableNames,
 ) -> Result<(), StorageError> {
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {executions} (execution_id, task_name)
         VALUES ($1, $2)
         ON CONFLICT (execution_id) DO NOTHING
         "#,
         executions = names.executions(),
-    ))
+    )))
     .bind(execution_id)
     .bind(task_name)
     .execute(&mut *conn)
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    let run_exists: bool = sqlx::query_scalar(&format!(
+    let run_exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM {execution_runs}
@@ -48,7 +48,7 @@ pub async fn start_execution_sql(
         )
         "#,
         execution_runs = names.execution_runs(),
-    ))
+    )))
     .bind(execution_id)
     .fetch_one(&mut *conn)
     .await
@@ -56,7 +56,7 @@ pub async fn start_execution_sql(
 
     if !run_exists {
         let run_id = format!("{execution_id}:run:0");
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {execution_runs}
                 (run_id, execution_id, run_index, payload, trigger)
@@ -64,7 +64,7 @@ pub async fn start_execution_sql(
             ON CONFLICT DO NOTHING
             "#,
             execution_runs = names.execution_runs(),
-        ))
+        )))
         .bind(&run_id)
         .bind(execution_id)
         .bind(payload)
@@ -72,14 +72,14 @@ pub async fn start_execution_sql(
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {executions}
             SET current_run_id = $1
             WHERE execution_id = $2 AND current_run_id IS NULL
             "#,
             executions = names.executions(),
-        ))
+        )))
         .bind(&run_id)
         .bind(execution_id)
         .execute(&mut *conn)
@@ -100,14 +100,14 @@ pub async fn write_step_completion_sql(
     names: &TableNames,
 ) -> Result<(), StorageError> {
     let attempt_id = format!("{}:attempt:{}", params.step_id, params.attempt_number);
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {step_attempts} (attempt_id, step_id, attempt_number, status, completed_at, result, error)
         VALUES ($1, $2, $3, 'completed', NOW(), $4, NULL)
         ON CONFLICT (attempt_id) DO NOTHING
         "#,
         step_attempts = names.step_attempts(),
-    ))
+    )))
     .bind(&attempt_id)
     .bind(&params.step_id)
     .bind(params.attempt_number as i32)
@@ -116,12 +116,12 @@ pub async fn write_step_completion_sql(
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         UPDATE {steps} SET status = 'completed', result = $1, result_kind = $2, completed_at = $3 WHERE step_id = $4
         "#,
         steps = names.steps(),
-    ))
+    )))
     .bind(&params.result)
     .bind(params.result_kind)
     .bind(Utc::now())
@@ -149,7 +149,7 @@ pub async fn copy_steps_and_attempts_sql(
         return Ok(());
     }
 
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {steps}
             (step_id, run_id, step_name, step_kind, task_id,
@@ -172,7 +172,7 @@ pub async fn copy_steps_and_attempts_sql(
         ON CONFLICT (step_id) DO NOTHING
         "#,
         steps = names.steps(),
-    ))
+    )))
     .bind(from_run_id)
     .bind(to_run_id)
     .bind(step_names)
@@ -180,7 +180,7 @@ pub async fn copy_steps_and_attempts_sql(
     .await
     .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {step_attempts}
             (attempt_id, step_id, attempt_number, started_at, completed_at,
@@ -203,7 +203,7 @@ pub async fn copy_steps_and_attempts_sql(
         "#,
         step_attempts = names.step_attempts(),
         steps = names.steps(),
-    ))
+    )))
     .bind(from_run_id)
     .bind(to_run_id)
     .bind(step_names)

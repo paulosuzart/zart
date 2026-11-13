@@ -66,7 +66,7 @@ impl ExecutionStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {execution_runs}
             SET status       = 'completed',
@@ -78,7 +78,7 @@ impl ExecutionStore for PostgresStorage {
             "#,
             execution_runs = self.table_names.execution_runs(),
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(&result)
         .bind(execution_id)
         .execute(&mut *tx)
@@ -98,7 +98,7 @@ impl ExecutionStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {execution_runs}
             SET status = 'failed'
@@ -108,7 +108,7 @@ impl ExecutionStore for PostgresStorage {
             "#,
             execution_runs = self.table_names.execution_runs(),
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(execution_id)
         .execute(&mut *tx)
         .await
@@ -134,7 +134,7 @@ impl ExecutionStore for PostgresStorage {
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             i32,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
                 SELECT r.run_id, e.task_name, r.payload, r.result, r.status,
                        r.started_at, r.completed_at, 1
@@ -144,7 +144,7 @@ impl ExecutionStore for PostgresStorage {
                 "#,
             executions = self.table_names.executions(),
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(execution_id)
         .fetch_optional(&self.pool)
         .await
@@ -175,7 +175,7 @@ impl ExecutionStore for PostgresStorage {
     }
 
     async fn cancel_execution(&self, execution_id: &str) -> Result<bool, StorageError> {
-        let exec_rows = sqlx::query(&format!(
+        let exec_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {execution_runs}
             SET status = 'cancelled', completed_at = NOW()
@@ -184,14 +184,14 @@ impl ExecutionStore for PostgresStorage {
             "#,
             execution_runs = self.table_names.execution_runs(),
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(execution_id)
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?
         .rows_affected();
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {tasks}
             SET status = 'cancelled', updated_at = NOW()
@@ -202,7 +202,7 @@ impl ExecutionStore for PostgresStorage {
               )
             "#,
             tasks = self.table_names.tasks(),
-        ))
+        )))
         .bind(execution_id)
         .execute(&self.pool)
         .await
@@ -252,7 +252,7 @@ impl ExecutionStore for PostgresStorage {
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             i32,
-        )> = sqlx::query_as(&sql)
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(params.status)
             .bind(params.task_name.as_deref())
             .bind(params.from)
@@ -283,12 +283,12 @@ impl ExecutionStore for PostgresStorage {
     }
 
     async fn get_current_run_id(&self, execution_id: &str) -> Result<Option<String>, StorageError> {
-        let run_id: Option<String> = sqlx::query_scalar(&format!(
+        let run_id: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT current_run_id FROM {executions} WHERE execution_id = $1
             "#,
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(execution_id)
         .fetch_optional(&self.pool)
         .await
@@ -308,7 +308,7 @@ impl ExecutionStore for PostgresStorage {
             chrono::DateTime<chrono::Utc>,
             Option<chrono::DateTime<chrono::Utc>>,
             ExecutionTrigger,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT run_id, execution_id, run_index, payload, status,
                    result, started_at, completed_at, trigger
@@ -317,7 +317,7 @@ impl ExecutionStore for PostgresStorage {
             ORDER BY run_index ASC
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(execution_id)
         .fetch_all(&self.pool)
         .await
@@ -362,14 +362,14 @@ impl ExecutionStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let max_index: i32 = sqlx::query_scalar(&format!(
+        let max_index: i32 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT COALESCE(MAX(run_index), -1)
             FROM {execution_runs}
             WHERE execution_id = $1
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(execution_id)
         .fetch_one(&mut *tx)
         .await
@@ -378,14 +378,14 @@ impl ExecutionStore for PostgresStorage {
         let next_index = max_index + 1;
         let new_run_id = format!("{execution_id}:run:{next_index}");
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {execution_runs}
                 (run_id, execution_id, run_index, payload, trigger)
             VALUES ($1, $2, $3, $4, 'restart')
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(&new_run_id)
         .bind(execution_id)
         .bind(next_index)
@@ -394,14 +394,14 @@ impl ExecutionStore for PostgresStorage {
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {executions}
             SET current_run_id = $1
             WHERE execution_id = $2
             "#,
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(&new_run_id)
         .bind(execution_id)
         .execute(&mut *tx)
@@ -466,14 +466,14 @@ impl ExecutionStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let max_index: i32 = sqlx::query_scalar(&format!(
+        let max_index: i32 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT COALESCE(MAX(run_index), -1)
             FROM {execution_runs}
             WHERE execution_id = $1
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(execution_id)
         .fetch_one(&mut *tx)
         .await
@@ -482,14 +482,14 @@ impl ExecutionStore for PostgresStorage {
         let next_index = max_index + 1;
         let run_id = format!("{execution_id}:run:{next_index}");
 
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {execution_runs}
                 (run_id, execution_id, run_index, payload, trigger, triggered_by)
             VALUES ($1, $2, $3, $4, $5::execution_trigger, $6)
             "#,
             execution_runs = self.table_names.execution_runs(),
-        ))
+        )))
         .bind(&run_id)
         .bind(execution_id)
         .bind(next_index)
@@ -508,14 +508,14 @@ impl ExecutionStore for PostgresStorage {
     }
 
     async fn set_current_run(&self, execution_id: &str, run_id: &str) -> Result<(), StorageError> {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {executions}
             SET current_run_id = $1
             WHERE execution_id = $2
             "#,
             executions = self.table_names.executions(),
-        ))
+        )))
         .bind(run_id)
         .bind(execution_id)
         .execute(&self.pool)
