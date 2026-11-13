@@ -152,7 +152,7 @@ impl ZartStep for SendConfirmation {
 
     async fn run(&self) -> Result<Self::Output, Self::Error> {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        let code = format!("CONF-{}", &Uuid::new_v4().to_string()[..8].to_uppercase());
+        let code = format!("CONF-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         tracing::info!(customer = %self.customer, order = %self.order_id, code = %code, "[send-confirmation] sent");
         Ok(code)
     }
