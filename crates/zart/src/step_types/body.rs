@@ -34,14 +34,7 @@ impl BodyBehavior for LookupOrSchedule {
     ) -> Result<(serde_json::Value, ResultKind), StepError> {
         let step_name = req.step_name;
 
-        let lookup = ctx
-            .scheduler
-            .get_step_status(ctx.run_id(), step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        let lookup = ctx.get_cached_step_status(step_name).await?;
 
         match lookup {
             Some(StepLookup {
@@ -146,14 +139,7 @@ impl BodyBehavior for LookupOrScheduleSleep {
 
         let step_name = req.step_name;
 
-        let lookup = ctx
-            .scheduler
-            .get_step_status(ctx.run_id(), step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        let lookup = ctx.get_cached_step_status(step_name).await?;
 
         match lookup {
             Some(StepLookup {
@@ -221,14 +207,7 @@ impl BodyBehavior for LookupOrScheduleEvent {
 
         let step_name = req.step_name;
 
-        let lookup = ctx
-            .scheduler
-            .get_step_status(ctx.run_id(), step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        let lookup = ctx.get_cached_step_status(step_name).await?;
 
         match lookup {
             Some(StepLookup {
@@ -356,14 +335,7 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
         for child_name in child_names {
             let child_task_id = format!("{}:step:{}", ctx.run_id(), child_name);
 
-            let lookup = ctx
-                .scheduler
-                .get_step_status(ctx.run_id(), child_name)
-                .await
-                .map_err(|e| StepError::Failed {
-                    step: child_name.clone(),
-                    reason: e.to_string(),
-                })?;
+            let lookup = ctx.get_cached_step_status(child_name).await?;
 
             match lookup {
                 Some(StepLookup {
@@ -398,14 +370,7 @@ impl BodyBehavior for LookupOrScheduleWaitGroupBarrier {
         if all_completed {
             let mut results = Vec::with_capacity(child_names.len());
             for child_name in child_names {
-                let lookup = ctx
-                    .scheduler
-                    .get_step_status(ctx.run_id(), child_name)
-                    .await
-                    .map_err(|e| StepError::Failed {
-                        step: child_name.clone(),
-                        reason: e.to_string(),
-                    })?;
+                let lookup = ctx.get_cached_step_status(child_name).await?;
                 match lookup {
                     Some(StepLookup {
                         status: TaskStatus::Completed,

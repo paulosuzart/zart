@@ -207,6 +207,20 @@ impl StepStore for MockScheduler {
             .cloned()
             .unwrap_or(None))
     }
+    async fn list_step_statuses(
+        &self,
+        run_id: &str,
+    ) -> Result<std::collections::HashMap<String, StepLookup>, StorageError> {
+        let mut map = std::collections::HashMap::new();
+        for ((r_id, step_name), lookup) in &self.step_responses {
+            if r_id == run_id
+                && let Some(l) = lookup
+            {
+                map.insert(step_name.clone(), l.clone());
+            }
+        }
+        Ok(map)
+    }
     async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {
         Ok(None)
     }

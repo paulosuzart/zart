@@ -35,14 +35,7 @@ impl StepBehavior for ExecuteLambda {
             return Ok(StepResult::Executed(json));
         }
 
-        let lookup = ctx
-            .scheduler
-            .get_step_status(ctx.run_id(), step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        let lookup = ctx.get_cached_step_status(step_name).await?;
 
         match lookup {
             Some(StepLookup {
@@ -99,14 +92,7 @@ impl StepBehavior for LookupCached {
         step_name: &str,
         _lambda: Option<PendingFn>,
     ) -> Result<StepResult, StepError> {
-        let lookup = ctx
-            .scheduler
-            .get_step_status(ctx.run_id(), step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        let lookup = ctx.get_cached_step_status(step_name).await?;
 
         match lookup {
             Some(StepLookup {
