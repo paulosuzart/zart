@@ -91,6 +91,8 @@ pub struct RecordingScheduler {
     wait_all_response: Vec<(String, serde_json::Value)>,
     /// Weak self-reference set by the builder so `Backend` impl can return `Arc<Self>`.
     self_ref: Mutex<std::sync::Weak<RecordingScheduler>>,
+    pub get_step_status_calls: std::sync::atomic::AtomicUsize,
+    pub list_step_statuses_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl RecordingScheduler {
@@ -147,6 +149,8 @@ impl RecordingSchedulerBuilder {
             step_responses: self.step_responses,
             wait_all_response: self.wait_all_response,
             self_ref: Mutex::new(std::sync::Weak::new()),
+            get_step_status_calls: std::sync::atomic::AtomicUsize::new(0),
+            list_step_statuses_calls: std::sync::atomic::AtomicUsize::new(0),
         });
         *scheduler.self_ref.lock().unwrap() = Arc::downgrade(&scheduler);
         (scheduler, calls)
@@ -320,8 +324,27 @@ impl StepStore for RecordingScheduler {
         run_id: &str,
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError> {
+        self.get_step_status_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let key = (run_id.to_string(), step_name.to_string());
         Ok(self.step_responses.get(&key).and_then(|v| v.clone()))
+    }
+
+    async fn list_step_statuses(
+        &self,
+        run_id: &str,
+    ) -> Result<HashMap<String, StepLookup>, StorageError> {
+        self.list_step_statuses_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut map = HashMap::new();
+        for ((r_id, step_name), lookup) in &self.step_responses {
+            if r_id == run_id
+                && let Some(l) = lookup
+            {
+                map.insert(step_name.clone(), l.clone());
+            }
+        }
+        Ok(map)
     }
 
     async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {

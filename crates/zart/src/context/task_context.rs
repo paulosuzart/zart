@@ -57,6 +57,10 @@ pub struct TaskContext {
     /// The deadline for the enclosing execution (parsed from task metadata or execution row).
     /// Set when the durable handler has a timeout. Used to cap step timeouts.
     pub(crate) execution_deadline: Option<chrono::DateTime<chrono::Utc>>,
+    /// Lazily populated per-run step status cache loaded in a single batch query.
+    step_cache: tokio::sync::OnceCell<
+        tokio::sync::RwLock<std::collections::HashMap<String, zart_core::types::StepLookup>>,
+    >,
 }
 
 impl TaskContext {
@@ -86,6 +90,7 @@ impl TaskContext {
             execution_mode: ExecutionMode::Body,
             step_deadline: None,
             execution_deadline: None,
+            step_cache: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -143,6 +148,54 @@ impl TaskContext {
         StepContext {
             current_attempt,
             max_retries,
+        }
+    }
+
+    // ── Step state cache ──────────────────────────────────────────────────────
+
+    /// Look up a step's status from the per-run batch cache, loading all step
+    /// statuses for `run_id` in a single storage query on first access.
+    pub(crate) async fn get_cached_step_status(
+        &self,
+        step_name: &str,
+    ) -> Result<Option<zart_core::types::StepLookup>, StepError> {
+        let lock = self
+            .step_cache
+            .get_or_try_init(|| async {
+                let map = self
+                    .scheduler
+                    .list_step_statuses(&self.run_id)
+                    .await
+                    .map_err(|e| StepError::Failed {
+                        step: step_name.to_string(),
+                        reason: e.to_string(),
+                    })?;
+                Ok::<_, StepError>(tokio::sync::RwLock::new(map))
+            })
+            .await?;
+
+        let guard = lock.read().await;
+        Ok(guard.get(step_name).cloned())
+    }
+
+    /// Record a newly completed step (e.g. from `capture`) in the in-memory cache
+    /// so subsequent lookups within the same execution do not re-query storage.
+    pub(crate) async fn record_completed_step_in_cache(
+        &self,
+        step_name: &str,
+        result: serde_json::Value,
+    ) {
+        if let Some(lock) = self.step_cache.get() {
+            let mut guard = lock.write().await;
+            guard.insert(
+                step_name.to_string(),
+                zart_core::types::StepLookup {
+                    task_id: format!("{}:step:{}", self.run_id, step_name),
+                    status: zart_core::types::TaskStatus::Completed,
+                    result: Some(result),
+                    result_kind: Some(zart_core::types::StepResultKind::Ok),
+                },
+            );
         }
     }
 
@@ -909,14 +962,7 @@ impl TaskContext {
     {
         use zart_core::types::StepKind;
 
-        let lookup = self
-            .scheduler
-            .get_step_status(self.run_id(), step_name)
-            .await
-            .map_err(|e| StepError::Failed {
-                step: step_name.to_string(),
-                reason: e.to_string(),
-            })?;
+        let lookup = self.get_cached_step_status(step_name).await?;
 
         if let Some(zart_core::types::StepLookup {
             status: zart_core::types::TaskStatus::Completed,
@@ -947,12 +993,14 @@ impl TaskContext {
         })?;
 
         self.scheduler
-            .insert_completed_step(self.run_id(), step_name, StepKind::Capture, json)
+            .insert_completed_step(self.run_id(), step_name, StepKind::Capture, json.clone())
             .await
             .map_err(|e| StepError::Failed {
                 step: step_name.to_string(),
                 reason: e.to_string(),
             })?;
+
+        self.record_completed_step_in_cache(step_name, json).await;
 
         Ok(value)
     }

@@ -173,6 +173,15 @@ pub trait StepStore: Send + Sync {
         step_name: &str,
     ) -> Result<Option<StepLookup>, StorageError>;
 
+    /// Load all step statuses for a run, keyed by `step_name`.
+    ///
+    /// Used by `TaskContext` to batch-load step state in a single query per
+    /// task execution instead of issuing per-step `get_step_status` calls.
+    async fn list_step_statuses(
+        &self,
+        run_id: &str,
+    ) -> Result<std::collections::HashMap<String, StepLookup>, StorageError>;
+
     /// Look up a step row by `run_id` + `step_name`.
     async fn get_step(
         &self,

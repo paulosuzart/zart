@@ -770,3 +770,66 @@ async fn body_mode_loop_with_named_override_returns_correct_per_iteration_result
     assert!(matches!(r0, Ok(StepOutcome::Ok(100u32))));
     assert!(matches!(r1, Ok(StepOutcome::Ok(200u32))));
 }
+
+#[tokio::test]
+async fn batch_load_issues_single_list_query_across_multiple_steps() {
+    use std::sync::atomic::Ordering;
+
+    let (scheduler, _calls) = RecordingScheduler::builder()
+        .step_completed("exec-1", "s1", serde_json::json!(1u32))
+        .step_completed("exec-1", "s2", serde_json::json!(2u32))
+        .step_completed("exec-1", "sleep-1", serde_json::Value::Null)
+        .step_completed("exec-1", "ev-1", serde_json::json!("approved"))
+        .build();
+    let ctx = make_body_ctx(scheduler.clone());
+
+    let r1 = ctx.execute_step(ChargeCardStep.named("s1")).await.unwrap();
+    let r2 = ctx.execute_step(ChargeCardStep.named("s2")).await.unwrap();
+    ctx.sleep("sleep-1", Duration::from_secs(1)).await.unwrap();
+    let ev: String = ctx.wait_for_event("ev-1", None).await.unwrap();
+
+    assert!(matches!(r1, StepOutcome::Ok(1u32)));
+    assert!(matches!(r2, StepOutcome::Ok(2u32)));
+    assert_eq!(ev, "approved");
+    assert_eq!(scheduler.list_step_statuses_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(scheduler.get_step_status_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn wait_all_resolves_completed_children_from_batch_cache() {
+    use std::sync::atomic::Ordering;
+
+    let (scheduler, _calls) = RecordingScheduler::builder()
+        .step_completed("exec-1", "c1", serde_json::json!(10u32))
+        .step_completed("exec-1", "c2", serde_json::json!(20u32))
+        .step_completed("exec-1", "c3", serde_json::json!(30u32))
+        .build();
+    let ctx = make_body_ctx(scheduler.clone());
+
+    let h1 = ctx.schedule_step(ChargeCardStep.named("c1"));
+    let h2 = ctx.schedule_step(ChargeCardStep.named("c2"));
+    let h3 = ctx.schedule_step(ChargeCardStep.named("c3"));
+
+    let results: Vec<Result<u32, StepError>> = ctx.wait_all(vec![h1, h2, h3]).await.unwrap();
+    let values: Vec<u32> = results.into_iter().map(|r| r.unwrap()).collect();
+
+    assert_eq!(values, vec![10, 20, 30]);
+    assert_eq!(scheduler.list_step_statuses_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(scheduler.get_step_status_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn capture_updates_in_memory_cache_for_subsequent_lookups() {
+    use std::sync::atomic::Ordering;
+
+    let (scheduler, _calls) = RecordingScheduler::builder().build();
+    let ctx = make_body_ctx(scheduler.clone());
+
+    let first: u32 = ctx.capture("ts", || 42u32).await.unwrap();
+    let second: u32 = ctx.capture("ts", || 99u32).await.unwrap();
+
+    assert_eq!(first, 42);
+    assert_eq!(second, 42);
+    assert_eq!(scheduler.list_step_statuses_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(scheduler.get_step_status_calls.load(Ordering::SeqCst), 0);
+}

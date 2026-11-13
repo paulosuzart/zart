@@ -464,6 +464,12 @@ mod tests {
         ) -> Result<Option<StepLookup>, StorageError> {
             Ok(None)
         }
+        async fn list_step_statuses(
+            &self,
+            _: &str,
+        ) -> Result<std::collections::HashMap<String, StepLookup>, StorageError> {
+            Ok(std::collections::HashMap::new())
+        }
         async fn get_step(&self, _: &str, _: &str) -> Result<Option<StepRow>, StorageError> {
             Ok(None)
         }

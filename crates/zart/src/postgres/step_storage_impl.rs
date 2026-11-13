@@ -13,6 +13,15 @@ use zart_core::types::{
 use super::PostgresStorage;
 use super::sql_helpers::{schedule_step_sql, write_step_completion_sql};
 
+fn step_status_to_task_status(step_status: StepStatus) -> TaskStatus {
+    match step_status {
+        StepStatus::Scheduled => TaskStatus::Scheduled,
+        StepStatus::Running => TaskStatus::PickedUp,
+        StepStatus::Completed => TaskStatus::Completed,
+        StepStatus::Dead => TaskStatus::Dead,
+    }
+}
+
 #[async_trait]
 impl StepStore for PostgresStorage {
     async fn get_step_status(
@@ -42,21 +51,51 @@ impl StepStore for PostgresStorage {
 
         match row {
             None => Ok(None),
-            Some((step_id, step_status, result, result_kind)) => {
-                let status = match step_status {
-                    StepStatus::Scheduled => TaskStatus::Scheduled,
-                    StepStatus::Running => TaskStatus::PickedUp,
-                    StepStatus::Completed => TaskStatus::Completed,
-                    StepStatus::Dead => TaskStatus::Dead,
-                };
-                Ok(Some(StepLookup {
+            Some((step_id, step_status, result, result_kind)) => Ok(Some(StepLookup {
+                task_id: step_id,
+                status: step_status_to_task_status(step_status),
+                result,
+                result_kind,
+            })),
+        }
+    }
+
+    async fn list_step_statuses(
+        &self,
+        run_id: &str,
+    ) -> Result<std::collections::HashMap<String, StepLookup>, StorageError> {
+        let rows: Vec<(
+            String,
+            String,
+            StepStatus,
+            Option<serde_json::Value>,
+            Option<StepResultKind>,
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            r#"
+            SELECT step_id, step_name, status, result, result_kind
+            FROM {steps}
+            WHERE run_id = $1
+            "#,
+            steps = self.table_names.steps(),
+        )))
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for (step_id, step_name, step_status, result, result_kind) in rows {
+            map.insert(
+                step_name,
+                StepLookup {
                     task_id: step_id,
-                    status,
+                    status: step_status_to_task_status(step_status),
                     result,
                     result_kind,
-                }))
-            }
+                },
+            );
         }
+        Ok(map)
     }
 
     #[allow(clippy::type_complexity)]
