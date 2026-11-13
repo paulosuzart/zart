@@ -3,7 +3,8 @@ title: Observability
 description: Structured logging and Prometheus metrics for Zart workers.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Code } from '@astrojs/starlight/components';
+import { ZART_VERSION } from '../../../../lib/version';
 
 Zart emits structured logs via [`tracing`](https://docs.rs/tracing) and exposes Prometheus metrics through a single function. Both work whether you run Zart embedded inside your own server or as a standalone worker.
 
@@ -57,13 +58,11 @@ RUST_LOG=zart=debug,info cargo run
 
 Prometheus instrumentation is opt-in. Enable the `metrics` Cargo feature to activate it:
 
-```toml
-# Cargo.toml
-zart = { version = "0.2", features = ["metrics"] }
+<Code lang="toml" code={`# Cargo.toml
+zart = { version = "${ZART_VERSION}", features = ["metrics"] }
 
 # If you also use zart-api, enable its matching feature:
-zart-api = { version = "0.2", features = ["metrics"] }
-```
+zart-api = { version = "${ZART_VERSION}", features = ["metrics"] }`} />
 
 Without this feature `prometheus` is not compiled into your binary (metrics use `std::sync::LazyLock` when enabled). All metric call sites become no-ops and `gather_metrics()` returns an empty string.
 

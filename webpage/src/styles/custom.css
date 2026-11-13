@@ -1,222 +1,131 @@
-/* ── Fonts ─────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+/* ── Fonts (unified with landing page) ────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Space+Grotesk:wght@500;600;700&display=swap');
 
-/* ── Brand tokens ──────────────────────────────────────────── */
+/* ── Brand & Typography Tokens ─────────────────────────────── */
 :root {
-  --sl-color-accent-low:  oklch(20% 0.09 285);
-  --sl-color-accent:      oklch(63% 0.26 285);
-  --sl-color-accent-high: oklch(82% 0.18 285);
+  --sl-font:         'IBM Plex Sans', system-ui, sans-serif;
+  --sl-font-display: 'Space Grotesk', system-ui, sans-serif;
+  --sl-font-mono:    'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
 
-  --sl-font:      'Instrument Sans', system-ui, sans-serif;
-  --sl-font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+  --sl-color-accent-low:  oklch(22% 0.07 282);
+  --sl-color-accent:      oklch(66% 0.22 282);
+  --sl-color-accent-high: oklch(78% 0.16 282);
 
-  /* Typography scale */
-  --sl-text-base: 1rem;
-  --sl-line-height: 1.75;
-
-  /* Readable content width — 72ch is ~65–70 chars of prose */
-  --sl-content-width: 46rem;
+  --sl-text-base: 0.975rem;
+  --sl-line-height: 1.72;
+  --sl-content-width: 48rem;
 }
 
-/* ── Dark mode ─────────────────────────────────────────────── */
+/* ── Dark Mode (Obsidian architectural system) ─────────────── */
 :root[data-theme='dark'] {
-  --sl-color-accent-low:        oklch(18% 0.08 285);
-  --sl-color-accent:            oklch(63% 0.26 285);
-  --sl-color-accent-high:       oklch(85% 0.16 285);
-  --sl-color-bg:                oklch(9%  0.014 285);
-  --sl-color-bg-nav:            oklch(10% 0.018 285 / 0.92);
-  --sl-color-bg-sidebar:        oklch(11% 0.016 285);
-  --sl-color-bg-inline-code:    oklch(17% 0.07 285);
-  --sl-color-hairline-light:    oklch(22% 0.05 285);
-  --sl-color-hairline:          oklch(18% 0.04 285);
-  --sl-color-text:              oklch(93% 0.006 285);
-  --sl-color-text-accent:       oklch(85% 0.16 285);
+  --sl-color-accent-low:        oklch(20% 0.065 282);
+  --sl-color-accent:            oklch(66% 0.22 282);
+  --sl-color-accent-high:       oklch(80% 0.15 282);
+
+  --sl-color-bg:                oklch(10% 0.012 275);
+  --sl-color-bg-nav:            oklch(10% 0.012 275 / 0.88);
+  --sl-color-bg-sidebar:        oklch(11.5% 0.013 275);
+  --sl-color-bg-inline-code:    oklch(16% 0.025 278);
+
+  --sl-color-hairline-light:    oklch(24% 0.016 275);
+  --sl-color-hairline:          oklch(20% 0.014 275);
+  --sl-color-hairline-shade:    oklch(16% 0.012 275);
+
+  --sl-color-white:             oklch(96% 0.005 275);
+  --sl-color-gray-1:            oklch(90% 0.008 275);
+  --sl-color-gray-2:            oklch(72% 0.012 275);
+  --sl-color-gray-3:            oklch(54% 0.014 275);
+  --sl-color-gray-4:            oklch(35% 0.016 275);
+  --sl-color-gray-5:            oklch(22% 0.015 275);
+  --sl-color-gray-6:            oklch(14% 0.014 275);
+  --sl-color-black:             oklch(8.5% 0.012 275);
+
+  --sl-color-text:              oklch(93% 0.006 275);
+  --sl-color-text-accent:       oklch(78% 0.16 282);
 }
 
-/* ── Body typography ───────────────────────────────────────── */
+/* ── Light Mode (Crisp technical paper, zero pastel fluff) ─── */
+:root[data-theme='light'] {
+  --sl-color-accent-low:        oklch(93% 0.025 282);
+  --sl-color-accent:            oklch(52% 0.22 282);
+  --sl-color-accent-high:       oklch(38% 0.18 282);
+  --sl-color-bg:                oklch(98.5% 0.002 275);
+  --sl-color-bg-nav:            oklch(98.5% 0.002 275 / 0.9);
+  --sl-color-bg-sidebar:        oklch(96.5% 0.004 275);
+  --sl-color-hairline:          oklch(88% 0.008 275);
+  --sl-color-hairline-light:    oklch(82% 0.012 275);
+}
+
+/* ── Base & Architectural Surface ──────────────────────────── */
 body {
   font-family: var(--sl-font);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Ensure dark mode background is applied */
 :root[data-theme='dark'] body {
   background-color: var(--sl-color-bg);
 }
 
-/* Tighten heading tracking slightly */
-h1, h2, h3, h4 {
-  letter-spacing: -0.02em;
-  line-height: 1.25;
+/* Subtle architectural backdrop grid in main content pane */
+:root[data-theme='dark'] .main-frame {
+  background-image:
+    linear-gradient(to right, oklch(100% 0 0 / 0.018) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(100% 0 0 / 0.018) 1px, transparent 1px);
+  background-size: 64px 64px;
 }
 
-/* Comfortable reading measure for paragraphs */
+/* ── Header & Search ───────────────────────────────────────── */
+header.header {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.site-title {
+  font-family: var(--sl-font-display);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  gap: 0.65rem;
+}
+
+site-search button[data-open-modal] {
+  border-radius: 3px;
+  border-color: var(--sl-color-hairline-light);
+  font-family: var(--sl-font-mono);
+  font-size: 0.78rem;
+}
+
+site-search button[data-open-modal]:hover {
+  border-color: var(--sl-color-accent);
+}
+
+/* ── Display Headings & Prose ──────────────────────────────── */
+h1, h2, h3, h4,
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+.sl-markdown-content h4 {
+  font-family: var(--sl-font-display);
+  letter-spacing: -0.03em;
+  line-height: 1.18;
+  font-weight: 700;
+}
+
+.content-panel h1#_top {
+  font-size: clamp(1.9rem, 3.2vw, 2.55rem);
+  letter-spacing: -0.035em;
+}
+
 .sl-markdown-content p,
 .sl-markdown-content li {
-  line-height: 1.8;
+  line-height: 1.75;
   max-width: 68ch;
 }
 
-/* ── Code blocks ───────────────────────────────────────────── */
-/* Force JetBrains Mono through all layers Expressive Code may apply */
-pre, code,
-.expressive-code pre,
-.expressive-code code,
-.expressive-code .ec-line {
-  font-family: var(--sl-font-mono) !important;
-  font-feature-settings: 'liga' 1, 'calt' 1;
-  font-size: 0.875rem;
-  line-height: 1.65;
-}
-
-/* Code window frame — tighter padding, cleaner look */
-.expressive-code .frame {
-  border-radius: 8px;
-}
-
-/* ── Inline code ───────────────────────────────────────────── */
-:not(pre) > code {
-  font-family: var(--sl-font-mono);
-  font-size: 0.85em;
-  border-radius: 4px;
-  padding: 0.1em 0.4em;
-  border: 1px solid oklch(50% 0.18 285 / 0.18);
-}
-
-/* Light mode: dark text on a faint purple-tinted chip */
-[data-theme='light'] :not(pre) > code {
-  background: oklch(94% 0.03 285);
-  color: oklch(25% 0.10 285);
-  border-color: oklch(50% 0.18 285 / 0.18);
-}
-
-/* Dark mode: near-white text on a dark purple chip */
-[data-theme='dark'] :not(pre) > code {
-  background: oklch(21% 0.09 285);
-  color: oklch(92% 0.04 285);
-  border-color: oklch(55% 0.20 285 / 0.25);
-}
-
-/* ── Sidebar ───────────────────────────────────────────────── */
-.site-title {
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-/* Light mode sidebar active links - light purple */
-a[aria-current='page'] {
-  background: var(--sl-color-accent-low);
-  color: var(--sl-color-accent-high);
-  border-inline-start-color: var(--sl-color-accent);
-}
-
-.right-sidebar a[aria-current='true'] {
-  color: var(--sl-color-accent-high);
-}
-
-/* Dark mode sidebar active links */
-[data-theme='dark'] a[aria-current='page'] {
-  background: var(--sl-color-accent-low);
-  color: var(--sl-color-accent-high);
-  border-inline-start-color: var(--sl-color-accent);
-}
-
-[data-theme='dark'] .right-sidebar a[aria-current='true'] {
-  color: var(--sl-color-accent-high);
-}
-
-/* Sidebar group labels */
-.sl-sidebar-group-label {
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--sl-color-gray-3);
-  padding-block: 0.75rem 0.25rem;
-}
-
-/* ── Asides / callouts ─────────────────────────────────────── */
-.starlight-aside {
-  border-radius: 8px;
-  border-inline-start-width: 3px;
-}
-
-/* ── Tables ────────────────────────────────────────────────── */
-table {
-  border-collapse: collapse;
-  width: 100%;
-  margin-block: 1.5rem;
-  font-size: 0.9rem;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--sl-color-hairline);
-}
-
-th {
-  background: var(--sl-color-accent-low);
-  color: var(--sl-color-accent-high);
-  font-weight: 600;
-  text-align: left;
-  padding: 0.6rem 1rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-td {
-  padding: 0.6rem 1rem;
-  border-bottom: 1px solid var(--sl-color-hairline);
-  vertical-align: top;
-}
-
-/* alternating rows for scanability */
-[data-theme='dark'] tbody tr:nth-child(even) {
-  background: oklch(12% 0.018 285 / 0.6);
-}
-
-[data-theme='dark'] tbody tr:hover {
-  background: oklch(18% 0.07 285 / 0.6);
-}
-
-/* inline code inside table cells: no-wrap for flag names */
-td code {
-  font-size: 0.82em;
-  white-space: nowrap;
-}
-
-/* ── Badges ────────────────────────────────────────────────── */
-.badge {
-  font-family: var(--sl-font-mono);
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-/* ── Placeholder boxes ─────────────────────────────────────── */
-.placeholder-box {
-  border: 1px dashed var(--sl-color-accent);
-  border-radius: 8px;
-  padding: 1.5rem;
-  margin: 1.5rem 0;
-  background: var(--sl-color-accent-low);
-  color: var(--sl-color-accent-high);
-  text-align: center;
-}
-
-/* ── Links ─────────────────────────────────────────────────── */
-a {
-  transition: color 0.15s ease;
-}
-
-nav a:hover {
-  color: var(--sl-color-accent-high);
-}
-
-/* ── Section spacing — give headings more room to breathe ──── */
 .sl-markdown-content h2 {
-  margin-top: 2.5rem;
-  padding-top: 1.5rem;
+  margin-top: 2.75rem;
+  padding-top: 1.6rem;
   border-top: 1px solid var(--sl-color-hairline);
 }
 
@@ -227,4 +136,185 @@ nav a:hover {
 
 .sl-markdown-content h3 {
   margin-top: 2rem;
+}
+
+/* ── Code Blocks (Expressive Code) ─────────────────────────── */
+pre, code,
+.expressive-code pre,
+.expressive-code code,
+.expressive-code .ec-line {
+  font-family: var(--sl-font-mono) !important;
+  font-feature-settings: 'liga' 1, 'calt' 1;
+  font-size: 0.84rem;
+  line-height: 1.65;
+}
+
+.expressive-code .frame {
+  border-radius: 6px !important;
+  border: 1px solid var(--sl-color-hairline-light) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme='dark'] .expressive-code .frame pre {
+  background: oklch(8.5% 0.012 275) !important;
+}
+
+:root[data-theme='dark'] .expressive-code .frame .header {
+  background: oklch(13% 0.014 275) !important;
+  border-bottom: 1px solid var(--sl-color-hairline) !important;
+  font-family: var(--sl-font-mono);
+  font-size: 0.74rem;
+}
+
+/* ── Inline Code ───────────────────────────────────────────── */
+:not(pre) > code {
+  font-family: var(--sl-font-mono);
+  font-size: 0.83em;
+  border-radius: 3px;
+  padding: 0.12em 0.38em;
+  border: 1px solid var(--sl-color-hairline-light);
+}
+
+[data-theme='light'] :not(pre) > code {
+  background: oklch(94% 0.012 282);
+  color: oklch(30% 0.12 282);
+  border-color: oklch(84% 0.03 282);
+}
+
+[data-theme='dark'] :not(pre) > code {
+  background: oklch(16% 0.03 282);
+  color: oklch(84% 0.12 282);
+  border-color: oklch(28% 0.06 282);
+}
+
+/* ── Sidebar & TOC ─────────────────────────────────────────── */
+.sidebar-pane {
+  border-inline-end: 1px solid var(--sl-color-hairline);
+}
+
+.right-sidebar {
+  border-inline-start: 1px solid var(--sl-color-hairline);
+}
+
+.sidebar-content summary,
+.sl-sidebar-group-label {
+  font-family: var(--sl-font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.sidebar-content a {
+  border-radius: 3px;
+  font-size: 0.875rem;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+a[aria-current='page'] {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  border-inline-start: 2px solid var(--sl-color-accent);
+  border-radius: 0 3px 3px 0;
+  font-weight: 600;
+}
+
+.right-sidebar a[aria-current='true'] {
+  color: var(--sl-color-accent-high);
+  border-inline-start-color: var(--sl-color-accent);
+}
+
+/* ── Asides / Callouts ─────────────────────────────────────── */
+.starlight-aside {
+  border-radius: 4px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-inline-start-width: 3px;
+}
+
+.starlight-aside__title {
+  font-family: var(--sl-font-display);
+  letter-spacing: -0.015em;
+}
+
+/* ── Tables ────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-block: 1.5rem;
+  font-size: 0.88rem;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--sl-color-hairline-light);
+}
+
+th {
+  font-family: var(--sl-font-mono);
+  background: oklch(14% 0.015 275);
+  color: var(--sl-color-text);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.65rem 1rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--sl-color-hairline-light);
+}
+
+[data-theme='light'] th {
+  background: oklch(94% 0.008 275);
+}
+
+td {
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--sl-color-hairline);
+  vertical-align: top;
+}
+
+[data-theme='dark'] tbody tr:nth-child(even) {
+  background: oklch(11.5% 0.013 275);
+}
+
+[data-theme='dark'] tbody tr:hover {
+  background: oklch(15% 0.02 280);
+}
+
+td code {
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+
+/* ── Cards & Pagination Links ──────────────────────────────── */
+.card,
+.link-card,
+.pagination-links a {
+  border-radius: 4px !important;
+  border: 1px solid var(--sl-color-hairline-light) !important;
+  box-shadow: none !important;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.link-card:hover,
+.pagination-links a:hover {
+  border-color: var(--sl-color-accent) !important;
+  background: var(--sl-color-accent-low) !important;
+}
+
+/* ── Badges ────────────────────────────────────────────────── */
+.sl-badge,
+.badge {
+  font-family: var(--sl-font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 2px;
+}
+
+/* ── Links ─────────────────────────────────────────────────── */
+a {
+  transition: color 0.15s ease;
+}
+
+nav a:hover {
+  color: var(--sl-color-accent-high);
 }

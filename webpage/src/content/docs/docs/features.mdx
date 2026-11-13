@@ -3,7 +3,8 @@ title: Features
 description: A comprehensive look at Zart's durable execution capabilities.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Code } from '@astrojs/starlight/components';
+import { ZART_VERSION } from '../../../lib/version';
 
 Zart provides everything you need to build reliable, long-running workflows in Rust. Here is a detailed look at each feature.
 
@@ -216,10 +217,8 @@ let worker = zart::WorkerBuilder::from_backend(&pg)
 
 All workflow state is persisted to PostgreSQL via the `zart` crate (`PgBackend`). No extra infrastructure — just a database you already have.
 
-```toml
-[dependencies]
-zart = "0.1"
-```
+<Code lang="toml" code={`[dependencies]
+zart = "${ZART_VERSION}"`} />
 
 ---
 

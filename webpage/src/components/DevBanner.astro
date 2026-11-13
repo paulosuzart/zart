@@ -4,6 +4,7 @@
 ---
 <div id="zart-dev-banner" role="status">
   <p>
+    <span class="banner-tag">ALPHA</span>
     Zart is in active development — breaking API changes may occur despite our
     best efforts to keep contracts stable.
   </p>
@@ -18,17 +19,18 @@
     align-items: center;
     justify-content: center;
     gap: 1rem;
-    padding: 0.55rem 1.25rem;
-    background: oklch(20% 0.09 285);
-    color: oklch(82% 0.14 285);
-    font-size: 0.82rem;
-    border-bottom: 1px solid oklch(32% 0.12 285 / 0.8);
+    padding: 0.5rem 1.25rem;
+    background: oklch(13% 0.014 275);
+    color: oklch(78% 0.015 275);
+    font-family: var(--sl-font);
+    font-size: 0.8rem;
+    border-bottom: 1px solid oklch(23% 0.016 275);
   }
 
   [data-theme="light"] #zart-dev-banner {
-    background: oklch(93% 0.04 285);
-    color: oklch(28% 0.12 285);
-    border-bottom-color: oklch(70% 0.15 285 / 0.3);
+    background: oklch(95% 0.006 275);
+    color: oklch(30% 0.02 275);
+    border-bottom-color: oklch(86% 0.01 275);
   }
 
   #zart-dev-banner[hidden] {
@@ -39,25 +41,54 @@
     margin: 0;
     max-width: none;
     line-height: 1.4;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .banner-tag {
+    font-family: var(--sl-font-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 0.12rem 0.42rem;
+    border-radius: 2px;
+    background: oklch(22% 0.07 282 / 0.55);
+    border: 1px solid oklch(66% 0.22 282 / 0.4);
+    color: oklch(78% 0.16 282);
+  }
+
+  [data-theme="light"] .banner-tag {
+    background: oklch(92% 0.03 282);
+    border-color: oklch(60% 0.18 282 / 0.35);
+    color: oklch(44% 0.18 282);
   }
 
   #zart-dev-banner-close {
     flex-shrink: 0;
     background: none;
-    border: 1px solid currentColor;
-    border-radius: 4px;
+    border: 1px solid oklch(30% 0.018 275);
+    border-radius: 3px;
     color: inherit;
     cursor: pointer;
-    font-size: 0.72rem;
+    font-family: var(--sl-font-mono);
+    font-size: 0.7rem;
     line-height: 1;
-    opacity: 0.6;
-    padding: 0.25rem 0.45rem;
-    transition: opacity 0.15s ease, background 0.15s ease;
+    opacity: 0.65;
+    padding: 0.24rem 0.42rem;
+    transition: opacity 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+
+  [data-theme="light"] #zart-dev-banner-close {
+    border-color: oklch(78% 0.015 275);
   }
 
   #zart-dev-banner-close:hover {
     opacity: 1;
-    background: oklch(100% 0 0 / 0.08);
+    border-color: oklch(66% 0.22 282 / 0.6);
+    background: oklch(100% 0 0 / 0.06);
   }
 </style>
 
