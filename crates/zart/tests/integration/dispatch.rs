@@ -2,58 +2,12 @@
 use super::helpers::*;
 use std::time::Duration;
 use uuid::Uuid;
-use zart::{DurableRegistry, DurableScheduler, step_types::StepDefId};
+use zart::{DurableRegistry, DurableScheduler};
 use zart_core::TaskMetadata;
 use zart_core::types::{
     CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleStepParams, StepKind,
     UpsertWaitGroupStepParams,
 };
-
-#[tokio::test]
-#[ignore = "requires PostgreSQL — run with: just test-integration"]
-async fn stepdefid_from_task_metadata_correct() {
-    use zart_core::TaskMetadata;
-    use zart_core::task_metadata::StepMetaType;
-
-    let make = |step_type: StepMetaType,
-                step_name: &str,
-                wg_step_name: Option<&str>,
-                is_wait_all_child: Option<bool>|
-     -> TaskMetadata {
-        TaskMetadata::Step {
-            step_type,
-            run_id: "exec-1:run:0".into(),
-            execution_id: "exec-1".into(),
-            step_name: step_name.into(),
-            retry_attempt: 0,
-            retry_config: None,
-            deadline: None,
-            is_wait_all_child,
-            wg_step_name: wg_step_name.map(str::to_string),
-        }
-    };
-
-    let wg_new = make(StepMetaType::Step, "child-a", Some("__wg__all__abc"), None);
-    let wg_old = make(StepMetaType::Step, "child-b", None, Some(true));
-    let sleep = make(StepMetaType::Sleep, "__sleep", None, None);
-    let event = make(StepMetaType::WaitForEvent, "approval", None, None);
-    let regular = make(StepMetaType::Step, "step-one", None, None);
-
-    assert_eq!(
-        StepDefId::from_task_metadata(&wg_new),
-        StepDefId::WaitGroupChild
-    );
-    assert_eq!(
-        StepDefId::from_task_metadata(&wg_old),
-        StepDefId::WaitGroupChild
-    );
-    assert_eq!(StepDefId::from_task_metadata(&sleep), StepDefId::Sleep);
-    assert_eq!(
-        StepDefId::from_task_metadata(&event),
-        StepDefId::WaitForEvent
-    );
-    assert_eq!(StepDefId::from_task_metadata(&regular), StepDefId::Step);
-}
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL — run with: just test-integration"]

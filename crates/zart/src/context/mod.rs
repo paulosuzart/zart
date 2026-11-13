@@ -15,7 +15,6 @@ mod task_context;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use state::PendingFn;
 pub use state::{AttemptStatus, ExecutionState, StepAttempt, StepHandle, StepRecord, StepStatus};
 pub(crate) use step_context::StepContext;
 pub use step_trait::{NamedStep, ZartStep};
