@@ -151,9 +151,7 @@ pub trait ZartStep {
     ///
     /// **Note**: Do NOT call this directly. Use `zart::step(self)` or `.await` instead,
     /// which handles retry and timeout configuration automatically.
-    fn run(
-        &self,
-    ) -> impl std::future::Future<Output = Result<Self::Output, Self::Error>> + Send;
+    fn run(&self) -> impl std::future::Future<Output = Result<Self::Output, Self::Error>> + Send;
 }
 
 // ── NamedStep — call-site identity override ──────────────────────────────────

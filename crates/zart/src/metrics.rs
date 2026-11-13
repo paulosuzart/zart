@@ -10,9 +10,9 @@
 //! `prometheus` is not compiled into your binary.
 
 #[cfg(feature = "metrics")]
-use std::sync::LazyLock;
-#[cfg(feature = "metrics")]
 use prometheus::{CounterVec, Gauge, HistogramOpts, HistogramVec, Registry};
+#[cfg(feature = "metrics")]
+use std::sync::LazyLock;
 
 /// Evaluate a metrics expression when the `metrics` feature is enabled;
 /// compile to nothing otherwise.
@@ -35,17 +35,28 @@ macro_rules! emit_metric {
 #[cfg(feature = "metrics")]
 pub static METRICS_REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
     let reg = Registry::new();
-    reg.register(Box::new(TASKS_TOTAL.clone())).expect("register TASKS_TOTAL");
-    reg.register(Box::new(TASK_DURATION_SECONDS.clone())).expect("register TASK_DURATION");
-    reg.register(Box::new(STEPS_TOTAL.clone())).expect("register STEPS_TOTAL");
-    reg.register(Box::new(STEP_DURATION_SECONDS.clone())).expect("register STEP_DURATION");
-    reg.register(Box::new(QUEUE_DEPTH.clone())).expect("register QUEUE_DEPTH");
-    reg.register(Box::new(WORKER_CONCURRENT_TASKS.clone())).expect("register WORKER_CONCURRENT");
-    reg.register(Box::new(POLL_INTERVAL_SECONDS.clone())).expect("register POLL_INTERVAL");
-    reg.register(Box::new(EXECUTIONS_TOTAL.clone())).expect("register EXECUTIONS_TOTAL");
-    reg.register(Box::new(EVENTS_DELIVERED_TOTAL.clone())).expect("register EVENTS_DELIVERED");
-    reg.register(Box::new(TASK_HEARTBEAT_RENEWALS_TOTAL.clone())).expect("register TASK_HEARTBEAT_RENEWALS");
-    reg.register(Box::new(HEARTBEAT_ACTIVE.clone())).expect("register HEARTBEAT_ACTIVE");
+    reg.register(Box::new(TASKS_TOTAL.clone()))
+        .expect("register TASKS_TOTAL");
+    reg.register(Box::new(TASK_DURATION_SECONDS.clone()))
+        .expect("register TASK_DURATION");
+    reg.register(Box::new(STEPS_TOTAL.clone()))
+        .expect("register STEPS_TOTAL");
+    reg.register(Box::new(STEP_DURATION_SECONDS.clone()))
+        .expect("register STEP_DURATION");
+    reg.register(Box::new(QUEUE_DEPTH.clone()))
+        .expect("register QUEUE_DEPTH");
+    reg.register(Box::new(WORKER_CONCURRENT_TASKS.clone()))
+        .expect("register WORKER_CONCURRENT");
+    reg.register(Box::new(POLL_INTERVAL_SECONDS.clone()))
+        .expect("register POLL_INTERVAL");
+    reg.register(Box::new(EXECUTIONS_TOTAL.clone()))
+        .expect("register EXECUTIONS_TOTAL");
+    reg.register(Box::new(EVENTS_DELIVERED_TOTAL.clone()))
+        .expect("register EVENTS_DELIVERED");
+    reg.register(Box::new(TASK_HEARTBEAT_RENEWALS_TOTAL.clone()))
+        .expect("register TASK_HEARTBEAT_RENEWALS");
+    reg.register(Box::new(HEARTBEAT_ACTIVE.clone()))
+        .expect("register HEARTBEAT_ACTIVE");
     reg
 });
 
