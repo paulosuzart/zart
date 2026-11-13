@@ -248,16 +248,13 @@ Make it friendly and helpful."#,
     );
 
     let messages = vec![ChatMessage::user().content(&prompt).build()];
-    let response = llm
-        .chat(&messages, None)
-        .await
-        .map_err(|e| {
-            eprintln!("  [generate-summary] error: {e}");
-            StepError::Failed {
-                step: "generate-summary".to_string(),
-                reason: format!("LLM summary generation failed: {e}"),
-            }
-        })?;
+    let response = llm.chat(&messages, None).await.map_err(|e| {
+        eprintln!("  [generate-summary] error: {e}");
+        StepError::Failed {
+            step: "generate-summary".to_string(),
+            reason: format!("LLM summary generation failed: {e}"),
+        }
+    })?;
 
     Ok(response.text().unwrap_or_default())
 }
