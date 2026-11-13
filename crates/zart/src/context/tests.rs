@@ -219,7 +219,6 @@ impl std::error::Error for TestStepError {}
 
 struct ChargeCardStep;
 
-#[async_trait::async_trait]
 impl ZartStep for ChargeCardStep {
     type Output = u32;
     type Error = TestStepError;
@@ -235,7 +234,6 @@ struct ChargeCardStepWithResult {
     result: u32,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for ChargeCardStepWithResult {
     type Output = u32;
     type Error = TestStepError;
@@ -249,7 +247,6 @@ impl ZartStep for ChargeCardStepWithResult {
 
 struct StepOne;
 
-#[async_trait::async_trait]
 impl ZartStep for StepOne {
     type Output = i32;
     type Error = TestStepError;
@@ -265,7 +262,6 @@ struct StepA;
 struct StepB;
 struct StepC;
 
-#[async_trait::async_trait]
 impl ZartStep for StepA {
     type Output = u32;
     type Error = TestStepError;
@@ -276,7 +272,6 @@ impl ZartStep for StepA {
         Ok(1)
     }
 }
-#[async_trait::async_trait]
 impl ZartStep for StepB {
     type Output = u32;
     type Error = TestStepError;
@@ -287,7 +282,6 @@ impl ZartStep for StepB {
         Ok(2)
     }
 }
-#[async_trait::async_trait]
 impl ZartStep for StepC {
     type Output = u32;
     type Error = TestStepError;
@@ -449,7 +443,6 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
     let ctx = make_body_ctx(scheduler);
 
     struct CachedStepA;
-    #[async_trait::async_trait]
     impl ZartStep for CachedStepA {
         type Output = u32;
         type Error = TestStepError;
@@ -461,7 +454,6 @@ async fn wait_all_body_mode_all_completed_returns_results_with_zero_new_tasks() 
         }
     }
     struct CachedStepB;
-    #[async_trait::async_trait]
     impl ZartStep for CachedStepB {
         type Output = u32;
         type Error = TestStepError;
@@ -568,7 +560,6 @@ async fn body_mode_execute_step_with_retry_embeds_retry_config_in_metadata() {
     let ctx = make_body_ctx(scheduler);
 
     struct RetryStep;
-    #[async_trait::async_trait]
     impl ZartStep for RetryStep {
         type Output = u32;
         type Error = TestStepError;
@@ -681,7 +672,6 @@ async fn body_mode_loop_with_unique_names_returns_correct_per_iteration_result()
     struct LoopItemStep {
         index: usize,
     }
-    #[async_trait::async_trait]
     impl ZartStep for LoopItemStep {
         type Output = u32;
         type Error = TestStepError;

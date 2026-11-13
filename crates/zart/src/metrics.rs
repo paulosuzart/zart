@@ -7,12 +7,12 @@
 //! ```
 //!
 //! When the feature is disabled every function in this module is a no-op and
-//! neither `prometheus` nor `lazy_static` are compiled into your binary.
+//! `prometheus` is not compiled into your binary.
 
 #[cfg(feature = "metrics")]
-use lazy_static::lazy_static;
-#[cfg(feature = "metrics")]
 use prometheus::{CounterVec, Gauge, HistogramOpts, HistogramVec, Registry};
+#[cfg(feature = "metrics")]
+use std::sync::LazyLock;
 
 /// Evaluate a metrics expression when the `metrics` feature is enabled;
 /// compile to nothing otherwise.
@@ -27,107 +27,173 @@ macro_rules! emit_metric {
     ($($tt:tt)*) => {};
 }
 
+/// Global Prometheus registry for Zart metrics.
+///
+/// All metrics are eagerly registered during initialisation so that
+/// every test and every worker sees a fully-populated registry
+/// regardless of execution order.
 #[cfg(feature = "metrics")]
-lazy_static! {
-    /// Global Prometheus registry for Zart metrics.
-    ///
-    /// All metrics are eagerly registered during initialisation so that
-    /// every test and every worker sees a fully-populated registry
-    /// regardless of execution order.
-    pub static ref METRICS_REGISTRY: Registry = {
-        let reg = Registry::new();
-        reg.register(Box::new(TASKS_TOTAL.clone())).expect("register TASKS_TOTAL");
-        reg.register(Box::new(TASK_DURATION_SECONDS.clone())).expect("register TASK_DURATION");
-        reg.register(Box::new(STEPS_TOTAL.clone())).expect("register STEPS_TOTAL");
-        reg.register(Box::new(STEP_DURATION_SECONDS.clone())).expect("register STEP_DURATION");
-        reg.register(Box::new(QUEUE_DEPTH.clone())).expect("register QUEUE_DEPTH");
-        reg.register(Box::new(WORKER_CONCURRENT_TASKS.clone())).expect("register WORKER_CONCURRENT");
-        reg.register(Box::new(POLL_INTERVAL_SECONDS.clone())).expect("register POLL_INTERVAL");
-        reg.register(Box::new(EXECUTIONS_TOTAL.clone())).expect("register EXECUTIONS_TOTAL");
-        reg.register(Box::new(EVENTS_DELIVERED_TOTAL.clone())).expect("register EVENTS_DELIVERED");
-        reg.register(Box::new(TASK_HEARTBEAT_RENEWALS_TOTAL.clone())).expect("register TASK_HEARTBEAT_RENEWALS");
-        reg.register(Box::new(HEARTBEAT_ACTIVE.clone())).expect("register HEARTBEAT_ACTIVE");
-        reg
-    };
+pub static METRICS_REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
+    let reg = Registry::new();
+    reg.register(Box::new(TASKS_TOTAL.clone()))
+        .expect("register TASKS_TOTAL");
+    reg.register(Box::new(TASK_DURATION_SECONDS.clone()))
+        .expect("register TASK_DURATION");
+    reg.register(Box::new(STEPS_TOTAL.clone()))
+        .expect("register STEPS_TOTAL");
+    reg.register(Box::new(STEP_DURATION_SECONDS.clone()))
+        .expect("register STEP_DURATION");
+    reg.register(Box::new(QUEUE_DEPTH.clone()))
+        .expect("register QUEUE_DEPTH");
+    reg.register(Box::new(WORKER_CONCURRENT_TASKS.clone()))
+        .expect("register WORKER_CONCURRENT");
+    reg.register(Box::new(POLL_INTERVAL_SECONDS.clone()))
+        .expect("register POLL_INTERVAL");
+    reg.register(Box::new(EXECUTIONS_TOTAL.clone()))
+        .expect("register EXECUTIONS_TOTAL");
+    reg.register(Box::new(EVENTS_DELIVERED_TOTAL.clone()))
+        .expect("register EVENTS_DELIVERED");
+    reg.register(Box::new(TASK_HEARTBEAT_RENEWALS_TOTAL.clone()))
+        .expect("register TASK_HEARTBEAT_RENEWALS");
+    reg.register(Box::new(HEARTBEAT_ACTIVE.clone()))
+        .expect("register HEARTBEAT_ACTIVE");
+    reg
+});
 
-    /// Total number of tasks by status (completed, failed, cancelled, scheduled).
-    pub static ref TASKS_TOTAL: CounterVec = CounterVec::new(
+/// Total number of tasks by status (completed, failed, cancelled, scheduled).
+#[cfg(feature = "metrics")]
+pub static TASKS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    CounterVec::new(
         prometheus::opts!("zart_tasks_total", "Total number of tasks by status"),
-        &["status"]
-    ).expect("create tasks_total");
+        &["status"],
+    )
+    .expect("create tasks_total")
+});
 
-    /// Task execution duration in seconds.
-    pub static ref TASK_DURATION_SECONDS: HistogramVec = HistogramVec::new(
+/// Task execution duration in seconds.
+#[cfg(feature = "metrics")]
+pub static TASK_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    HistogramVec::new(
         HistogramOpts::new(
             "zart_task_duration_seconds",
-            "Task execution duration in seconds"
+            "Task execution duration in seconds",
         )
-        .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0]),
-        &["task_name", "status"]
-    ).expect("create task_duration_seconds");
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0,
+        ]),
+        &["task_name", "status"],
+    )
+    .expect("create task_duration_seconds")
+});
 
-    /// Total number of steps by status (completed, failed, scheduled, waiting_for_event).
-    pub static ref STEPS_TOTAL: CounterVec = CounterVec::new(
+/// Total number of steps by status (completed, failed, scheduled, waiting_for_event).
+#[cfg(feature = "metrics")]
+pub static STEPS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    CounterVec::new(
         prometheus::opts!("zart_steps_total", "Total number of steps by status"),
-        &["status", "step_name"]
-    ).expect("create steps_total");
+        &["status", "step_name"],
+    )
+    .expect("create steps_total")
+});
 
-    /// Step execution duration in seconds.
-    pub static ref STEP_DURATION_SECONDS: HistogramVec = HistogramVec::new(
+/// Step execution duration in seconds.
+#[cfg(feature = "metrics")]
+pub static STEP_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    HistogramVec::new(
         HistogramOpts::new(
             "zart_step_duration_seconds",
-            "Step execution duration in seconds"
+            "Step execution duration in seconds",
         )
-        .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0]),
-        &["step_name", "status"]
-    ).expect("create step_duration_seconds");
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0,
+        ]),
+        &["step_name", "status"],
+    )
+    .expect("create step_duration_seconds")
+});
 
-    /// Number of tasks currently waiting to be picked up (queue depth).
-    pub static ref QUEUE_DEPTH: Gauge = Gauge::new(
+/// Number of tasks currently waiting to be picked up (queue depth).
+#[cfg(feature = "metrics")]
+pub static QUEUE_DEPTH: LazyLock<Gauge> = LazyLock::new(|| {
+    Gauge::new(
         "zart_queue_depth",
-        "Number of tasks waiting to be picked up"
-    ).expect("create queue_depth");
+        "Number of tasks waiting to be picked up",
+    )
+    .expect("create queue_depth")
+});
 
-    /// Number of tasks currently executing concurrently.
-    pub static ref WORKER_CONCURRENT_TASKS: Gauge = Gauge::new(
+/// Number of tasks currently executing concurrently.
+#[cfg(feature = "metrics")]
+pub static WORKER_CONCURRENT_TASKS: LazyLock<Gauge> = LazyLock::new(|| {
+    Gauge::new(
         "zart_worker_concurrent_tasks",
-        "Number of tasks currently executing"
-    ).expect("create worker_concurrent_tasks");
+        "Number of tasks currently executing",
+    )
+    .expect("create worker_concurrent_tasks")
+});
 
-    /// Time between poll cycles in seconds.
-    pub static ref POLL_INTERVAL_SECONDS: HistogramVec = HistogramVec::new(
+/// Time between poll cycles in seconds.
+#[cfg(feature = "metrics")]
+pub static POLL_INTERVAL_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    HistogramVec::new(
         HistogramOpts::new(
             "zart_poll_interval_seconds",
-            "Time between poll cycles in seconds"
+            "Time between poll cycles in seconds",
         )
         .buckets(vec![0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]),
-        &[]
-    ).expect("create poll_interval_seconds");
+        &[],
+    )
+    .expect("create poll_interval_seconds")
+});
 
-    /// Total number of durable executions by status.
-    pub static ref EXECUTIONS_TOTAL: CounterVec = CounterVec::new(
-        prometheus::opts!("zart_executions_total", "Total number of durable executions by status"),
-        &["status", "task_name"]
-    ).expect("create executions_total");
+/// Total number of durable executions by status.
+#[cfg(feature = "metrics")]
+pub static EXECUTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    CounterVec::new(
+        prometheus::opts!(
+            "zart_executions_total",
+            "Total number of durable executions by status"
+        ),
+        &["status", "task_name"],
+    )
+    .expect("create executions_total")
+});
 
-    /// Total number of events delivered.
-    pub static ref EVENTS_DELIVERED_TOTAL: CounterVec = CounterVec::new(
-        prometheus::opts!("zart_events_delivered_total", "Total number of events delivered"),
-        &["event_name", "status"]
-    ).expect("create events_delivered_total");
+/// Total number of events delivered.
+#[cfg(feature = "metrics")]
+pub static EVENTS_DELIVERED_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    CounterVec::new(
+        prometheus::opts!(
+            "zart_events_delivered_total",
+            "Total number of events delivered"
+        ),
+        &["event_name", "status"],
+    )
+    .expect("create events_delivered_total")
+});
 
-    /// Total number of task lease renewals via heartbeat.
-    pub static ref TASK_HEARTBEAT_RENEWALS_TOTAL: CounterVec = CounterVec::new(
-        prometheus::opts!("zart_task_heartbeat_renewals_total", "Total number of task lease renewals via heartbeat"),
-        &["task_name", "status"]
-    ).expect("create task_heartbeat_renewals_total");
+/// Total number of task lease renewals via heartbeat.
+#[cfg(feature = "metrics")]
+pub static TASK_HEARTBEAT_RENEWALS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    CounterVec::new(
+        prometheus::opts!(
+            "zart_task_heartbeat_renewals_total",
+            "Total number of task lease renewals via heartbeat"
+        ),
+        &["task_name", "status"],
+    )
+    .expect("create task_heartbeat_renewals_total")
+});
 
-    /// Number of currently active heartbeat loops.
-    pub static ref HEARTBEAT_ACTIVE: prometheus::IntGauge = prometheus::IntGauge::new(
+/// Number of currently active heartbeat loops.
+#[cfg(feature = "metrics")]
+pub static HEARTBEAT_ACTIVE: LazyLock<prometheus::IntGauge> = LazyLock::new(|| {
+    prometheus::IntGauge::new(
         "zart_heartbeat_active",
-        "Number of currently active heartbeat loops"
-    ).expect("create heartbeat_active");
-}
+        "Number of currently active heartbeat loops",
+    )
+    .expect("create heartbeat_active")
+});
 
 /// Encode all registered metrics in Prometheus text format.
 ///

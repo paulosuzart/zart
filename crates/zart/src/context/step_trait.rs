@@ -42,7 +42,6 @@ use std::borrow::Cow;
 ///     order_id: OrderId,
 /// }
 ///
-/// #[async_trait::async_trait]
 /// impl ZartStep for ChargePayment {
 ///     type Output = ChargeReceipt;
 ///     type Error  = PaymentError;
@@ -81,7 +80,6 @@ use std::borrow::Cow;
 /// automatically; `run()` always sees a clean call with no prior state.
 ///
 /// [`DurableExecution`]: crate::registry::DurableExecution
-#[async_trait::async_trait]
 pub trait ZartStep {
     /// The output type this step produces.
     type Output: serde::Serialize + serde::de::DeserializeOwned + Send + Sync;
@@ -153,7 +151,7 @@ pub trait ZartStep {
     ///
     /// **Note**: Do NOT call this directly. Use `zart::step(self)` or `.await` instead,
     /// which handles retry and timeout configuration automatically.
-    async fn run(&self) -> Result<Self::Output, Self::Error>;
+    fn run(&self) -> impl std::future::Future<Output = Result<Self::Output, Self::Error>> + Send;
 }
 
 // ── NamedStep — call-site identity override ──────────────────────────────────
@@ -169,7 +167,6 @@ pub struct NamedStep<S> {
     pub(crate) id: String,
 }
 
-#[async_trait::async_trait]
 impl<S> ZartStep for NamedStep<S>
 where
     S: ZartStep + Send + Sync,

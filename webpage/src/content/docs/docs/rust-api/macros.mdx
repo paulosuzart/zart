@@ -157,7 +157,6 @@ use std::time::Duration;
 
 struct SendEmailStep { email: String }
 
-#[async_trait]
 impl ZartStep for SendEmailStep {
     type Output = ();
     fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("send-email") }
@@ -168,7 +167,6 @@ impl ZartStep for SendEmailStep {
 
 struct CreateCustomerStep { email: String }
 
-#[async_trait]
 impl ZartStep for CreateCustomerStep {
     type Output = String;
     fn step_name(&self) -> Cow<'static, str> { Cow::Borrowed("create-stripe-customer") }

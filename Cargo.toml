@@ -45,7 +45,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prometheus = "0.14"
-lazy_static = "1.5"
 
 # Graceful shutdown
 tokio-util = { version = "0.7", features = ["rt"] }

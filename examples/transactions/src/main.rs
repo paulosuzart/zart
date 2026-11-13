@@ -88,7 +88,6 @@ struct DeductBalanceStep {
     amount: i64,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for DeductBalanceStep {
     type Output = i64;
     type Error = TransferError;
@@ -127,7 +126,6 @@ struct MarkOnboardedStep {
     user_id: Uuid,
 }
 
-#[async_trait::async_trait]
 impl ZartStep for MarkOnboardedStep {
     type Output = ();
     type Error = TransferError;

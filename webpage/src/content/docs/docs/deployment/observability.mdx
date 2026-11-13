@@ -64,7 +64,7 @@ zart = { version = "${ZART_VERSION}", features = ["metrics"] }
 # If you also use zart-api, enable its matching feature:
 zart-api = { version = "${ZART_VERSION}", features = ["metrics"] }`} />
 
-Without this feature neither `prometheus` nor `lazy_static` are compiled into your binary. All metric call sites become no-ops and `gather_metrics()` returns an empty string.
+Without this feature `prometheus` is not compiled into your binary (metrics use `std::sync::LazyLock` when enabled). All metric call sites become no-ops and `gather_metrics()` returns an empty string.
 
 Zart maintains a private Prometheus registry. All metrics are registered at startup; you expose them by calling `gather_metrics()` at whatever path suits your application.
 

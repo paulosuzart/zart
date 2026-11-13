@@ -17,7 +17,6 @@
 //!
 //! struct SendWelcomeEmail { user_id: Uuid }
 //!
-//! #[async_trait::async_trait]
 //! impl ZartStep for SendWelcomeEmail {
 //!     type Output = ();
 //!     type Error  = MyError;
@@ -30,7 +29,6 @@
 //!
 //! struct CreateWorkspace { user_id: Uuid }
 //!
-//! #[async_trait::async_trait]
 //! impl ZartStep for CreateWorkspace {
 //!     type Output = Uuid;
 //!     type Error  = MyError;
