@@ -5,7 +5,7 @@
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// // Global scope (default): 5 minutes total across all retries
 /// #[zart_step("call-api", timeout = "5m", retry = "fixed(3, 1s)")]
 ///

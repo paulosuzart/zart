@@ -63,7 +63,7 @@ pub trait CompletionHandler: Send + 'static {
 /// call `mark_failed`.
 ///
 /// External implementations can return standard handlers from
-/// [`crate::completion`](crate::completion): [`OnComplete`](crate::completion::OnComplete),
+/// [`crate::completion`]: [`OnComplete`](crate::completion::OnComplete),
 /// [`OnReschedule`](crate::completion::OnReschedule), or
 /// [`WithTransaction`](crate::completion::WithTransaction).
 #[async_trait]

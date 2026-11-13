@@ -10,14 +10,14 @@ use super::PostgresStorage;
 #[async_trait]
 impl PauseStorage for PostgresStorage {
     async fn create_pause_rule(&self, rule: PauseRule) -> Result<PauseRule, StorageError> {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {pause_rules}
                 (rule_id, execution_id, task_name, step_pattern, reason, created_at, expires_at, created_by)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
             pause_rules = self.table_names.pause_rules(),
-        ))
+        )))
         .bind(&rule.rule_id)
         .bind(&rule.execution_id)
         .bind(&rule.task_name)
@@ -38,14 +38,14 @@ impl PauseStorage for PostgresStorage {
         rule_id: &str,
         deleted_by: Option<&str>,
     ) -> Result<bool, StorageError> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             UPDATE {pause_rules}
             SET deleted_at = NOW(), deleted_by = $2
             WHERE rule_id = $1 AND deleted_at IS NULL
             "#,
             pause_rules = self.table_names.pause_rules(),
-        ))
+        )))
         .bind(rule_id)
         .bind(deleted_by)
         .execute(&self.pool)
@@ -71,7 +71,7 @@ impl PauseStorage for PostgresStorage {
             Option<String>,
             Option<chrono::DateTime<chrono::Utc>>,
             Option<String>,
-        )> = sqlx::query_as(&format!(
+        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT rule_id, execution_id, task_name, step_pattern, reason,
                    created_at, expires_at, created_by, deleted_at, deleted_by
@@ -81,7 +81,7 @@ impl PauseStorage for PostgresStorage {
             ORDER BY created_at DESC
             "#,
             pause_rules = self.table_names.pause_rules(),
-        ))
+        )))
         .bind(&filter.execution_id)
         .bind(&filter.task_name)
         .fetch_all(&self.pool)
@@ -128,7 +128,7 @@ impl PauseStorage for PostgresStorage {
         step_name: Option<&str>,
     ) -> Result<bool, StorageError> {
         let rules: Vec<(Option<String>, Option<String>, Option<String>)> =
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 r#"
             SELECT execution_id, task_name, step_pattern
             FROM {pause_rules}
@@ -138,7 +138,7 @@ impl PauseStorage for PostgresStorage {
               AND (task_name IS NULL OR task_name = $2)
             "#,
                 pause_rules = self.table_names.pause_rules(),
-            ))
+            )))
             .bind(execution_id)
             .bind(task_name)
             .fetch_all(&self.pool)

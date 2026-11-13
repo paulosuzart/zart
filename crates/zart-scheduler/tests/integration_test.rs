@@ -258,9 +258,9 @@ mod postgres_tests {
             // INCLUDING ALL copies column defaults, check constraints, indexes
             // (including PK/unique), and storage parameters — but NOT FK constraints,
             // which is fine since our queries don't rely on cross-table FKs at test time.
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE {custom} (LIKE {zart} INCLUDING ALL)"
-            ))
+            )))
             .execute(pool)
             .await
             .unwrap_or_else(|e| panic!("failed to create table {custom}: {e}"));
@@ -272,10 +272,12 @@ mod postgres_tests {
         let tables = ["tasks"];
         for base in &tables {
             let custom = format!("{prefix}{base}");
-            sqlx::query(&format!("DROP TABLE IF EXISTS {custom} CASCADE"))
-                .execute(pool)
-                .await
-                .ok();
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {custom} CASCADE"
+            )))
+            .execute(pool)
+            .await
+            .ok();
         }
     }
 
@@ -316,9 +318,9 @@ mod postgres_tests {
         assert_eq!(in_default, 0, "task should NOT be in zart_tasks");
 
         // Verify the task IS in the custom table.
-        let in_custom: i64 = sqlx::query_scalar(&format!(
+        let in_custom: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM {prefix}tasks WHERE task_id = $1"
-        ))
+        )))
         .bind(&task_id)
         .fetch_one(&pool)
         .await
