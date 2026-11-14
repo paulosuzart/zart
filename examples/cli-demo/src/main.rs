@@ -220,18 +220,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Task: zart::cli_demo::CliDemoTask");
     println!();
 
-    let config = zart::WorkerConfig {
-        poll_interval: Duration::from_millis(500),
-        max_tasks_per_poll: 10,
-        max_concurrent_tasks: 4,
-        shutdown_timeout: Duration::from_secs(10),
-        orphan_timeout: Duration::from_secs(30),
-        ..Default::default()
-    };
-
     let worker = zart::WorkerBuilder::from_backend(&pg)
         .register_durable_task("zart::cli_demo::CliDemoTask", CliDemoTask)
-        .config(config)
         .build();
 
     println!("Worker starting... (press Ctrl+C to stop)");
