@@ -9,7 +9,7 @@ use tracing::{Instrument, error, info, instrument, warn};
 
 use crate::ops::ExecutionOps;
 use crate::registry::TaskRegistry;
-use crate::store::TaskScheduler;
+use crate::store::{TaskScheduler, WakeupOptions};
 use crate::task::{CompletionHandler, TaskInstance};
 use crate::types::{FetchedTask, ScheduleAtParams};
 use crate::worker_config::WorkerConfig;
@@ -86,10 +86,12 @@ impl Worker {
         }
     }
 
-    /// Start the polling loop.
+    /// Start the adaptive polling loop.
     ///
     /// Runs until [`stop`](Self::stop) is called or the cancellation token is
-    /// triggered. Orphan recovery runs every 10 poll cycles.
+    /// triggered. Drains full batches without sleeping, waits on wakeup
+    /// notifications or `poll_interval` when idle, and runs orphan recovery at
+    /// `max(orphan_timeout / 2, 10s)` intervals.
     #[instrument(name = "scheduler_worker.run", skip(self))]
     pub async fn run(&self) {
         info!(
@@ -97,6 +99,7 @@ impl Worker {
             max_tasks = self.config.max_tasks_per_poll,
             concurrency = self.config.max_concurrent_tasks,
             orphan_timeout_secs = self.config.orphan_timeout.as_secs(),
+            enable_listen_notify = self.config.enable_listen_notify,
             "Scheduler worker starting"
         );
 
@@ -107,42 +110,36 @@ impl Worker {
             }
         }
 
+        let wakeup = self
+            .scheduler
+            .subscribe_wakeups(
+                WakeupOptions {
+                    enable_listen_notify: self.config.enable_listen_notify,
+                    subscribed_queues: Vec::new(),
+                },
+                self.cancellation.clone(),
+            )
+            .await;
+
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_tasks));
         let permit_returned = Arc::new(Notify::new());
-        let mut poll_count: u32 = 0;
+        let orphan_recovery_interval =
+            (self.config.orphan_timeout / 2).max(Duration::from_secs(10));
+        let mut last_orphan_recovery = tokio::time::Instant::now();
 
         loop {
-            let shutdown_notified = self.shutdown.notified();
-            let cancellation = self.cancellation.cancelled();
-            tokio::pin!(shutdown_notified);
-            tokio::pin!(cancellation);
-
-            tokio::select! {
-                biased;
-                _ = &mut shutdown_notified => {
-                    info!("Scheduler worker shutdown signal received, exiting poll loop");
-                    break;
-                }
-                _ = &mut cancellation => {
-                    info!("Scheduler worker cancellation token triggered, exiting poll loop");
-                    break;
-                }
-                _ = tokio::time::sleep(self.config.poll_interval) => {}
+            if self.cancellation.is_cancelled() {
+                info!("Scheduler worker cancellation token triggered, exiting poll loop");
+                break;
             }
 
-            poll_count += 1;
-
-            if poll_count.is_multiple_of(10) {
-                match self
-                    .scheduler
-                    .recover_orphans(self.config.orphan_timeout)
-                    .await
-                {
-                    Ok(n) if n > 0 => info!(recovered = n, "Orphan tasks recovered"),
-                    Ok(_) => {}
-                    Err(e) => error!(error = %e, "Orphan recovery failed"),
-                }
-            }
+            maybe_recover_orphans(
+                &*self.scheduler,
+                self.config.orphan_timeout,
+                orphan_recovery_interval,
+                &mut last_orphan_recovery,
+            )
+            .await;
 
             let Some(available) = wait_for_capacity(
                 &semaphore,
@@ -164,15 +161,24 @@ impl Worker {
                 Ok(t) => t,
                 Err(e) => {
                     error!(error = %e, "Failed to poll for due tasks");
+                    if !wait_idle(
+                        None,
+                        self.config.poll_interval,
+                        &self.shutdown,
+                        &self.cancellation,
+                    )
+                    .await
+                    {
+                        break;
+                    }
                     continue;
                 }
             };
 
-            if tasks.is_empty() {
-                continue;
+            let fetched_count = tasks.len();
+            if fetched_count > 0 {
+                info!(count = fetched_count, "Fetched tasks for dispatch");
             }
-
-            info!(count = tasks.len(), "Fetched tasks for dispatch");
 
             for task in tasks {
                 let permit = match semaphore.clone().try_acquire_owned() {
@@ -211,6 +217,24 @@ impl Worker {
                     .in_current_span(),
                 );
             }
+
+            if fetched_count == batch_limit {
+                if semaphore.available_permits() > 0 {
+                    tokio::task::yield_now().await;
+                }
+                continue;
+            }
+
+            if !wait_idle(
+                wakeup.as_deref(),
+                self.config.poll_interval,
+                &self.shutdown,
+                &self.cancellation,
+            )
+            .await
+            {
+                break;
+            }
         }
     }
 
@@ -240,6 +264,59 @@ impl Drop for PermitGuard {
         // reflects the freed slot when the worker wakes up.
         drop(self.permit.take());
         self.permit_returned.notify_one();
+    }
+}
+
+/// Run orphan recovery if at least `interval` has elapsed since `last_run`.
+async fn maybe_recover_orphans(
+    scheduler: &dyn TaskScheduler,
+    orphan_timeout: Duration,
+    interval: Duration,
+    last_run: &mut tokio::time::Instant,
+) {
+    if last_run.elapsed() < interval {
+        return;
+    }
+    *last_run = tokio::time::Instant::now();
+    match scheduler.recover_orphans(orphan_timeout).await {
+        Ok(n) if n > 0 => info!(recovered = n, "Orphan tasks recovered"),
+        Ok(_) => {}
+        Err(e) => error!(error = %e, "Orphan recovery failed"),
+    }
+}
+
+/// Wait for a wakeup notification, fallback `poll_interval`, or shutdown/cancellation.
+///
+/// Returns `true` if the worker should continue polling, or `false` if shutdown
+/// or cancellation was triggered.
+async fn wait_idle(
+    wakeup: Option<&Notify>,
+    poll_interval: Duration,
+    shutdown: &Notify,
+    cancellation: &CancellationToken,
+) -> bool {
+    let shutdown_notified = shutdown.notified();
+    let cancelled = cancellation.cancelled();
+    tokio::pin!(shutdown_notified);
+    tokio::pin!(cancelled);
+
+    tokio::select! {
+        biased;
+        _ = &mut shutdown_notified => {
+            info!("Scheduler worker shutdown signal received, exiting poll loop");
+            false
+        }
+        _ = &mut cancelled => {
+            info!("Scheduler worker cancellation token triggered, exiting poll loop");
+            false
+        }
+        _ = async {
+            match wakeup {
+                Some(w) => w.notified().await,
+                None => std::future::pending().await,
+            }
+        } => true,
+        _ = tokio::time::sleep(poll_interval) => true,
     }
 }
 
@@ -416,6 +493,8 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use serde_json::json;
     use tokio::sync::mpsc;
 
@@ -428,7 +507,10 @@ mod tests {
     struct StubScheduler {
         queued: Mutex<VecDeque<FetchedTask>>,
         poll_limits: Mutex<Vec<usize>>,
+        poll_fetched: Mutex<Vec<usize>>,
         poll_notified: Notify,
+        wakeup: Option<Arc<Notify>>,
+        recover_orphans_calls: AtomicUsize,
     }
 
     impl StubScheduler {
@@ -436,12 +518,28 @@ mod tests {
             Self {
                 queued: Mutex::new(tasks.into_iter().collect()),
                 poll_limits: Mutex::new(Vec::new()),
+                poll_fetched: Mutex::new(Vec::new()),
                 poll_notified: Notify::new(),
+                wakeup: None,
+                recover_orphans_calls: AtomicUsize::new(0),
             }
+        }
+
+        fn with_wakeup(mut self, wakeup: Arc<Notify>) -> Self {
+            self.wakeup = Some(wakeup);
+            self
         }
 
         fn recorded_poll_limits(&self) -> Vec<usize> {
             self.poll_limits.lock().unwrap().clone()
+        }
+
+        fn recorded_poll_fetched(&self) -> Vec<usize> {
+            self.poll_fetched.lock().unwrap().clone()
+        }
+
+        fn recover_orphans_count(&self) -> usize {
+            self.recover_orphans_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -479,6 +577,7 @@ mod tests {
             let take = limit.min(queued.len());
             let batch: Vec<_> = queued.drain(..take).collect();
             drop(queued);
+            self.poll_fetched.lock().unwrap().push(batch.len());
             self.poll_notified.notify_waiters();
             Ok(batch)
         }
@@ -518,6 +617,19 @@ mod tests {
 
         async fn delete_task(&self, _task_id: &str) -> Result<(), StorageError> {
             Ok(())
+        }
+
+        async fn recover_orphans(&self, _stale_timeout: Duration) -> Result<usize, StorageError> {
+            self.recover_orphans_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        }
+
+        async fn subscribe_wakeups(
+            &self,
+            _options: WakeupOptions,
+            _cancel: CancellationToken,
+        ) -> Option<Arc<Notify>> {
+            self.wakeup.clone()
         }
     }
 
@@ -718,5 +830,191 @@ mod tests {
             .await
             .expect("worker did not stop")
             .expect("worker task panicked");
+    }
+
+    struct ImmediateHandler {
+        executed: Arc<AtomicUsize>,
+        target: usize,
+        done_notify: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl ScheduledTask for ImmediateHandler {
+        async fn execute(
+            &self,
+            _instance: &TaskInstance,
+        ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
+            if self.executed.fetch_add(1, Ordering::SeqCst) + 1 >= self.target {
+                self.done_notify.notify_waiters();
+            }
+            Ok(OnComplete::done())
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_mode_drains_all_batches_without_sleeping_poll_interval() {
+        let tasks: Vec<_> = (0..25).map(|i| make_task(&format!("t{i}"))).collect();
+        let scheduler = Arc::new(StubScheduler::with_tasks(tasks));
+        let executed = Arc::new(AtomicUsize::new(0));
+        let done_notify = Arc::new(Notify::new());
+
+        let mut registry = TaskRegistry::new();
+        registry.register(
+            "gated",
+            ImmediateHandler {
+                executed: executed.clone(),
+                target: 25,
+                done_notify: done_notify.clone(),
+            },
+        );
+
+        let config = WorkerConfig {
+            poll_interval: Duration::from_secs(30),
+            max_tasks_per_poll: 10,
+            max_concurrent_tasks: 32,
+            heartbeat_interval: Some(Duration::ZERO),
+            ..WorkerConfig::default()
+        };
+
+        let worker = Arc::new(Worker::new(
+            scheduler.clone(),
+            Arc::new(registry),
+            config,
+            Vec::new(),
+        ));
+        let worker_handle = tokio::spawn({
+            let worker = worker.clone();
+            async move { worker.run().await }
+        });
+
+        // All 25 tasks must drain in well under 30s (proving no poll_interval sleep occurred).
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while executed.load(Ordering::SeqCst) < 25 {
+                done_notify.notified().await;
+            }
+        })
+        .await
+        .expect("worker did not drain 25 tasks immediately");
+
+        assert_eq!(scheduler.recorded_poll_fetched(), vec![10, 10, 5]);
+
+        worker.stop();
+        tokio::time::timeout(Duration::from_secs(2), worker_handle)
+            .await
+            .expect("worker did not stop")
+            .expect("worker task panicked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_wakeup_and_fallback_poll() {
+        let wakeup = Arc::new(Notify::new());
+        let scheduler = Arc::new(StubScheduler::with_tasks(Vec::new()).with_wakeup(wakeup.clone()));
+
+        let config = WorkerConfig {
+            poll_interval: Duration::from_secs(30),
+            max_tasks_per_poll: 10,
+            max_concurrent_tasks: 16,
+            heartbeat_interval: Some(Duration::ZERO),
+            ..WorkerConfig::default()
+        };
+
+        let worker = Arc::new(Worker::new(
+            scheduler.clone(),
+            Arc::new(TaskRegistry::new()),
+            config,
+            Vec::new(),
+        ));
+        let worker_handle = tokio::spawn({
+            let worker = worker.clone();
+            async move { worker.run().await }
+        });
+
+        // Initial poll happens immediately.
+        while scheduler.recorded_poll_limits().is_empty() {
+            scheduler.poll_notified.notified().await;
+        }
+        assert_eq!(scheduler.recorded_poll_limits().len(), 1);
+
+        // Yield so the worker parks inside wait_idle.
+        tokio::task::yield_now().await;
+
+        // Notify wakeup: worker must poll immediately without waiting 30s.
+        let before_wakeup = tokio::time::Instant::now();
+        wakeup.notify_one();
+        while scheduler.recorded_poll_limits().len() < 2 {
+            scheduler.poll_notified.notified().await;
+        }
+        assert!(before_wakeup.elapsed() < Duration::from_secs(1));
+
+        // Yield so the worker parks inside wait_idle again.
+        tokio::task::yield_now().await;
+
+        // No notification arrives: advancing paused time by 30s triggers fallback poll.
+        tokio::time::advance(Duration::from_secs(30)).await;
+        while scheduler.recorded_poll_limits().len() < 3 {
+            scheduler.poll_notified.notified().await;
+        }
+        assert_eq!(scheduler.recorded_poll_limits().len(), 3);
+
+        worker.stop();
+        worker_handle.await.expect("worker task panicked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn instant_based_recover_orphans_does_not_burst_during_drain() {
+        // 495 tasks with max_tasks_per_poll = 10 -> 50 drain cycles (49 * 10 + 5).
+        let tasks: Vec<_> = (0..495).map(|i| make_task(&format!("t{i}"))).collect();
+        let scheduler = Arc::new(StubScheduler::with_tasks(tasks));
+        let executed = Arc::new(AtomicUsize::new(0));
+        let done_notify = Arc::new(Notify::new());
+
+        let mut registry = TaskRegistry::new();
+        registry.register(
+            "gated",
+            ImmediateHandler {
+                executed: executed.clone(),
+                target: 495,
+                done_notify: done_notify.clone(),
+            },
+        );
+
+        let config = WorkerConfig {
+            poll_interval: Duration::from_secs(30),
+            max_tasks_per_poll: 10,
+            max_concurrent_tasks: 32,
+            orphan_timeout: Duration::from_secs(300), // interval = 150s
+            heartbeat_interval: Some(Duration::ZERO),
+            ..WorkerConfig::default()
+        };
+
+        let worker = Arc::new(Worker::new(
+            scheduler.clone(),
+            Arc::new(registry),
+            config,
+            Vec::new(),
+        ));
+        let worker_handle = tokio::spawn({
+            let worker = worker.clone();
+            async move { worker.run().await }
+        });
+
+        while executed.load(Ordering::SeqCst) < 495 {
+            done_notify.notified().await;
+        }
+
+        // All 50 cycles ran within < 2s; recover_orphans must not burst (<= 1, actually 0).
+        assert_eq!(scheduler.recorded_poll_fetched().len(), 50);
+        assert!(scheduler.recover_orphans_count() <= 1);
+
+        // Advancing past the 150s interval triggers recover_orphans on the next fallback poll.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(150)).await;
+        while scheduler.recover_orphans_count() < 1 {
+            scheduler.poll_notified.notified().await;
+        }
+        assert_eq!(scheduler.recover_orphans_count(), 1);
+
+        worker.stop();
+        worker_handle.await.expect("worker task panicked");
     }
 }
