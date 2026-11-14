@@ -45,6 +45,9 @@ impl TaskScheduler for PostgresTaskScheduler {
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
+        if params.execution_time <= Utc::now() {
+            self.notify_local_wakeup();
+        }
         Ok(result)
     }
 
@@ -427,6 +430,9 @@ impl TaskScheduler for PostgresTaskScheduler {
         tx.commit()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
+        if params.new_execution_time <= Utc::now() {
+            self.notify_local_wakeup();
+        }
         Ok(())
     }
 
@@ -435,5 +441,62 @@ impl TaskScheduler for PostgresTaskScheduler {
             .begin()
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))
+    }
+
+    fn notify_local_wakeup(&self) {
+        self.local_wakeup.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use sqlx::PgPool;
+
+    use super::*;
+    use crate::postgres::TableNames;
+
+    #[tokio::test]
+    async fn notify_local_wakeup_signals_notifier() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart_test")
+            .expect("lazy pool creation should succeed");
+        let scheduler = PostgresTaskScheduler::new(pool);
+
+        // No permit before notify_local_wakeup is called.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                scheduler.local_wakeup().notified()
+            )
+            .await
+            .is_err()
+        );
+
+        // Calling notify_local_wakeup stores a permit for the next waiter.
+        scheduler.notify_local_wakeup();
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            scheduler.local_wakeup().notified(),
+        )
+        .await
+        .expect("local_wakeup should resolve immediately after notify_local_wakeup");
+    }
+
+    #[tokio::test]
+    async fn with_table_names_initializes_local_wakeup() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart_test")
+            .expect("lazy pool creation should succeed");
+        let scheduler = PostgresTaskScheduler::with_table_names(pool, TableNames::default());
+
+        let wakeup = scheduler.local_wakeup().clone();
+        let notified = wakeup.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        scheduler.notify_local_wakeup();
+        tokio::time::timeout(Duration::from_millis(50), notified)
+            .await
+            .expect("pinned notified future should wake on notify_local_wakeup");
     }
 }

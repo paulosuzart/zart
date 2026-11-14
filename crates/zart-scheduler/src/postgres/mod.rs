@@ -14,7 +14,10 @@ mod scheduler_impl;
 mod sql_helpers;
 mod table_names;
 
+use std::sync::Arc;
+
 use sqlx::PgPool;
+use tokio::sync::Notify;
 
 pub use table_names::{TableNames, TableNamesError};
 
@@ -34,6 +37,7 @@ pub use table_names::{TableNames, TableNamesError};
 pub struct PostgresTaskScheduler {
     pub(crate) pool: PgPool,
     pub(crate) table_names: TableNames,
+    pub(crate) local_wakeup: Arc<Notify>,
 }
 
 impl PostgresTaskScheduler {
@@ -42,17 +46,27 @@ impl PostgresTaskScheduler {
         Self {
             pool,
             table_names: TableNames::default(),
+            local_wakeup: Arc::new(Notify::new()),
         }
     }
 
     /// Create a new task scheduler with explicit table-name configuration.
     pub fn with_table_names(pool: PgPool, table_names: TableNames) -> Self {
-        Self { pool, table_names }
+        Self {
+            pool,
+            table_names,
+            local_wakeup: Arc::new(Notify::new()),
+        }
     }
 
     /// Returns a reference to the underlying connection pool.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Returns a reference to the in-process wakeup notifier.
+    pub fn local_wakeup(&self) -> &Arc<Notify> {
+        &self.local_wakeup
     }
 }
 
