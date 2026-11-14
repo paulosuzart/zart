@@ -25,7 +25,7 @@ use std::time::Duration;
 use uuid::Uuid;
 use zart::PgBackend;
 use zart::prelude::*;
-use zart_autoagents::DurableReactTask;
+use zart_autoagents::{AgentPrompt, DurableReactTask};
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 
@@ -221,15 +221,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let execution_id = format!("autoagents-durable-{}", Uuid::new_v4());
     let durable = DurableScheduler::from_backend(&pg);
 
-    let prompt = "Investigate recent incidents on 'checkout-api'. Inspect logs for every incident, check the affected customer's SLA, emit the client action, and summarize the report.".to_string();
+    let input = AgentPrompt::new(
+        "Investigate recent incidents on 'checkout-api'. Inspect logs for every incident, check the affected customer's SLA, emit the client action, and summarize the report.",
+    );
 
     println!("Starting execution '{}'...", execution_id);
-    println!("  Prompt: {}\n", prompt);
+    println!("  Prompt: {}\n", input.prompt);
     durable
         .start_for::<DurableReactTask<IncidentAgent>>(
             &execution_id,
             "durable-incident-agent",
-            &prompt,
+            &input,
         )
         .await?;
 

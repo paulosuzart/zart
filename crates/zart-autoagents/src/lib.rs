@@ -18,6 +18,7 @@
 //!   human-in-the-loop approvals or deferred client tool calls.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,21 +26,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use autoagents::core::agent::memory::SlidingWindowMemory;
-use autoagents::core::agent::prebuilt::executor::{ReActAgent, ReActAgentOutput};
 use autoagents::core::agent::task::Task;
-use autoagents::core::agent::{
-    AgentBuilder, AgentDeriveT, AgentHooks, Context, DirectAgent, HookOutcome,
-};
+use autoagents::core::agent::{AgentDeriveT, AgentHooks, Context, HookOutcome};
 use autoagents::core::tool::{ToolCallError, ToolRuntime, ToolT};
 use autoagents::llm::chat::{
-    ChatMessage, ChatProvider, ChatResponse, SamplingOverrides, StructuredOutputFormat, Tool, Usage,
+    ChatMessage, ChatProvider, ChatResponse, ChatRole, FunctionTool, MessageType,
+    SamplingOverrides, StructuredOutputFormat, Tool, Usage,
 };
 use autoagents::llm::completion::{CompletionProvider, CompletionRequest, CompletionResponse};
 use autoagents::llm::embedding::EmbeddingProvider;
 use autoagents::llm::error::LLMError;
 use autoagents::llm::models::{ModelListRequest, ModelListResponse, ModelsProvider};
-use autoagents::llm::{LLMProvider, ToolCall};
+use autoagents::llm::{FunctionCall, LLMProvider, ToolCall};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -566,18 +564,52 @@ impl<T: AgentHooks + Send + Sync> AgentHooks for DurableAgent<T> {
 
 // ── Reusable DurableExecution for ReAct agents ────────────────────────────────
 
-/// Reusable [`DurableExecution`] implementation for any AutoAgents `#[agent]`
-/// (`AgentDeriveT + AgentHooks + Clone`).
+/// Input payload for [`DurableReactTask`].
 ///
-/// Handles [`ControlFlowSlot`], [`DurableLLMProvider`], [`DurableAgent`] tool
-/// wrapping, and `SlidingWindowMemory` automatically so callers only need to
-/// register `DurableReactTask::new(MyAgent {}, llm)` on Zart's `WorkerBuilder`.
+/// Wrapped as a JSON object struct (rather than a bare `String`) so Zart's
+/// `zart::schedule` / `zart::wait` WaitGroup machinery can attach internal
+/// fields (`wg_step_name`) without breaking deserialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPrompt {
+    pub prompt: String,
+}
+
+impl AgentPrompt {
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+        }
+    }
+}
+
+impl From<String> for AgentPrompt {
+    fn from(prompt: String) -> Self {
+        Self { prompt }
+    }
+}
+
+impl From<&str> for AgentPrompt {
+    fn from(prompt: &str) -> Self {
+        Self {
+            prompt: prompt.to_string(),
+        }
+    }
+}
+
+/// Reusable [`DurableExecution`] implementation for any AutoAgents `#[agent]`
+/// (`AgentDeriveT`).
+///
+/// Drives the ReAct loop directly on top of Zart primitives:
+/// - Each LLM turn is persisted via `zart::step` (`llm-call-0`, `llm-call-1`, ...).
+/// - When a turn emits **1 tool call**, it executes via `zart::step` (`tool-{turn}-0-{name}`).
+/// - When a turn emits **multiple tool calls**, they are dispatched **in parallel** via
+///   `zart::schedule` + `zart::wait` (`tool-{turn}-{idx}-{name}`).
 pub struct DurableReactTask<A> {
     agent: A,
     llm: Arc<dyn LLMProvider>,
-    memory_window: usize,
     max_turns: usize,
     llm_retry: Option<RetryConfig>,
+    tool_retry: Option<RetryConfig>,
 }
 
 impl<A> DurableReactTask<A> {
@@ -585,15 +617,10 @@ impl<A> DurableReactTask<A> {
         Self {
             agent,
             llm,
-            memory_window: 50,
             max_turns: 10,
             llm_retry: None,
+            tool_retry: None,
         }
-    }
-
-    pub fn with_memory_window(mut self, memory_window: usize) -> Self {
-        self.memory_window = memory_window;
-        self
     }
 
     pub fn with_max_turns(mut self, max_turns: usize) -> Self {
@@ -605,44 +632,222 @@ impl<A> DurableReactTask<A> {
         self.llm_retry = Some(retry);
         self
     }
+
+    pub fn with_tool_retry(mut self, retry: RetryConfig) -> Self {
+        self.tool_retry = Some(retry);
+        self
+    }
+}
+
+struct OwnedLlmTurnStep {
+    name: String,
+    inner: Arc<dyn LLMProvider>,
+    messages: Vec<ChatMessage>,
+    tools: Vec<Tool>,
+    retry: Option<RetryConfig>,
+}
+
+impl ZartStep for OwnedLlmTurnStep {
+    type Output = DurableChatResponse;
+    type Error = BridgeStepError;
+
+    fn step_name(&self) -> Cow<'static, str> {
+        Cow::Owned(self.name.clone())
+    }
+
+    fn retry_config(&self) -> Option<RetryConfig> {
+        self.retry.clone()
+    }
+
+    async fn run(&self) -> Result<Self::Output, Self::Error> {
+        let tools_slice = if self.tools.is_empty() {
+            None
+        } else {
+            Some(self.tools.as_slice())
+        };
+        let resp = self
+            .inner
+            .chat_with_tools(&self.messages, tools_slice, None)
+            .await
+            .map_err(|e| {
+                tracing::warn!(step = %self.name, error = %e, "LLM step call failed");
+                BridgeStepError {
+                    step: self.name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+
+        let durable_resp = DurableChatResponse::from_response(resp.as_ref());
+        tracing::info!(
+            step = %self.name,
+            text_len = durable_resp.text.as_ref().map(|t| t.len()).unwrap_or(0),
+            tool_calls = durable_resp.tool_calls.as_ref().map(|c| c.len()).unwrap_or(0),
+            "LLM step completed"
+        );
+        Ok(durable_resp)
+    }
 }
 
 #[async_trait]
 impl<A> DurableExecution for DurableReactTask<A>
 where
-    A: AgentDeriveT + AgentHooks + Clone + Send + Sync + 'static,
-    <A as AgentDeriveT>::Output: From<ReActAgentOutput> + Into<String> + Send + Sync,
+    A: AgentDeriveT + Send + Sync + 'static,
 {
-    type Data = String;
+    type Data = AgentPrompt;
     type Output = String;
 
-    async fn run(&self, prompt: Self::Data) -> Result<Self::Output, TaskError> {
-        let slot = ControlFlowSlot::new();
-        let mut provider = DurableLLMProvider::new(Arc::clone(&self.llm), slot.clone());
-        if let Some(retry) = &self.llm_retry {
-            provider = provider.with_retry(retry.clone());
+    async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
+        let prompt = data.prompt;
+        let raw_tools: Vec<Arc<dyn ToolT>> = self
+            .agent
+            .tools()
+            .into_iter()
+            .map(Arc::from)
+            .collect();
+
+        let tool_defs: Vec<Tool> = raw_tools
+            .iter()
+            .map(|t| Tool {
+                tool_type: "function".to_string(),
+                function: FunctionTool {
+                    name: t.name().to_string(),
+                    description: t.description().to_string(),
+                    parameters: t.args_schema(),
+                },
+            })
+            .collect();
+
+        let tool_map: HashMap<String, Arc<dyn ToolT>> = raw_tools
+            .into_iter()
+            .map(|t| (t.name().to_string(), t))
+            .collect();
+
+        let mut messages = vec![
+            ChatMessage {
+                role: ChatRole::System,
+                message_type: MessageType::Text,
+                content: self.agent.description().to_string(),
+            },
+            ChatMessage {
+                role: ChatRole::User,
+                message_type: MessageType::Text,
+                content: prompt,
+            },
+        ];
+
+        for turn in 0..self.max_turns {
+            let llm_step = OwnedLlmTurnStep {
+                name: format!("llm-call-{turn}"),
+                inner: Arc::clone(&self.llm),
+                messages: messages.clone(),
+                tools: tool_defs.clone(),
+                retry: self.llm_retry.clone(),
+            };
+
+            let resp = zart::require(llm_step).await?;
+            let response_text = resp.text.unwrap_or_default();
+            let tool_calls = resp.tool_calls.unwrap_or_default();
+
+            if tool_calls.is_empty() {
+                return Ok(response_text);
+            }
+
+            let tool_outputs: Vec<Value> = if tool_calls.len() == 1 {
+                let call = &tool_calls[0];
+                let step = build_tool_step(
+                    format!("tool-{turn}-0-{}", call.function.name),
+                    call,
+                    &tool_map,
+                    self.tool_retry.clone(),
+                )?;
+                vec![zart::require(step).await?]
+            } else {
+                tracing::info!(
+                    turn,
+                    count = tool_calls.len(),
+                    "Dispatching tool calls in parallel via zart::schedule"
+                );
+                let mut handles = Vec::with_capacity(tool_calls.len());
+                for (idx, call) in tool_calls.iter().enumerate() {
+                    let step = build_tool_step(
+                        format!("tool-{turn}-{idx}-{}", call.function.name),
+                        call,
+                        &tool_map,
+                        self.tool_retry.clone(),
+                    )?;
+                    handles.push(zart::schedule(step));
+                }
+                let results = zart::wait(handles).await?;
+                let mut values = Vec::with_capacity(results.len());
+                for (idx, res) in results.into_iter().enumerate() {
+                    let val = res.map_err(|e| TaskError::StepFailed {
+                        step: format!("tool-{turn}-{idx}-{}", tool_calls[idx].function.name),
+                        source: e,
+                    })?;
+                    values.push(val);
+                }
+                values
+            };
+
+            let result_calls: Vec<ToolCall> = tool_calls
+                .iter()
+                .zip(tool_outputs.iter())
+                .map(|(call, val)| ToolCall {
+                    id: call.id.clone(),
+                    call_type: call.call_type.clone(),
+                    function: FunctionCall {
+                        name: call.function.name.clone(),
+                        arguments: serde_json::to_string(val).unwrap_or_default(),
+                    },
+                })
+                .collect();
+
+            messages.push(ChatMessage {
+                role: ChatRole::Assistant,
+                message_type: MessageType::ToolUse(tool_calls),
+                content: response_text,
+            });
+            messages.push(ChatMessage {
+                role: ChatRole::Tool,
+                message_type: MessageType::ToolResult(result_calls),
+                content: String::new(),
+            });
         }
-        let durable_llm: Arc<dyn LLMProvider> = Arc::new(provider);
 
-        let output = run_durable_agent(&slot, || async {
-            let durable_agent = DurableAgent::new(self.agent.clone(), slot.clone());
-            let react = ReActAgent::with_max_turns(durable_agent, self.max_turns);
-            let handle = AgentBuilder::<_, DirectAgent>::new(react)
-                .llm(durable_llm)
-                .memory(Box::new(SlidingWindowMemory::new(self.memory_window)))
-                .build()
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-            handle
-                .agent
-                .run(Task::new(&prompt))
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        Err(TaskError::StepFailed {
+            step: "react-loop".to_string(),
+            source: StepError::Failed {
+                step: "react-loop".to_string(),
+                reason: format!("max turns ({}) exceeded", self.max_turns),
+            },
         })
-        .await?;
-
-        Ok(output.into())
     }
+}
+
+fn build_tool_step(
+    step_name: String,
+    call: &ToolCall,
+    tool_map: &HashMap<String, Arc<dyn ToolT>>,
+    retry: Option<RetryConfig>,
+) -> Result<ToolExecStep, TaskError> {
+    let tool = tool_map
+        .get(&call.function.name)
+        .cloned()
+        .ok_or_else(|| TaskError::StepFailed {
+            step: step_name.clone(),
+            source: StepError::Failed {
+                step: step_name.clone(),
+                reason: format!("unknown tool '{}'", call.function.name),
+            },
+        })?;
+    let args: Value =
+        serde_json::from_str(&call.function.arguments).unwrap_or_else(|_| Value::Null);
+    Ok(ToolExecStep {
+        name: step_name,
+        inner: tool,
+        args,
+        retry,
+    })
 }
 
 #[cfg(test)]
