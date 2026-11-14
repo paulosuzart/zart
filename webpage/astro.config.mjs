@@ -78,6 +78,14 @@ export default defineConfig({
           autogenerate: { directory: "docs/admin" },
         },
 
+        // ── Integrations ───────────────────────────────────────
+        {
+          label: "Integrations",
+          items: [
+            { label: "AutoAgents (zart-autoagents)", link: "/docs/integrations/autoagents" },
+          ],
+        },
+
         // ── Examples ───────────────────────────────────────────
         {
           label: "Examples",

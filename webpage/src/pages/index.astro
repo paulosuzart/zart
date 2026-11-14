@@ -1952,6 +1952,71 @@ import { ZART_VERSION } from "../lib/version";
   </div>
 </section>
 
+<!-- ── AutoAgents / Durable AI Agents ── -->
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <span class="section-label">AI Agents · zart-autoagents</span>
+      <h2 class="section-title">Durable AI agents with AutoAgents.</h2>
+      <p class="section-sub">
+        Persist every reasoning turn, fan out parallel tool calls, and pause for human approvals — with a clear path toward full <a href="https://github.com/liquidos-ai/AutoAgents" target="_blank" rel="noopener">AutoAgents</a> compatibility including durable <strong>Actors</strong>.
+      </p>
+    </div>
+
+    <div class="matrix-grid">
+      <!-- 01: Intra-Loop Checkpointing -->
+      <article class="matrix-cell">
+        <div class="cell-topbar">
+          <span>01 // INTRA-LOOP REPLAY</span>
+          <span class="cell-status"><span class="status-dot green"></span> turn-by-turn</span>
+        </div>
+        <div class="cell-body">
+          <h3 class="cell-title">Checkpointed LLM &amp; Tool Turns</h3>
+          <p class="cell-desc">
+            <code>DurableReactTask</code> persists each <code>llm-call-&#123;turn&#125;</code> via <code>zart::require</code> and each tool step via <code>DurableChatResponse</code>. Crash on turn 4 and resume without re-billing turns 1–3.
+          </p>
+          <div class="cell-callout">Every reasoning step committed to PostgreSQL before moving on.</div>
+        </div>
+      </article>
+
+      <!-- 02: Parallel Tools & HITL -->
+      <article class="matrix-cell">
+        <div class="cell-topbar">
+          <span>02 // PARALLEL FAN-OUT &amp; HITL</span>
+          <span class="cell-status"><span class="status-dot amber"></span> concurrent</span>
+        </div>
+        <div class="cell-body">
+          <h3 class="cell-title">Parallel Tools &amp; Human Signals</h3>
+          <p class="cell-desc">
+            Multi-tool turns dispatch concurrently with <code>zart::schedule</code> + <code>zart::wait</code> (<code>tool-&#123;turn&#125;-&#123;idx&#125;-&#123;name&#125;</code>). Suspend indefinitely for approvals with <code>wait_for_hitl</code>.
+          </p>
+          <div class="cell-callout">Concurrent tool execution + zero-CPU human-in-the-loop waits.</div>
+        </div>
+      </article>
+
+      <!-- 03: Actors Roadmap -->
+      <article class="matrix-cell">
+        <div class="cell-topbar">
+          <span>03 // ROADMAP · ACTORS</span>
+          <span class="cell-status"><span class="status-dot"></span> multi-agent</span>
+        </div>
+        <div class="cell-body">
+          <h3 class="cell-title">Full AutoAgents &amp; Actor Compatibility</h3>
+          <p class="cell-desc">
+            Expanding <code>zart-autoagents</code> beyond single-agent ReAct loops to full AutoAgents parity: durable <code>ActorAgent</code> mailboxes, persistent actor-to-actor messaging, and multi-agent supervision.
+          </p>
+          <div class="cell-callout">Crash-proof agent actors with durable mailboxes and supervision.</div>
+        </div>
+      </article>
+    </div>
+
+    <div style="margin-top: 2rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+      <a href="/docs/integrations/autoagents/" class="btn btn-primary">Read zart-autoagents Docs →</a>
+      <a href="/docs/examples/autoagents-agent/" class="btn btn-ghost">View AutoAgents Example</a>
+    </div>
+  </div>
+</section>
+
 <!-- ── Code section ── -->
 <section class="code-section">
   <div class="container">
