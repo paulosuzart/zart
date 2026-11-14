@@ -94,7 +94,7 @@ let worker = Arc::new(
 When the model decides to call multiple tools in the same turn (for example, fetching logs for `INC-101` and `INC-102` simultaneously), `DurableReactTask` schedules each tool as an independent Zart child step and awaits all of them via `zart::wait`. If the worker restarts mid-turn, completed tool steps are replayed from PostgreSQL and only pending steps run.
 
 <Aside type="tip">
-  See the complete runnable SRE incident investigation example in `examples/autoagents-durable`, including `thoughtSignature` preservation for Gemini 3 tool-calling turns.
+  See the complete runnable SRE incident investigation walkthrough in [Durable AutoAgents ReAct Agent](/docs/examples/autoagents-durable/) (`examples/autoagents-durable`), including `thoughtSignature` preservation for Gemini 3 tool-calling turns.
 </Aside>
 
 ---

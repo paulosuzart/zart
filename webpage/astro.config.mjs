@@ -98,6 +98,7 @@ export default defineConfig({
             { label: "Sleep", link: "/docs/examples/sleep" },
             { label: "Retry Simulation", link: "/docs/examples/retry-simulation" },
             { label: "AutoAgents LLM Agent", link: "/docs/examples/autoagents-agent" },
+            { label: "AutoAgents Durable ReAct", link: "/docs/examples/autoagents-durable" },
             { label: "Scheduler-Only", link: "/docs/examples/scheduler-only" },
           ],
         },
