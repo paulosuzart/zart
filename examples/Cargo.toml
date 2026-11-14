@@ -52,6 +52,10 @@ path = "recurring-tasks/src/main.rs"
 name = "example-recurring-durable"
 path = "recurring-durable/src/main.rs"
 
+[[bin]]
+name = "example-multi-worker"
+path = "multi-worker/src/main.rs"
+
 [dependencies]
 zart = { path = "../crates/zart" }
 zart-macros = { path = "../crates/zart-macros" }

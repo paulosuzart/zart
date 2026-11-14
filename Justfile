@@ -51,6 +51,7 @@ test-integration-full:
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-scheduler-only
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-recurring-durable
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p example-admin-demo
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-multi-worker
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} bash examples/cli-demo/demo.sh
     @echo "── All examples completed ────────────────────────────────────────────────"
 
@@ -246,6 +247,12 @@ example-admin-demo db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p example-admin-demo
 
+# Run the multi-worker example (3 independent workers with LISTEN/NOTIFY, SKIP LOCKED, and Drain Mode)
+# Usage: just example-multi-worker [DATABASE_URL]
+example-multi-worker db_url=example_db_url:
+    just migrate
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-multi-worker
+
 # Run all examples sequentially (requires PostgreSQL and internet)
 run-all-examples db_url=example_db_url:
     just example-brewery-finder {{db_url}}
@@ -260,6 +267,7 @@ run-all-examples db_url=example_db_url:
     just example-scheduler-only {{db_url}}
     just example-recurring-durable {{db_url}}
     just example-admin-demo {{db_url}}
+    just example-multi-worker {{db_url}}
 
 # Run integration tests for examples (requires PostgreSQL and internet)
 # The examples themselves serve as integration tests — run them via just run-all-examples
