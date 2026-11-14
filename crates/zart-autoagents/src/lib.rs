@@ -698,12 +698,8 @@ where
 
     async fn run(&self, data: Self::Data) -> Result<Self::Output, TaskError> {
         let prompt = data.prompt;
-        let raw_tools: Vec<Arc<dyn ToolT>> = self
-            .agent
-            .tools()
-            .into_iter()
-            .map(Arc::from)
-            .collect();
+        let raw_tools: Vec<Arc<dyn ToolT>> =
+            self.agent.tools().into_iter().map(Arc::from).collect();
 
         let tool_defs: Vec<Tool> = raw_tools
             .iter()
