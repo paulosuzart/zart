@@ -836,8 +836,7 @@ fn build_tool_step(
                 reason: format!("unknown tool '{}'", call.function.name),
             },
         })?;
-    let args: Value =
-        serde_json::from_str(&call.function.arguments).unwrap_or_else(|_| Value::Null);
+    let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
     Ok(ToolExecStep {
         name: step_name,
         inner: tool,
