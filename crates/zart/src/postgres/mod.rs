@@ -216,7 +216,28 @@ impl PgBackend {
     ///
     /// Use this when the main `PgPool` connects through a transaction-mode
     /// pooler (such as PgBouncer in transaction mode) that does not support
-    /// session-level `LISTEN` commands.
+    /// session-level `LISTEN` commands. The `PgPool` continues handling all
+    /// queries and `pg_notify` calls through the pooler while `PgListener`
+    /// maintains a dedicated direct session connection.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use sqlx::PgPool;
+    /// use sqlx::postgres::PgConnectOptions;
+    /// use zart::postgres::PgBackend;
+    ///
+    /// let tx_pool = PgPool::connect("postgres://user:pass@pgbouncer:6432/zart").await?;
+    /// let direct_opts = PgConnectOptions::new()
+    ///     .host("pg-primary.internal")
+    ///     .port(5432)
+    ///     .database("zart");
+    ///
+    /// let pg = PgBackend::new(tx_pool).with_listener_options(direct_opts);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_listener_options(self, options: PgConnectOptions) -> Self {
         let scheduler = Arc::new(
             self.scheduler
@@ -236,6 +257,20 @@ impl PgBackend {
     /// connection for `LISTEN/NOTIFY`.
     ///
     /// See [`PgBackend::with_listener_options`] for details.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use sqlx::PgPool;
+    /// use zart::postgres::PgBackend;
+    ///
+    /// let tx_pool = PgPool::connect("postgres://user:pass@pgbouncer:6432/zart").await?;
+    /// let pg = PgBackend::new(tx_pool)
+    ///     .with_listener_url("postgres://user:pass@pg-primary.internal:5432/zart")?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_listener_url(self, url: &str) -> Result<Self, StorageError> {
         let options =
             PgConnectOptions::from_str(url).map_err(|e| StorageError::Database(Box::new(e)))?;
