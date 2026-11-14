@@ -38,6 +38,13 @@ pub use table_names::{TableNames, TableNamesError};
 ///
 /// To use custom table names (e.g. to avoid collisions or support multi-tenancy),
 /// use [`PostgresTaskScheduler::with_table_names`] together with [`TableNames`].
+/// `TableNames` also isolates the PostgreSQL `LISTEN/NOTIFY` wakeup channel
+/// using the `"{tasks_table}_wakeup"` convention (default `"zart_tasks_wakeup"`).
+///
+/// When `pool` connects through a transaction-mode pooler such as PgBouncer,
+/// configure a dedicated direct PostgreSQL connection for `LISTEN/NOTIFY` via
+/// [`PostgresTaskScheduler::with_listener_url`] or
+/// [`PostgresTaskScheduler::with_listener_options`].
 #[derive(Clone)]
 pub struct PostgresTaskScheduler {
     pub(crate) pool: PgPool,
@@ -71,7 +78,29 @@ impl PostgresTaskScheduler {
     ///
     /// Use this when `pool` connects through a transaction-mode pooler (such
     /// as PgBouncer in transaction mode) that does not support session-level
-    /// `LISTEN` commands.
+    /// `LISTEN` commands. The main `PgPool` continues to run all queries and
+    /// `pg_notify` calls through the pooler while `PgListener` opens a single
+    /// direct session connection using `options`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use sqlx::PgPool;
+    /// use sqlx::postgres::PgConnectOptions;
+    /// use zart_scheduler::PostgresTaskScheduler;
+    ///
+    /// let tx_pool = PgPool::connect("postgres://user:pass@pgbouncer:6432/zart").await?;
+    /// let direct_opts = PgConnectOptions::new()
+    ///     .host("pg-primary.internal")
+    ///     .port(5432)
+    ///     .database("zart");
+    ///
+    /// let scheduler = PostgresTaskScheduler::new(tx_pool)
+    ///     .with_listener_options(direct_opts);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_listener_options(mut self, options: PgConnectOptions) -> Self {
         self.listener_options = Some(options);
         self
@@ -81,6 +110,20 @@ impl PostgresTaskScheduler {
     /// connection for `LISTEN/NOTIFY`.
     ///
     /// See [`PostgresTaskScheduler::with_listener_options`] for details.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// use sqlx::PgPool;
+    /// use zart_scheduler::PostgresTaskScheduler;
+    ///
+    /// let tx_pool = PgPool::connect("postgres://user:pass@pgbouncer:6432/zart").await?;
+    /// let scheduler = PostgresTaskScheduler::new(tx_pool)
+    ///     .with_listener_url("postgres://user:pass@pg-primary.internal:5432/zart")?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn with_listener_url(self, url: &str) -> Result<Self, StorageError> {
         let options =
             PgConnectOptions::from_str(url).map_err(|e| StorageError::Database(Box::new(e)))?;

@@ -4,13 +4,33 @@ use std::time::Duration;
 
 /// Tuning parameters for a [`Worker`](crate::Worker).
 ///
+/// Zart uses a **Notify-Hint & Adaptive Drain** dispatch model:
+/// *"Notifications are hints, never truth."*
+///
+/// - **Sub-100ms wakeup**: When `enable_listen_notify` is `true` (the default),
+///   PostgreSQL `LISTEN/NOTIFY` and in-process `local_wakeup` hints wake idle
+///   workers immediately when a due task is scheduled or resumed.
+/// - **Fallback reconciliation**: `poll_interval` acts as a safety-net poll for
+///   future-scheduled tasks becoming due or missed notifications, and can safely
+///   be set to `30s`–`60s` in production.
+/// - **Adaptive drain & backpressure**: Each poll clamps its fetch limit to
+///   `min(max_tasks_per_poll, available_permits)` against
+///   `max_concurrent_tasks`. When a full batch is returned, the worker drains
+///   the next batch immediately without sleeping `poll_interval`; when capacity
+///   is full, it suspends until an in-flight task finishes.
+///
 /// All fields have production-ready defaults via [`WorkerConfig::default`].
 /// Override only what you need:
 ///
-/// ```rust,ignore
+/// ```rust
+/// use std::time::Duration;
+/// use zart_scheduler::WorkerConfig;
+///
 /// let config = WorkerConfig {
-///     poll_interval:        Duration::from_secs(2),
+///     poll_interval:        Duration::from_secs(30),
 ///     max_concurrent_tasks: 32,
+///     max_tasks_per_poll:   10,
+///     enable_listen_notify: true,
 ///     ..WorkerConfig::default()
 /// };
 /// ```
@@ -24,9 +44,17 @@ pub struct WorkerConfig {
     pub poll_interval: Duration,
 
     /// Maximum number of tasks to fetch per poll cycle.
+    ///
+    /// The actual fetch limit is clamped to `min(max_tasks_per_poll, available_permits)`
+    /// so the worker never over-fetches beyond `max_concurrent_tasks`.
+    /// When a poll returns a full batch, the worker enters adaptive drain mode
+    /// and immediately polls again without waiting for `poll_interval`.
     pub max_tasks_per_poll: usize,
 
     /// Maximum number of tasks that can execute concurrently within this worker.
+    ///
+    /// Enforced via a semaphore. When all permits are in use, the worker pauses
+    /// polling (backpressure) until an in-flight task completes and releases a permit.
     pub max_concurrent_tasks: usize,
 
     /// How long to wait for in-flight tasks to finish during graceful shutdown.

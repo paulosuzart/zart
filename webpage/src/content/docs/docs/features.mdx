@@ -197,14 +197,17 @@ Worker C ─── polls ──→ claims exec-005 (skips locked rows)
 
 Workers can be added or removed at any time. There is no leader election, no ZooKeeper, no coordination service.
 
+With `enable_listen_notify: true` (the default), PostgreSQL `LISTEN/NOTIFY` wakes idle workers in under 100ms while `poll_interval` (`30s`–`60s` in production) serves as a fallback reconciliation poll. Full batches drain immediately via adaptive drain, and `max_concurrent_tasks` enforces backpressure so workers never over-fetch. See [Deployment Options](/docs/deployment/options/) for `WorkerConfig` tuning and PgBouncer transaction-pooling setup.
+
 ```rust
 let pg = zart::PgBackend::new(pool);
 let worker = zart::WorkerBuilder::from_backend(&pg)
     .register_durable_task("onboarding", Onboarding)
     .config(zart::WorkerConfig {
-        poll_interval:        Duration::from_secs(5),
+        poll_interval:        Duration::from_secs(30), // fallback reconciliation poll
+        enable_listen_notify: true,                    // sub-100ms LISTEN/NOTIFY wakeups
         max_tasks_per_poll:   10,
-        max_concurrent_tasks: 16,  // tokio tasks per worker
+        max_concurrent_tasks: 16,                      // tokio tasks per worker
         shutdown_timeout:     Duration::from_secs(30),
         ..Default::default()
     })

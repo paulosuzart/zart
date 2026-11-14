@@ -134,7 +134,7 @@ If the process crashes after `process_payment` completes, a restart skips that s
 | **Event-driven waits** | Suspend until an external signal arrives — human approval, webhook, callback. |
 | **Parallel steps** | Fan out independent work, wait for all to complete. Survives restarts mid-wait. |
 | **Durable loops** | Iterate over collections with per-iteration checkpoints. Restarts skip done items. |
-| **No new infrastructure** | Uses the PostgreSQL database you already have. Workers poll via `SKIP LOCKED`. |
+| **No new infrastructure** | Uses the PostgreSQL database you already have. Sub-100ms `LISTEN/NOTIFY` wakeups + `SKIP LOCKED` + adaptive drain. |
 
 ## Philosophy
 
@@ -197,7 +197,36 @@ just example-sleep
 
 ## Architecture
 
-Zart uses a pull-based model: workers poll PostgreSQL for due tasks and execute them. No coordinator service is required beyond your existing worker processes.
+Zart uses a **Notify-Hint & Adaptive Drain** model on top of PostgreSQL: *"notifications are hints, never truth."* No coordinator service is required beyond your existing worker processes.
+
+- **Sub-100ms `LISTEN/NOTIFY` wakeups** — When a due task is scheduled or resumed, PostgreSQL emits `pg_notify` (and an in-process `local_wakeup` signal) strictly after `COMMIT`, waking idle workers immediately.
+- **Fallback reconciliation poll** — `poll_interval` acts as a safety-net reconciliation loop for future-scheduled tasks becoming due or missed notifications, so it can safely be set to `30s`–`60s` in production without hurting latency.
+- **Backpressure & Adaptive Drain** — Each poll clamps its batch size to `min(max_tasks_per_poll, available_permits)` against `max_concurrent_tasks`. Full batches drain immediately without sleeping `poll_interval`; when all permits are busy, the worker suspends until an in-flight task finishes.
+- **Multi-tenant channel isolation** — `TableNames` derives the wakeup channel automatically as `"{tasks_table}_wakeup"` (default `"zart_tasks_wakeup"`), keeping custom prefixes and schemas isolated.
+
+### Production Setup: Tuning & PgBouncer
+
+When your main `PgPool` connects through **PgBouncer in transaction pooling mode**, `PgListener` still needs a session-level connection for `LISTEN`. Pass a direct PostgreSQL URL (or `PgConnectOptions`) via `with_listener_url` / `with_listener_options`:
+
+```rust
+use std::time::Duration;
+use zart::{WorkerBuilder, WorkerConfig, postgres::PgBackend};
+
+let tx_pool = sqlx::PgPool::connect("postgres://app@pgbouncer:6432/zart").await?;
+let pg = PgBackend::new(tx_pool)
+    .with_listener_url("postgres://app@pg-primary.internal:5432/zart")?;
+
+let worker = WorkerBuilder::from_backend(&pg)
+    .register_durable_task("order-fulfillment", order_fulfillment)
+    .config(WorkerConfig {
+        poll_interval:        Duration::from_secs(30), // fallback reconciliation poll
+        enable_listen_notify: true,                    // sub-100ms LISTEN/NOTIFY wakeups
+        max_concurrent_tasks: 32,                      // bounded concurrency + backpressure
+        max_tasks_per_poll:   10,                      // batch size for adaptive drain
+        ..WorkerConfig::default()
+    })
+    .build();
+```
 
 Steps are decomposed into:
 1. **Body mode** — your workflow function schedules/looks up steps
