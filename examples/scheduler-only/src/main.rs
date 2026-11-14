@@ -255,11 +255,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register("generate-report", GenerateReport);
     registry.register("scheduled-greeting", ScheduledGreeting);
 
-    // Start the worker with default 0.3.0 LISTEN/NOTIFY + Adaptive Drain settings
+    // Demo 2 schedules a future task (+3s) and waits 15s, so keep poll_interval short.
+    let config = WorkerConfig {
+        poll_interval: Duration::from_millis(200),
+        ..Default::default()
+    };
     let worker = Arc::new(Worker::new(
         scheduler.clone(),
         Arc::new(registry),
-        WorkerConfig::default(),
+        config,
         vec![],
     ));
     let w = worker.clone();
