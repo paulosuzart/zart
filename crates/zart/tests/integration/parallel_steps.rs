@@ -67,3 +67,67 @@ async fn parallel_steps_followed_by_downstream_step_completes() {
     let result = record.result.expect("expected a result");
     assert_eq!(result["total"], 6);
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL — run with: just test-integration"]
+async fn durable_multistep_and_waitgroup_completes_sub_100ms_with_long_poll_interval() {
+    let scheduler = setup().await;
+
+    let mut registry = DurableRegistry::new();
+    registry.register("parallel-then-downstream", ParallelThenDownstreamTask);
+
+    let config = WorkerConfig {
+        poll_interval: Duration::from_secs(30),
+        max_tasks_per_poll: 10,
+        max_concurrent_tasks: 4,
+        shutdown_timeout: Duration::from_secs(5),
+        orphan_timeout: Duration::from_secs(30),
+        enable_listen_notify: true,
+        ..Default::default()
+    };
+    let worker = Arc::new(
+        WorkerBuilder::from_backend(scheduler.as_ref())
+            .durable_registry(registry)
+            .config(config)
+            .build(),
+    );
+    let w = worker.clone();
+    let handle = tokio::spawn(async move { w.run().await });
+
+    // Allow initial poll and PgListener subscription to establish before starting execution.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let execution_id = format!("test-par-wakeup-{}", Uuid::new_v4());
+    let durable = DurableScheduler::from_backend(scheduler.as_ref());
+
+    let start = std::time::Instant::now();
+    durable
+        .start(
+            &execution_id,
+            "parallel-then-downstream",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("start failed");
+
+    let record = durable
+        .wait(
+            &execution_id,
+            Duration::from_secs(5),
+            Some(Duration::from_millis(10)),
+        )
+        .await
+        .expect("wait failed");
+    let elapsed = start.elapsed();
+
+    worker.stop();
+    let _ = handle.await;
+
+    assert_eq!(record.status, ExecutionStatus::Completed);
+    let result = record.result.expect("expected a result");
+    assert_eq!(result["total"], 6);
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "expected durable multi-step + WaitGroup to complete in < 100ms with 30s poll_interval, took {elapsed:?}"
+    );
+}
