@@ -17,6 +17,10 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     /// How often the worker polls the database for due tasks.
+    ///
+    /// When `enable_listen_notify` is `true` (default), this acts as the
+    /// fallback reconciliation poll interval (can safely be set to `30s`–`60s`
+    /// in production without hurting task wakeup latency).
     pub poll_interval: Duration,
 
     /// Maximum number of tasks to fetch per poll cycle.
@@ -38,6 +42,13 @@ pub struct WorkerConfig {
     /// giving 2 retries before orphan recovery would reclaim the task.
     /// Set to `Some(Duration::ZERO)` to disable heartbeating entirely.
     pub heartbeat_interval: Option<Duration>,
+
+    /// Enable PostgreSQL `LISTEN / NOTIFY` wakeup hints when supported by the
+    /// scheduler backend. Defaults to `true`.
+    ///
+    /// Even when `false`, in-process `local_wakeup` hints and the `poll_interval`
+    /// fallback loop remain active.
+    pub enable_listen_notify: bool,
 }
 
 impl Default for WorkerConfig {
@@ -49,6 +60,7 @@ impl Default for WorkerConfig {
             shutdown_timeout: Duration::from_secs(30),
             orphan_timeout: Duration::from_secs(300),
             heartbeat_interval: None, // Defaults to orphan_timeout / 3.
+            enable_listen_notify: true,
         }
     }
 }
@@ -65,6 +77,18 @@ mod tests {
         assert!(cfg.max_concurrent_tasks > 0);
         assert!(cfg.shutdown_timeout > Duration::ZERO);
         assert!(cfg.heartbeat_interval.is_none());
+        assert!(cfg.enable_listen_notify);
+    }
+
+    #[test]
+    fn struct_update_syntax_preserves_wakeup_defaults() {
+        let cfg = WorkerConfig {
+            max_concurrent_tasks: 32,
+            ..WorkerConfig::default()
+        };
+        assert_eq!(cfg.max_concurrent_tasks, 32);
+        assert!(cfg.enable_listen_notify);
+        assert_eq!(cfg.poll_interval, Duration::from_secs(5));
     }
 
     #[test]

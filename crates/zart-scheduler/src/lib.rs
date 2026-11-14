@@ -33,7 +33,7 @@ pub use error::StorageError;
 pub use ops::ExecutionOps;
 pub use recurrence::Recurrence;
 pub use registry::TaskRegistry;
-pub use store::TaskScheduler;
+pub use store::{TaskScheduler, WakeupOptions};
 pub use task::CompletionHandler;
 pub use task::{ScheduledTask, SchedulerTaskError, TaskInstance};
 pub use types::{
@@ -173,5 +173,16 @@ mod tests {
         let scheduler = Arc::new(StubScheduler);
         let cancelled = scheduler.cancel_task("task-1").await.unwrap();
         assert!(cancelled);
+    }
+
+    #[tokio::test]
+    async fn subscribe_wakeups_returns_none_by_default() {
+        let scheduler = Arc::new(StubScheduler);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let wakeup = scheduler
+            .subscribe_wakeups(WakeupOptions::default(), cancel)
+            .await;
+        assert!(wakeup.is_none());
+        scheduler.notify_local_wakeup();
     }
 }
