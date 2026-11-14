@@ -82,7 +82,7 @@ pub struct WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_secs(30),
+            poll_interval: Duration::from_secs(5),
             max_tasks_per_poll: 10,
             max_concurrent_tasks: 16,
             shutdown_timeout: Duration::from_secs(30),
@@ -116,7 +116,7 @@ mod tests {
         };
         assert_eq!(cfg.max_concurrent_tasks, 32);
         assert!(cfg.enable_listen_notify);
-        assert_eq!(cfg.poll_interval, Duration::from_secs(30));
+        assert_eq!(cfg.poll_interval, Duration::from_secs(5));
     }
 
     #[test]

@@ -51,7 +51,7 @@ impl WorkerBuilder {
     ///
     /// This is the recommended production path. It starts with
     /// [`WorkerConfig::default()`] (`enable_listen_notify: true`,
-    /// `poll_interval: 30s` fallback, `max_concurrent_tasks: 16`,
+    /// `poll_interval: 5s` fallback, `max_concurrent_tasks: 16`,
     /// `max_tasks_per_poll: 10`, `shutdown_timeout: 30s`,
     /// `orphan_timeout: 300s`), so calling [`.config(...)`](Self::config) is
     /// optional unless you need custom tuning.
