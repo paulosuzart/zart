@@ -9,6 +9,7 @@ members = [
     "examples/admin-demo",
     "examples/cli-demo",
     "examples/ui-demo", "crates/zart-core",
+    "crates/zart-autoagents",
 ]
 resolver = "2"
 

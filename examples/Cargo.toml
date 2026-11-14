@@ -21,6 +21,10 @@ name = "example-autoagents-agent"
 path = "autoagents-agent/src/main.rs"
 
 [[bin]]
+name = "example-autoagents-durable"
+path = "autoagents-durable/src/main.rs"
+
+[[bin]]
 name = "example-retry-simulation"
 path = "retry-simulation/src/main.rs"
 
@@ -54,6 +58,7 @@ path = "recurring-durable/src/main.rs"
 
 [dependencies]
 zart = { path = "../crates/zart" }
+zart-autoagents = { path = "../crates/zart-autoagents" }
 zart-macros = { path = "../crates/zart-macros" }
 zart-scheduler = { path = "../crates/zart-scheduler" }
 tokio = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "zart-autoagents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal durable execution harness integrating AutoAgents with Zart"
+
+[dependencies]
+zart = { path = "../zart" }
+autoagents = "0.4.0"
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

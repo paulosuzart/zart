@@ -3809,6 +3809,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zart-autoagents"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "autoagents",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "zart",
+]
+
+[[package]]
 name = "zart-cli"
 version = "0.2.1"
 dependencies = [
@@ -3855,6 +3870,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zart",
+ "zart-autoagents",
  "zart-macros",
  "zart-scheduler",
 ]
