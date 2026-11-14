@@ -52,9 +52,11 @@ mod step_storage_impl;
 mod table_names;
 mod wait_group_storage_impl;
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use sqlx::PgPool;
+use sqlx::postgres::PgConnectOptions;
 use zart_core::StorageError;
 use zart_scheduler::PostgresTaskScheduler;
 use zart_scheduler::TaskScheduler;
@@ -210,6 +212,36 @@ impl PgBackend {
         Self { storage, scheduler }
     }
 
+    /// Configure dedicated PostgreSQL connection options for `LISTEN/NOTIFY`.
+    ///
+    /// Use this when the main `PgPool` connects through a transaction-mode
+    /// pooler (such as PgBouncer in transaction mode) that does not support
+    /// session-level `LISTEN` commands.
+    pub fn with_listener_options(self, options: PgConnectOptions) -> Self {
+        let scheduler = Arc::new(
+            self.scheduler
+                .as_ref()
+                .clone()
+                .with_listener_options(options),
+        );
+        let storage = Arc::new(PostgresStorage {
+            pool: self.storage.pool.clone(),
+            table_names: self.storage.table_names.clone(),
+            task_scheduler: scheduler.clone(),
+        });
+        Self { storage, scheduler }
+    }
+
+    /// Parse a PostgreSQL connection URL and configure it as the dedicated
+    /// connection for `LISTEN/NOTIFY`.
+    ///
+    /// See [`PgBackend::with_listener_options`] for details.
+    pub fn with_listener_url(self, url: &str) -> Result<Self, StorageError> {
+        let options =
+            PgConnectOptions::from_str(url).map_err(|e| StorageError::Database(Box::new(e)))?;
+        Ok(self.with_listener_options(options))
+    }
+
     /// Returns a reference to the underlying connection pool.
     pub fn pool(&self) -> &PgPool {
         &self.storage.pool
@@ -232,5 +264,52 @@ impl Backend for PgBackend {
 
     fn scheduler(&self) -> Arc<dyn TaskScheduler> {
         self.scheduler.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pg_backend_with_listener_options_wires_shared_scheduler() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@pgbouncer:6432/zart")
+            .expect("lazy pool creation should succeed");
+        let opts = PgConnectOptions::new()
+            .host("pg-direct")
+            .port(5432)
+            .database("zart");
+
+        let backend = PgBackend::new(pool).with_listener_options(opts);
+        let configured = backend
+            .scheduler
+            .listener_options()
+            .expect("listener options should be wired onto scheduler");
+        assert_eq!(configured.get_host(), "pg-direct");
+        assert_eq!(configured.get_port(), 5432);
+        assert_eq!(configured.get_database(), Some("zart"));
+        // Both PgBackend::scheduler and PostgresStorage::task_scheduler share the same Arc.
+        assert_eq!(Arc::strong_count(&backend.scheduler), 2);
+    }
+
+    #[tokio::test]
+    async fn pg_backend_with_listener_url_parses_and_wires_or_errors() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@pgbouncer:6432/zart")
+            .expect("lazy pool creation should succeed");
+
+        let backend = PgBackend::new(pool.clone())
+            .with_listener_url("postgres://user:pass@pg-direct.internal:5435/zart_db")
+            .expect("valid listener URL should parse");
+        let configured = backend
+            .scheduler
+            .listener_options()
+            .expect("listener options should be wired onto scheduler");
+        assert_eq!(configured.get_host(), "pg-direct.internal");
+        assert_eq!(configured.get_port(), 5435);
+        assert_eq!(configured.get_database(), Some("zart_db"));
+        assert_eq!(Arc::strong_count(&backend.scheduler), 2);
+
+        let err = PgBackend::new(pool).with_listener_url("not a valid url");
+        assert!(matches!(err, Err(StorageError::Database(_))));
     }
 }
