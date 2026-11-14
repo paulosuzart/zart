@@ -407,3 +407,352 @@ mod postgres_tests {
         cleanup(&pool, &[task_id.as_str()]).await;
     }
 }
+
+mod wakeup_and_backpressure_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use async_trait::async_trait;
+    use sqlx::PgPool;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+    use zart_scheduler::{
+        CompletionHandler, OnComplete, PostgresTaskScheduler, ScheduledTask, SchedulerTaskError,
+        TaskInstance, TaskRegistry, TaskScheduler, Worker, WorkerConfig,
+    };
+
+    fn pg_url() -> String {
+        std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://zart:zart@localhost:5432/zart".to_string())
+    }
+
+    async fn setup_pool() -> PgPool {
+        PgPool::connect(&pg_url())
+            .await
+            .expect("failed to connect to PostgreSQL")
+    }
+
+    async fn cleanup(pool: &PgPool, task_ids: &[String]) {
+        if task_ids.is_empty() {
+            return;
+        }
+        let _ = sqlx::query("DELETE FROM zart_tasks WHERE task_id = ANY($1)")
+            .bind(task_ids)
+            .execute(pool)
+            .await;
+    }
+
+    struct ConcurrencyGuard {
+        active: Arc<AtomicUsize>,
+    }
+
+    impl Drop for ConcurrencyGuard {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    struct RecordingTask {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        completed: Arc<AtomicUsize>,
+        work_delay: Duration,
+        done_tx: mpsc::UnboundedSender<String>,
+    }
+
+    #[async_trait]
+    impl ScheduledTask for RecordingTask {
+        async fn execute(
+            &self,
+            instance: &TaskInstance,
+        ) -> Result<Box<dyn CompletionHandler>, SchedulerTaskError> {
+            let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(current, Ordering::SeqCst);
+            let _guard = ConcurrencyGuard {
+                active: Arc::clone(&self.active),
+            };
+
+            if !self.work_delay.is_zero() {
+                tokio::time::sleep(self.work_delay).await;
+            }
+
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            let _ = self.done_tx.send(instance.task_id.clone());
+            Ok(OnComplete::done())
+        }
+    }
+
+    fn make_recording_task(
+        work_delay: Duration,
+    ) -> (
+        RecordingTask,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        mpsc::UnboundedReceiver<String>,
+    ) {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let (done_tx, done_rx) = mpsc::unbounded_channel();
+        let task = RecordingTask {
+            active,
+            peak: Arc::clone(&peak),
+            completed: Arc::clone(&completed),
+            work_delay,
+            done_tx,
+        };
+        (task, peak, completed, done_rx)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn postgres_worker_sub_100ms_wakeup_via_listen_notify() {
+        let pool = setup_pool().await;
+        let worker_scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
+        // Separate scheduler instance has its own local_wakeup, so the worker
+        // can only wake sub-100ms via PostgreSQL LISTEN / NOTIFY.
+        let producer_scheduler = PostgresTaskScheduler::new(pool.clone());
+
+        let (task, _peak, completed, mut done_rx) = make_recording_task(Duration::ZERO);
+        let mut registry = TaskRegistry::new();
+        registry.register("wakeup-notify-task", task);
+
+        let worker = Arc::new(Worker::new(
+            worker_scheduler,
+            Arc::new(registry),
+            WorkerConfig {
+                poll_interval: Duration::from_secs(30),
+                enable_listen_notify: true,
+                shutdown_timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
+            vec![],
+        ));
+        let w = Arc::clone(&worker);
+        let handle = tokio::spawn(async move { w.run().await });
+
+        // Allow initial poll and PgListener subscription to establish.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let task_id = format!("test-notify-wakeup-{}", Uuid::new_v4());
+        let start = Instant::now();
+        producer_scheduler
+            .schedule_now(&task_id, "wakeup-notify-task", serde_json::json!({}))
+            .await
+            .expect("schedule_now failed");
+
+        let finished_id = tokio::time::timeout(Duration::from_millis(100), done_rx.recv())
+            .await
+            .expect("worker did not wake up within 100ms via LISTEN/NOTIFY")
+            .expect("channel closed unexpectedly");
+        let elapsed = start.elapsed();
+
+        assert_eq!(finished_id, task_id);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "expected < 100ms wakeup, took {elapsed:?}"
+        );
+
+        worker.stop();
+        let _ = handle.await;
+        cleanup(&pool, &[task_id]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn postgres_worker_sub_100ms_wakeup_via_local_wakeup() {
+        let pool = setup_pool().await;
+        let scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
+
+        let (task, _peak, completed, mut done_rx) = make_recording_task(Duration::ZERO);
+        let mut registry = TaskRegistry::new();
+        registry.register("wakeup-local-task", task);
+
+        let worker = Arc::new(Worker::new(
+            Arc::clone(&scheduler) as Arc<dyn TaskScheduler>,
+            Arc::new(registry),
+            WorkerConfig {
+                poll_interval: Duration::from_secs(30),
+                enable_listen_notify: false,
+                shutdown_timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
+            vec![],
+        ));
+        let w = Arc::clone(&worker);
+        let handle = tokio::spawn(async move { w.run().await });
+
+        // Allow initial poll to complete so the worker parks on wait_for_wakeup.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let task_id = format!("test-local-wakeup-{}", Uuid::new_v4());
+        let start = Instant::now();
+        scheduler
+            .schedule_now(&task_id, "wakeup-local-task", serde_json::json!({}))
+            .await
+            .expect("schedule_now failed");
+
+        let finished_id = tokio::time::timeout(Duration::from_millis(100), done_rx.recv())
+            .await
+            .expect("worker did not wake up within 100ms via local_wakeup")
+            .expect("channel closed unexpectedly");
+        let elapsed = start.elapsed();
+
+        assert_eq!(finished_id, task_id);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "expected < 100ms local_wakeup, took {elapsed:?}"
+        );
+
+        worker.stop();
+        let _ = handle.await;
+        cleanup(&pool, &[task_id]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn postgres_worker_backpressure_and_drain_under_burst() {
+        const TOTAL_TASKS: usize = 50;
+        const MAX_CONCURRENT: usize = 4;
+
+        let pool = setup_pool().await;
+        let scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
+
+        let mut task_ids = Vec::with_capacity(TOTAL_TASKS);
+        for i in 0..TOTAL_TASKS {
+            let task_id = format!("test-burst-{i}-{}", Uuid::new_v4());
+            scheduler
+                .schedule_now(&task_id, "burst-task", serde_json::json!({ "idx": i }))
+                .await
+                .expect("schedule_now failed");
+            task_ids.push(task_id);
+        }
+
+        let (task, peak, completed, mut done_rx) = make_recording_task(Duration::from_millis(40));
+        let mut registry = TaskRegistry::new();
+        registry.register("burst-task", task);
+
+        let worker = Arc::new(Worker::new(
+            scheduler,
+            Arc::new(registry),
+            WorkerConfig {
+                poll_interval: Duration::from_secs(30),
+                max_concurrent_tasks: MAX_CONCURRENT,
+                max_tasks_per_poll: 10,
+                enable_listen_notify: true,
+                shutdown_timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
+            vec![],
+        ));
+
+        let start = Instant::now();
+        let w = Arc::clone(&worker);
+        let handle = tokio::spawn(async move { w.run().await });
+
+        let mut received = 0usize;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while received < TOTAL_TASKS {
+                done_rx.recv().await.expect("channel closed unexpectedly");
+                received += 1;
+            }
+        })
+        .await
+        .expect("50 burst tasks did not drain within 10s");
+
+        let elapsed = start.elapsed();
+
+        worker.stop();
+        let _ = handle.await;
+
+        let observed_peak = peak.load(Ordering::SeqCst);
+        assert!(
+            observed_peak <= MAX_CONCURRENT,
+            "concurrency peak {observed_peak} exceeded max_concurrent_tasks {MAX_CONCURRENT}"
+        );
+        assert!(
+            observed_peak >= 2,
+            "expected concurrent execution, but peak was {observed_peak}"
+        );
+        assert_eq!(completed.load(Ordering::SeqCst), TOTAL_TASKS);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "burst should drain continuously without 30s sleeps, took {elapsed:?}"
+        );
+
+        let completed_in_db: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM zart_tasks WHERE task_id = ANY($1) AND status = 'completed'",
+        )
+        .bind(&task_ids)
+        .fetch_one(&pool)
+        .await
+        .expect("DB count query failed");
+        assert_eq!(completed_in_db, TOTAL_TASKS as i64);
+
+        cleanup(&pool, &task_ids).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL — run with: just test-integration"]
+    async fn postgres_worker_fallback_poll_executes_external_insert() {
+        let pool = setup_pool().await;
+        let scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
+
+        let (task, _peak, completed, mut done_rx) = make_recording_task(Duration::ZERO);
+        let mut registry = TaskRegistry::new();
+        registry.register("fallback-poll-task", task);
+
+        let worker = Arc::new(Worker::new(
+            scheduler,
+            Arc::new(registry),
+            WorkerConfig {
+                poll_interval: Duration::from_millis(200),
+                enable_listen_notify: false,
+                shutdown_timeout: Duration::from_secs(5),
+                ..Default::default()
+            },
+            vec![],
+        ));
+        let w = Arc::clone(&worker);
+        let handle = tokio::spawn(async move { w.run().await });
+
+        // Let initial poll finish so the worker enters the 200ms fallback sleep.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let task_id = format!("test-fallback-{}", Uuid::new_v4());
+        let start = Instant::now();
+        // External raw SQL insert: neither NOTIFY nor local_wakeup fires.
+        sqlx::query(
+            r#"
+            INSERT INTO zart_tasks (task_id, task_name, execution_time, data, recurrence, metadata)
+            VALUES ($1, $2, NOW(), $3, NULL, 'null'::jsonb)
+            "#,
+        )
+        .bind(&task_id)
+        .bind("fallback-poll-task")
+        .bind(serde_json::json!({ "source": "external" }))
+        .execute(&pool)
+        .await
+        .expect("external SQL insert failed");
+
+        let finished_id = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+            .await
+            .expect("worker did not pick up external insert within fallback poll window")
+            .expect("channel closed unexpectedly");
+        let elapsed = start.elapsed();
+
+        assert_eq!(finished_id, task_id);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "expected fallback poll pickup within 1s, took {elapsed:?}"
+        );
+
+        worker.stop();
+        let _ = handle.await;
+        cleanup(&pool, &[task_id]).await;
+    }
+}
