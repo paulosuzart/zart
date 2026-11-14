@@ -5,13 +5,28 @@
 //! crate (`PostgresTaskScheduler`); the `zart` crate consumes the trait
 //! without providing its own implementation.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
+use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::Recurrence;
 use crate::StorageError;
 use crate::types::{CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult};
+
+/// Configuration passed to [`TaskScheduler::subscribe_wakeups`].
+#[derive(Debug, Clone, Default)]
+pub struct WakeupOptions {
+    /// Whether to subscribe to cross-process backend hints (e.g. Postgres `LISTEN/NOTIFY`).
+    /// In-process wakeups remain active regardless when supported.
+    pub enable_listen_notify: bool,
+    /// Optional queue filter for Spec 0054 forward compatibility.
+    /// Empty means wake on notifications for any queue.
+    pub subscribed_queues: Vec<String>,
+}
 
 /// Task-queue operations: schedule, poll, and lifecycle management.
 ///
@@ -198,4 +213,26 @@ pub trait TaskScheduler: Send + Sync {
         let _ = params;
         Err(StorageError::NotImplemented("complete_and_schedule"))
     }
+
+    /// Subscribe to ephemeral task-readiness wakeup hints.
+    ///
+    /// Returned `Notify` is signaled whenever a task may have become due
+    /// (e.g. via `LISTEN/NOTIFY` or an in-process scheduling commit).
+    /// Returning `None` (the default for simple/mock schedulers) tells the
+    /// worker to rely solely on `WorkerConfig::poll_interval`.
+    async fn subscribe_wakeups(
+        &self,
+        options: WakeupOptions,
+        cancel: CancellationToken,
+    ) -> Option<Arc<Notify>> {
+        let _ = (options, cancel);
+        None
+    }
+
+    /// Signal in-process workers that a transaction scheduling due work has committed.
+    ///
+    /// Called strictly *after* `tx.commit()` by `ExecutionOps` (and `zart` storage
+    /// paths that manage their own transaction around `schedule_at_in_tx`).
+    /// Default implementation is a no-op.
+    fn notify_local_wakeup(&self) {}
 }
