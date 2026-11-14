@@ -960,30 +960,13 @@ impl TaskContext {
                     .resolve_wait_group_barrier(&group_step_name, &step_names, 0)
                     .await?;
 
-                let mut results = Vec::with_capacity(values.len());
-                for (idx, value) in values.into_iter().enumerate() {
-                    let step_name = step_names
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| "__wait_all".to_string());
-
-                    if value.is_null() {
-                        results.push(Err(StepError::Failed {
-                            step: step_name,
-                            reason: "step completed but result is missing".to_string(),
-                        }));
-                    } else {
-                        let val = serde_json::from_value(value).map_err(|e| StepError::Failed {
-                            step: step_name,
-                            reason: format!("deserialize error: {e}"),
-                        })?;
-                        results.push(Ok(val));
-                    }
-                }
-                Ok(results)
+                deserialize_wait_group_values(&step_names, values)
             }
             ExecutionMode::Step { target_step, .. } => {
+                use zart_core::types::{StepLookup, TaskStatus};
+
                 let target = target_step.clone();
+                let step_names: Vec<String> = handles.iter().map(|h| h.step_name.clone()).collect();
 
                 for handle in handles {
                     if handle.step_name == target {
@@ -1001,10 +984,29 @@ impl TaskContext {
                     }
                 }
 
-                Err(StepError::Failed {
-                    step: target,
-                    reason: "target step not found in wait_all handles".to_string(),
-                })
+                // Target step is downstream of this wait group: if all children in this
+                // wait group are already completed, replay their cached results so the
+                // body walk can reach `target`.
+                let mut values = Vec::with_capacity(step_names.len());
+                for child_name in &step_names {
+                    match self.get_cached_step_status(child_name).await? {
+                        Some(StepLookup {
+                            status: TaskStatus::Completed,
+                            result,
+                            ..
+                        }) => {
+                            values.push(result.unwrap_or(serde_json::Value::Null));
+                        }
+                        _ => {
+                            return Err(StepError::Failed {
+                                step: target,
+                                reason: "target step not found in wait_all handles".to_string(),
+                            });
+                        }
+                    }
+                }
+
+                deserialize_wait_group_values(&step_names, values)
             }
         }
     }
@@ -1246,6 +1248,36 @@ impl TaskContext {
     pub fn is_retry_attempt(&self) -> bool {
         self.current_attempt() > 0
     }
+}
+
+fn deserialize_wait_group_values<T>(
+    step_names: &[String],
+    values: Vec<serde_json::Value>,
+) -> Result<Vec<Result<T, StepError>>, StepError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let mut results = Vec::with_capacity(values.len());
+    for (idx, value) in values.into_iter().enumerate() {
+        let step_name = step_names
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| "__wait_all".to_string());
+
+        if value.is_null() {
+            results.push(Err(StepError::Failed {
+                step: step_name,
+                reason: "step completed but result is missing".to_string(),
+            }));
+        } else {
+            let val = serde_json::from_value(value).map_err(|e| StepError::Failed {
+                step: step_name,
+                reason: format!("deserialize error: {e}"),
+            })?;
+            results.push(Ok(val));
+        }
+    }
+    Ok(results)
 }
 
 struct RetryPlan {
