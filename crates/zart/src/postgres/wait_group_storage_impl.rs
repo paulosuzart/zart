@@ -1,13 +1,16 @@
 //! PostgreSQL implementation of [`WaitGroupStore`] for [`PostgresStorage`].
 
 use async_trait::async_trait;
+use chrono::Utc;
 use sqlx::PgConnection;
 use zart_core::StorageError;
 use zart_core::store::WaitGroupStore;
 use zart_core::task_metadata::TaskMetadata;
 use zart_core::types::{
-    CompleteWaitGroupChildParams, FailWaitGroupChildParams, UpsertWaitGroupStepParams,
+    CompleteWaitGroupChildParams, FailWaitGroupChildParams, ScheduleAtParams,
+    UpsertWaitGroupStepParams,
 };
+use zart_scheduler::TaskScheduler;
 
 use super::PostgresStorage;
 
@@ -51,8 +54,13 @@ impl WaitGroupStore for PostgresStorage {
             .await
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        let triggered =
-            complete_wait_group_child_in_tx_impl(&mut tx, &params, &self.table_names).await?;
+        let triggered = complete_wait_group_child_in_tx_impl(
+            &mut tx,
+            &params,
+            &self.table_names,
+            &*self.task_scheduler,
+        )
+        .await?;
 
         tx.commit()
             .await
@@ -65,7 +73,13 @@ impl WaitGroupStore for PostgresStorage {
         conn: &mut PgConnection,
         params: CompleteWaitGroupChildParams,
     ) -> Result<bool, StorageError> {
-        complete_wait_group_child_in_tx_impl(conn, &params, &self.table_names).await
+        complete_wait_group_child_in_tx_impl(
+            conn,
+            &params,
+            &self.table_names,
+            &*self.task_scheduler,
+        )
+        .await
     }
 
     async fn fail_wait_group_child(
@@ -96,14 +110,15 @@ impl WaitGroupStore for PostgresStorage {
     }
 
     async fn recover_wait_group_orphans(&self) -> Result<usize, StorageError> {
-        let rows: Vec<(String, String, String, String)> =
+        let rows: Vec<(String, String, String, String, serde_json::Value)> =
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 r#"
             SELECT
                 s.run_id,
                 s.step_name,
                 e.task_name,
-                r.execution_id
+                r.execution_id,
+                r.payload
             FROM {steps} s
             JOIN {execution_runs} r ON r.run_id = s.run_id
             JOIN {executions} e ON e.execution_id = r.execution_id
@@ -121,33 +136,24 @@ impl WaitGroupStore for PostgresStorage {
             .map_err(|e| StorageError::Database(Box::new(e)))?;
 
         let mut recovered = 0usize;
-        for (run_id, step_name, _task_name, execution_id) in rows {
+        for (run_id, step_name, _task_name, execution_id, payload) in rows {
             let next_body_task_id = format!("{run_id}:body:after:{step_name}");
             let body_metadata = TaskMetadata::body(&run_id, &execution_id).to_json_value();
 
-            let inserted = sqlx::query(sqlx::AssertSqlSafe(format!(
-                r#"
-                INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-                SELECT $1, $2, NOW(), r.payload, $3
-                FROM {execution_runs} r
-                WHERE r.run_id = $4
-                ON CONFLICT (task_id) DO NOTHING
-                "#,
-                tasks = self.table_names.tasks(),
-                execution_runs = self.table_names.execution_runs(),
-            )))
-            .bind(&next_body_task_id)
-            .bind(crate::TASK_NAME)
-            .bind(&body_metadata)
-            .bind(&run_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(Box::new(e)))?
-            .rows_affected();
+            // Delegate task-queue insert to task_scheduler (no task-queue SQL in this crate).
+            // `schedule_at` uses `ON CONFLICT (task_id) DO NOTHING` for idempotency.
+            self.task_scheduler
+                .schedule_at(ScheduleAtParams {
+                    task_id: next_body_task_id,
+                    task_name: crate::TASK_NAME.to_string(),
+                    execution_time: Utc::now(),
+                    data: payload,
+                    recurrence: None,
+                    metadata: body_metadata,
+                })
+                .await?;
 
-            if inserted > 0 {
-                recovered += 1;
-            }
+            recovered += 1;
         }
 
         Ok(recovered)
@@ -158,6 +164,7 @@ async fn complete_wait_group_child_in_tx_impl(
     conn: &mut PgConnection,
     params: &CompleteWaitGroupChildParams,
     table_names: &super::table_names::TableNames,
+    task_scheduler: &dyn TaskScheduler,
 ) -> Result<bool, StorageError> {
     let attempt_id = format!("{}:attempt:{}", params.child_step_id, params.attempt_number);
     sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -217,21 +224,20 @@ async fn complete_wait_group_child_in_tx_impl(
     if triggered {
         let body_metadata =
             TaskMetadata::body(&params.run_id, &params.execution_id).to_json_value();
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            r#"
-            INSERT INTO {tasks} (task_id, task_name, execution_time, data, metadata)
-            VALUES ($1, $2, NOW(), $3, $4)
-            ON CONFLICT (task_id) DO NOTHING
-            "#,
-            tasks = table_names.tasks(),
-        )))
-        .bind(&params.next_body_task_id)
-        .bind(crate::TASK_NAME)
-        .bind(&params.data)
-        .bind(&body_metadata)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        // Delegate task-queue insert to task_scheduler within the same ACID transaction.
+        task_scheduler
+            .schedule_at_in_tx(
+                conn,
+                ScheduleAtParams {
+                    task_id: params.next_body_task_id.clone(),
+                    task_name: crate::TASK_NAME.to_string(),
+                    execution_time: Utc::now(),
+                    data: params.data.clone(),
+                    recurrence: None,
+                    metadata: body_metadata,
+                },
+            )
+            .await?;
     }
 
     Ok(triggered)
