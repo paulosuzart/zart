@@ -18,7 +18,7 @@ function loadWorkspaceMetadata(): { zartVersion: string; sqlxVersion: string } {
 
     const pkgSection = raw.match(/\[workspace\.package\][\s\S]*?(?=\n\[|$)/)?.[0] ?? "";
     const zartVersion =
-      pkgSection.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1] ?? "0.2.1";
+      pkgSection.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1] ?? "0.2.2";
 
     const sqlxVersion =
       raw.match(/^\s*sqlx\s*=\s*\{[^}]*version\s*=\s*"([^"]+)"/m)?.[1] ?? "0.9";
@@ -26,7 +26,7 @@ function loadWorkspaceMetadata(): { zartVersion: string; sqlxVersion: string } {
     return { zartVersion, sqlxVersion };
   }
 
-  return { zartVersion: "0.2.1", sqlxVersion: "0.9" };
+  return { zartVersion: "0.2.2", sqlxVersion: "0.9" };
 }
 
 const meta = loadWorkspaceMetadata();
