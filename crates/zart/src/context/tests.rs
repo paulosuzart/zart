@@ -823,3 +823,20 @@ async fn capture_updates_in_memory_cache_for_subsequent_lookups() {
     assert_eq!(scheduler.list_step_statuses_calls.load(Ordering::SeqCst), 1);
     assert_eq!(scheduler.get_step_status_calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn step_mode_wait_all_replays_completed_children_for_downstream_target() {
+    let (scheduler, _calls) = RecordingScheduler::builder()
+        .step_completed("exec-1", "c1", serde_json::json!(10u32))
+        .step_completed("exec-1", "c2", serde_json::json!(20u32))
+        .build();
+    let ctx = make_step_ctx(scheduler, "downstream-step");
+
+    let h1 = ctx.schedule_step(ChargeCardStep.named("c1"));
+    let h2 = ctx.schedule_step(ChargeCardStep.named("c2"));
+
+    let results: Vec<Result<u32, StepError>> = ctx.wait_all(vec![h1, h2]).await.unwrap();
+    let values: Vec<u32> = results.into_iter().map(|r| r.unwrap()).collect();
+
+    assert_eq!(values, vec![10, 20]);
+}
