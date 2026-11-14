@@ -14,6 +14,38 @@ use sqlx::PgConnection;
 
 use super::table_names::TableNames;
 
+/// Lightweight JSON wakeup payload emitted via `pg_notify` (D8).
+pub(crate) const DEFAULT_WAKEUP_PAYLOAD: &str = r#"{"queue":"default"}"#;
+
+/// Returns `true` when `execution_time` is due immediately (`<= now`).
+pub(crate) fn is_immediately_eligible(execution_time: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    execution_time <= now
+}
+
+/// Returns `true` when a scheduling/rescheduling statement actually affected at
+/// least one row and the resulting task is immediately eligible (`<= now`).
+pub(crate) fn should_notify_on_schedule(
+    rows_affected: u64,
+    execution_time: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    rows_affected > 0 && is_immediately_eligible(execution_time, now)
+}
+
+/// Emit a transaction-scoped `pg_notify` hint on the configured wakeup channel.
+pub(crate) async fn notify_wakeup_sql(
+    conn: &mut PgConnection,
+    names: &TableNames,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_notify($1, $2)")
+        .bind(names.wakeup_channel())
+        .bind(DEFAULT_WAKEUP_PAYLOAD)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| StorageError::Database(Box::new(e)))?;
+    Ok(())
+}
+
 /// Mark a task as completed within a caller-owned connection/transaction.
 pub async fn mark_completed_sql(
     conn: &mut PgConnection,
@@ -119,6 +151,11 @@ pub async fn mark_failed_sql(
     if rows_affected == 0 {
         return Err(StorageError::LockMismatch(task_id.to_string()));
     }
+    if let Some(t) = exec_time
+        && should_notify_on_schedule(rows_affected, t, Utc::now())
+    {
+        notify_wakeup_sql(conn, names).await?;
+    }
     Ok(())
 }
 
@@ -191,6 +228,9 @@ pub async fn update_task_state_sql(
     if rows_affected == 0 {
         return Err(StorageError::LockMismatch(task_id.to_string()));
     }
+    if should_notify_on_schedule(rows_affected, next_execution_time, Utc::now()) {
+        notify_wakeup_sql(conn, names).await?;
+    }
     Ok(())
 }
 
@@ -209,7 +249,7 @@ pub async fn schedule_at_sql(
         .transpose()
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-    sqlx::query(sqlx::AssertSqlSafe(format!(
+    let rows_affected = sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"
         INSERT INTO {tasks}
             (task_id, task_name, execution_time, data, recurrence, metadata)
@@ -226,10 +266,62 @@ pub async fn schedule_at_sql(
     .bind(&params.metadata)
     .execute(&mut *conn)
     .await
-    .map_err(|e| StorageError::Database(Box::new(e)))?;
+    .map_err(|e| StorageError::Database(Box::new(e)))?
+    .rows_affected();
+
+    if should_notify_on_schedule(rows_affected, params.execution_time, Utc::now()) {
+        notify_wakeup_sql(conn, names).await?;
+    }
 
     Ok(ScheduleResult {
         task_id: params.task_id.clone(),
         execution_time: params.execution_time,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn default_wakeup_payload_is_valid_json() {
+        let parsed: serde_json::Value = serde_json::from_str(DEFAULT_WAKEUP_PAYLOAD).unwrap();
+        assert_eq!(parsed, serde_json::json!({ "queue": "default" }));
+    }
+
+    #[test]
+    fn is_immediately_eligible_checks_due_boundary() {
+        let now = Utc::now();
+        assert!(is_immediately_eligible(now - Duration::seconds(1), now));
+        assert!(is_immediately_eligible(now, now));
+        assert!(!is_immediately_eligible(now + Duration::seconds(1), now));
+    }
+
+    #[test]
+    fn should_notify_on_schedule_requires_affected_row_and_due_time() {
+        let now = Utc::now();
+        // ON CONFLICT DO NOTHING (0 rows) must never notify, even when due.
+        assert!(!should_notify_on_schedule(0, now, now));
+        assert!(!should_notify_on_schedule(
+            0,
+            now - Duration::seconds(5),
+            now
+        ));
+
+        // Inserted/updated row that is due or past-due notifies.
+        assert!(should_notify_on_schedule(1, now, now));
+        assert!(should_notify_on_schedule(
+            1,
+            now - Duration::seconds(5),
+            now
+        ));
+
+        // Future-scheduled row must not notify.
+        assert!(!should_notify_on_schedule(
+            1,
+            now + Duration::seconds(5),
+            now
+        ));
+    }
 }

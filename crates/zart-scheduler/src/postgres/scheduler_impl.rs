@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::PostgresTaskScheduler;
 use super::sql_helpers::{
-    mark_completed_sql, mark_failed_sql, schedule_at_sql, update_task_state_sql,
+    mark_completed_sql, mark_failed_sql, notify_wakeup_sql, schedule_at_sql,
+    should_notify_on_schedule, update_task_state_sql,
 };
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
@@ -325,24 +326,40 @@ impl TaskScheduler for PostgresTaskScheduler {
         let threshold = Utc::now()
             - chrono::Duration::from_std(stale_timeout).unwrap_or(chrono::Duration::seconds(300));
 
-        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+        let (recovered_count, has_due): (i64, bool) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             r#"
-            UPDATE {tasks}
-            SET status     = 'scheduled',
-                locked_at  = NULL,
-                worker_id  = NULL,
-                updated_at = NOW()
-            WHERE status    = 'picked_up'
-              AND locked_at < $1
-            "#,
+                WITH recovered AS (
+                    UPDATE {tasks}
+                    SET status     = 'scheduled',
+                        locked_at  = NULL,
+                        worker_id  = NULL,
+                        updated_at = NOW()
+                    WHERE status    = 'picked_up'
+                      AND locked_at < $1
+                    RETURNING execution_time
+                )
+                SELECT
+                    COUNT(*)::BIGINT,
+                    COALESCE(BOOL_OR(execution_time <= NOW()), FALSE)
+                FROM recovered
+                "#,
             tasks = self.table_names.tasks(),
         )))
         .bind(threshold)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|e| StorageError::Database(Box::new(e)))?;
 
-        Ok(result.rows_affected() as usize)
+        if has_due {
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| StorageError::Database(Box::new(e)))?;
+            notify_wakeup_sql(&mut conn, &self.table_names).await?;
+        }
+
+        Ok(recovered_count as usize)
     }
 
     async fn renew_lease(&self, task_id: &str, lock_token: &str) -> Result<bool, StorageError> {
@@ -406,7 +423,7 @@ impl TaskScheduler for PostgresTaskScheduler {
             return Err(StorageError::LockMismatch(params.completed_task_id));
         }
 
-        sqlx::query(sqlx::AssertSqlSafe(format!(
+        let inserted_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO {tasks}
                 (task_id, task_name, execution_time, data, metadata)
@@ -422,7 +439,12 @@ impl TaskScheduler for PostgresTaskScheduler {
         .bind(&params.new_metadata)
         .execute(&mut *tx)
         .await
-        .map_err(|e| StorageError::Database(Box::new(e)))?;
+        .map_err(|e| StorageError::Database(Box::new(e)))?
+        .rows_affected();
+
+        if should_notify_on_schedule(inserted_rows, params.new_execution_time, Utc::now()) {
+            notify_wakeup_sql(&mut tx, &self.table_names).await?;
+        }
 
         tx.commit()
             .await
