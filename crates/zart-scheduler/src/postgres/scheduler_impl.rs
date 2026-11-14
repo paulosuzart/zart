@@ -1,8 +1,14 @@
 //! Implementation of the [`TaskScheduler`] trait for [`PostgresTaskScheduler`].
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
+use sqlx::postgres::{PgListener, PgPoolOptions};
+use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::PostgresTaskScheduler;
@@ -12,8 +18,133 @@ use super::sql_helpers::{
 };
 use crate::{
     CompleteAndScheduleParams, FetchedTask, ScheduleAtParams, ScheduleResult, StorageError,
-    TaskScheduler,
+    TaskScheduler, WakeupOptions,
 };
+
+const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(100);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
+
+#[derive(serde::Deserialize)]
+struct WakeupPayload<'a> {
+    queue: Option<&'a str>,
+}
+
+/// Returns `true` if a `pg_notify` payload should wake a worker subscribed to `subscribed_queues`.
+///
+/// When `subscribed_queues` is empty, every notification wakes the worker.
+/// When `subscribed_queues` is non-empty, only JSON payloads of the form
+/// `{"queue":"<name>"}` matching one of `subscribed_queues` wake the worker;
+/// malformed or empty payloads are ignored without panicking.
+pub(crate) fn should_wake_for_payload(payload: &str, subscribed_queues: &[String]) -> bool {
+    if subscribed_queues.is_empty() {
+        return true;
+    }
+
+    match serde_json::from_str::<WakeupPayload<'_>>(payload) {
+        Ok(WakeupPayload { queue: Some(q) }) => subscribed_queues.iter().any(|sub| sub == q),
+        Ok(WakeupPayload { queue: None }) => false,
+        Err(err) => {
+            tracing::debug!(error = %err, "ignoring malformed pg_notify wakeup payload");
+            false
+        }
+    }
+}
+
+fn spawn_local_wakeup_bridge(
+    local_wakeup: Arc<Notify>,
+    wakeup: Arc<Notify>,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => break,
+                _ = local_wakeup.notified() => wakeup.notify_one(),
+            }
+        }
+    });
+}
+
+async fn connect_and_listen(
+    pool: &sqlx::PgPool,
+    channel: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<PgListener>, sqlx::Error> {
+    let mut listener = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(None),
+        res = PgListener::connect_with(pool) => res?,
+    };
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(None),
+        res = listener.listen(channel) => res?,
+    }
+    Ok(Some(listener))
+}
+
+fn spawn_pg_listener_loop(
+    pool: sqlx::PgPool,
+    channel: String,
+    subscribed_queues: Vec<String>,
+    wakeup: Arc<Notify>,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut backoff = INITIAL_RECONNECT_BACKOFF;
+        let mut is_reconnect = false;
+
+        loop {
+            let mut listener = match connect_and_listen(&pool, &channel, &cancel).await {
+                Ok(Some(listener)) => listener,
+                Ok(None) => break,
+                Err(err) => {
+                    tracing::warn!(error = %err, channel = %channel, "PgListener connect/listen failed; retrying");
+                    is_reconnect = true;
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+                    continue;
+                }
+            };
+
+            backoff = INITIAL_RECONNECT_BACKOFF;
+            if is_reconnect {
+                // D5: immediate wakeup on reconnect so poll_due reconciles missed notifications.
+                wakeup.notify_one();
+            }
+            is_reconnect = true;
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    res = listener.try_recv() => {
+                        match res {
+                            Ok(Some(notification)) => {
+                                if should_wake_for_payload(notification.payload(), &subscribed_queues) {
+                                    wakeup.notify_one();
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(channel = %channel, "PgListener connection dropped; reconnecting");
+                                break;
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, channel = %channel, "PgListener receive error; reconnecting");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
 
 #[async_trait]
 impl TaskScheduler for PostgresTaskScheduler {
@@ -465,6 +596,41 @@ impl TaskScheduler for PostgresTaskScheduler {
             .map_err(|e| StorageError::Database(Box::new(e)))
     }
 
+    async fn subscribe_wakeups(
+        &self,
+        options: WakeupOptions,
+        cancel: CancellationToken,
+    ) -> Option<Arc<Notify>> {
+        if !options.enable_listen_notify {
+            // In-process local_wakeup remains active even when LISTEN/NOTIFY is disabled.
+            return Some(Arc::clone(&self.local_wakeup));
+        }
+
+        let wakeup = Arc::new(Notify::new());
+        spawn_local_wakeup_bridge(
+            Arc::clone(&self.local_wakeup),
+            Arc::clone(&wakeup),
+            cancel.clone(),
+        );
+
+        let listener_pool = match self.listener_options.clone() {
+            Some(opts) => PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy_with(opts),
+            None => self.pool.clone(),
+        };
+
+        spawn_pg_listener_loop(
+            listener_pool,
+            self.table_names.wakeup_channel().to_string(),
+            options.subscribed_queues,
+            Arc::clone(&wakeup),
+            cancel,
+        );
+
+        Some(wakeup)
+    }
+
     fn notify_local_wakeup(&self) {
         self.local_wakeup.notify_one();
     }
@@ -520,5 +686,141 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(50), notified)
             .await
             .expect("pinned notified future should wake on notify_local_wakeup");
+    }
+
+    #[test]
+    fn should_wake_for_payload_empty_subscribed_queues_wakes_on_everything() {
+        let subscribed: Vec<String> = vec![];
+        assert!(should_wake_for_payload(
+            r#"{"queue":"default"}"#,
+            &subscribed
+        ));
+        assert!(should_wake_for_payload(
+            r#"{"queue":"reports"}"#,
+            &subscribed
+        ));
+        assert!(should_wake_for_payload("", &subscribed));
+        assert!(should_wake_for_payload("not-json", &subscribed));
+    }
+
+    #[test]
+    fn should_wake_for_payload_filters_by_subscribed_queues() {
+        let subscribed = vec!["reports".to_string(), "emails".to_string()];
+        assert!(!should_wake_for_payload(
+            r#"{"queue":"default"}"#,
+            &subscribed
+        ));
+        assert!(should_wake_for_payload(
+            r#"{"queue":"reports"}"#,
+            &subscribed
+        ));
+        assert!(should_wake_for_payload(
+            r#"{"queue":"emails","extra":1}"#,
+            &subscribed
+        ));
+        assert!(!should_wake_for_payload("", &subscribed));
+        assert!(!should_wake_for_payload("not-json", &subscribed));
+        assert!(!should_wake_for_payload(
+            r#"{"other":"reports"}"#,
+            &subscribed
+        ));
+        assert!(!should_wake_for_payload(r#"{"queue":null}"#, &subscribed));
+        assert!(!should_wake_for_payload(r#"{"queue":123}"#, &subscribed));
+    }
+
+    #[tokio::test]
+    async fn with_listener_options_and_url_configure_scheduler() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart_test")
+            .expect("lazy pool creation should succeed");
+
+        let default_scheduler = PostgresTaskScheduler::new(pool.clone());
+        assert!(default_scheduler.listener_options().is_none());
+
+        let opts = sqlx::postgres::PgConnectOptions::new()
+            .host("direct.pg.internal")
+            .port(5433)
+            .database("app_db");
+        let with_opts = PostgresTaskScheduler::new(pool.clone()).with_listener_options(opts);
+        let configured = with_opts.listener_options().expect("options should be set");
+        assert_eq!(configured.get_host(), "direct.pg.internal");
+        assert_eq!(configured.get_port(), 5433);
+        assert_eq!(configured.get_database(), Some("app_db"));
+
+        let with_url = PostgresTaskScheduler::new(pool.clone())
+            .with_listener_url("postgres://user:pass@db.internal:5434/zart_direct")
+            .expect("valid URL should parse");
+        let url_opts = with_url
+            .listener_options()
+            .expect("URL options should be set");
+        assert_eq!(url_opts.get_host(), "db.internal");
+        assert_eq!(url_opts.get_port(), 5434);
+        assert_eq!(url_opts.get_database(), Some("zart_direct"));
+
+        let invalid = PostgresTaskScheduler::new(pool).with_listener_url("not a valid url");
+        assert!(matches!(invalid, Err(StorageError::Database(_))));
+    }
+
+    #[tokio::test]
+    async fn subscribe_wakeups_bridges_local_wakeup_when_listen_notify_disabled() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart_test")
+            .expect("lazy pool creation should succeed");
+        let scheduler = PostgresTaskScheduler::new(pool);
+        let cancel = CancellationToken::new();
+
+        let wakeup = scheduler
+            .subscribe_wakeups(
+                WakeupOptions {
+                    enable_listen_notify: false,
+                    subscribed_queues: vec![],
+                },
+                cancel.clone(),
+            )
+            .await
+            .expect("subscribe_wakeups should return Some even when LISTEN/NOTIFY is disabled");
+
+        let notified = wakeup.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        scheduler.notify_local_wakeup();
+        tokio::time::timeout(Duration::from_millis(50), notified)
+            .await
+            .expect("local_wakeup should wake subscriber when LISTEN/NOTIFY is disabled");
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn subscribe_wakeups_bridges_local_wakeup_when_listen_notify_enabled() {
+        // Use an unused localhost port so PgListener retries in the background
+        // without blocking local_wakeup bridging.
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@127.0.0.1:1/zart_test")
+            .expect("lazy pool creation should succeed");
+        let scheduler = PostgresTaskScheduler::new(pool);
+        let cancel = CancellationToken::new();
+
+        let wakeup = scheduler
+            .subscribe_wakeups(
+                WakeupOptions {
+                    enable_listen_notify: true,
+                    subscribed_queues: vec!["reports".to_string()],
+                },
+                cancel.clone(),
+            )
+            .await
+            .expect("subscribe_wakeups should return Some when LISTEN/NOTIFY is enabled");
+
+        let notified = wakeup.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        scheduler.notify_local_wakeup();
+        tokio::time::timeout(Duration::from_millis(100), notified)
+            .await
+            .expect(
+                "local_wakeup bridge should wake subscriber even while PgListener is reconnecting",
+            );
+
+        cancel.cancel();
     }
 }
