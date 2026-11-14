@@ -87,6 +87,76 @@ let pg = PgBackend::new(pool);
 
 ---
 
+## LISTEN/NOTIFY & Adaptive Drain
+
+Zart dispatches tasks using a **Notify-Hint & Adaptive Drain** architecture built around one rule: **"Notifications are hints, never truth."**
+
+### How it works
+
+1. **Sub-100ms wakeups (`enable_listen_notify: true`)**: When a due task is scheduled or resumed, PostgreSQL emits `pg_notify` (and an in-process `local_wakeup` signal) strictly after `COMMIT`. Idle workers wake immediately instead of waiting for the next poll tick.
+2. **Fallback reconciliation (`poll_interval`)**: Because notifications are hints, `poll_interval` acts as a reconciliation safety net for future-scheduled tasks becoming due or missed signals. In production with `LISTEN/NOTIFY` enabled, you can safely set `poll_interval` to `30s`–`60s` without sacrificing dispatch latency.
+3. **Backpressure (`max_concurrent_tasks`)**: Each poll clamps its batch size to `min(max_tasks_per_poll, available_permits)` against `max_concurrent_tasks`. If all permits are occupied, the worker suspends polling until an in-flight task finishes and releases a permit.
+4. **Adaptive drain (`max_tasks_per_poll`)**: When `poll_due` returns a full batch (`fetched_count == batch_limit`), the worker immediately polls for the next batch without sleeping `poll_interval`. It only parks on `LISTEN/NOTIFY` / `poll_interval` once the backlog drains below a full batch.
+
+```rust
+use std::time::Duration;
+use zart::WorkerConfig;
+
+let config = WorkerConfig {
+    poll_interval:        Duration::from_secs(30), // fallback reconciliation poll
+    enable_listen_notify: true,                    // sub-100ms LISTEN/NOTIFY wakeups
+    max_concurrent_tasks: 32,                      // bounded concurrency + backpressure
+    max_tasks_per_poll:   10,                      // batch size for adaptive drain
+    ..WorkerConfig::default()
+};
+```
+
+<Aside type="tip">
+Enable the `metrics` feature on `zart` to monitor `zart_poll_interval_seconds`, `zart_worker_concurrent_tasks`, and `zart_queue_depth` in Prometheus. See [Observability](/docs/deployment/observability/) for details.
+</Aside>
+
+### PgBouncer in transaction pooling mode
+
+`PgListener` requires a session-level PostgreSQL connection for `LISTEN`. If your application's main `PgPool` connects through **PgBouncer in transaction pooling mode**, configure a dedicated direct PostgreSQL connection for the listener using `with_listener_url` or `with_listener_options`:
+
+```rust
+use sqlx::PgPool;
+use sqlx::postgres::PgConnectOptions;
+use zart::postgres::PgBackend;
+
+// Main pool goes through PgBouncer (transaction mode)
+let tx_pool = PgPool::connect("postgres://app@pgbouncer:6432/zart").await?;
+
+// Dedicated direct session connection for PgListener
+let pg = PgBackend::new(tx_pool)
+    .with_listener_url("postgres://app@pg-primary.internal:5432/zart")?;
+
+// Or pass PgConnectOptions directly:
+let direct_opts = PgConnectOptions::new()
+    .host("pg-primary.internal")
+    .port(5432)
+    .database("zart");
+let pg = PgBackend::new(tx_pool).with_listener_options(direct_opts);
+```
+
+If you use `zart_scheduler::PostgresTaskScheduler` directly (scheduler-only mode), the same `with_listener_url` and `with_listener_options` builder methods are available on `PostgresTaskScheduler`.
+
+### Multi-tenant wakeup channel isolation
+
+`zart_scheduler::postgres::TableNames` automatically derives a sanitized PostgreSQL `LISTEN/NOTIFY` channel name from the resolved tasks table using the `"{tasks_table}_wakeup"` convention (default `"zart_tasks_wakeup"`). Custom prefixes and schemas each get their own isolated channel (truncated with an FNV-1a hash suffix if over PostgreSQL's 63-byte identifier limit).
+
+```rust
+use zart_core::table_names::TableNameConfig;
+use zart_scheduler::postgres::TableNames;
+
+let config = TableNameConfig::with_prefix("svc_")?
+    .with_schema("tenant_a")?;
+let names = TableNames::from_config(config);
+assert_eq!(names.wakeup_channel(), "tenant_a_svc_tasks_wakeup");
+```
+
+---
+
 ## Custom Table Names
 
 By default Zart uses `zart_tasks`, `zart_executions`, and the other `zart_*` tables created by the bundled migration. If those names collide with existing tables in your database, or you need multiple logical workers sharing one database (e.g. per-environment isolation), you can override them with `TableNames`.

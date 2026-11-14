@@ -1396,6 +1396,111 @@ import { ZART_VERSION } from "../lib/version";
     }
 
     /* ────────────────────────────────────────
+       DISPATCH ARCHITECTURE (LISTEN/NOTIFY)
+    ──────────────────────────────────────── */
+    .dispatch-section {
+      padding: 5.5rem 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .dispatch-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+      gap: 2.5rem;
+      align-items: start;
+    }
+
+    @media (max-width: 940px) {
+      .dispatch-grid { grid-template-columns: 1fr; }
+    }
+
+    .dispatch-pillars {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .dispatch-pillar {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 1.25rem 1.35rem;
+      transition: border-color 0.2s var(--ease-out);
+    }
+
+    .dispatch-pillar:hover {
+      border-color: var(--border-strong);
+    }
+
+    .dispatch-pillar-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      margin-bottom: 0.5rem;
+    }
+
+    .dispatch-tag {
+      color: var(--emerald);
+      font-weight: 500;
+    }
+
+    .dispatch-pillar h3 {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.35rem;
+    }
+
+    .dispatch-pillar p {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .dispatch-pillar code {
+      font-family: var(--font-mono);
+      font-size: 0.8em;
+      color: var(--brand-bright);
+    }
+
+    .dispatch-code-body pre {
+      padding: 1.4rem 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.68;
+      overflow-x: auto;
+    }
+
+    .dispatch-footer-note {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      padding: 0.85rem 1.25rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg-elevated);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .dispatch-footer-note a {
+      color: var(--brand-bright);
+      text-decoration: none;
+    }
+
+    .dispatch-footer-note a:hover {
+      text-decoration: underline;
+    }
+
+    /* ────────────────────────────────────────
        CTA SECTION
     ──────────────────────────────────────── */
     .cta-section {
@@ -1737,7 +1842,7 @@ import { ZART_VERSION } from "../lib/version";
         </div>
         <div class="spec-title">State in the database you already run</div>
         <p class="spec-desc">
-          Durable checkpoints, retries, and worker locks live in standard PostgreSQL tables via <code style="font-family:var(--font-mono);font-size:0.8em;color:var(--brand-bright);">SKIP LOCKED</code>.
+          Durable checkpoints, retries, and worker locks live in standard PostgreSQL tables via <code style="font-family:var(--font-mono);font-size:0.8em;color:var(--brand-bright);">SKIP LOCKED</code> and sub-100ms <code style="font-family:var(--font-mono);font-size:0.8em;color:var(--brand-bright);">LISTEN/NOTIFY</code>.
         </p>
       </div>
     </div>
@@ -2105,6 +2210,92 @@ import { ZART_VERSION } from "../lib/version";
         <span class="ty">Ok</span>(())
     &#125;
 &#125;</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Dispatch Architecture (LISTEN/NOTIFY & Adaptive Drain) ── -->
+<section class="dispatch-section">
+  <div class="container">
+    <div class="section-header">
+      <span class="section-label">Production Dispatch</span>
+      <h2 class="section-title">Sub-100ms wakeups. Zero wasted polls.</h2>
+      <p class="section-sub">
+        Zart pairs PostgreSQL <code>LISTEN/NOTIFY</code> with Adaptive Drain and bounded concurrency — built on one rule: <em>notifications are hints, never truth.</em>
+      </p>
+    </div>
+
+    <div class="dispatch-grid">
+      <div class="dispatch-pillars">
+        <div class="dispatch-pillar">
+          <div class="dispatch-pillar-head">
+            <span>01 // NOTIFY-HINT</span>
+            <span class="dispatch-tag">&lt; 100ms wakeup</span>
+          </div>
+          <h3>Hints, never truth</h3>
+          <p>
+            <code>pg_notify</code> wakes idle workers immediately after <code>COMMIT</code>, while <code>poll_interval</code> (<code>30s</code>–<code>60s</code>) acts as a fallback reconciliation poll for delayed tasks and missed signals.
+          </p>
+        </div>
+
+        <div class="dispatch-pillar">
+          <div class="dispatch-pillar-head">
+            <span>02 // ADAPTIVE DRAIN</span>
+            <span class="dispatch-tag">backpressure</span>
+          </div>
+          <h3>Drain bursts without sleeping</h3>
+          <p>
+            Fetch limits clamp to <code>min(max_tasks_per_poll, available_permits)</code> against <code>max_concurrent_tasks</code>. Full batches drain immediately; saturated workers suspend until a permit frees.
+          </p>
+        </div>
+
+        <div class="dispatch-pillar">
+          <div class="dispatch-pillar-head">
+            <span>03 // PGBOUNCER &amp; ISOLATION</span>
+            <span class="dispatch-tag">session-safe</span>
+          </div>
+          <h3>Transaction-pooler ready</h3>
+          <p>
+            Keep your main <code>PgPool</code> on PgBouncer transaction mode and pass <code>.with_listener_url(...)</code> for a dedicated <code>PgListener</code> session. <code>TableNames</code> isolates channels as <code>"&#123;tasks_table&#125;_wakeup"</code>.
+          </p>
+        </div>
+      </div>
+
+      <div class="code-shell">
+        <div class="console-header">
+          <span class="console-file">production_worker.rs</span>
+          <div class="console-meta">
+            <span>PgBouncer + Direct Listener</span>
+            <span class="console-badge">WorkerConfig</span>
+          </div>
+        </div>
+        <div class="dispatch-code-body">
+          <pre><code><span class="kw">use</span> std::time::<span class="ty">Duration</span>;
+<span class="kw">use</span> zart::&#123;<span class="ty">WorkerBuilder</span>, <span class="ty">WorkerConfig</span>, postgres::<span class="ty">PgBackend</span>&#125;;
+
+<span class="cmt">// Main pool uses PgBouncer (transaction pooling mode)</span>
+<span class="kw">let</span> tx_pool = sqlx::<span class="ty">PgPool</span>::<span class="fn">connect</span>(<span class="str">"postgres://app@pgbouncer:6432/zart"</span>).<span class="kw">await</span>?;
+
+<span class="cmt">// Dedicated session connection for PgListener (LISTEN/NOTIFY)</span>
+<span class="kw">let</span> pg = <span class="ty">PgBackend</span>::<span class="fn">new</span>(tx_pool)
+    .<span class="fn">with_listener_url</span>(<span class="str">"postgres://app@pg-primary.internal:5432/zart"</span>)?;
+
+<span class="kw">let</span> worker = <span class="ty">WorkerBuilder</span>::<span class="fn">from_backend</span>(&amp;pg)
+    .<span class="fn">register_durable_task</span>(<span class="str">"checkout"</span>, checkout)
+    .<span class="fn">config</span>(<span class="ty">WorkerConfig</span> &#123;
+        poll_interval:        <span class="ty">Duration</span>::<span class="fn">from_secs</span>(<span class="lit">30</span>), <span class="cmt">// fallback reconciliation</span>
+        enable_listen_notify: <span class="kw">true</span>,                    <span class="cmt">// sub-100ms wakeups</span>
+        max_concurrent_tasks: <span class="lit">32</span>,                      <span class="cmt">// bounded concurrency</span>
+        max_tasks_per_poll:   <span class="lit">10</span>,                      <span class="cmt">// adaptive drain batch</span>
+        ..<span class="ty">WorkerConfig</span>::<span class="fn">default</span>()
+    &#125;)
+    .<span class="fn">build</span>();</code></pre>
+        </div>
+        <div class="dispatch-footer-note">
+          <span>Default channel: <code>zart_tasks_wakeup</code></span>
+          <a href="/docs/deployment/options/">Read Deployment Guide →</a>
+        </div>
       </div>
     </div>
   </div>
