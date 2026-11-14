@@ -289,14 +289,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         WorkerBuilder::from_backend(&pg)
             .register_durable_task(TASK_ORDER, OrderProcessingTask)
             .register_durable_task(TASK_PIPELINE, DataPipelineTask)
-            .config(WorkerConfig {
-                poll_interval: Duration::from_millis(200),
-                max_tasks_per_poll: 10,
-                max_concurrent_tasks: 8,
-                shutdown_timeout: Duration::from_secs(5),
-                orphan_timeout: Duration::from_secs(60),
-                ..Default::default()
-            })
             .build(),
     );
 
