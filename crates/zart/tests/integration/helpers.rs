@@ -310,6 +310,25 @@ impl DurableExecution for ParallelTask {
     }
 }
 
+pub struct ParallelThenDownstreamTask;
+
+#[async_trait::async_trait]
+impl DurableExecution for ParallelThenDownstreamTask {
+    type Data = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn run(&self, _data: Self::Data) -> Result<Self::Output, TaskError> {
+        let h1 = zart::schedule(StepA);
+        let h2 = zart::schedule(StepB);
+
+        let results = zart::wait(vec![h1, h2]).await?;
+        let par_sum: i32 = results.into_iter().map(|r| r.unwrap()).sum();
+
+        let step_c_val = zart::require(StepC).await?;
+        Ok(serde_json::json!({ "total": par_sum + step_c_val }))
+    }
+}
+
 // ── Handlers for cancellation tests ──────────────────────────────────────
 
 pub struct GatedTask {

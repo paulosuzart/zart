@@ -840,3 +840,21 @@ async fn step_mode_wait_all_replays_completed_children_for_downstream_target() {
 
     assert_eq!(values, vec![10, 20]);
 }
+
+#[tokio::test]
+async fn step_mode_wait_all_fails_when_downstream_target_and_child_incomplete() {
+    let (scheduler, _calls) = RecordingScheduler::builder()
+        .step_completed("exec-1", "c1", serde_json::json!(10u32))
+        .build();
+    let ctx = make_step_ctx(scheduler, "downstream-step");
+
+    let h1 = ctx.schedule_step(ChargeCardStep.named("c1"));
+    let h2 = ctx.schedule_step(ChargeCardStep.named("c2"));
+
+    let result = ctx.wait_all(vec![h1, h2]).await;
+    assert!(matches!(
+        result,
+        Err(StepError::Failed { ref step, ref reason })
+            if step == "downstream-step" && reason.contains("target step not found in wait_all handles")
+    ));
+}
