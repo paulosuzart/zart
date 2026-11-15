@@ -49,6 +49,7 @@ test-integration-full:
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-error-handling
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-transactions
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-scheduler-only
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-recurring-tasks
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-recurring-durable
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p example-admin-demo
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{example_db_url}} cargo run -p zart-examples --bin example-multi-worker
@@ -235,6 +236,12 @@ example-cli-demo db_url=example_db_url:
     just migrate
     RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} bash examples/cli-demo/demo.sh
 
+# Run the recurring-tasks example (scheduler-level FixedDelay and Cron recurring tasks)
+# Usage: just example-recurring-tasks [DATABASE_URL]
+example-recurring-tasks db_url=example_db_url:
+    just migrate
+    RUST_LOG=${RUST_LOG:-off} DATABASE_URL={{db_url}} cargo run -p zart-examples --bin example-recurring-tasks
+
 # Run the recurring-durable example (overlap policies: SkipIfRunning, CancelAndRestart, AlwaysStart)
 # Usage: just example-recurring-durable [DATABASE_URL]
 example-recurring-durable db_url=example_db_url:
@@ -265,6 +272,7 @@ run-all-examples db_url=example_db_url:
     just example-error-handling {{db_url}}
     just example-transactions {{db_url}}
     just example-scheduler-only {{db_url}}
+    just example-recurring-tasks {{db_url}}
     just example-recurring-durable {{db_url}}
     just example-admin-demo {{db_url}}
     just example-multi-worker {{db_url}}

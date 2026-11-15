@@ -93,7 +93,6 @@ fn spawn_pg_listener_loop(
 ) {
     tokio::spawn(async move {
         let mut backoff = INITIAL_RECONNECT_BACKOFF;
-        let mut is_reconnect = false;
 
         loop {
             let mut listener = match connect_and_listen(&pool, &channel, &cancel).await {
@@ -101,7 +100,6 @@ fn spawn_pg_listener_loop(
                 Ok(None) => break,
                 Err(err) => {
                     tracing::warn!(error = %err, channel = %channel, "PgListener connect/listen failed; retrying");
-                    is_reconnect = true;
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => break,
@@ -113,11 +111,8 @@ fn spawn_pg_listener_loop(
             };
 
             backoff = INITIAL_RECONNECT_BACKOFF;
-            if is_reconnect {
-                // D5: immediate wakeup on reconnect so poll_due reconciles missed notifications.
-                wakeup.notify_one();
-            }
-            is_reconnect = true;
+            // Reconcile any notifications emitted while PgListener was connecting/reconnecting.
+            wakeup.notify_one();
 
             loop {
                 tokio::select! {

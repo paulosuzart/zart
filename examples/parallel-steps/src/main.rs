@@ -157,18 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start_for::<HealthCheckTask>(&execution_id, "health-check", &input)
         .await?;
 
-    let config = zart::WorkerConfig {
-        poll_interval: Duration::from_millis(200),
-        max_tasks_per_poll: 10,
-        max_concurrent_tasks: 4,
-        shutdown_timeout: Duration::from_secs(5),
-        orphan_timeout: Duration::from_secs(30),
-        ..Default::default()
-    };
     let worker = Arc::new(
         zart::WorkerBuilder::from_backend(&pg)
             .register_durable_task("health-check", HealthCheckTask)
-            .config(config)
             .build(),
     );
     let w = worker.clone();
