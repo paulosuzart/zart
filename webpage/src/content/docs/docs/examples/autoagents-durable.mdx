@@ -1,0 +1,112 @@
+---
+title: Durable AutoAgents ReAct Agent
+description: Intra-loop durable execution for an AutoAgents ReAct agent using zart-autoagents, with checkpointed LLM turns and parallel tool fan-out.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This example (located in `examples/autoagents-durable`) demonstrates **intra-loop durable execution** for an [AutoAgents](https://github.com/liquidos-ai/AutoAgents) `ReActAgent` using `zart-autoagents`.
+
+Unlike [AutoAgents LLM Agent SDK](/docs/examples/autoagents-agent/), which wraps fixed external steps with `#[zart_step]`, `DurableReactTask` drives the ReAct loop directly on Zart primitives:
+
+- **Every LLM turn** is persisted in PostgreSQL via `zart::require` (`llm-call-0`, `llm-call-1`, ...).
+- **Parallel tool calls** in the same turn are dispatched concurrently via `zart::schedule` + `zart::wait` (`tool-{turn}-{idx}-{name}`).
+- **Crash recovery**: if the worker crashes mid-investigation, completed LLM turns and tools replay from PostgreSQL without re-billing tokens or re-running side effects.
+
+**Features demonstrated:** `DurableReactTask`, `AgentPrompt`, parallel tool fan-out (`list_recent_incidents`, `get_incident_logs`, `lookup_customer_sla`, `emit_client_action`), Gemini 3 `thoughtSignature` preservation, and OpenAI-compatible provider fallback.
+
+## Tools
+
+Each tool is a standard AutoAgents `#[tool(...)]` implementing `ToolRuntime`:
+
+```rust
+#[derive(Serialize, Deserialize, ToolInput)]
+struct IncidentLogsArgs {
+    #[input(description = "Incident ID (e.g. INC-101) to inspect logs for")]
+    incident_id: String,
+}
+
+#[tool(
+    name = "get_incident_logs",
+    description = "Fetch root-cause log summary and latency spike for a specific incident ID.",
+    input = IncidentLogsArgs,
+)]
+#[derive(Default)]
+struct GetIncidentLogsTool {}
+
+#[async_trait]
+impl ToolRuntime for GetIncidentLogsTool {
+    async fn execute(&self, args: Value) -> Result<Value, ToolCallError> {
+        let parsed: IncidentLogsArgs = serde_json::from_value(args)?;
+        // Fetch logs for INC-101, INC-102, ...
+        Ok(details)
+    }
+}
+```
+
+The example defines four tools for an SRE incident investigation workflow:
+1. `list_recent_incidents` — discovers recent incident IDs (`INC-101`, `INC-102`) and `affected_customer_id`.
+2. `get_incident_logs` — fetches root-cause details and `p95_latency_ms` for each incident (called in parallel when the LLM emits multiple tool calls in one turn).
+3. `lookup_customer_sla` — checks the customer tier and SLA latency threshold.
+4. `emit_client_action` — prepares a client-side notification banner payload.
+
+## Agent definition
+
+Define the AutoAgents `#[agent(...)]` with `AgentHooks` and register the tools:
+
+```rust
+#[agent(
+    name = "durable_incident_agent",
+    description = "You are an SRE incident investigator. Follow this exact process using tools: 1) list_recent_incidents for the service, 2) call get_incident_logs for EVERY incident returned, 3) call lookup_customer_sla for the affected customer, 4) call emit_client_action with your findings, then return a concise final report.",
+    tools = [ListIncidentsTool, GetIncidentLogsTool, LookupCustomerSlaTool, EmitClientActionTool],
+)]
+#[derive(Default, Clone, AgentHooks)]
+struct IncidentAgent {}
+```
+
+## Running with `DurableReactTask`
+
+Wrap `IncidentAgent` and the `Arc<dyn LLMProvider>` inside `DurableReactTask::new(IncidentAgent {}, llm)`, register it on `WorkerBuilder`, and start an execution with `AgentPrompt`:
+
+```rust
+let execution_id = format!("autoagents-durable-{}", Uuid::new_v4());
+let durable = DurableScheduler::from_backend(&pg);
+
+let input = AgentPrompt::new(
+    "Investigate recent incidents on 'checkout-api'. Inspect logs for every incident, check the affected customer's SLA, emit the client action, and summarize the report.",
+);
+
+durable
+    .start_for::<DurableReactTask<IncidentAgent>>(
+        &execution_id,
+        "durable-incident-agent",
+        &input,
+    )
+    .await?;
+
+let worker = Arc::new(
+    zart::WorkerBuilder::from_backend(&pg)
+        .register_durable_task(
+            "durable-incident-agent",
+            DurableReactTask::new(IncidentAgent {}, llm),
+        )
+        .config(config)
+        .build(),
+);
+```
+
+## Running the example
+
+Start PostgreSQL, configure either `GEMINI_API_KEY` (uses `gemini-3.8-flash` by default) or `OPENAI_API_KEY`, and run:
+
+```bash
+just up
+export GEMINI_API_KEY="your-key-here"
+
+DATABASE_URL=postgres://zart:zart@localhost:5432/zart \
+  cargo run -p zart-examples --bin example-autoagents-durable
+```
+
+<Aside type="note">
+  For full details on `zart-autoagents` primitives and the roadmap toward durable AutoAgents Actors, see the [AutoAgents Integration guide](/docs/integrations/autoagents/).
+</Aside>
