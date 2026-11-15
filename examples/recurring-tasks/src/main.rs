@@ -134,5 +134,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.stop();
     let _ = handle.await;
 
+    // Clean up recurring tasks so subsequent examples sharing the DB don't pick them up
+    scheduler.delete_task("heartbeat-check-1").await?;
+    scheduler.delete_task("daily-report-1").await?;
+
     Ok(())
 }
