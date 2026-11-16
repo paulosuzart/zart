@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import Enum, StrEnum
 from typing import Optional
 from uuid import UUID, uuid4
 
 import pytest
-
 from zart.serde import from_json_value, to_json_value
 
 
@@ -17,7 +16,7 @@ from zart.serde import from_json_value, to_json_value
 class Address:
     street: str
     zip_code: int
-    unit: Optional[str] = None
+    unit: str | None = None
 
 
 @dataclass
@@ -42,7 +41,7 @@ def test_primitives_roundtrip() -> None:
 
 def test_uuid_and_datetime_roundtrip() -> None:
     uid = uuid4()
-    now = datetime(2026, 11, 16, 12, 30, 45, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 16, 12, 30, 45, tzinfo=UTC)
 
     enc_uid = to_json_value(uid)
     assert isinstance(enc_uid, str)
@@ -56,7 +55,7 @@ def test_uuid_and_datetime_roundtrip() -> None:
 def test_nested_dataclass_roundtrip() -> None:
     order = UserOrder(
         order_id=uuid4(),
-        created_at=datetime(2026, 11, 16, 8, 0, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 11, 16, 8, 0, 0, tzinfo=UTC),
         amount=199.95,
         paid=True,
         tags=["priority", "fragile"],
@@ -84,9 +83,9 @@ def test_nested_dataclass_roundtrip() -> None:
 
 
 def test_optional_and_collections() -> None:
-    assert from_json_value(None, Optional[int]) is None
+    assert from_json_value(None, Optional[int]) is None  # noqa: UP045
     assert from_json_value(None, str | None) is None
-    assert from_json_value(123, Optional[int]) == 123
+    assert from_json_value(123, Optional[int]) == 123  # noqa: UP045
 
     uid = uuid4()
     raw = to_json_value({"k1": [uid], "k2": []})
@@ -94,7 +93,7 @@ def test_optional_and_collections() -> None:
     assert restored == {"k1": [uid], "k2": []}
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     PENDING = "pending"
     DONE = "done"
 
@@ -145,7 +144,7 @@ def test_pydantic_roundtrip() -> None:
         item_id: UUID
         label: str
         count: int
-        note: Optional[str] = None
+        note: str | None = None
 
     class Envelope(pydantic.BaseModel):
         request_id: UUID
@@ -153,11 +152,11 @@ def test_pydantic_roundtrip() -> None:
         active: bool
         score: float
         items: list[SubItem]
-        extra: Optional[str] = None
+        extra: str | None = None
 
     env = Envelope(
         request_id=uuid4(),
-        timestamp=datetime(2026, 11, 16, 15, 45, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2026, 11, 16, 15, 45, 0, tzinfo=UTC),
         active=True,
         score=98.5,
         items=[
@@ -184,7 +183,7 @@ def test_ffi_pythonize_roundtrip() -> None:
 
     order = UserOrder(
         order_id=uuid4(),
-        created_at=datetime(2026, 11, 16, 10, 0, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 11, 16, 10, 0, 0, tzinfo=UTC),
         amount=42.5,
         paid=False,
         tags=["a", "b"],

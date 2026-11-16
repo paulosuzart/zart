@@ -18,16 +18,13 @@ import os
 import uuid
 from dataclasses import dataclass
 
+import zart
 from sqlalchemy import Integer, String, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-import zart
 from zart import DurableScheduler, PgBackend, Retry, WorkerBuilder
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgres://zart:zart@localhost:5432/zart"
-)
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://zart:zart@localhost:5432/zart")
 
 
 def _sqlalchemy_url(url: str) -> str:
@@ -155,12 +152,7 @@ async def main() -> None:
     backend = await PgBackend.connect(DATABASE_URL)
     await backend.run_migrations()
     scheduler = DurableScheduler(backend)
-    worker = (
-        WorkerBuilder(backend)
-        .poll_interval(0.05)
-        .register_durable(checkout_workflow)
-        .build()
-    )
+    worker = WorkerBuilder(backend).poll_interval(0.05).register_durable(checkout_workflow).build()
 
     async def _worker_loop() -> None:
         await worker.run()
@@ -191,9 +183,7 @@ async def main() -> None:
                 await session.execute(select(Account).where(Account.id == account_id))
             ).scalar_one()
             order = (
-                await session.execute(
-                    select(CheckoutOrder).where(CheckoutOrder.id == order_id)
-                )
+                await session.execute(select(CheckoutOrder).where(CheckoutOrder.id == order_id))
             ).scalar_one()
             assert acct.balance == 350
             assert order.status == "paid"

@@ -8,7 +8,6 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
-
 import zart
 from zart import (
     DurableTask,

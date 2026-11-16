@@ -74,7 +74,11 @@ impl PyStepError {
             .qualname()
             .map(|s| s.to_string())
             .unwrap_or_else(|_| "Exception".to_string());
-        let message = err.value(py).str().map(|s| s.to_string()).unwrap_or_default();
+        let message = err
+            .value(py)
+            .str()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         let data = err
             .value(py)
             .getattr("data")
@@ -91,14 +95,23 @@ impl PyStepError {
 
 /// Register all Zart exception classes on the `_zart` module.
 pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("ZartControlFlowSignal", m.py().get_type::<ZartControlFlowSignal>())?;
+    m.add(
+        "ZartControlFlowSignal",
+        m.py().get_type::<ZartControlFlowSignal>(),
+    )?;
     m.add("ZartError", m.py().get_type::<ZartError>())?;
-    m.add("ZartStepFailedError", m.py().get_type::<ZartStepFailedError>())?;
+    m.add(
+        "ZartStepFailedError",
+        m.py().get_type::<ZartStepFailedError>(),
+    )?;
     m.add(
         "ZartRetryExhaustedError",
         m.py().get_type::<ZartRetryExhaustedError>(),
     )?;
-    m.add("ZartStepTimeoutError", m.py().get_type::<ZartStepTimeoutError>())?;
+    m.add(
+        "ZartStepTimeoutError",
+        m.py().get_type::<ZartStepTimeoutError>(),
+    )?;
     m.add(
         "ZartDeadlineExceededError",
         m.py().get_type::<ZartDeadlineExceededError>(),

@@ -188,13 +188,10 @@ async fn fetch_one_on_conn(
     sql: &str,
     args: PgArguments,
 ) -> PyResult<Py<PyAny>> {
-    let row = sqlx::query_with::<sqlx::Postgres, _>(
-        sqlx::AssertSqlSafe(sql.to_string()),
-        args,
-    )
-    .fetch_one(conn)
-    .await
-    .map_err(|e| PyRuntimeError::new_err(format!("SQL fetch_one failed: {e}")))?;
+    let row = sqlx::query_with::<sqlx::Postgres, _>(sqlx::AssertSqlSafe(sql.to_string()), args)
+        .fetch_one(conn)
+        .await
+        .map_err(|e| PyRuntimeError::new_err(format!("SQL fetch_one failed: {e}")))?;
     Python::attach(|py| row_to_py_dict(py, &row))
 }
 
@@ -203,13 +200,10 @@ async fn fetch_optional_on_conn(
     sql: &str,
     args: PgArguments,
 ) -> PyResult<Option<Py<PyAny>>> {
-    let row = sqlx::query_with::<sqlx::Postgres, _>(
-        sqlx::AssertSqlSafe(sql.to_string()),
-        args,
-    )
-    .fetch_optional(conn)
-    .await
-    .map_err(|e| PyRuntimeError::new_err(format!("SQL fetch_optional failed: {e}")))?;
+    let row = sqlx::query_with::<sqlx::Postgres, _>(sqlx::AssertSqlSafe(sql.to_string()), args)
+        .fetch_optional(conn)
+        .await
+        .map_err(|e| PyRuntimeError::new_err(format!("SQL fetch_optional failed: {e}")))?;
     match row {
         Some(r) => Python::attach(|py| row_to_py_dict(py, &r).map(Some)),
         None => Ok(None),
@@ -221,13 +215,10 @@ async fn fetch_all_on_conn(
     sql: &str,
     args: PgArguments,
 ) -> PyResult<Vec<Py<PyAny>>> {
-    let rows = sqlx::query_with::<sqlx::Postgres, _>(
-        sqlx::AssertSqlSafe(sql.to_string()),
-        args,
-    )
-    .fetch_all(conn)
-    .await
-    .map_err(|e| PyRuntimeError::new_err(format!("SQL fetch_all failed: {e}")))?;
+    let rows = sqlx::query_with::<sqlx::Postgres, _>(sqlx::AssertSqlSafe(sql.to_string()), args)
+        .fetch_all(conn)
+        .await
+        .map_err(|e| PyRuntimeError::new_err(format!("SQL fetch_all failed: {e}")))?;
     Python::attach(|py| rows.iter().map(|r| row_to_py_dict(py, r)).collect())
 }
 
@@ -260,8 +251,9 @@ where
             &'a mut sqlx::PgConnection,
             &'a str,
             PgArguments,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = PyResult<R>> + Send + 'a>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = PyResult<R>> + Send + 'a>,
+        > + Send
         + 'static,
     R: for<'a> pyo3::IntoPyObject<'a> + Send + 'static,
     for<'a> <R as pyo3::IntoPyObject<'a>>::Output: pyo3::IntoPyObject<'a>,
@@ -435,9 +427,9 @@ impl PyClientTrx {
                 .await
                 .take()
                 .ok_or_else(|| PyRuntimeError::new_err("Transaction is already closed"))?;
-            tx.rollback()
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("Transaction rollback failed: {e}")))?;
+            tx.rollback().await.map_err(|e| {
+                PyRuntimeError::new_err(format!("Transaction rollback failed: {e}"))
+            })?;
             Ok(())
         })
     }

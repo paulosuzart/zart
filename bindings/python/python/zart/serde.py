@@ -7,15 +7,13 @@ import types
 from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
-from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, Union, get_args, get_origin, get_type_hints
 from uuid import UUID
 
 try:
     from pydantic import BaseModel as _PydanticBaseModel
 except ImportError:  # pragma: no cover
     _PydanticBaseModel = None  # type: ignore[assignment,misc]
-
-T = TypeVar("T")
 
 
 def to_json_value(obj: Any) -> Any:
@@ -41,16 +39,10 @@ def to_json_value(obj: Any) -> Any:
         return obj.model_dump(mode="json")
 
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {
-            f.name: to_json_value(getattr(obj, f.name))
-            for f in dataclasses.fields(obj)
-        }
+        return {f.name: to_json_value(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
 
     if isinstance(obj, Mapping):
-        return {
-            (k if isinstance(k, str) else str(k)): to_json_value(v)
-            for k, v in obj.items()
-        }
+        return {(k if isinstance(k, str) else str(k)): to_json_value(v) for k, v in obj.items()}
 
     if isinstance(obj, (list, tuple)):
         return [to_json_value(item) for item in obj]
@@ -69,7 +61,7 @@ def _from_union(data: Any, target_type: Any) -> Any:
     for arg in non_none_args:
         try:
             return from_json_value(data, arg)
-        except (TypeError, ValueError, KeyError):
+        except TypeError, ValueError, KeyError:
             continue
     raise TypeError(f"Cannot deserialize {data!r} into {target_type!r}")
 
@@ -109,10 +101,7 @@ def _from_collection(data: Any, origin: Any, target_type: Any) -> Any:
     args = get_args(target_type)
     key_type = args[0] if len(args) >= 1 else Any
     val_type = args[1] if len(args) >= 2 else Any
-    return {
-        from_json_value(k, key_type): from_json_value(v, val_type)
-        for k, v in data.items()
-    }
+    return {from_json_value(k, key_type): from_json_value(v, val_type) for k, v in data.items()}
 
 
 def _from_primitive(data: Any, target_type: type[Any]) -> Any:
@@ -158,7 +147,7 @@ def _from_primitive(data: Any, target_type: type[Any]) -> Any:
     return target_type(data)
 
 
-def from_json_value(data: Any, target_type: type[T] | Any = None) -> T | Any:
+def from_json_value[T](data: Any, target_type: type[T] | Any = None) -> T | Any:
     """Reconstruct an annotated Python type from JSON-compatible primitives.
 
     If ``target_type`` is ``None`` or ``typing.Any``, returns ``data`` as-is.
@@ -177,7 +166,11 @@ def from_json_value(data: Any, target_type: type[T] | Any = None) -> T | Any:
     if origin is Union or origin is types.UnionType:
         return _from_union(data, target_type)
 
-    if _PydanticBaseModel is not None and isinstance(target_type, type) and issubclass(target_type, _PydanticBaseModel):
+    if (
+        _PydanticBaseModel is not None
+        and isinstance(target_type, type)
+        and issubclass(target_type, _PydanticBaseModel)
+    ):
         return target_type.model_validate(data)
 
     if dataclasses.is_dataclass(target_type) and isinstance(target_type, type):

@@ -27,9 +27,9 @@ impl PyPgBackend {
         listener_url: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let pool = PgPool::connect(&url)
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to connect to PostgreSQL: {e}")))?;
+            let pool = PgPool::connect(&url).await.map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to connect to PostgreSQL: {e}"))
+            })?;
             let mut backend = zart::PgBackend::new(pool);
             if let Some(l_url) = listener_url {
                 backend = backend
@@ -78,10 +78,9 @@ impl PyPgBackend {
     fn begin<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pool = self.inner.pool().clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let tx = pool
-                .begin()
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to begin transaction: {e}")))?;
+            let tx = pool.begin().await.map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to begin transaction: {e}"))
+            })?;
             Ok(PyClientTrx::new(tx))
         })
     }

@@ -6,9 +6,17 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
-
 import zart
-from zart import ClientTrx, DurableScheduler, PgBackend, StepInvocation, Trx, WorkerBuilder, step, trx
+from zart import (
+    ClientTrx,
+    DurableScheduler,
+    PgBackend,
+    StepInvocation,
+    Trx,
+    WorkerBuilder,
+    step,
+    trx,
+)
 from zart.trx import (
     UserManagedTrxManager,
     get_worker_trx_provider,
@@ -86,6 +94,7 @@ def test_step_omits_trx_parameter_from_caller() -> None:
 
 def test_multiple_trx_params_raises() -> None:
     with pytest.raises(ValueError, match="at most one"):
+
         @step("bad-step")
         async def bad(a: Trx = trx(), b: Trx = trx()) -> None:
             pass
@@ -138,7 +147,7 @@ async def test_psycopg_connection_lifecycle_success_and_error() -> None:
 async def test_async_generator_provider_lifecycle() -> None:
     events: list[str] = []
 
-    async def get_db() -> AsyncGenerator[str, None]:
+    async def get_db() -> AsyncGenerator[str]:
         events.append("open")
         try:
             yield "db-session"
@@ -170,6 +179,7 @@ async def test_worker_default_provider_and_zart_trx_override() -> None:
     session = _FakeSQLAlchemySession()
     token = set_worker_trx_provider(lambda: session)
     try:
+
         @step("user-managed-default")
         async def with_default_session(x: int, db: Any = trx()) -> int:
             assert db is session

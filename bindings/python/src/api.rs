@@ -456,11 +456,7 @@ pub(crate) async fn handle_command(
         ZartCommand::Wait { handles, reply } => {
             let mut rust_handles = Vec::with_capacity(handles.len());
             for h in handles {
-                let taken = h
-                    .inner
-                    .lock()
-                    .ok()
-                    .and_then(|mut g| g.take());
+                let taken = h.inner.lock().ok().and_then(|mut g| g.take());
                 match taken {
                     Some(rh) => rust_handles.push(rh),
                     None => {
@@ -734,11 +730,7 @@ fn wait_for_event<'py>(
 /// Capture a synchronous pure computation durably.
 #[pyfunction]
 fn capture<'py>(py: Python<'py>, name: String, func: Py<PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    dispatch_async_json(py, None, |reply| ZartCommand::Capture {
-        name,
-        func,
-        reply,
-    })
+    dispatch_async_json(py, None, |reply| ZartCommand::Capture { name, func, reply })
 }
 
 /// Capture the current UTC timestamp durably (returns ISO-8601 string).

@@ -4,8 +4,8 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::backend::PyPgBackend;
-use crate::duration_from_secs;
 use crate::durable::PyDurableTask;
+use crate::duration_from_secs;
 
 /// Builder for configuring and constructing a Zart `Worker`.
 #[pyclass(name = "WorkerBuilder")]
@@ -30,10 +30,7 @@ impl PyWorkerBuilder {
     }
 
     /// Register a worker-wide default transaction/session provider for `zart.trx()`.
-    fn trx_provider<'py>(
-        slf: PyRef<'py, Self>,
-        provider: Py<PyAny>,
-    ) -> PyResult<PyRef<'py, Self>> {
+    fn trx_provider<'py>(slf: PyRef<'py, Self>, provider: Py<PyAny>) -> PyResult<PyRef<'py, Self>> {
         let mut guard = slf
             .trx_provider
             .lock()
@@ -58,10 +55,7 @@ impl PyWorkerBuilder {
     }
 
     /// Set the fallback polling interval in seconds.
-    fn poll_interval<'py>(
-        slf: PyRef<'py, Self>,
-        secs: f64,
-    ) -> PyResult<PyRef<'py, Self>> {
+    fn poll_interval<'py>(slf: PyRef<'py, Self>, secs: f64) -> PyResult<PyRef<'py, Self>> {
         let dur = duration_from_secs(secs, "secs")?;
         let mut cfg = slf
             .config
@@ -111,10 +105,7 @@ impl PyWorkerBuilder {
     }
 
     /// Set the graceful shutdown timeout in seconds.
-    fn shutdown_timeout<'py>(
-        slf: PyRef<'py, Self>,
-        secs: f64,
-    ) -> PyResult<PyRef<'py, Self>> {
+    fn shutdown_timeout<'py>(slf: PyRef<'py, Self>, secs: f64) -> PyResult<PyRef<'py, Self>> {
         let dur = duration_from_secs(secs, "secs")?;
         let mut cfg = slf
             .config
@@ -126,10 +117,7 @@ impl PyWorkerBuilder {
     }
 
     /// Set the orphan recovery timeout in seconds.
-    fn orphan_timeout<'py>(
-        slf: PyRef<'py, Self>,
-        secs: f64,
-    ) -> PyResult<PyRef<'py, Self>> {
+    fn orphan_timeout<'py>(slf: PyRef<'py, Self>, secs: f64) -> PyResult<PyRef<'py, Self>> {
         let dur = duration_from_secs(secs, "secs")?;
         let mut cfg = slf
             .config

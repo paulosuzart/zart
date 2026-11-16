@@ -23,9 +23,11 @@ uv run maturin develop
 ```python
 import zart
 
+
 @zart.step("charge-card", retry=zart.Retry.fixed(3, "1s"))
 async def charge_card(order_id: str, amount: float) -> str:
     return f"charged:{order_id}:{amount}"
+
 
 @zart.durable("checkout")
 async def checkout(order_id: str) -> str:

@@ -10,12 +10,9 @@ from typing import Any
 import pytest_asyncio
 from psycopg_pool import AsyncConnectionPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from zart import DurableScheduler, PgBackend, Worker
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgres://zart:zart@localhost:5432/zart"
-)
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://zart:zart@localhost:5432/zart")
 
 
 def _sqlalchemy_url(url: str) -> str:
@@ -70,6 +67,7 @@ async def psycopg_pool() -> AsyncIterator[AsyncConnectionPool[Any]]:
 
 async def run_with_worker(worker: Worker, coro: Awaitable[Any]) -> Any:
     """Run ``worker.run()`` in the background while awaiting ``coro``, then stop cleanly."""
+
     async def _worker_loop() -> None:
         await worker.run()
 

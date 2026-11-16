@@ -72,7 +72,7 @@ class UserManagedTrxManager:
 
     def __init__(self, provider: Any) -> None:
         self._provider = provider
-        self._agen: AsyncGenerator[Any, None] | None = None
+        self._agen: AsyncGenerator[Any] | None = None
         self._cm: Any = None
         self._resource: Any = None
 

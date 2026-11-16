@@ -7,11 +7,9 @@ import uuid
 from typing import Any
 
 import pytest
-
 import zart
-from zart import DurableScheduler, PgBackend, Retry, WorkerBuilder
-
 from conftest import run_with_worker
+from zart import DurableScheduler, PgBackend, Retry, WorkerBuilder
 
 
 def _uid(prefix: str) -> str:
@@ -19,9 +17,7 @@ def _uid(prefix: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_deterministic_step_replay(
-    backend: PgBackend, scheduler: DurableScheduler
-) -> None:
+async def test_deterministic_step_replay(backend: PgBackend, scheduler: DurableScheduler) -> None:
     calls: dict[str, int] = {"step_one": 0, "step_two": 0}
 
     @zart.step("replay-step-one")
@@ -56,9 +52,7 @@ async def test_deterministic_step_replay(
 
 
 @pytest.mark.asyncio
-async def test_loop_named_steps(
-    backend: PgBackend, scheduler: DurableScheduler
-) -> None:
+async def test_loop_named_steps(backend: PgBackend, scheduler: DurableScheduler) -> None:
     @zart.step("process-item")
     async def process_item(i: int) -> int:
         return i * 2
@@ -97,9 +91,7 @@ async def test_loop_named_steps(
 
 
 @pytest.mark.asyncio
-async def test_step_retries_fixed(
-    backend: PgBackend, scheduler: DurableScheduler
-) -> None:
+async def test_step_retries_fixed(backend: PgBackend, scheduler: DurableScheduler) -> None:
     attempts = 0
 
     @zart.step("flaky-step", retry=Retry.fixed(2, "50ms"))
@@ -129,9 +121,7 @@ async def test_step_retries_fixed(
 
 
 @pytest.mark.asyncio
-async def test_parallel_schedule_and_wait(
-    backend: PgBackend, scheduler: DurableScheduler
-) -> None:
+async def test_parallel_schedule_and_wait(backend: PgBackend, scheduler: DurableScheduler) -> None:
     @zart.step("par-compute")
     async def compute(i: int) -> int:
         return i * 10
@@ -157,9 +147,7 @@ async def test_parallel_schedule_and_wait(
 
 
 @pytest.mark.asyncio
-async def test_sleep_and_wait_for_event(
-    backend: PgBackend, scheduler: DurableScheduler
-) -> None:
+async def test_sleep_and_wait_for_event(backend: PgBackend, scheduler: DurableScheduler) -> None:
     task_name = _uid("event-wf")
 
     @zart.durable(task_name)
@@ -178,9 +166,7 @@ async def test_sleep_and_wait_for_event(
             for _ in range(50):
                 await asyncio.sleep(0.1)
                 try:
-                    await scheduler.offer_event(
-                        exec_id, "approval-evt", {"approved": True}
-                    )
+                    await scheduler.offer_event(exec_id, "approval-evt", {"approved": True})
                     return
                 except LookupError:
                     continue

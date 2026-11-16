@@ -136,7 +136,10 @@ async def main() -> None:
         assert len(result.notifications) == 2
         assert result.notifications[0].startswith("warehouse-notified:")
         assert result.notifications[1] == "receipt-sent:buyer@example.com:100.00"
-        print(f"Completed saga {result.order_id}: total={result.total}, notifications={result.notifications}")
+        print(
+            f"Completed saga {result.order_id}: "
+            f"total={result.total}, notifications={result.notifications}"
+        )
     finally:
         await backend.close()
 

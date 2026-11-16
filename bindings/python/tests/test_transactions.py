@@ -7,14 +7,12 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+import zart
+from conftest import run_with_worker
 from psycopg_pool import AsyncConnectionPool
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-import zart
 from zart import DurableScheduler, PgBackend, WorkerBuilder
-
-from conftest import run_with_worker
 
 
 def _uid(prefix: str) -> str:
@@ -56,9 +54,7 @@ async def test_start_in_tx_commit_and_rollback(
         await scheduler.start_in_tx(tx, exec_ok, task_name, acct_ok)
 
     async with await backend.begin() as tx:
-        row = await tx.fetch_one(
-            "SELECT balance FROM py_test_accounts WHERE id = $1", acct_ok
-        )
+        row = await tx.fetch_one("SELECT balance FROM py_test_accounts WHERE id = $1", acct_ok)
     assert row["balance"] == 1000
 
     worker = WorkerBuilder(backend).poll_interval(0.05).register_durable(noop).build()
@@ -144,13 +140,9 @@ async def test_zart_managed_trx_commit_and_rollback(
 
     async def _run() -> tuple[int, Any]:
         await scheduler.start(exec_ok, task_ok, acct_id)
-        bal = await scheduler.wait_completion(
-            exec_ok, timeout_secs=10.0, poll_interval_secs=0.05
-        )
+        bal = await scheduler.wait_completion(exec_ok, timeout_secs=10.0, poll_interval_secs=0.05)
         await scheduler.start(exec_fail, task_fail, acct_id)
-        rec_fail = await scheduler.wait(
-            exec_fail, timeout_secs=10.0, poll_interval_secs=0.05
-        )
+        rec_fail = await scheduler.wait(exec_fail, timeout_secs=10.0, poll_interval_secs=0.05)
         return bal, rec_fail
 
     bal, rec_fail = await run_with_worker(worker, _run())
@@ -158,11 +150,10 @@ async def test_zart_managed_trx_commit_and_rollback(
     assert rec_fail.status == "failed"
 
     async with await backend.begin() as tx:
-        row = await tx.fetch_one(
-            "SELECT balance FROM py_test_accounts WHERE id = $1", acct_id
-        )
+        row = await tx.fetch_one("SELECT balance FROM py_test_accounts WHERE id = $1", acct_id)
         step_row = await tx.fetch_one(
-            "SELECT status::text AS status FROM zart_steps WHERE run_id LIKE $1 AND step_name = 'debit-zart'",
+            "SELECT status::text AS status FROM zart_steps "
+            "WHERE run_id LIKE $1 AND step_name = 'debit-zart'",
             f"{exec_ok}:%",
         )
     assert row["balance"] == 900
@@ -235,13 +226,9 @@ async def test_user_managed_sqlalchemy_commit_and_rollback(
 
     async def _run() -> tuple[int, str]:
         await scheduler.start(exec_ok, task_ok, acct_id)
-        bal = await scheduler.wait_completion(
-            exec_ok, timeout_secs=10.0, poll_interval_secs=0.05
-        )
+        bal = await scheduler.wait_completion(exec_ok, timeout_secs=10.0, poll_interval_secs=0.05)
         await scheduler.start(exec_fail, task_fail, acct_id)
-        rec = await scheduler.wait(
-            exec_fail, timeout_secs=10.0, poll_interval_secs=0.05
-        )
+        rec = await scheduler.wait(exec_fail, timeout_secs=10.0, poll_interval_secs=0.05)
         return bal, rec.status
 
     bal, fail_status = await run_with_worker(worker, _run())
@@ -249,9 +236,7 @@ async def test_user_managed_sqlalchemy_commit_and_rollback(
     assert fail_status == "failed"
 
     async with await backend.begin() as tx:
-        row = await tx.fetch_one(
-            "SELECT balance FROM py_test_accounts WHERE id = $1", acct_id
-        )
+        row = await tx.fetch_one("SELECT balance FROM py_test_accounts WHERE id = $1", acct_id)
     assert row["balance"] == 850
 
 
@@ -320,13 +305,9 @@ async def test_user_managed_psycopg_commit_and_rollback(
 
     async def _run() -> tuple[int, str]:
         await scheduler.start(exec_ok, task_ok, acct_id)
-        bal = await scheduler.wait_completion(
-            exec_ok, timeout_secs=10.0, poll_interval_secs=0.05
-        )
+        bal = await scheduler.wait_completion(exec_ok, timeout_secs=10.0, poll_interval_secs=0.05)
         await scheduler.start(exec_fail, task_fail, acct_id)
-        rec = await scheduler.wait(
-            exec_fail, timeout_secs=10.0, poll_interval_secs=0.05
-        )
+        rec = await scheduler.wait(exec_fail, timeout_secs=10.0, poll_interval_secs=0.05)
         return bal, rec.status
 
     bal, fail_status = await run_with_worker(worker, _run())
@@ -334,7 +315,5 @@ async def test_user_managed_psycopg_commit_and_rollback(
     assert fail_status == "failed"
 
     async with await backend.begin() as tx:
-        row = await tx.fetch_one(
-            "SELECT balance FROM py_test_accounts WHERE id = $1", acct_id
-        )
+        row = await tx.fetch_one("SELECT balance FROM py_test_accounts WHERE id = $1", acct_id)
     assert row["balance"] == 800

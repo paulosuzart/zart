@@ -7,8 +7,8 @@ import inspect
 import math
 import re
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from datetime import datetime, timedelta, timezone
-from typing import Any, Generic, ParamSpec, TypeVar, get_type_hints, overload
+from datetime import UTC, datetime, timedelta
+from typing import Any, ParamSpec, get_type_hints, overload
 
 from zart._zart import (
     DurableTask,
@@ -18,17 +18,41 @@ from zart._zart import (
     StepHandle,
     StepOutcome,
     StepSpec,
+)
+from zart._zart import (
     capture as _native_capture,
+)
+from zart._zart import (
     context as _native_context,
+)
+from zart._zart import (
     now as _native_now,
+)
+from zart._zart import (
     require as _native_require,
+)
+from zart._zart import (
     schedule as _native_schedule,
+)
+from zart._zart import (
     sleep as _native_sleep,
+)
+from zart._zart import (
     sleep_until as _native_sleep_until,
+)
+from zart._zart import (
     step as _native_step,
+)
+from zart._zart import (
     step_or as _native_step_or,
+)
+from zart._zart import (
     step_or_else as _native_step_or_else,
+)
+from zart._zart import (
     wait as _native_wait,
+)
+from zart._zart import (
     wait_for_event as _native_wait_for_event,
 )
 from zart.serde import from_json_value, to_json_value
@@ -40,8 +64,6 @@ from zart.trx import (
 )
 
 P = ParamSpec("P")
-T = TypeVar("T")
-U = TypeVar("U")
 
 DurationLike = int | float | timedelta | str
 
@@ -135,7 +157,7 @@ def _safe_type_hints(fn: Callable[..., Any]) -> dict[str, Any]:
         return {}
 
 
-class StepInvocation(Generic[T]):
+class StepInvocation[T]:
     """Deferred, awaitable step invocation created by calling a ``@step``-decorated function."""
 
     def __init__(
@@ -161,7 +183,7 @@ class StepInvocation(Generic[T]):
         return StepInvocation(self._spec.named(custom_id), return_type=self.return_type)
 
     def __await__(self) -> Generator[Any, None, T]:
-        """Allow ``await my_step(...)`` directly as shorthand for ``await require(my_step(...))``."""
+        """Allow ``await my_step(...)`` directly as shorthand for ``await require(...)``."""
         return require(self).__await__()
 
     def __repr__(self) -> str:
@@ -236,9 +258,7 @@ def _inspect_trx_param(
 
     resolved_annot = hints.get(trx_param.name, trx_param.annotation)
     is_zart_trx_annot = resolved_annot is Trx or trx_param.annotation in ("Trx", "zart.Trx")
-    call_sig = inspect.Signature(
-        [p for p in sig.parameters.values() if p.name != trx_param.name]
-    )
+    call_sig = inspect.Signature([p for p in sig.parameters.values() if p.name != trx_param.name])
     return trx_param.name, trx_param.default, is_zart_trx_annot, sig, call_sig
 
 
@@ -293,6 +313,7 @@ def _build_step_runner(
 ) -> tuple[Callable[..., Awaitable[Any]], bool]:
     """Build the step runner coroutine factory and ``inject_trx`` flag."""
     if trx_marker is None or trx_param_name is None or call_sig is None:
+
         async def _run_plain() -> Any:
             return await _invoke_step_fn(fn, args, kwargs)
 
@@ -300,21 +321,18 @@ def _build_step_runner(
 
     worker_provider = get_worker_trx_provider()
     if trx_marker.provider is None and (worker_provider is None or is_zart_trx_annot):
+
         async def _run_zart_trx(py_trx: Trx) -> Any:
             bound = _bind_with_trx(sig, call_sig, trx_param_name, py_trx, args, kwargs)
             return await _invoke_step_fn(fn, bound.args, bound.kwargs)
 
         return _run_zart_trx, True
 
-    effective_provider = (
-        trx_marker.provider if trx_marker.provider is not None else worker_provider
-    )
+    effective_provider = trx_marker.provider if trx_marker.provider is not None else worker_provider
 
     async def _run_user_trx() -> Any:
         async with UserManagedTrxManager(effective_provider) as session_or_conn:
-            bound = _bind_with_trx(
-                sig, call_sig, trx_param_name, session_or_conn, args, kwargs
-            )
+            bound = _bind_with_trx(sig, call_sig, trx_param_name, session_or_conn, args, kwargs)
             return await _invoke_step_fn(fn, bound.args, bound.kwargs)
 
     return _run_user_trx, False
@@ -332,9 +350,7 @@ def _make_step_decorator(
     def decorator(fn: Callable[P, Any]) -> Callable[P, StepInvocation]:
         hints = _safe_type_hints(fn)
         return_type = hints.get("return", Any)
-        trx_param_name, trx_marker, is_zart_trx_annot, sig, call_sig = _inspect_trx_param(
-            fn, hints
-        )
+        trx_param_name, trx_marker, is_zart_trx_annot, sig, call_sig = _inspect_trx_param(fn, hints)
 
         @functools.wraps(fn)
         def invoker(*args: P.args, **kwargs: P.kwargs) -> StepInvocation:
@@ -444,9 +460,7 @@ def durable(
             fail_params = list(fail_sig.parameters.values())
             fail_hints = _safe_type_hints(on_failure)
             fail_input_type = (
-                fail_hints.get(fail_params[0].name, input_type)
-                if fail_params
-                else input_type
+                fail_hints.get(fail_params[0].name, input_type) if fail_params else input_type
             )
 
             async def _wrapped_on_failure(raw_data: Any, failure: ExecutionFailure) -> Any:
@@ -476,7 +490,7 @@ async def require(invocation: StepInvocation | StepSpec) -> Any:
     return from_json_value(raw, return_type)
 
 
-async def step_or(invocation: StepInvocation | StepSpec, default: T) -> T | Any:
+async def step_or[T](invocation: StepInvocation | StepSpec, default: T) -> T | Any:
     """Execute a step durably, returning ``default`` if it fails."""
     spec, return_type = _to_step_spec(invocation)
     raw = await _native_step_or(spec, to_json_value(default))
@@ -519,14 +533,14 @@ async def sleep_until(name: str, wake_time: datetime | str) -> None:
     """Durably sleep until ``wake_time`` (``datetime`` or ISO-8601 string)."""
     if isinstance(wake_time, datetime):
         if wake_time.tzinfo is None:
-            wake_time = wake_time.replace(tzinfo=timezone.utc)
+            wake_time = wake_time.replace(tzinfo=UTC)
         wake_iso = wake_time.isoformat()
     else:
         wake_iso = wake_time
     await _native_sleep_until(name, wake_iso)
 
 
-async def wait_for_event(
+async def wait_for_event[T](
     name: str,
     timeout: DurationLike | None = None,
     *,
@@ -538,13 +552,14 @@ async def wait_for_event(
     return from_json_value(raw, target_type)
 
 
-async def capture(
+async def capture[T](
     name: str,
     func: Callable[[], T],
     *,
     target_type: type[T] | Any = None,
 ) -> T | Any:
     """Capture a synchronous pure computation durably."""
+
     def _wrapped() -> Any:
         return to_json_value(func())
 
