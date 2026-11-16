@@ -3,13 +3,16 @@ title: Parallel Steps
 description: Run independent steps concurrently with zart::schedule and zart::wait, then aggregate the results.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example runs health checks on three services concurrently. Each check is an independent step scheduled at the same time; `zart::wait` collects their results once all complete. A final sequential step aggregates the data into a summary.
 
 **Features demonstrated:** `#[zart_step]`, `zart::schedule()`, `zart::wait()`, structured output, `DurableExecution` trait.
 
 ## Data types
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,7 +36,61 @@ struct HealthCheckOutput {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class HealthCheckInput:
+    services: list[str]
+
+@dataclass
+class ServiceResult:
+    name: str
+    status: str
+    response_ms: int
+    issues: list[str]
+
+@dataclass
+class HealthCheckOutput:
+    services_checked: int
+    total_issues: int
+    results: list[ServiceResult]
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Schema } from "effect";
+
+const HealthCheckInput = Schema.Struct({
+  services: Schema.Array(Schema.String),
+});
+
+const ServiceResult = Schema.Struct({
+  name: Schema.String,
+  status: Schema.String,
+  responseMs: Schema.Number,
+  issues: Schema.Array(Schema.String),
+});
+
+const HealthCheckOutput = Schema.Struct({
+  servicesChecked: Schema.Number,
+  totalIssues: Schema.Number,
+  results: Schema.Array(ServiceResult),
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## Step definition
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -51,7 +108,64 @@ async fn check_service(service: String) -> Result<ServiceResult, StepError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("check-service")
+async def check_service(service: str) -> ServiceResult:
+    match service:
+        case "auth-api":
+            status, response_ms, issues = "healthy", 42, []
+        case "payments":
+            status, response_ms, issues = "degraded", 156, ["high latency detected"]
+        case "users-db":
+            status, response_ms, issues = "healthy", 28, []
+        case _:
+            status, response_ms, issues = "unknown", 0, ["no check configured"]
+    return ServiceResult(name=service, status=status, response_ms=response_ms, issues=issues)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const checkService = Zart.step("check-service", (service: string) => {
+  switch (service) {
+    case "auth-api":
+      return Effect.succeed({ name: service, status: "healthy", responseMs: 42, issues: [] });
+    case "payments":
+      return Effect.succeed({
+        name: service,
+        status: "degraded",
+        responseMs: 156,
+        issues: ["high latency detected"],
+      });
+    case "users-db":
+      return Effect.succeed({ name: service, status: "healthy", responseMs: 28, issues: [] });
+    default:
+      return Effect.succeed({
+        name: service,
+        status: "unknown",
+        responseMs: 0,
+        issues: ["no check configured"],
+      });
+  }
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## The workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 struct HealthCheckTask;
@@ -92,7 +206,64 @@ impl DurableExecution for HealthCheckTask {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("health-check")
+async def health_check(data: HealthCheckInput) -> HealthCheckOutput:
+    # Schedule one step per service — all are registered before any runs
+    handles = [
+        zart.schedule(check_service(service).named(f"check-service-{i}"))
+        for i, service in enumerate(data.services)
+    ]
+
+    # Wait until every scheduled step has a persisted result
+    outcomes = await zart.wait(handles)
+    service_results = [o.unwrap() for o in outcomes]
+    total_issues = sum(len(s.issues) for s in service_results)
+
+    return HealthCheckOutput(
+        services_checked=len(service_results),
+        total_issues=total_issues,
+        results=service_results,
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const healthCheck = Zart.durable(
+  "health-check",
+  (data) =>
+    Effect.gen(function* () {
+      // Schedule one step per service — all are registered before any runs
+      const handles = yield* Effect.forEach(data.services, (service, i) =>
+        Zart.schedule(checkService(service).named(`check-service-${i}`)),
+      );
+
+      // Wait until every scheduled step has a persisted result
+      const serviceResults = yield* Zart.waitAll(handles);
+      const totalIssues = serviceResults.reduce((acc, s) => acc + s.issues.length, 0);
+
+      return {
+        servicesChecked: serviceResults.length,
+        totalIssues,
+        results: serviceResults,
+      };
+    }),
+  { inputSchema: HealthCheckInput, outputSchema: HealthCheckOutput },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Running the workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let durable = DurableScheduler::from_backend(&pg);
@@ -109,6 +280,38 @@ let output = durable
 
 println!("Checked {} services, {} issues", output.services_checked, output.total_issues);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+scheduler = zart.DurableScheduler(backend)
+await scheduler.start(
+    "health-check-run-1",
+    "health-check",
+    zart.to_json_value(HealthCheckInput(services=["auth-api", "payments", "users-db"])),
+)
+
+raw = await scheduler.wait_completion("health-check-run-1", timeout_secs=60.0)
+output = zart.from_json_value(raw, HealthCheckOutput)
+print(f"Checked {output.services_checked} services, {output.total_issues} issues")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+yield* scheduler.start("health-check-run-1", "health-check", HealthCheckInput, {
+  services: ["auth-api", "payments", "users-db"],
+});
+
+const output = yield* scheduler.waitCompletion("health-check-run-1", HealthCheckOutput, 60);
+console.log(`Checked ${output.servicesChecked} services, ${output.totalIssues} issues`);
+```
+
+</TabItem>
+</Tabs>
 
 ## What you'll see
 
@@ -136,6 +339,9 @@ Each scheduled step is its own persisted record. If the worker crashes after `au
 
 ## Sequential vs parallel
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 // Sequential — each step waits for the previous one to finish
 let a = step_a().await?;
@@ -148,6 +354,41 @@ let h2 = zart::schedule(step_b());
 let h3 = zart::schedule(step_c());
 let results = zart::wait(vec![h1, h2, h3]).await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Sequential — each step waits for the previous one to finish
+a = await step_a()
+b = await step_b()
+c = await step_c()
+
+# Parallel — all three are scheduled first, then collected together
+h1 = zart.schedule(step_a())
+h2 = zart.schedule(step_b())
+h3 = zart.schedule(step_c())
+results = await zart.wait([h1, h2, h3])
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Sequential — each step waits for the previous one to finish
+const a = yield* stepA();
+const b = yield* stepB();
+const c = yield* stepC();
+
+// Parallel — all three are scheduled first, then collected together
+const h1 = yield* Zart.schedule(stepA());
+const h2 = yield* Zart.schedule(stepB());
+const h3 = yield* Zart.schedule(stepC());
+const results = yield* Zart.waitAll([h1, h2, h3]);
+```
+
+</TabItem>
+</Tabs>
 
 Use parallel steps when the work is independent and order does not matter. Use sequential steps when each step depends on the previous step's output.
 

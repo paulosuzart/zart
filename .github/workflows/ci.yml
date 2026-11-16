@@ -271,3 +271,34 @@ jobs:
         run: just doc-check
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  # ── Webpage & Snippet Verification ────────────────────────────────────────────
+  webpage:
+    name: Webpage & Snippets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Rust toolchain (for rustfmt snippet check)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install TypeScript SDK dependencies
+        working-directory: bindings/typescript
+        run: npm ci
+
+      - name: Install webpage dependencies
+        working-directory: webpage
+        run: npm ci
+
+      - name: Verify documentation snippets
+        run: npm --prefix webpage run verify:snippets
+
+      - name: Build webpage
+        run: ASTRO_TELEMETRY_DISABLED=1 npm --prefix webpage run build

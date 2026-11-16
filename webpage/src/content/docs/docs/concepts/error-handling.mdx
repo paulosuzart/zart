@@ -3,7 +3,7 @@ title: Error Handling
 description: "The three-way step outcome model: Ok, BusinessErr, and ZartErr — and the four calling conventions."
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## The Core Idea: Typed, Three-Way Step Outcomes
 
@@ -13,6 +13,9 @@ Every step declares its own error type. Zart distinguishes between:
 - **`BusinessErr(E)`** — the step's own error type (e.g., `PaymentError::InsufficientFunds`). These are **business decisions**.
 - **`ZartErr(ZartStepError)`** — a framework-level failure (retry exhausted, step timed out). These are **infrastructure problems**.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 pub enum StepOutcome<T, E> {
     Ok(T),              // success
@@ -20,6 +23,30 @@ pub enum StepOutcome<T, E> {
     ZartErr(ZartStepError),  // framework failure (retry exhausted, timeout)
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+# zart.StepOutcome (returned by await zart.step(...))
+# - outcome.is_ok           -> outcome.value
+# - outcome.is_business_err -> outcome.error
+# - outcome.is_zart_err     -> outcome.error (ZartError)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// StepOutcome<A> (returned by yield* Zart.outcome(...))
+export type StepOutcome<A = unknown> =
+  | { readonly _tag: "ok"; readonly value: A }
+  | { readonly _tag: "business_err"; readonly errorType: string; readonly message: string; readonly data?: unknown }
+  | { readonly _tag: "zart_err"; readonly error: unknown };
+```
+
+</TabItem>
+</Tabs>
 
 This distinction matters because business errors deserve specific handling — insufficient funds is different from a declined card — while framework errors should typically escalate to a centralized recovery path.
 
@@ -29,6 +56,9 @@ This distinction matters because business errors deserve specific handling — i
 
 The most common path. Any non-`Ok` outcome (business or framework error) fails the entire execution.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 let inventory = reserve_inventory(order_id.clone()).await?;
 // ──────────────────────────────────────────────────────────────
@@ -36,11 +66,33 @@ let inventory = reserve_inventory(order_id.clone()).await?;
 // the execution fails immediately with TaskError::StepFailed.
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Direct await uses require() semantics — raises on any error
+inventory = await reserve_inventory(order_id)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Direct yield* uses require() semantics — fails the workflow Effect on any error
+const inventory = yield* reserveInventory(orderId);
+```
+
+</TabItem>
+</Tabs>
+
 Use `require` when a step's failure means the whole workflow cannot proceed.
 
-### 2. `zart::step()` — Explicit Three-Way Matching
+### 2. `step()` / `Zart.outcome()` — Explicit Three-Way Matching
 
-When the body genuinely needs to branch on a step's specific business error, use `zart::step()` and match on `StepOutcome`.
+When the body genuinely needs to branch on a step's specific business error, use `zart::step()` (Rust/Python) or `Zart.outcome()` (TypeScript) to inspect `StepOutcome`.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::error::StepOutcome;
@@ -68,11 +120,45 @@ let balance = match zart::step(check_balance(account_id.clone())).await? {
 };
 ```
 
-The outer `?` propagates control-flow signals (`Scheduled`, `StepExecuted`) — these are framework internals, never matched by user code. The `StepOutcome` is what you actually branch on.
+</TabItem>
+<TabItem label="Python">
 
-### 3. `zart::step_or()` — Blind Fallback
+```python
+outcome = await zart.step(check_balance(account_id))
+if outcome.is_ok:
+    balance = outcome.value
+    print(f"Balance: ${balance}")
+elif outcome.is_business_err:
+    return OrderOutput(status="payment_error", message=str(outcome.error))
+else:
+    raise outcome.error  # escalate ZartErr to on_failure
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const balanceOutcome = yield* Zart.outcome(checkBalance(accountId));
+if (balanceOutcome._tag === "business_err") {
+  return { status: "payment_error", message: balanceOutcome.message };
+}
+if (balanceOutcome._tag === "zart_err") {
+  return yield* Effect.fail(balanceOutcome.error);
+}
+const balance = balanceOutcome.value;
+```
+
+</TabItem>
+</Tabs>
+
+The outer `?` (in Rust) propagates control-flow signals (`Scheduled`, `StepExecuted`) — these are framework internals, never matched by user code. The `StepOutcome` is what you actually branch on.
+
+### 3. `step_or()` / `Zart.stepOr()` — Blind Fallback
 
 Discard any error and return a default value. Use only when the failure reason doesn't matter.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let cached_config = zart::step_or(
@@ -81,9 +167,29 @@ let cached_config = zart::step_or(
 ).await?;
 ```
 
-### 4. `zart::step_or_else()` — Computed Fallback
+</TabItem>
+<TabItem label="Python">
 
-The closure receives the step's `Error` type — framework errors (`ZartErr`) still propagate and are not silently swallowed.
+```python
+cached_config = await zart.step_or(fetch_remote_config(), default_config)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const cachedConfig = yield* Zart.stepOr(fetchRemoteConfig(), defaultConfig);
+```
+
+</TabItem>
+</Tabs>
+
+### 4. `step_or_else()` — Computed Fallback
+
+The closure receives the step's error — framework errors (`ZartErr`) still propagate and are not silently swallowed.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let payment = zart::step_or_else(
@@ -96,11 +202,36 @@ let payment = zart::step_or_else(
 .await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+payment = await zart.step_or_else(
+    charge_card(account_id, data.amount),
+    lambda err: PaymentResult(transaction_id="fallback", amount=0.0),
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const payment = yield* chargeCard(accountId, data.amount).pipe(
+  Effect.catch((_err) => Effect.succeed({ transactionId: "fallback", amount: 0 })),
+);
+```
+
+</TabItem>
+</Tabs>
+
 If `charge_card` returns `BusinessErr(PaymentError::CardDeclined)`, the closure runs. If it returns `ZartErr` (retry exhausted), the error propagates — no silent swallowing.
 
 ## Centralized Recovery with `on_failure`
 
-When any propagated failure reaches the top of `run`, the `on_failure` handler is invoked. This is a plain async function — fully unit-testable without any framework setup.
+When any propagated failure reaches the top of the workflow, the `on_failure` handler (Rust/Python) or `Effect.catch` (TypeScript) is invoked.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_durable("order-processing", on_failure = handle_order_failure)]
@@ -155,6 +286,49 @@ async fn handle_order_failure(
     }
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async def handle_order_failure(
+    _data: OrderInput,
+    failure: zart.ExecutionFailure,
+) -> OrderOutput:
+    if failure.kind == "step_failed" and failure.step == "charge-card":
+        return OrderOutput(status="payment_failed", message=f"Payment failed: {failure.raw}")
+    if failure.kind == "execution_deadline_exceeded":
+        return OrderOutput(status="timed_out", message="Execution deadline exceeded")
+    if failure.kind == "retries_exhausted":
+        return OrderOutput(status="retries_exhausted", message=f"Gave up after {failure.attempts} attempts")
+    raise RuntimeError(f"Unhandled failure: {failure}")
+
+@zart.durable("order-processing", on_failure=handle_order_failure)
+async def process_order(data: OrderInput) -> OrderOutput:
+    inventory = await reserve_inventory(data.order_id)
+    payment = await charge_card(data.account_id, data.amount)
+    return OrderOutput(status="completed", message="ok")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const processOrder = Zart.durable("order-processing", (data: OrderInput) =>
+  Effect.gen(function* () {
+    const inventory = yield* reserveInventory(data.orderId);
+    const payment = yield* chargeCard(data.accountId, data.amount);
+    return { status: "completed", inventory, payment };
+  }).pipe(
+    Effect.catch((err) =>
+      Effect.succeed({ status: "failed", message: String(err) }),
+    ),
+  ),
+);
+```
+
+</TabItem>
+</Tabs>
 
 ### `ExecutionFailure` Variants
 

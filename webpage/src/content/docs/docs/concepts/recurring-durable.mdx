@@ -3,7 +3,7 @@ title: Recurring Durable Executions
 description: Schedule durable workflows on a recurring basis with configurable overlap policies.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Motivation
 
@@ -53,6 +53,9 @@ executions when you need steps, retries, and observability.
 
 ## Quick Start
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 use zart::prelude::*;
 use zart::OverlapPolicy;
@@ -89,6 +92,55 @@ let worker = WorkerBuilder::from_backend(&pg)
     )
     .build();
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+# Recurring cron/fixed-delay registration (`register_recurring_durable`) is currently
+# available in the Rust SDK. In Python, trigger occurrences from your scheduler/cron
+# using idempotent execution IDs:
+@zart.durable("nightly-report")
+async def nightly_report(data: dict) -> dict:
+    await fetch_inventory(data["warehouse"])
+    await write_report(data["warehouse"])
+    return {"status": "ok"}
+
+# Trigger an occurrence idempotently:
+await scheduler.start("report-0", "nightly-report", {"warehouse": "EU-1"})
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect, Schema } from "effect";
+import { DurableScheduler, Zart } from "@zart/effect";
+
+// Recurring cron/fixed-delay registration (`register_recurring_durable`) is currently
+// available in the Rust SDK. In TypeScript, trigger occurrences from your scheduler/cron
+// using idempotent execution IDs:
+const ReportInput = Schema.Struct({ warehouse: Schema.String });
+
+const nightlyReport = Zart.durable(
+  "nightly-report",
+  (data) =>
+    Effect.gen(function* () {
+      yield* fetchInventory(data.warehouse);
+      yield* writeReport(data.warehouse);
+      return { status: "ok" };
+    }),
+  { inputSchema: ReportInput },
+);
+
+// Trigger an occurrence idempotently:
+yield* scheduler.start("report-0", "nightly-report", ReportInput, { warehouse: "EU-1" });
+```
+
+</TabItem>
+</Tabs>
 
 <Aside type="tip">
 `register_recurring_durable` schedules the first occurrence immediately and
@@ -155,6 +207,9 @@ database or use the same template for two different recurring tasks.
 
 Use `DurableScheduler::wait` to block until a specific occurrence finishes:
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 let record = durable
     .wait("report-3", Duration::from_secs(30), None)
@@ -164,14 +219,55 @@ println!("Status: {:?}", record.status);
 println!("Result: {:?}", record.result);
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+record = await scheduler.wait("report-3", timeout_secs=30.0)
+print(f"Status: {record.status}")
+print(f"Result: {record.result}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const record = yield* scheduler.wait("report-3", 30);
+console.log("Status:", record.status);
+console.log("Result:", record.result);
+```
+
+</TabItem>
+</Tabs>
+
 ## Stopping a Recurring Task
 
-To cancel a recurring task entirely, use `DurableScheduler::stop_recurring`:
+To cancel a recurring task entirely, use `DurableScheduler::stop_recurring` (Rust), or `cancel` for an individual occurrence in Python / TypeScript:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let durable = DurableScheduler::from_backend(&pg);
 durable.stop_recurring("nightly-report").await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+await scheduler.cancel("report-3")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* scheduler.cancel("report-3");
+```
+
+</TabItem>
+</Tabs>
 
 This marks the recurring task as inactive. No new occurrences will be scheduled,
 but executions that are already running will complete normally.

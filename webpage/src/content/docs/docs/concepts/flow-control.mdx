@@ -3,11 +3,14 @@ title: Flow Control
 description: Sequential execution, parallel steps, durable loops, and how to compose them.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Sequential Execution (the Default)
 
 By default, steps execute in the order you call them. Each `.await?` is a durable checkpoint — the result is persisted before the next step begins.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_durable("user-onboarding")]
@@ -19,11 +22,41 @@ async fn user_onboarding(data: OnboardingData) -> Result<(), TaskError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("user-onboarding")
+async def user_onboarding(data: OnboardingData) -> None:
+    user = await create_user(data.email)        # ✓ persisted
+    account = await setup_account(user.id)      # ✓ persisted
+    await send_welcome_email(user.email)        # ✓ persisted
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const userOnboarding = Zart.durable("user-onboarding", (data: { email: string }) =>
+  Effect.gen(function* () {
+    const user = yield* createUser(data.email);        // ✓ persisted
+    const account = yield* setupAccount(user.id);      // ✓ persisted
+    yield* sendWelcomeEmail(user.email);               // ✓ persisted
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 If the process crashes after `setup_account`, a restart skips `create_user` and `setup_account` entirely and resumes at `send_welcome_email`.
 
 ## Parallel Steps — `schedule` + `wait`
 
 When steps are independent, fan them out concurrently with `zart::schedule` and collect results with `zart::wait`.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_durable("health-check")]
@@ -55,6 +88,53 @@ async fn health_check(input: HealthCheckInput) -> Result<HealthCheckOutput, Task
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("health-check")
+async def health_check(input_data: HealthCheckInput) -> HealthCheckOutput:
+    # Schedule all checks in parallel
+    handles = [
+        zart.schedule(check_service(service).named(f"check-{i}"))
+        for i, service in enumerate(input_data.services)
+    ]
+
+    # Durably wait for all of them to complete
+    outcomes = await zart.wait(handles)
+    service_results = [o.unwrap() for o in outcomes]
+
+    return HealthCheckOutput(
+        services_checked=len(service_results),
+        results=service_results,
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const healthCheck = Zart.durable("health-check", (input: { services: ReadonlyArray<string> }) =>
+  Effect.gen(function* () {
+    // Schedule all checks in parallel
+    const handles = yield* Effect.forEach(input.services, (service, i) =>
+      Zart.schedule(checkService(service).named(`check-${i}`)),
+    );
+
+    // Durably wait for all of them to complete
+    const serviceResults = yield* Zart.waitAll(handles);
+
+    return {
+      servicesChecked: serviceResults.length,
+      results: serviceResults,
+    };
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### How it works
 
 1. `zart::schedule` registers a step for parallel execution and returns a `StepHandle`.
@@ -66,6 +146,9 @@ async fn health_check(input: HealthCheckInput) -> Result<HealthCheckOutput, Task
 
 The number of parallel steps doesn't need to be known at compile time:
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 let handles: Vec<_> = items
     .iter()
@@ -75,11 +158,35 @@ let handles: Vec<_> = items
 let results = zart::wait(handles).await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+handles = [zart.schedule(process_item(item).named(f"item-{i}")) for i, item in enumerate(items)]
+outcomes = await zart.wait(handles)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const handles = yield* Effect.forEach(items, (item, i) =>
+  Zart.schedule(processItem(item).named(`item-${i}`)),
+);
+const results = yield* Zart.waitAll(handles);
+```
+
+</TabItem>
+</Tabs>
+
 ## Durable Loops
 
 Iterating over a collection is just a normal Rust `for` loop. The key requirement: **every step name must be unique**.
 
-### Using `{index}` in the step name
+### Using `{index}` in the step name (Rust)
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_step("process-report-{index}")]
@@ -104,9 +211,57 @@ async fn report_batch(data: BatchInput) -> Result<BatchOutput, TaskError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.step("process-report")
+async def process_report(report: Report) -> ProcessedReport:
+    score = int(report.value * 10)
+    return ProcessedReport(id=report.id, title=report.title, score=score, flagged=score < 800)
+
+@zart.durable("report-batch")
+async def report_batch(data: BatchInput) -> BatchOutput:
+    reports = await fetch_reports(data.batch_name)
+    processed = [
+        await process_report(report).named(f"process-report-{i}")
+        for i, report in enumerate(reports)
+    ]
+    flagged = sum(1 for p in processed if p.flagged)
+    return BatchOutput(total=len(processed), flagged=flagged)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const processReport = Zart.step("process-report", (report: Report) => {
+  const score = Math.floor(report.value * 10);
+  return Effect.succeed({ id: report.id, title: report.title, score, flagged: score < 800 });
+});
+
+const reportBatch = Zart.durable("report-batch", (data: BatchInput) =>
+  Effect.gen(function* () {
+    const reports = yield* fetchReports(data.batchName);
+    const processed: Array<ProcessedReport> = [];
+    for (let i = 0; i < reports.length; i++) {
+      processed.push(yield* processReport(reports[i]!).named(`process-report-${i}`));
+    }
+    const flagged = processed.filter((p) => p.flagged).length;
+    return { total: processed.length, flagged };
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### Using `.named()` at the call site
 
 For steps with static names that are called inside a loop, use `.named()`:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_step("notify-stakeholder")]
@@ -123,9 +278,44 @@ for (i, report) in processed.iter().enumerate() {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.step("notify-stakeholder")
+async def notify_stakeholder(email: str, title: str) -> None:
+    ...
+
+for i, report in enumerate(processed):
+    if report.flagged:
+        await notify_stakeholder("team@example.com", report.title).named(f"notify-{i}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const notifyStakeholder = Zart.step("notify-stakeholder", (_email: string, _title: string) =>
+  Effect.void,
+);
+
+for (let i = 0; i < processed.length; i++) {
+  const report = processed[i]!;
+  if (report.flagged) {
+    yield* notifyStakeholder("team@example.com", report.title).named(`notify-${i}`);
+  }
+}
+```
+
+</TabItem>
+</Tabs>
+
 ### The fetch-inside-step pattern
 
 When a loop iterates over external data (e.g., database rows, API responses), fetch the list **inside a step** so the same list is replayed after a crash — even if the underlying data changed.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_step("fetch-reports")]
@@ -137,9 +327,39 @@ let reports = fetch_reports(data.batch_name.clone()).await?;
 // On replay: returns the same Vec, even if the DB table changed.
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.step("fetch-reports")
+async def fetch_reports(batch: str, trx: zart.Trx) -> list[dict]:
+    return await trx.fetch_all("SELECT * FROM reports WHERE batch = $1", batch)
+
+reports = await fetch_reports(data.batch_name)
+# On replay: returns the same list, even if the DB table changed.
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const fetchReports = Zart.step("fetch-reports", (batch: string) =>
+  Zart.Trx.fetchAll<Report>("SELECT * FROM reports WHERE batch = $1", [batch]),
+);
+
+const reports = yield* fetchReports(data.batchName);
+// On replay: returns the same array, even if the DB table changed.
+```
+
+</TabItem>
+</Tabs>
+
 ## Mixing Sequential and Parallel
 
 Sequential and parallel steps compose freely:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 // Phase 1: sequential setup
@@ -154,6 +374,43 @@ let results = zart::wait(vec![h1, h2, h3]).await?;
 // Phase 3: sequential cleanup
 generate_summary(&results).await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Phase 1: sequential setup
+config = await load_config()
+
+# Phase 2: parallel fan-out
+h1 = zart.schedule(process_payments(config.batch_1).named("batch-1"))
+h2 = zart.schedule(process_payments(config.batch_2).named("batch-2"))
+h3 = zart.schedule(process_payments(config.batch_3).named("batch-3"))
+results = await zart.wait([h1, h2, h3])
+
+# Phase 3: sequential cleanup
+await generate_summary(results)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Phase 1: sequential setup
+const config = yield* loadConfig();
+
+// Phase 2: parallel fan-out
+const h1 = yield* Zart.schedule(processPayments(config.batch1).named("batch-1"));
+const h2 = yield* Zart.schedule(processPayments(config.batch2).named("batch-2"));
+const h3 = yield* Zart.schedule(processPayments(config.batch3).named("batch-3"));
+const results = yield* Zart.waitAll([h1, h2, h3]);
+
+// Phase 3: sequential cleanup
+yield* generateSummary(results);
+```
+
+</TabItem>
+</Tabs>
 
 ## Next Steps
 

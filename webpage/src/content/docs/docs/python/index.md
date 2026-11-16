@@ -1,5 +1,5 @@
 ---
-title: Python Bindings
+title: Python SDK
 description: Durable execution for Python 3.15+ powered by Zart's Rust runtime.
 ---
 

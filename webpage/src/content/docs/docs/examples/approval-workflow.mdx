@@ -3,13 +3,16 @@ title: Approval Workflow
 description: A human-in-the-loop durable workflow that pauses for an external event before continuing.
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example shows how to pause a durable execution and wait for a human decision before proceeding. The workflow validates a resource-access request, parks itself waiting for manager approval, then either provisions the resource or records the rejection — depending on what the manager decides.
 
 **Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, `zart::wait_for_event()`, `durable.offer_event()`.
 
 ## Data types
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +39,71 @@ struct ApprovalOutput {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class ApprovalRequest:
+    requester_name: str
+    resource: str
+    reason: str
+
+@dataclass
+class ApprovalDecision:
+    approved: bool
+    reviewer: str
+    comment: str
+
+@dataclass
+class ApprovalOutput:
+    decision: str  # "approved" | "rejected"
+    requester: str
+    resource: str
+    reviewer: str
+    comment: str
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Data, Schema } from "effect";
+
+class ValidationError extends Data.TaggedError("ValidationError")<{
+  readonly message: string;
+}> {}
+
+const ApprovalRequest = Schema.Struct({
+  requesterName: Schema.String,
+  resource: Schema.String,
+  reason: Schema.String,
+});
+
+const ApprovalDecision = Schema.Struct({
+  approved: Schema.Boolean,
+  reviewer: Schema.String,
+  comment: Schema.String,
+});
+
+const ApprovalOutput = Schema.Struct({
+  decision: Schema.String, // "approved" | "rejected"
+  requester: Schema.String,
+  resource: Schema.String,
+  reviewer: Schema.String,
+  comment: Schema.String,
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## Step definitions
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -60,9 +127,53 @@ async fn process_approved(resource: &str, requester: &str) -> Result<String, Ste
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("validate-request")
+async def validate_request(request: ApprovalRequest) -> str:
+    if not request.requester_name:
+        raise ValueError("requester_name is required")
+    return f"Validated request from {request.requester_name} for {request.resource}"
+
+@zart.step("process-approved")
+async def process_approved(resource: str, requester: str) -> str:
+    # In a real system, this would provision the resource
+    return f"Provisioned {resource} for {requester}"
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const validateRequest = Zart.step(
+  "validate-request",
+  (request: typeof ApprovalRequest.Type) =>
+    request.requesterName
+      ? Effect.succeed(`Validated request from ${request.requesterName} for ${request.resource}`)
+      : Effect.fail(new ValidationError({ message: "requesterName is required" })),
+);
+
+const processApproved = Zart.step("process-approved", (resource: string, requester: string) =>
+  Effect.succeed(`Provisioned ${resource} for ${requester}`),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## The workflow
 
-The durable handler composes steps and uses `zart::wait_for_event` to pause for the manager's decision.
+The durable handler composes steps and uses `wait_for_event` to pause for the manager's decision.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_durable("approval-task", timeout = "5m")]
@@ -91,7 +202,76 @@ async fn approval_task(data: ApprovalRequest) -> Result<ApprovalOutput, TaskErro
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("approval-task", timeout="5m")
+async def approval_workflow(data: ApprovalRequest) -> ApprovalOutput:
+    # Step 1: validate the request
+    await validate_request(data)
+
+    # Step 2: park until a manager delivers the approval event
+    decision: ApprovalDecision = await zart.wait_for_event(
+        "manager-approval",
+        timeout="2m",
+        target_type=ApprovalDecision,
+    )
+
+    # Step 3: act on the decision
+    if decision.approved:
+        await process_approved(data.resource, data.requester_name)
+
+    return ApprovalOutput(
+        decision="approved" if decision.approved else "rejected",
+        requester=data.requester_name,
+        resource=data.resource,
+        reviewer=decision.reviewer,
+        comment=decision.comment,
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const approvalWorkflow = Zart.durable(
+  "approval-task",
+  (data) =>
+    Effect.gen(function* () {
+      // Step 1: validate the request
+      yield* validateRequest(data);
+
+      // Step 2: park until a manager delivers the approval event
+      const decision = yield* Zart.waitForEvent("manager-approval", {
+        schema: ApprovalDecision,
+        timeout: "2 minutes",
+      });
+
+      // Step 3: act on the decision
+      if (decision.approved) {
+        yield* processApproved(data.resource, data.requesterName);
+      }
+
+      return {
+        decision: decision.approved ? "approved" : "rejected",
+        requester: data.requesterName,
+        resource: data.resource,
+        reviewer: decision.reviewer,
+        comment: decision.comment,
+      };
+    }),
+  { inputSchema: ApprovalRequest, outputSchema: ApprovalOutput, timeout: "5 minutes" },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Starting the workflow and delivering the event
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let durable = DurableScheduler::from_backend(&pg);
@@ -122,6 +302,75 @@ let output: ApprovalOutput = durable
     .await?;
 println!("Decision: {} by {}", output.decision, output.reviewer);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+scheduler = zart.DurableScheduler(backend)
+execution_id = "approval-demo-1"
+
+# Start the workflow — it will run step 1, then park at wait_for_event
+await scheduler.start(
+    execution_id,
+    "approval-task",
+    zart.to_json_value(
+        ApprovalRequest(
+            requester_name="Bob",
+            resource="staging-environment",
+            reason="Need to test the new deployment pipeline",
+        )
+    ),
+)
+
+# ... later, when the manager clicks "Approve" in your UI or API ...
+decision = ApprovalDecision(
+    approved=True,
+    reviewer="Alice (Manager)",
+    comment="Approved for staging rollout",
+)
+await scheduler.offer_event(
+    execution_id,
+    "manager-approval",
+    zart.to_json_value(decision),
+)
+
+# The workflow resumes automatically and runs step 3
+raw_result = await scheduler.wait_completion(execution_id, timeout_secs=60.0)
+output = zart.from_json_value(raw_result, ApprovalOutput)
+print(f"Decision: {output.decision} by {output.reviewer}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { DurableScheduler } from "@zart/effect";
+
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+const executionId = "approval-demo-1";
+
+// Start the workflow — it will run step 1, then park at waitForEvent
+yield* scheduler.start(executionId, "approval-task", ApprovalRequest, {
+  requesterName: "Bob",
+  resource: "staging-environment",
+  reason: "Need to test the new deployment pipeline",
+});
+
+// ... later, when the manager clicks "Approve" in your UI or API ...
+yield* scheduler.offerEvent(executionId, "manager-approval", ApprovalDecision, {
+  approved: true,
+  reviewer: "Alice (Manager)",
+  comment: "Approved for staging rollout",
+});
+
+// The workflow resumes automatically and runs step 3
+const output = yield* scheduler.waitCompletion(executionId, ApprovalOutput, 60);
+console.log(`Decision: ${output.decision} by ${output.reviewer}`);
+```
+
+</TabItem>
+</Tabs>
 
 ## What you'll see
 

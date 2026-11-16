@@ -3,13 +3,16 @@ title: Sleep
 description: Demonstrate durable sleep and capture — pause a workflow without blocking threads, and persist values durably.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example shows a minimal durable workflow that sleeps for 5 seconds, then completes. It demonstrates `zart::capture!` for persisting values and `zart::sleep` for durable delays.
 
 **Features demonstrated:** `DurableExecution` trait, `zart::capture!`, `zart::sleep`, durable value persistence.
 
 ## Data types
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +28,47 @@ struct SleepOutput {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class SleepInput:
+    task_name: str
+
+@dataclass
+class SleepOutput:
+    task_name: str
+    started_at: str
+    resumed_at: str
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Schema } from "effect";
+
+const SleepInput = Schema.Struct({
+  taskName: Schema.String,
+});
+
+const SleepOutput = Schema.Struct({
+  taskName: Schema.String,
+  startedAt: Schema.String,
+  resumedAt: Schema.String,
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## The workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -56,6 +99,64 @@ impl DurableExecution for SleepTask {
     }
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from datetime import UTC, datetime
+import zart
+
+@zart.durable("sleep-task")
+async def sleep_task(data: SleepInput) -> SleepOutput:
+    # Capture the start time durably — survives restarts
+    started_at = await zart.capture("started-at", lambda: datetime.now(UTC).isoformat())
+
+    # Durable sleep — zero threads blocked, persists to DB
+    await zart.sleep("initial-sleep", "5s")
+
+    # Capture the resumed time — different from started_at after any restart
+    resumed_at = await zart.capture("resumed-at", lambda: datetime.now(UTC).isoformat())
+
+    return SleepOutput(
+        task_name=data.task_name,
+        started_at=started_at,
+        resumed_at=resumed_at,
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const sleepTask = Zart.durable(
+  "sleep-task",
+  (data) =>
+    Effect.gen(function* () {
+      // Capture the start time durably — survives restarts
+      const startedAt = yield* Zart.capture("started-at", () => new Date().toISOString());
+
+      // Durable sleep — zero fibers blocked, persists to DB
+      yield* Zart.sleep("initial-sleep", "5 seconds");
+
+      // Capture the resumed time — different from startedAt after any restart
+      const resumedAt = yield* Zart.capture("resumed-at", () => new Date().toISOString());
+
+      return {
+        taskName: data.taskName,
+        startedAt,
+        resumedAt,
+      };
+    }),
+  { inputSchema: SleepInput, outputSchema: SleepOutput },
+);
+```
+
+</TabItem>
+</Tabs>
 
 ## What this demonstrates
 

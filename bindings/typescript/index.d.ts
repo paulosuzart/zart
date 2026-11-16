@@ -5,110 +5,163 @@
 
 /** Read-only view of the current execution. */
 export interface ExecutionInfo {
-  executionId: string
-  taskName: string
-  data: Json
-  currentAttempt: number
-  maxRetries?: number
+	executionId: string;
+	taskName: string;
+	data: Json;
+	currentAttempt: number;
+	maxRetries?: number;
 }
 /** Result of a step body: `kind` is `"ok" | "business_err" | "zart_err"`. */
 export interface StepOutcome {
-  kind: string
-  /** JSON value for `ok`. */
-  value?: any
-  /** Business/zart error details. */
-  errorType?: string
-  message?: string
-  data?: any
+	kind: string;
+	/** JSON value for `ok`. */
+	value?: any;
+	/** Business/zart error details. */
+	errorType?: string;
+	message?: string;
+	data?: any;
 }
 export interface ScheduleResult {
-  taskId: string
-  /** RFC3339 timestamp. */
-  executionTime: string
+	taskId: string;
+	/** RFC3339 timestamp. */
+	executionTime: string;
 }
 export interface ExecutionRecord {
-  executionId: string
-  taskName: string
-  payload: any
-  /** scheduled | running | completed | failed | cancelled */
-  status: string
-  result?: any
-  scheduledAt: string
-  completedAt?: string
-  version: number
+	executionId: string;
+	taskName: string;
+	payload: any;
+	/** scheduled | running | completed | failed | cancelled */
+	status: string;
+	result?: any;
+	scheduledAt: string;
+	completedAt?: string;
+	version: number;
 }
 /** Retry policy: `kind` is `none | fixed | linear | exponential`. */
 export interface RetrySpec {
-  kind: string
-  maxAttempts: number
-  delayMs: number
-  factor?: number
-  maxDelayMs?: number
+	kind: string;
+	maxAttempts: number;
+	delayMs: number;
+	factor?: number;
+	maxDelayMs?: number;
 }
 /** Step options. `timeoutScope` is `attempt | total` (also `per_attempt | global`). */
 export interface StepSpec {
-  name: string
-  retry?: RetrySpec
-  timeoutMs?: number
-  timeoutScope?: string
-  needsTrx?: boolean
+	name: string;
+	retry?: RetrySpec;
+	timeoutMs?: number;
+	timeoutScope?: string;
+	needsTrx?: boolean;
 }
-export type Dispatcher = NativeDispatcher
+export type Dispatcher = NativeDispatcher;
 /** Handle given to JS durable handlers. */
-export declare class NativeDispatcher { }
+export declare class NativeDispatcher {}
 /** PostgreSQL-backed storage and scheduler entry point. */
 export declare class PgBackend {
-  /** Connect to PostgreSQL. Optional `listenerUrl` is used for LISTEN/NOTIFY. */
-  static connect(url: string, listenerUrl?: string | undefined | null): Promise<PgBackend>
-  /** New backend sharing the same pool with a dedicated LISTEN/NOTIFY URL. */
-  withListenerUrl(url: string): PgBackend
-  runMigrations(): Promise<void>
-  /** Round-trip `SELECT 1`. */
-  ping(): Promise<void>
-  close(): Promise<void>
-  /** Begin a caller-owned transaction. */
-  begin(): Promise<ClientTrx>
+	/** Connect to PostgreSQL. Optional `listenerUrl` is used for LISTEN/NOTIFY. */
+	static connect(
+		url: string,
+		listenerUrl?: string | undefined | null,
+	): Promise<PgBackend>;
+	/** New backend sharing the same pool with a dedicated LISTEN/NOTIFY URL. */
+	withListenerUrl(url: string): PgBackend;
+	runMigrations(): Promise<void>;
+	/** Round-trip `SELECT 1`. */
+	ping(): Promise<void>;
+	close(): Promise<void>;
+	/** Begin a caller-owned transaction. */
+	begin(): Promise<ClientTrx>;
 }
 export declare class DurableScheduler {
-  static fromBackend(backend: PgBackend): DurableScheduler
-  start(executionId: string, taskName: string, payload: any): Promise<ScheduleResult>
-  /** Start a new durable execution atomically inside a caller-owned `ClientTrx`. */
-  startInTx(tx: ClientTrx, executionId: string, taskName: string, payload: any): Promise<ScheduleResult>
-  status(executionId: string): Promise<ExecutionRecord>
-  wait(executionId: string, timeoutSecs?: number | undefined | null, pollIntervalSecs?: number | undefined | null): Promise<ExecutionRecord>
-  waitCompletion(executionId: string, timeoutSecs?: number | undefined | null, pollIntervalSecs?: number | undefined | null): Promise<any>
-  cancel(executionId: string): Promise<boolean>
-  offerEvent(executionId: string, eventName: string, payload: any): Promise<void>
+	static fromBackend(backend: PgBackend): DurableScheduler;
+	start(
+		executionId: string,
+		taskName: string,
+		payload: any,
+	): Promise<ScheduleResult>;
+	/** Start a new durable execution atomically inside a caller-owned `ClientTrx`. */
+	startInTx(
+		tx: ClientTrx,
+		executionId: string,
+		taskName: string,
+		payload: any,
+	): Promise<ScheduleResult>;
+	status(executionId: string): Promise<ExecutionRecord>;
+	wait(
+		executionId: string,
+		timeoutSecs?: number | undefined | null,
+		pollIntervalSecs?: number | undefined | null,
+	): Promise<ExecutionRecord>;
+	waitCompletion(
+		executionId: string,
+		timeoutSecs?: number | undefined | null,
+		pollIntervalSecs?: number | undefined | null,
+	): Promise<any>;
+	cancel(executionId: string): Promise<boolean>;
+	offerEvent(
+		executionId: string,
+		eventName: string,
+		payload: any,
+	): Promise<void>;
 }
 /** Zart-managed step transaction handle (`zart::ZartTrx`). */
 export declare class NativeTrx {
-  execute(sql: string, params?: Array<unknown> | undefined | null): Promise<number>
-  fetchOne(sql: string, params?: Array<unknown> | undefined | null): Promise<Record<string, unknown>>
-  fetchOptional(sql: string, params?: Array<unknown> | undefined | null): Promise<Record<string, unknown> | null>
-  fetchAll(sql: string, params?: Array<unknown> | undefined | null): Promise<Array<Record<string, unknown>>>
+	execute(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<number>;
+	fetchOne(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<Record<string, unknown>>;
+	fetchOptional(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<Record<string, unknown> | null>;
+	fetchAll(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<Array<Record<string, unknown>>>;
 }
 /** Caller-owned PostgreSQL transaction handle. */
 export declare class ClientTrx {
-  execute(sql: string, params?: Array<unknown> | undefined | null): Promise<number>
-  fetchOne(sql: string, params?: Array<unknown> | undefined | null): Promise<Record<string, unknown>>
-  fetchOptional(sql: string, params?: Array<unknown> | undefined | null): Promise<Record<string, unknown> | null>
-  fetchAll(sql: string, params?: Array<unknown> | undefined | null): Promise<Array<Record<string, unknown>>>
-  commit(): Promise<void>
-  rollback(): Promise<void>
+	execute(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<number>;
+	fetchOne(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<Record<string, unknown>>;
+	fetchOptional(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<Record<string, unknown> | null>;
+	fetchAll(
+		sql: string,
+		params?: Array<unknown> | undefined | null,
+	): Promise<Array<Record<string, unknown>>>;
+	commit(): Promise<void>;
+	rollback(): Promise<void>;
 }
 /** Builder for a `Worker` with configuration and durable handler registration. */
 export declare class WorkerBuilder {
-  static fromBackend(backend: PgBackend): WorkerBuilder
-  pollIntervalSecs(secs: number): void
-  maxConcurrentTasks(n: number): void
-  maxTasksPerPoll(n: number): void
-  shutdownTimeoutSecs(secs: number): void
-  /** Register a JS durable handler: `handler(dispatcher, data) => Promise<json>`. */
-  registerDurable(name: string, handler: (dispatcher: NativeDispatcher, data: any) => Promise<any>, timeoutSecs?: number | undefined | null, maxRetries?: number | undefined | null): void
-  build(): Worker
+	static fromBackend(backend: PgBackend): WorkerBuilder;
+	pollIntervalSecs(secs: number): void;
+	maxConcurrentTasks(n: number): void;
+	maxTasksPerPoll(n: number): void;
+	shutdownTimeoutSecs(secs: number): void;
+	/** Register a JS durable handler: `handler(dispatcher, data) => Promise<json>`. */
+	registerDurable(
+		name: string,
+		handler: (dispatcher: NativeDispatcher, data: any) => Promise<any>,
+		timeoutSecs?: number | undefined | null,
+		maxRetries?: number | undefined | null,
+	): void;
+	build(): Worker;
 }
 export declare class Worker {
-  /** Run the polling loop until `stop()` is called. */
-  run(): Promise<void>
-  stop(): void
+	/** Run the polling loop until `stop()` is called. */
+	run(): Promise<void>;
+	stop(): void;
 }

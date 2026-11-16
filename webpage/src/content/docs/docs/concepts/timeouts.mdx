@@ -3,7 +3,7 @@ title: Timeouts and Deadlines
 description: Deadline-based timeouts for steps and executions, timeout scopes, and how they interact with retries.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Core Concept: Deadlines, Not Durations
 
@@ -15,6 +15,9 @@ The framework records the deadline when a step or execution is first scheduled. 
 
 Set a top-level deadline on your durable handler with the `timeout` attribute. The deadline is computed as `scheduled_at + timeout_duration` when the execution is first started.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 #[zart_durable("order-fulfillment", timeout = "30m")]
 async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
@@ -25,6 +28,40 @@ async fn order_fulfillment(data: OrderInput) -> Result<Receipt, TaskError> {
     Ok(receipt)
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("order-fulfillment", timeout="30m")
+async def order_fulfillment(data: OrderInput) -> Receipt:
+    # Must complete within 30 minutes of when the execution was first scheduled.
+    await validate_address(data.order_id)
+    await process_payment(data.order_id)
+    await ship_order(data.order_id)
+    return receipt
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const orderFulfillment = Zart.durable(
+  "order-fulfillment",
+  (data: { orderId: string }) =>
+    Effect.gen(function* () {
+      // Must complete within 30 minutes of when the execution was first scheduled.
+      yield* validateAddress(data.orderId);
+      yield* processPayment(data.orderId);
+      yield* shipOrder(data.orderId);
+      return { orderId: data.orderId };
+    }),
+  { timeout: "30 minutes" },
+);
+```
+
+</TabItem>
+</Tabs>
 
 If the execution deadline is exceeded, the worker invokes your `on_failure` handler (if defined) before marking the execution as failed. This gives you a chance to compensate — refund a payment, notify the user, etc.
 
@@ -41,6 +78,9 @@ Duration strings support the following units:
 
 Omit the `timeout` attribute entirely for executions that may run indefinitely (e.g., long-lived approval workflows).
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 #[zart_durable("approval-workflow")]
 async fn approval_workflow(req: ApprovalRequest) -> Result<ApprovalOutput, TaskError> {
@@ -50,9 +90,39 @@ async fn approval_workflow(req: ApprovalRequest) -> Result<ApprovalOutput, TaskE
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("approval-workflow")
+async def approval_workflow(req: ApprovalRequest) -> ApprovalOutput:
+    # No execution timeout — waits up to 7 days for manager approval.
+    decision = await zart.wait_for_event("manager-approval", timeout="7d")
+    ...
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const approvalWorkflowNoTimeout = Zart.durable("approval-workflow", (_req: ApprovalRequest) =>
+  Effect.gen(function* () {
+    // No execution timeout — waits up to 7 days for manager approval.
+    const decision = yield* Zart.waitForEvent("manager-approval", { timeout: "7 days" });
+    return decision;
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Step-Level Timeouts and Timeout Scope
 
-Individual steps can have their own timeouts via the `#[zart_step]` attribute:
+Individual steps can have their own timeouts:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_step("call-external-api", timeout = "5m", retry = "fixed(3, 1s)")]
@@ -61,14 +131,39 @@ async fn call_external_api() -> Result<Response, StepError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.step("call-external-api", timeout="5m", retry=zart.Retry.fixed(3, "1s"))
+async def call_external_api() -> dict:
+    ...
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const callExternalApi = Zart.step("call-external-api", () => Effect.succeed({ ok: true }), {
+  timeout: "5 minutes",
+  retry: Zart.Retry.fixed(3, "1 seconds"),
+});
+```
+
+</TabItem>
+</Tabs>
+
 ### Timeout Scope: `global` (default) vs `per_attempt`
 
-The `timeout_scope` attribute controls how the timeout behaves across retries:
+The `timeout_scope` (`timeoutScope` in TypeScript) parameter controls how the timeout behaves across retries:
 
 | Scope | Behavior | Example |
 |---|---|---|
 | `global` (default) | Deadline is calculated from the **first attempt**. All retries share the same window. | `timeout = "5m"` → 5 minutes total from the first attempt |
 | `per_attempt` | Each retry attempt gets a **fresh countdown**. No deadline is persisted. | `timeout = "30s", timeout_scope = "per_attempt"` → each attempt gets 30 seconds |
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 // Global scope (default): 5 minutes total across all retries
@@ -86,6 +181,47 @@ async fn call_api_per_attempt() -> Result<Response, StepError> {
     client.get("https://api.example.com").send().await
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Global scope (default): 5 minutes total across all retries
+@zart.step("call-api", timeout="5m", retry=zart.Retry.fixed(3, "1s"))
+async def call_api() -> dict:
+    ...
+
+# Per-attempt scope: each attempt gets a fresh 30 seconds
+@zart.step(
+    "call-api",
+    timeout="30s",
+    timeout_scope="per_attempt",
+    retry=zart.Retry.fixed(3, "1s"),
+)
+async def call_api_per_attempt() -> dict:
+    ...
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Global scope (default): 5 minutes total across all retries
+const callApiGlobal = Zart.step("call-api", () => Effect.succeed({ ok: true }), {
+  timeout: "5 minutes",
+  retry: Zart.Retry.fixed(3, "1 seconds"),
+});
+
+// Per-attempt scope: each attempt gets a fresh 30 seconds
+const callApiPerAttempt = Zart.step("call-api", () => Effect.succeed({ ok: true }), {
+  timeout: "30 seconds",
+  timeoutScope: "per_attempt",
+  retry: Zart.Retry.fixed(3, "1 seconds"),
+});
+```
+
+</TabItem>
+</Tabs>
 
 ### Timeout Is Always Terminal
 
@@ -123,6 +259,9 @@ When a step runs under `global` scope, its effective timeout is capped by whiche
 
 `zart::wait_for_event` accepts an optional `Duration`. If no event arrives before the timeout, the wait fails with `DeadlineExceeded`.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 // Wait up to 7 days for approval
 let decision: ApprovalDecision = zart::wait_for_event(
@@ -131,11 +270,50 @@ let decision: ApprovalDecision = zart::wait_for_event(
 ).await?;
 ```
 
-Pass `None` to wait indefinitely (until cancelled or the execution-level timeout is exceeded):
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Wait up to 7 days for approval
+decision = await zart.wait_for_event("manager-approval", timeout="7d")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Wait up to 7 days for approval
+const decision = yield* Zart.waitForEvent("manager-approval", { timeout: "7 days" });
+```
+
+</TabItem>
+</Tabs>
+
+Pass `None` (or omit `timeout` in TypeScript) to wait indefinitely (until cancelled or the execution-level timeout is exceeded):
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let event: ShipmentEvent = zart::wait_for_event("shipment-ready", None).await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+event = await zart.wait_for_event("shipment-ready")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const event = yield* Zart.waitForEvent("shipment-ready");
+```
+
+</TabItem>
+</Tabs>
 
 <Aside type="tip">
 Event-wait deadlines are **independent** of step and execution deadlines. The event-wait timeout governs only the event itself. However, if the execution-level deadline is exceeded, the entire execution fails regardless of the event's own timeout.
@@ -145,9 +323,29 @@ Event-wait deadlines are **independent** of step and execution deadlines. The ev
 
 Stop a running execution from the outside:
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 let cancelled = durable.cancel("signup-user-42").await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+cancelled = await scheduler.cancel("signup-user-42")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const cancelled = yield* scheduler.cancel("signup-user-42");
+```
+
+</TabItem>
+</Tabs>
 
 - A cancelled execution stops at its **next scheduling point**.
 - A step currently running will finish, but no new steps will be scheduled.

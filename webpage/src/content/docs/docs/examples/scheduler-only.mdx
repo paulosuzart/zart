@@ -3,7 +3,7 @@ title: Scheduler-Only
 description: Use zart-scheduler standalone for lightweight task scheduling without the durable execution engine.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example demonstrates using `zart-scheduler` as a standalone crate — without the full Zart durable execution engine. It's perfect for lightweight scheduling needs where you don't need step checkpointing, retries, or complex workflow state.
 
@@ -27,7 +27,12 @@ If you just need to schedule tasks that run to completion, chain them together, 
 
 ## The Tasks
 
+In Rust, `zart-scheduler` provides `ScheduledTask` + `OnComplete` for lightweight task chaining without step checkpointing. In Python and TypeScript, the same lightweight scheduling, chaining, and delayed execution patterns are built with `DurableScheduler` and `@zart.durable` / `Zart.durable`.
+
 ### Task 1: Send Welcome Email
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 struct SendWelcomeEmail;
@@ -62,7 +67,51 @@ impl ScheduledTask for SendWelcomeEmail {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import asyncio
+import zart
+
+@zart.durable("send-welcome-email")
+async def send_welcome_email(data: dict) -> dict:
+    print(f"  [send-welcome-email] Sending welcome email to {data['email']}")
+    await asyncio.sleep(0.3)
+    return {"status": "sent", "user_id": data["user_id"]}
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect, Schema } from "effect";
+import { Zart } from "@zart/effect";
+
+const WelcomeEmailInput = Schema.Struct({
+  userId: Schema.String,
+  email: Schema.String,
+});
+
+const sendWelcomeEmail = Zart.durable(
+  "send-welcome-email",
+  (data) =>
+    Effect.gen(function* () {
+      console.log(`  [send-welcome-email] Sending welcome email to ${data.email}`);
+      yield* Zart.sleep("send-delay", "300 millis");
+      return { status: "sent", userId: data.userId };
+    }),
+  { inputSchema: WelcomeEmailInput },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### Task 2: Onboarding Cleanup (chained)
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 struct OnboardingCleanup;
@@ -97,7 +146,42 @@ impl ScheduledTask for OnboardingCleanup {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("onboarding-cleanup")
+async def onboarding_cleanup(data: dict) -> dict:
+    print(f"  [onboarding-cleanup] Running cleanup for user {data['user_id']}")
+    await asyncio.sleep(0.2)
+    return {"status": "cleaned", "user_id": data["user_id"]}
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const UserInput = Schema.Struct({ userId: Schema.String });
+
+const onboardingCleanup = Zart.durable(
+  "onboarding-cleanup",
+  (data) =>
+    Effect.gen(function* () {
+      console.log(`  [onboarding-cleanup] Running cleanup for user ${data.userId}`);
+      yield* Zart.sleep("cleanup-delay", "200 millis");
+      return { status: "cleaned", userId: data.userId };
+    }),
+  { inputSchema: UserInput },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### Task 3: Generate Report (end of chain)
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 struct GenerateReport;
@@ -119,7 +203,40 @@ impl ScheduledTask for GenerateReport {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("generate-report")
+async def generate_report(data: dict) -> dict:
+    print(f"  [generate-report] Generating report for user {data['user_id']}")
+    await asyncio.sleep(0.15)
+    return {"status": "done"}
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const generateReport = Zart.durable(
+  "generate-report",
+  (data) =>
+    Effect.gen(function* () {
+      console.log(`  [generate-report] Generating report for user ${data.userId}`);
+      yield* Zart.sleep("report-delay", "150 millis");
+      return { status: "done" };
+    }),
+  { inputSchema: UserInput },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Setting Up the Worker
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let pool = sqlx::PgPool::connect(&db_url).await?;
@@ -142,9 +259,53 @@ let worker = Arc::new(Worker::new(scheduler.clone(), Arc::new(registry), config,
 tokio::spawn(async move { worker.run().await });
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+backend = await zart.PgBackend.connect(db_url)
+await backend.run_migrations()
+scheduler = zart.DurableScheduler(backend)
+
+worker = (
+    zart.WorkerBuilder(backend)
+    .register_durable(send_welcome_email)
+    .register_durable(onboarding_cleanup)
+    .register_durable(generate_report)
+    .poll_interval(0.2)
+    .max_tasks_per_poll(10)
+    .max_concurrent_tasks(4)
+    .build()
+)
+worker_task = asyncio.ensure_future(worker.run())
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const backend = yield* PgBackend.scoped(dbUrl);
+yield* backend.runMigrations();
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+
+const worker = (yield* WorkerBuilder.fromBackend(backend))
+  .registerDurable(sendWelcomeEmail)
+  .registerDurable(onboardingCleanup)
+  .registerDurable(generateReport)
+  .configure({ pollIntervalSecs: 0.2, maxTasksPerPoll: 10, maxConcurrentTasks: 4 })
+  .build();
+const workerFiber = yield* Effect.forkChild(worker.runScoped());
+```
+
+</TabItem>
+</Tabs>
+
 ## Running the Demos
 
 ### Demo 1: Task Chaining
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let chain_id = format!("chain-{}", Uuid::new_v4());
@@ -154,7 +315,34 @@ scheduler
 // -> sends email -> schedules cleanup -> cleanup runs -> schedules report -> report runs
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+await scheduler.start(f"chain-1-{uuid4()}", "send-welcome-email", welcome_data)
+await scheduler.wait_completion(chain_1_id)
+await scheduler.start(f"chain-2-{uuid4()}", "onboarding-cleanup", {"user_id": "user-42"})
+await scheduler.wait_completion(chain_2_id)
+await scheduler.start(f"chain-3-{uuid4()}", "generate-report", {"user_id": "user-42"})
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* scheduler.start(`chain-1-${randomUUID()}`, "send-welcome-email", WelcomeEmailInput, {
+  userId: "user-42",
+  email: "alice@example.com",
+});
+```
+
+</TabItem>
+</Tabs>
+
 ### Demo 2: Schedule for Future
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let future_time = Utc::now() + chrono::Duration::seconds(3);
@@ -170,7 +358,41 @@ scheduler
     .await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+# In Python, schedule delayed execution using zart.sleep / zart.sleep_until inside @zart.durable:
+@zart.durable("scheduled-greeting")
+async def scheduled_greeting(data: dict) -> str:
+    await zart.sleep("delay", "3s")
+    print(f"  [scheduled-greeting] Hello, {data['name']}!")
+    return f"Hello, {data['name']}!"
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// In @zart/effect, schedule delayed execution using Zart.sleep / Zart.sleepUntil inside Zart.durable:
+const scheduledGreeting = Zart.durable(
+  "scheduled-greeting",
+  (data: { name: string }) =>
+    Effect.gen(function* () {
+      yield* Zart.sleep("delay", "3 seconds");
+      console.log(`  [scheduled-greeting] Hello, ${data.name}!`);
+      return `Hello, ${data.name}!`;
+    }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### Demo 3: Parallel Independent Tasks
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 for i in 0..3 {
@@ -180,6 +402,30 @@ for i in 0..3 {
 }
 // All 3 run concurrently (up to max_concurrent_tasks)
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for i in range(3):
+    await scheduler.start(f"parallel-{i}", "scheduled-greeting", {"name": f"User-parallel-{i}"})
+# All 3 run concurrently (up to max_concurrent_tasks)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+for (let i = 0; i < 3; i++) {
+  yield* scheduler.start(`parallel-${i}`, "scheduled-greeting", GreetingInput, {
+    name: `User-parallel-${i}`,
+  });
+}
+// All 3 run concurrently (up to maxConcurrentTasks)
+```
+
+</TabItem>
+</Tabs>
 
 ## Running the Example
 

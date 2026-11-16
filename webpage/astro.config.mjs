@@ -58,6 +58,29 @@ export default defineConfig({
           ],
         },
 
+        // ── SDKs ───────────────────────────────────────────────
+        {
+          label: "SDKs",
+          items: [
+            {
+              label: "Python",
+              items: [
+                { label: "Overview & Quickstart", link: "/docs/python" },
+                { label: "Transactions", link: "/docs/python/transactions" },
+                { label: "Examples", link: "/docs/python/examples" },
+              ],
+            },
+            {
+              label: "TypeScript (Effect v4)",
+              items: [
+                { label: "Overview & Quickstart", link: "/docs/typescript" },
+                { label: "Transactions", link: "/docs/typescript/transactions" },
+                { label: "Examples", link: "/docs/typescript/examples" },
+              ],
+            },
+          ],
+        },
+
         // ── API Reference ──────────────────────────────────────
         {
           label: "API Reference",
@@ -100,16 +123,6 @@ export default defineConfig({
           items: [
             { label: "Options", link: "/docs/deployment/options" },
             { label: "Observability", link: "/docs/deployment/observability" },
-          ],
-        },
-
-        // ── Python Bindings ────────────────────────────────────
-        {
-          label: "Python Bindings",
-          items: [
-            { label: "Overview & Quickstart", link: "/docs/python" },
-            { label: "Transactions", link: "/docs/python/transactions" },
-            { label: "Examples", link: "/docs/python/examples" },
           ],
         },
 
