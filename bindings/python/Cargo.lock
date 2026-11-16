@@ -1966,9 +1966,12 @@ dependencies = [
 name = "zart-py"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "pyo3",
  "pyo3-async-runtimes",
  "pythonize",
+ "serde",
  "serde_json",
  "sqlx",
  "tokio",

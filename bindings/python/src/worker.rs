@@ -1,16 +1,18 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::backend::PyPgBackend;
 use crate::duration_from_secs;
+use crate::durable::PyDurableTask;
 
 /// Builder for configuring and constructing a Zart `Worker`.
 #[pyclass(name = "WorkerBuilder")]
 pub struct PyWorkerBuilder {
     backend: Arc<zart::PgBackend>,
     config: Mutex<zart::WorkerConfig>,
+    durable_tasks: Mutex<Vec<PyDurableTask>>,
 }
 
 #[pymethods]
@@ -21,7 +23,22 @@ impl PyWorkerBuilder {
         Self {
             backend: backend.inner.clone(),
             config: Mutex::new(zart::WorkerConfig::default()),
+            durable_tasks: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register a `DurableTask` handler on this worker.
+    fn register_durable<'py>(
+        slf: PyRef<'py, Self>,
+        task: PyDurableTask,
+    ) -> PyResult<PyRef<'py, Self>> {
+        let mut tasks = slf
+            .durable_tasks
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder tasks lock poisoned"))?;
+        tasks.push(task);
+        drop(tasks);
+        Ok(slf)
     }
 
     /// Set the fallback polling interval in seconds.
@@ -128,11 +145,24 @@ impl PyWorkerBuilder {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?
             .clone();
-        let worker = zart::WorkerBuilder::from_backend(&*self.backend)
-            .config(cfg)
-            .build();
+        let tasks = self
+            .durable_tasks
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder tasks lock poisoned"))?
+            .clone();
+
+        let mut builder = zart::WorkerBuilder::from_backend(&*self.backend).config(cfg);
+        let mut task_locals = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            task_locals.push(task.locals.clone());
+            let name = task.name.clone();
+            builder = builder.register_durable_task(&name, task);
+        }
+
+        let worker = builder.build();
         Ok(PyWorker {
             inner: Arc::new(worker),
+            task_locals,
         })
     }
 }
@@ -141,12 +171,18 @@ impl PyWorkerBuilder {
 #[pyclass(name = "Worker", frozen)]
 pub struct PyWorker {
     inner: Arc<zart::Worker>,
+    task_locals: Vec<Arc<OnceLock<pyo3_async_runtimes::TaskLocals>>>,
 }
 
 #[pymethods]
 impl PyWorker {
     /// Start the worker polling loop until `stop()` is called.
     fn run<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        if let Ok(locals) = pyo3_async_runtimes::tokio::get_current_locals(py) {
+            for slot in &self.task_locals {
+                let _ = slot.set(locals.clone());
+            }
+        }
         let worker = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             worker.run().await;
