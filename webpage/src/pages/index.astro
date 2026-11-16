@@ -538,6 +538,54 @@ import { ZART_VERSION } from "../lib/version";
       border-radius: 2px;
     }
 
+    .hero-lang-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+      background: oklch(11% 0.012 275);
+    }
+
+    .hero-lang-btn {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 0.14rem 0.48rem;
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .hero-lang-btn:hover {
+      color: var(--text);
+    }
+
+    .hero-lang-btn.active {
+      background: var(--emerald-dim);
+      color: var(--emerald);
+    }
+
+    .tab-panel-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 0.65rem 1.25rem;
+      border-top: 1px solid var(--border);
+      background: oklch(11% 0.012 275);
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+    }
+
+    .tab-panel-footer a {
+      color: var(--emerald);
+      text-decoration: none;
+    }
+
+    .tab-panel-footer a:hover {
+      text-decoration: underline;
+    }
+
     .hero-code-stack {
       display: grid;
       min-width: 0;
@@ -1702,14 +1750,18 @@ import { ZART_VERSION } from "../lib/version";
         <div class="console-header">
           <span class="console-file" id="hero-filename">brewery_finder.rs</span>
           <div class="console-meta">
-            <span>tokio · sqlx</span>
+            <span id="hero-runtime">tokio · sqlx</span>
+            <div class="hero-lang-toggle" role="tablist" aria-label="Hero code language">
+              <button class="hero-lang-btn active" type="button" role="tab" aria-selected="true" data-hero-lang="rust">Rust</button>
+              <button class="hero-lang-btn" type="button" role="tab" aria-selected="false" data-hero-lang="python">Python</button>
+            </div>
             <span class="console-badge">PgBackend</span>
           </div>
         </div>
 
         <div class="hero-code-stack">
-          <!-- Agents -->
-          <div class="hero-code-variant active" data-variant="agents">
+          <!-- Agents (Rust) -->
+          <div class="hero-code-variant active" data-variant="agents" data-lang="rust">
             <pre><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
@@ -1731,8 +1783,28 @@ import { ZART_VERSION } from "../lib/version";
 &#125;</code></pre>
           </div>
 
-          <!-- Payments -->
-          <div class="hero-code-variant" data-variant="payments">
+          <!-- Agents (Python) -->
+          <div class="hero-code-variant" data-variant="agents" data-lang="python">
+            <pre><code><span class="kw">import</span> zart
+<span class="kw">from</span> zart <span class="kw">import</span> <span class="ty">Retry</span>
+
+<span class="attr">@zart.step("extract", retry=Retry.exponential(3, "2s"))</span>
+<span class="kw">async def</span> <span class="fn">extract_city</span>(query: <span class="ty">str</span>) -&gt; <span class="ty">City</span>:
+    <span class="kw">return await</span> llm.extract(<span class="ty">City</span>, query)
+
+<span class="attr">@zart.step("fetch", retry=Retry.exponential(3, "1s"))</span>
+<span class="kw">async def</span> <span class="fn">fetch_breweries</span>(city: <span class="ty">str</span>) -&gt; <span class="ty">list</span>[<span class="ty">Brewery</span>]:
+    <span class="kw">return await</span> http.get_json(api_url(city))
+
+<span class="attr">@zart.durable("ai-brewery-finder", timeout="10m")</span>
+<span class="kw">async def</span> <span class="fn">brewery_finder</span>(query: <span class="ty">str</span>) -&gt; <span class="ty">Report</span>:
+    city = <span class="kw">await</span> <span class="fn">extract_city</span>(query)
+    data = <span class="kw">await</span> <span class="fn">fetch_breweries</span>(city.name)
+    <span class="kw">return</span> <span class="ty">Report</span>.<span class="fn">summarize</span>(data)</code></pre>
+          </div>
+
+          <!-- Payments (Rust) -->
+          <div class="hero-code-variant" data-variant="payments" data-lang="rust">
             <pre><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
@@ -1755,8 +1827,27 @@ import { ZART_VERSION } from "../lib/version";
 &#125;</code></pre>
           </div>
 
-          <!-- Onboarding -->
-          <div class="hero-code-variant" data-variant="onboarding">
+          <!-- Payments (Python) -->
+          <div class="hero-code-variant" data-variant="payments" data-lang="python">
+            <pre><code><span class="kw">import</span> zart
+
+<span class="attr">@zart.step("deduct")</span>
+<span class="kw">async def</span> <span class="fn">deduct_balance</span>(order: <span class="ty">Order</span>, tx: zart.<span class="ty">Trx</span> = zart.<span class="fn">trx</span>()) -&gt; <span class="ty">int</span>:
+    row = <span class="kw">await</span> tx.<span class="fn">fetch_one</span>(
+        <span class="str">"UPDATE accounts SET balance = balance - $1 WHERE id = $2 RETURNING balance"</span>,
+        order.total, order.account_id,
+    )
+    <span class="kw">return</span> row[<span class="str">"balance"</span>]
+
+<span class="attr">@zart.durable("checkout", timeout="10m")</span>
+<span class="kw">async def</span> <span class="fn">checkout</span>(order: <span class="ty">Order</span>) -&gt; <span class="ty">Receipt</span>:
+    balance = <span class="kw">await</span> <span class="fn">deduct_balance</span>(order)
+    shipped = <span class="kw">await</span> zart.<span class="fn">wait_for_event</span>(<span class="str">"shipped"</span>, timeout=<span class="str">"24h"</span>)
+    <span class="kw">return</span> <span class="ty">Receipt</span>(balance=balance, tracking=shipped[<span class="str">"tracking"</span>])</code></pre>
+          </div>
+
+          <!-- Onboarding (Rust) -->
+          <div class="hero-code-variant" data-variant="onboarding" data-lang="rust">
             <pre><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
@@ -1778,6 +1869,27 @@ import { ZART_VERSION } from "../lib/version";
     <span class="fn">provision</span>(&amp;user).<span class="kw">await</span>?;
     <span class="ty">Ok</span>(<span class="ty">Welcome</span>::<span class="fn">for_user</span>(&amp;user))
 &#125;</code></pre>
+          </div>
+
+          <!-- Onboarding (Python) -->
+          <div class="hero-code-variant" data-variant="onboarding" data-lang="python">
+            <pre><code><span class="kw">import</span> zart
+<span class="kw">from</span> zart <span class="kw">import</span> <span class="ty">Retry</span>
+
+<span class="attr">@zart.step("welcome")</span>
+<span class="kw">async def</span> <span class="fn">send_welcome</span>(email: <span class="ty">str</span>) -&gt; <span class="ty">None</span>:
+    <span class="kw">await</span> mailer.send(email, <span class="str">"Welcome!"</span>)
+
+<span class="attr">@zart.step("billing", retry=Retry.exponential(3, "2s"))</span>
+<span class="kw">async def</span> <span class="fn">setup_billing</span>(user: <span class="ty">NewUser</span>) -&gt; <span class="ty">str</span>:
+    <span class="kw">return await</span> stripe.create_customer(user)
+
+<span class="attr">@zart.durable("onboarding", timeout="30m")</span>
+<span class="kw">async def</span> <span class="fn">onboard</span>(user: <span class="ty">NewUser</span>) -&gt; <span class="ty">Welcome</span>:
+    <span class="kw">await</span> <span class="fn">send_welcome</span>(user.email)
+    <span class="kw">await</span> <span class="fn">setup_billing</span>(user)
+    <span class="kw">await</span> zart.<span class="fn">wait_for_event</span>(<span class="str">"email-confirmed"</span>, timeout=<span class="str">"48h"</span>)
+    <span class="kw">return</span> <span class="ty">Welcome</span>.<span class="fn">for_user</span>(user)</code></pre>
           </div>
         </div>
 
@@ -2062,9 +2174,9 @@ import { ZART_VERSION } from "../lib/version";
   <div class="container">
     <div class="section-header">
       <span class="section-label">Ergonomics</span>
-      <h2 class="section-title">Two APIs. Same durability.</h2>
+      <h2 class="section-title">Three APIs. Same durability.</h2>
       <p class="section-sub">
-        Start with ergonomic attribute macros that read like plain async Rust, or drop down to explicit traits when you want manual struct dependency injection.
+        Start with ergonomic Rust attribute macros, drop down to explicit traits for manual dependency injection, or write workflows in Python with native async/await and atomic Postgres transactions.
       </p>
     </div>
 
@@ -2073,8 +2185,9 @@ import { ZART_VERSION } from "../lib/version";
         <ul class="tab-list" role="tablist">
           <li><button class="tab-btn active" role="tab" aria-selected="true" data-tab="macros">#[zart_durable] Macros</button></li>
           <li><button class="tab-btn" role="tab" aria-selected="false" data-tab="task-handler">DurableExecution Trait</button></li>
+          <li><button class="tab-btn" role="tab" aria-selected="false" data-tab="python">Python Bindings</button></li>
         </ul>
-        <span class="tab-hint">onboarding.rs</span>
+        <span class="tab-hint" id="code-tab-hint">onboarding.rs</span>
       </div>
 
       <!-- Macros tab -->
@@ -2145,6 +2258,36 @@ import { ZART_VERSION } from "../lib/version";
         <span class="ty">Ok</span>(())
     &#125;
 &#125;</code></pre>
+      </div>
+
+      <!-- Python Bindings tab -->
+      <div class="tab-panel" id="tab-python">
+        <pre><code><span class="kw">import</span> zart
+<span class="kw">from</span> zart <span class="kw">import</span> <span class="ty">Retry</span>
+
+<span class="cmt"># Define each step with retries and optional atomic Postgres transaction</span>
+<span class="attr">@zart.step("send-welcome", retry=Retry.exponential(3, "2s"))</span>
+<span class="kw">async def</span> <span class="fn">send_welcome</span>(email: <span class="ty">str</span>) -&gt; <span class="ty">None</span>:
+    <span class="kw">await</span> send_email(email)
+
+<span class="attr">@zart.step("credit-account")</span>
+<span class="kw">async def</span> <span class="fn">credit_account</span>(user_id: <span class="ty">str</span>, tx: zart.<span class="ty">Trx</span> = zart.<span class="fn">trx</span>()) -&gt; <span class="ty">int</span>:
+    row = <span class="kw">await</span> tx.<span class="fn">fetch_one</span>(
+        <span class="str">"UPDATE accounts SET balance = balance + 100 WHERE id = $1 RETURNING balance"</span>,
+        user_id,
+    )
+    <span class="kw">return</span> row[<span class="str">"balance"</span>]
+
+<span class="cmt"># Compose steps — direct await, dataclasses/Pydantic serde, powered by Rust</span>
+<span class="attr">@zart.durable("onboarding", timeout="30m")</span>
+<span class="kw">async def</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -&gt; <span class="ty">int</span>:
+    <span class="kw">await</span> <span class="fn">send_welcome</span>(data.email)
+    balance = <span class="kw">await</span> <span class="fn">credit_account</span>(data.user_id)
+    <span class="kw">await</span> zart.<span class="fn">wait_for_event</span>(<span class="str">"email-verified"</span>, timeout=<span class="str">"48h"</span>)
+    <span class="kw">return</span> balance</code></pre>
+        <div class="tab-panel-footer">
+          <a href="/docs/python/">Explore Python Bindings docs &rarr;</a>
+        </div>
       </div>
     </div>
   </div>
@@ -2308,6 +2451,13 @@ import { ZART_VERSION } from "../lib/version";
   });
 
   // ── Code section tabs ────────────────────────────────────
+  const TAB_HINTS = {
+    macros: 'onboarding.rs',
+    'task-handler': 'onboarding.rs',
+    python: 'onboarding.py',
+  };
+  const tabHintEl = document.getElementById('code-tab-hint');
+
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const tabId = btn.getAttribute('data-tab');
@@ -2320,20 +2470,56 @@ import { ZART_VERSION } from "../lib/version";
       btn.classList.add('active');
       btn.setAttribute('aria-selected', 'true');
       document.getElementById('tab-' + tabId)?.classList.add('active');
+      if (tabHintEl && TAB_HINTS[tabId]) {
+        tabHintEl.textContent = TAB_HINTS[tabId];
+      }
     });
   });
 
   // ── Interactive Hero Domain Switcher + Auto-rotation ─────
   const DOMAINS = [
-    { id: 'agents',     word: 'Agents',      file: 'brewery_finder.rs' },
-    { id: 'payments',   word: 'Payments',    file: 'checkout_flow.rs' },
-    { id: 'onboarding', word: 'Onboardings', file: 'onboarding.rs' },
+    { id: 'agents',     word: 'Agents',      file: 'brewery_finder.rs', pyFile: 'brewery_finder.py' },
+    { id: 'payments',   word: 'Payments',    file: 'checkout_flow.rs',  pyFile: 'checkout_flow.py' },
+    { id: 'onboarding', word: 'Onboardings', file: 'onboarding.rs',     pyFile: 'onboarding.py' },
   ];
 
   let currentIdx = 0;
+  let currentLang = 'rust';
   let autoTimer = null;
   const wordEl = document.getElementById('hero-word');
   const fileEl = document.getElementById('hero-filename');
+  const runtimeEl = document.getElementById('hero-runtime');
+
+  function syncHeroCode() {
+    const next = DOMAINS[currentIdx];
+    if (!next) return;
+    document.querySelectorAll('.hero-code-variant').forEach(el => {
+      const match =
+        el.getAttribute('data-variant') === next.id &&
+        el.getAttribute('data-lang') === currentLang;
+      el.classList.toggle('active', match);
+    });
+    if (fileEl) {
+      fileEl.textContent = currentLang === 'python' ? next.pyFile : next.file;
+    }
+    if (runtimeEl) {
+      runtimeEl.textContent = currentLang === 'python' ? 'asyncio · pyo3' : 'tokio · sqlx';
+    }
+  }
+
+  document.querySelectorAll('.hero-lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const lang = btn.getAttribute('data-hero-lang');
+      if (!lang || lang === currentLang) return;
+      currentLang = lang;
+      document.querySelectorAll('.hero-lang-btn').forEach(b => {
+        const isMatch = b.getAttribute('data-hero-lang') === lang;
+        b.classList.toggle('active', isMatch);
+        b.setAttribute('aria-selected', String(isMatch));
+      });
+      syncHeroCode();
+    });
+  });
 
   function setDomain(idx, animateWord = true) {
     const next = DOMAINS[idx];
@@ -2346,11 +2532,11 @@ import { ZART_VERSION } from "../lib/version";
       btn.setAttribute('aria-selected', String(isMatch));
     });
 
-    document.querySelectorAll('.hero-sub-variant, .hero-code-variant, .trace-variant').forEach(el => {
+    document.querySelectorAll('.hero-sub-variant, .trace-variant').forEach(el => {
       el.classList.toggle('active', el.getAttribute('data-variant') === next.id);
     });
 
-    if (fileEl) fileEl.textContent = next.file;
+    syncHeroCode();
 
     if (!wordEl) return;
     if (!animateWord) {

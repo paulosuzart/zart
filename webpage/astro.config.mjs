@@ -103,6 +103,16 @@ export default defineConfig({
           ],
         },
 
+        // ── Python Bindings ────────────────────────────────────
+        {
+          label: "Python Bindings",
+          items: [
+            { label: "Overview & Quickstart", link: "/docs/python" },
+            { label: "Transactions", link: "/docs/python/transactions" },
+            { label: "Examples", link: "/docs/python/examples" },
+          ],
+        },
+
         // ── Coming Soon sections hidden for now ──
         // Content preserved in: /java-sdk/, /http-api/
       ],
