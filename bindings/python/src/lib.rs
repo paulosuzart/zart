@@ -11,12 +11,14 @@ mod errors;
 mod scheduler;
 mod serde_bridge;
 mod step;
+mod trx;
 mod worker;
 
 use backend::PyPgBackend;
 use durable::{PyDurableTask, PyExecutionFailure};
 use scheduler::{PyDurableScheduler, PyExecutionRecord, PyScheduleResult};
 use step::{PyRetryPolicy, PyStep};
+use trx::{PyClientTrx, PyTrx};
 use worker::{PyWorker, PyWorkerBuilder};
 
 /// Convert a non-negative finite number of seconds into a `Duration`.
@@ -56,6 +58,8 @@ fn _zart(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStep>()?;
     m.add_class::<PyDurableTask>()?;
     m.add_class::<PyExecutionFailure>()?;
+    m.add_class::<PyTrx>()?;
+    m.add_class::<PyClientTrx>()?;
     m.add_function(wrap_pyfunction!(serde_bridge::_roundtrip_json, m)?)?;
     Ok(())
 }

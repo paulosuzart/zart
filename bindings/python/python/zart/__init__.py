@@ -1,6 +1,7 @@
 """Python bindings for the Zart durable execution framework."""
 
 from zart._zart import (
+    ClientTrx,
     DurableScheduler,
     DurableTask,
     ExecutionFailure,
@@ -12,6 +13,7 @@ from zart._zart import (
     StepHandle,
     StepOutcome,
     StepSpec,
+    Trx,
     Worker,
     WorkerBuilder,
     ZartControlFlowSignal,
@@ -42,8 +44,10 @@ from zart.decorators import (
     wait_for_event,
 )
 from zart.serde import from_json_value, to_json_value
+from zart.trx import trx
 
 __all__ = [
+    "ClientTrx",
     "DurableScheduler",
     "DurableTask",
     "DurationLike",
@@ -58,6 +62,7 @@ __all__ = [
     "StepInvocation",
     "StepOutcome",
     "StepSpec",
+    "Trx",
     "TypedStepOutcome",
     "Worker",
     "WorkerBuilder",
@@ -81,6 +86,7 @@ __all__ = [
     "step_or",
     "step_or_else",
     "to_json_value",
+    "trx",
     "wait",
     "wait_for_event",
 ]

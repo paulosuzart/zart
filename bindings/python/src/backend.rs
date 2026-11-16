@@ -4,6 +4,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use sqlx::PgPool;
 
+use crate::trx::PyClientTrx;
+
 /// PostgreSQL-backed storage and scheduler entry point for Zart.
 #[pyclass(name = "PgBackend", frozen)]
 #[derive(Clone)]
@@ -69,6 +71,18 @@ impl PyPgBackend {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             backend.pool().close().await;
             Ok(())
+        })
+    }
+
+    /// Begin a caller-owned PostgreSQL transaction for atomic `start_in_tx` calls.
+    fn begin<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pool = self.inner.pool().clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let tx = pool
+                .begin()
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to begin transaction: {e}")))?;
+            Ok(PyClientTrx::new(tx))
         })
     }
 }

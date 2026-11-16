@@ -15,15 +15,26 @@ use crate::serde_bridge::{json_to_py, py_to_json};
 use crate::step::PyStep;
 
 static DISPATCHER_VAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+static TRX_PROVIDER_VAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 static ENTRY_HELPER: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+fn create_context_var(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    let cv_mod = py.import("contextvars")?;
+    let kwargs = pyo3::types::PyDict::new(py);
+    kwargs.set_item("default", py.None())?;
+    let var = cv_mod.call_method("ContextVar", (name,), Some(&kwargs))?;
+    Ok(var.unbind())
+}
 
 fn get_dispatcher_var(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     DISPATCHER_VAR
-        .get_or_try_init(py, || -> PyResult<Py<PyAny>> {
-            let cv_mod = py.import("contextvars")?;
-            let var = cv_mod.call_method1("ContextVar", ("_zart_dispatcher", py.None()))?;
-            Ok(var.unbind())
-        })
+        .get_or_try_init(py, || create_context_var(py, "_zart_dispatcher"))
+        .map(|obj| obj.bind(py))
+}
+
+fn get_trx_provider_var(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    TRX_PROVIDER_VAR
+        .get_or_try_init(py, || create_context_var(py, "_zart_trx_provider"))
         .map(|obj| obj.bind(py))
 }
 
@@ -31,7 +42,7 @@ fn get_entry_helper(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     ENTRY_HELPER
         .get_or_try_init(py, || -> PyResult<Py<PyAny>> {
             let globals = pyo3::types::PyDict::new(py);
-            let code = c"async def _zart_entry(cv, disp, fn, has_arg, arg):\n    token = cv.set(disp)\n    try:\n        if has_arg:\n            return await fn(arg)\n        return await fn()\n    finally:\n        cv.reset(token)\n";
+            let code = c"async def _zart_entry(cv, disp, fn, has_arg, arg, pvar, prov):\n    token = cv.set(disp)\n    ptoken = pvar.set(prov) if prov is not None else None\n    try:\n        if has_arg:\n            return await fn(arg)\n        return await fn()\n    finally:\n        if ptoken is not None:\n            pvar.reset(ptoken)\n        cv.reset(token)\n";
             py.run(code, Some(&globals), None)?;
             let helper = globals
                 .get_item("_zart_entry")?
@@ -47,13 +58,19 @@ pub(crate) fn invoke_with_dispatcher<'py>(
     disp: PyDispatcher,
     callable: &Bound<'py, PyAny>,
     arg: Option<Bound<'py, PyAny>>,
+    trx_provider: Option<&Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cv = get_dispatcher_var(py)?;
+    let pvar = get_trx_provider_var(py)?;
     let helper = get_entry_helper(py)?;
     let disp_py = Py::new(py, disp)?;
+    let prov_py = match trx_provider {
+        Some(p) => p.bind(py).clone(),
+        None => py.None().into_bound(py),
+    };
     match arg {
-        Some(a) => helper.call1((cv, disp_py, callable, true, a)),
-        None => helper.call1((cv, disp_py, callable, false, py.None())),
+        Some(a) => helper.call1((cv, disp_py, callable, true, a, pvar, prov_py)),
+        None => helper.call1((cv, disp_py, callable, false, py.None(), pvar, prov_py)),
     }
 }
 
@@ -313,6 +330,8 @@ pub(crate) struct PyDispatcher {
     tx: Option<mpsc::UnboundedSender<ZartCommand>>,
     info: PyExecutionInfo,
     locals: Arc<OnceLock<pyo3_async_runtimes::TaskLocals>>,
+    pool: Option<sqlx::PgPool>,
+    trx_provider: Option<Arc<Py<PyAny>>>,
 }
 
 impl PyDispatcher {
@@ -320,11 +339,15 @@ impl PyDispatcher {
         tx: mpsc::UnboundedSender<ZartCommand>,
         info: PyExecutionInfo,
         locals: Arc<OnceLock<pyo3_async_runtimes::TaskLocals>>,
+        pool: Option<sqlx::PgPool>,
+        trx_provider: Option<Arc<Py<PyAny>>>,
     ) -> Self {
         Self {
             tx: Some(tx),
             info,
             locals,
+            pool,
+            trx_provider,
         }
     }
 
@@ -333,6 +356,8 @@ impl PyDispatcher {
             tx: None,
             info,
             locals: Arc::new(OnceLock::new()),
+            pool: None,
+            trx_provider: None,
         }
     }
 
@@ -348,6 +373,12 @@ impl PyDispatcher {
     fn attach_locals(&self, step: &PyStep) {
         if let Some(l) = self.locals.get() {
             let _ = step.locals.set(l.clone());
+        }
+        if let Some(ref p) = self.pool {
+            let _ = step.pool.set(p.clone());
+        }
+        if let Some(ref prov) = self.trx_provider {
+            let _ = step.trx_provider.set(prov.clone());
         }
     }
 }
@@ -724,6 +755,14 @@ fn context(py: Python<'_>) -> PyResult<PyExecutionInfo> {
     Ok(info)
 }
 
+/// Return the worker-level default transaction provider (if configured via `WorkerBuilder.trx_provider`).
+#[pyfunction]
+fn _get_worker_trx_provider(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let pvar = get_trx_provider_var(py)?;
+    let val = pvar.call_method0("get")?;
+    Ok(val.unbind())
+}
+
 /// Register Phase 2 API classes and functions on `_zart`.
 pub fn register_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExecutionInfo>()?;
@@ -741,5 +780,6 @@ pub fn register_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(capture, m)?)?;
     m.add_function(wrap_pyfunction!(now, m)?)?;
     m.add_function(wrap_pyfunction!(context, m)?)?;
+    m.add_function(wrap_pyfunction!(_get_worker_trx_provider, m)?)?;
     Ok(())
 }

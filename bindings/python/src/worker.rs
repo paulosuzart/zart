@@ -13,6 +13,7 @@ pub struct PyWorkerBuilder {
     backend: Arc<zart::PgBackend>,
     config: Mutex<zart::WorkerConfig>,
     durable_tasks: Mutex<Vec<PyDurableTask>>,
+    trx_provider: Mutex<Option<Arc<Py<PyAny>>>>,
 }
 
 #[pymethods]
@@ -24,7 +25,22 @@ impl PyWorkerBuilder {
             backend: backend.inner.clone(),
             config: Mutex::new(zart::WorkerConfig::default()),
             durable_tasks: Mutex::new(Vec::new()),
+            trx_provider: Mutex::new(None),
         }
+    }
+
+    /// Register a worker-wide default transaction/session provider for `zart.trx()`.
+    fn trx_provider<'py>(
+        slf: PyRef<'py, Self>,
+        provider: Py<PyAny>,
+    ) -> PyResult<PyRef<'py, Self>> {
+        let mut guard = slf
+            .trx_provider
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder trx_provider lock poisoned"))?;
+        *guard = Some(Arc::new(provider));
+        drop(guard);
+        Ok(slf)
     }
 
     /// Register a `DurableTask` handler on this worker.
@@ -150,10 +166,20 @@ impl PyWorkerBuilder {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("WorkerBuilder tasks lock poisoned"))?
             .clone();
+        let trx_provider = self
+            .trx_provider
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder trx_provider lock poisoned"))?
+            .clone();
 
+        let pool = self.backend.pool().clone();
         let mut builder = zart::WorkerBuilder::from_backend(&*self.backend).config(cfg);
         let mut task_locals = Vec::with_capacity(tasks.len());
         for task in tasks {
+            let _ = task.pool.set(pool.clone());
+            if let Some(ref prov) = trx_provider {
+                let _ = task.trx_provider.set(prov.clone());
+            }
             task_locals.push(task.locals.clone());
             let name = task.name.clone();
             builder = builder.register_durable_task(&name, task);

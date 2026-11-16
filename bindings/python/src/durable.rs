@@ -80,6 +80,8 @@ pub struct PyDurableTask {
     pub max_retries: usize,
     pub(crate) on_failure: Option<Arc<Py<PyAny>>>,
     pub(crate) locals: Arc<OnceLock<pyo3_async_runtimes::TaskLocals>>,
+    pub(crate) pool: Arc<OnceLock<sqlx::PgPool>>,
+    pub(crate) trx_provider: Arc<OnceLock<Arc<Py<PyAny>>>>,
 }
 
 #[pymethods]
@@ -108,6 +110,8 @@ impl PyDurableTask {
             max_retries,
             on_failure: on_failure.map(Arc::new),
             locals,
+            pool: Arc::new(OnceLock::new()),
+            trx_provider: Arc::new(OnceLock::new()),
         })
     }
 
@@ -173,12 +177,21 @@ impl zart::DurableExecution for PyDurableTask {
         let locals_lock = self.locals.clone();
         let handler = self.handler.clone();
 
-        let dispatcher = PyDispatcher::for_body(tx, info, locals_lock.clone());
+        let pool = self.pool.get().cloned();
+        let trx_provider = self.trx_provider.get().cloned();
+        let prov_for_entry = trx_provider.clone();
+        let dispatcher = PyDispatcher::for_body(tx, info, locals_lock.clone(), pool, trx_provider);
 
         let fut = Python::attach(|py| -> PyResult<_> {
             let locals = resolve_task_locals(py, &locals_lock)?;
             let py_data = json_to_py(py, &data)?;
-            let coro = invoke_with_dispatcher(py, dispatcher, handler.bind(py), Some(py_data))?;
+            let coro = invoke_with_dispatcher(
+                py,
+                dispatcher,
+                handler.bind(py),
+                Some(py_data),
+                prov_for_entry.as_deref(),
+            )?;
             pyo3_async_runtimes::into_future_with_locals(&locals, coro)
         })
         .map_err(|e| Python::attach(|py| unwrap_py_task_err(py, e, &cf_slot)))?;

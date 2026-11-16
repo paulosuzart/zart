@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 use crate::backend::PyPgBackend;
 use crate::duration_from_secs;
 use crate::serde_bridge::{json_to_py, py_to_json};
+use crate::trx::PyClientTrx;
 
 fn scheduler_err_to_py(err: zart::SchedulerError) -> PyErr {
     match err {
@@ -202,6 +203,34 @@ impl PyDurableScheduler {
                 .offer_event(&execution_id, &event_name, payload_json)
                 .await
                 .map_err(scheduler_err_to_py)
+        })
+    }
+
+    /// Start a new durable execution inside a caller-owned `ClientTrx` transaction.
+    fn start_in_tx<'py>(
+        &self,
+        py: Python<'py>,
+        tx: &PyClientTrx,
+        execution_id: String,
+        task_name: String,
+        payload: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let payload_json = py_to_json(payload)?;
+        let sched = self.inner.clone();
+        let tx_inner = tx.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = tx_inner.lock().await;
+            let pg_tx = guard
+                .as_mut()
+                .ok_or_else(|| PyRuntimeError::new_err("Transaction is already closed"))?;
+            let res = sched
+                .start_in_tx(pg_tx, &execution_id, &task_name, payload_json)
+                .await
+                .map_err(scheduler_err_to_py)?;
+            Ok(PyScheduleResult {
+                task_id: res.task_id,
+                execution_time: res.execution_time.to_rfc3339(),
+            })
         })
     }
 }

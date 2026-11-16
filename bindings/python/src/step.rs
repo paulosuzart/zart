@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use crate::api::{PyDispatcher, PyExecutionInfo, invoke_with_dispatcher};
 use crate::errors::PyStepError;
 use crate::serde_bridge::py_to_json;
+use crate::trx::PyTrx;
 use crate::{duration_from_secs, resolve_task_locals};
 
 /// Retry policy configuration for steps and durable tasks.
@@ -137,13 +138,16 @@ pub struct PyStep {
     pub(crate) retry: Option<zart::RetryConfig>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) timeout_scope: zart::TimeoutScope,
+    pub(crate) inject_trx: bool,
     pub(crate) locals: Arc<OnceLock<pyo3_async_runtimes::TaskLocals>>,
+    pub(crate) pool: Arc<OnceLock<sqlx::PgPool>>,
+    pub(crate) trx_provider: Arc<OnceLock<Arc<Py<PyAny>>>>,
 }
 
 #[pymethods]
 impl PyStep {
     #[new]
-    #[pyo3(signature = (name, callable, retry = None, timeout_secs = None, timeout_scope = None))]
+    #[pyo3(signature = (name, callable, retry = None, timeout_secs = None, timeout_scope = None, inject_trx = false))]
     fn new(
         py: Python<'_>,
         name: String,
@@ -151,6 +155,7 @@ impl PyStep {
         retry: Option<PyRetryPolicy>,
         timeout_secs: Option<f64>,
         timeout_scope: Option<String>,
+        inject_trx: bool,
     ) -> PyResult<Self> {
         let timeout = timeout_secs
             .map(|s| duration_from_secs(s, "timeout_secs"))
@@ -166,7 +171,10 @@ impl PyStep {
             retry: retry.map(|r| r.inner),
             timeout,
             timeout_scope: scope,
+            inject_trx,
             locals,
+            pool: Arc::new(OnceLock::new()),
+            trx_provider: Arc::new(OnceLock::new()),
         })
     }
 
@@ -178,7 +186,10 @@ impl PyStep {
             retry: self.retry.clone(),
             timeout: self.timeout,
             timeout_scope: self.timeout_scope,
+            inject_trx: self.inject_trx,
             locals: self.locals.clone(),
+            pool: self.pool.clone(),
+            trx_provider: self.trx_provider.clone(),
         }
     }
 
@@ -215,20 +226,64 @@ impl zart::ZartStep for PyStep {
     fn run(&self) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         let callable = self.callable.clone();
         let locals_lock = self.locals.clone();
+        let inject_trx = self.inject_trx;
+        let pool_lock = self.pool.clone();
+        let trx_provider_lock = self.trx_provider.clone();
         let info = PyExecutionInfo::from_rust(zart::context());
 
         async move {
+            let mut trx_arc = None;
+            let py_trx = if inject_trx {
+                let pool = pool_lock.get().ok_or_else(|| PyStepError {
+                    error_type: "RuntimeError".to_string(),
+                    message: "No PgPool available for zart.trx()".to_string(),
+                    data: None,
+                })?;
+                let zart_trx = zart::trx(pool).await.map_err(|e| PyStepError {
+                    error_type: "RuntimeError".to_string(),
+                    message: e.to_string(),
+                    data: None,
+                })?;
+                let wrapper = PyTrx::new(zart_trx);
+                trx_arc = Some(wrapper.inner.clone());
+                Some(wrapper)
+            } else {
+                None
+            };
+
             let dispatcher = PyDispatcher::for_step(info);
+            let prov_ref = trx_provider_lock.get().map(|a| a.as_ref());
             let fut = Python::attach(|py| -> PyResult<_> {
                 let locals = resolve_task_locals(py, &locals_lock)?;
-                let coro = invoke_with_dispatcher(py, dispatcher, callable.bind(py), None)?;
+                let arg = match py_trx {
+                    Some(t) => Some(Py::new(py, t)?.into_bound(py).into_any()),
+                    None => None,
+                };
+                let coro =
+                    invoke_with_dispatcher(py, dispatcher, callable.bind(py), arg, prov_ref)?;
                 pyo3_async_runtimes::into_future_with_locals(&locals, coro)
             })
-            .map_err(|e| Python::attach(|py| PyStepError::from_py_err(py, e)))?;
+            .map_err(|e| Python::attach(|py| PyStepError::from_py_err(py, e)));
 
-            let py_res = fut
-                .await
-                .map_err(|e| Python::attach(|py| PyStepError::from_py_err(py, e)))?;
+            let fut = match fut {
+                Ok(f) => f,
+                Err(e) => {
+                    if let Some(arc) = trx_arc {
+                        let _ = arc.lock().await.take();
+                    }
+                    return Err(e);
+                }
+            };
+
+            let py_res = fut.await;
+
+            // Deterministically drop ZartTrx before returning to Zart's ZartStepCompletion.
+            if let Some(arc) = trx_arc {
+                let _ = arc.lock().await.take();
+            }
+
+            let py_res =
+                py_res.map_err(|e| Python::attach(|py| PyStepError::from_py_err(py, e)))?;
 
             Python::attach(|py| py_to_json(py_res.bind(py)))
                 .map_err(|e| Python::attach(|py| PyStepError::from_py_err(py, e)))
