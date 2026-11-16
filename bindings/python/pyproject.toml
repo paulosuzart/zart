@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "zart"
+version = "0.3.0"
+description = "Python bindings for the Zart durable execution framework"
+requires-python = ">=3.15"
+dependencies = []
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pydantic>=2.0",
+    "maturin>=1.7,<2.0",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "zart._zart"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
