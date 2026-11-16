@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID, uuid4
@@ -95,10 +96,12 @@ async def test_step_decorator_and_named() -> None:
     uid = uuid4()
     inv = charge_card(OrderInput(order_id=uid, amount=49.99))
     assert isinstance(inv, StepInvocation)
+    assert isinstance(inv, Awaitable)
     assert inv.name == "charge-card"
     assert isinstance(inv.spec, StepSpec)
 
     renamed = inv.named("charge-card-0")
+    assert isinstance(renamed, Awaitable)
     assert renamed.name == "charge-card-0"
     assert inv.name == "charge-card"
 

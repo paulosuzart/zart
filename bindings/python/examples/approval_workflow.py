@@ -56,7 +56,7 @@ async def process_approved(resource: str, requester: str) -> str:
 
 @zart.durable("approval-task")
 async def approval_workflow(data: ApprovalRequest) -> ApprovalOutput:
-    await zart.require(validate_request(data))
+    await validate_request(data)
 
     decision: ApprovalDecision = await zart.wait_for_event(
         "manager-approval",
@@ -65,7 +65,7 @@ async def approval_workflow(data: ApprovalRequest) -> ApprovalOutput:
     )
 
     if decision.approved:
-        await zart.require(process_approved(data.resource, data.requester_name))
+        await process_approved(data.resource, data.requester_name)
 
     return ApprovalOutput(
         decision="approved" if decision.approved else "rejected",

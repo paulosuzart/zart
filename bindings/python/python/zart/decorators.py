@@ -6,9 +6,9 @@ import functools
 import inspect
 import math
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from datetime import datetime, timedelta, timezone
-from typing import Any, ParamSpec, TypeVar, get_type_hints, overload
+from typing import Any, Generic, ParamSpec, TypeVar, get_type_hints, overload
 
 from zart._zart import (
     DurableTask,
@@ -135,8 +135,8 @@ def _safe_type_hints(fn: Callable[..., Any]) -> dict[str, Any]:
         return {}
 
 
-class StepInvocation:
-    """Deferred step invocation created by calling a ``@step``-decorated function."""
+class StepInvocation(Generic[T]):
+    """Deferred, awaitable step invocation created by calling a ``@step``-decorated function."""
 
     def __init__(
         self,
@@ -156,9 +156,13 @@ class StepInvocation:
         """Return the underlying native :class:`StepSpec`."""
         return self._spec
 
-    def named(self, custom_id: str) -> StepInvocation:
+    def named(self, custom_id: str) -> StepInvocation[T]:
         """Return a copy of this invocation with an overridden tracking identity."""
         return StepInvocation(self._spec.named(custom_id), return_type=self.return_type)
+
+    def __await__(self) -> Generator[Any, None, T]:
+        """Allow ``await my_step(...)`` directly as shorthand for ``await require(my_step(...))``."""
+        return require(self).__await__()
 
     def __repr__(self) -> str:
         return f"StepInvocation(name={self.name!r})"

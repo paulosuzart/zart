@@ -54,8 +54,8 @@ async def mark_onboarded(user_id: UUID, tx: zart.Trx = zart.trx()) -> None:
 
 @zart.durable("onboard-user")
 async def onboard_user(data: OnboardInput) -> OnboardOutput:
-    balance = await zart.require(deduct_balance(data.user_id, 100))
-    await zart.require(mark_onboarded(data.user_id))
+    balance = await deduct_balance(data.user_id, 100)
+    await mark_onboarded(data.user_id)
     return OnboardOutput(user_id=data.user_id, email=data.email, balance=balance)
 
 

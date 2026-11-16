@@ -125,11 +125,11 @@ async def test_zart_managed_trx_commit_and_rollback(
 
     @zart.durable(task_ok)
     async def wf_ok(account: str) -> int:
-        return await zart.require(debit(100, account))
+        return await debit(100, account)
 
     @zart.durable(task_fail)
     async def wf_fail(account: str) -> int:
-        return await zart.require(debit_fail(250, account))
+        return await debit_fail(250, account)
 
     worker = (
         WorkerBuilder(backend)
@@ -216,11 +216,11 @@ async def test_user_managed_sqlalchemy_commit_and_rollback(
 
     @zart.durable(task_ok)
     async def wf_ok(account: str) -> int:
-        return await zart.require(sa_debit(150, account))
+        return await sa_debit(150, account)
 
     @zart.durable(task_fail)
     async def wf_fail(account: str) -> int:
-        return await zart.require(sa_debit_fail(300, account))
+        return await sa_debit_fail(300, account)
 
     worker = (
         WorkerBuilder(backend)

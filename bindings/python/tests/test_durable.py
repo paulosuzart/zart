@@ -38,8 +38,8 @@ async def test_deterministic_step_replay(
 
     @zart.durable(task_name)
     async def workflow(x: int) -> int:
-        a = await zart.require(step_one(x))
-        b = await zart.require(step_two(a))
+        a = await step_one(x)
+        b = await step_two(a)
         return b
 
     worker = WorkerBuilder(backend).poll_interval(0.05).register_durable(workflow).build()
@@ -69,7 +69,7 @@ async def test_loop_named_steps(
     async def workflow(n: int) -> list[int]:
         out: list[int] = []
         for i in range(n):
-            val = await zart.require(process_item(i).named(f"item-{i}"))
+            val = await process_item(i).named(f"item-{i}")
             out.append(val)
         return out
 
@@ -114,7 +114,7 @@ async def test_step_retries_fixed(
 
     @zart.durable(task_name)
     async def workflow(_data: None) -> str:
-        return await zart.require(flaky_step())
+        return await flaky_step()
 
     worker = WorkerBuilder(backend).poll_interval(0.05).register_durable(workflow).build()
     exec_id = _uid("exec-retry")
