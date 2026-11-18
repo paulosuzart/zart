@@ -185,6 +185,10 @@ Iterating over a collection is just a normal Rust `for` loop. The key requiremen
 
 ### Using `{index}` in the step name (Rust)
 
+:::note
+Template interpolation in step names (such as `"{index}"`) is a Rust proc-macro feature (`#[zart_step("process-report-{index}")]`). In **Python** and **TypeScript**, use `.named(...)` at the call site for dynamic step names inside loops.
+:::
+
 <Tabs syncKey="sdk">
 <TabItem label="Rust">
 
