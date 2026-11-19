@@ -16,6 +16,22 @@ pub struct PyWorkerBuilder {
     trx_provider: Mutex<Option<Arc<Py<PyAny>>>>,
 }
 
+impl PyWorkerBuilder {
+    /// Acquire the config mutex, apply `f`, and return `slf` for fluent chaining.
+    fn update_config<'py>(
+        slf: PyRef<'py, Self>,
+        f: impl FnOnce(&mut zart::WorkerConfig),
+    ) -> PyResult<PyRef<'py, Self>> {
+        let mut cfg = slf
+            .config
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
+        f(&mut cfg);
+        drop(cfg);
+        Ok(slf)
+    }
+}
+
 #[pymethods]
 impl PyWorkerBuilder {
     /// Create a `WorkerBuilder` backed by a `PgBackend`.
@@ -57,16 +73,10 @@ impl PyWorkerBuilder {
     /// Set the fallback polling interval in seconds.
     fn poll_interval<'py>(slf: PyRef<'py, Self>, secs: f64) -> PyResult<PyRef<'py, Self>> {
         let dur = duration_from_secs(secs, "secs")?;
-        let mut cfg = slf
-            .config
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
-        cfg.poll_interval = dur;
-        drop(cfg);
-        Ok(slf)
+        Self::update_config(slf, |cfg| cfg.poll_interval = dur)
     }
 
-    /// Set the maximum number of concurrent tasks executed by the worker.
+    /// Set the maximum number of concurrent tasks executed by the worker (must be at least 1).
     fn max_concurrent_tasks<'py>(
         slf: PyRef<'py, Self>,
         max_tasks: usize,
@@ -76,16 +86,10 @@ impl PyWorkerBuilder {
                 "max_concurrent_tasks must be at least 1",
             ));
         }
-        let mut cfg = slf
-            .config
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
-        cfg.max_concurrent_tasks = max_tasks;
-        drop(cfg);
-        Ok(slf)
+        Self::update_config(slf, |cfg| cfg.max_concurrent_tasks = max_tasks)
     }
 
-    /// Set the maximum number of tasks fetched per poll cycle.
+    /// Set the maximum number of tasks fetched per poll cycle (must be at least 1).
     fn max_tasks_per_poll<'py>(
         slf: PyRef<'py, Self>,
         max_tasks: usize,
@@ -95,37 +99,31 @@ impl PyWorkerBuilder {
                 "max_tasks_per_poll must be at least 1",
             ));
         }
-        let mut cfg = slf
-            .config
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
-        cfg.max_tasks_per_poll = max_tasks;
-        drop(cfg);
-        Ok(slf)
+        Self::update_config(slf, |cfg| cfg.max_tasks_per_poll = max_tasks)
     }
 
     /// Set the graceful shutdown timeout in seconds.
     fn shutdown_timeout<'py>(slf: PyRef<'py, Self>, secs: f64) -> PyResult<PyRef<'py, Self>> {
         let dur = duration_from_secs(secs, "secs")?;
-        let mut cfg = slf
-            .config
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
-        cfg.shutdown_timeout = dur;
-        drop(cfg);
-        Ok(slf)
+        Self::update_config(slf, |cfg| cfg.shutdown_timeout = dur)
     }
 
     /// Set the orphan recovery timeout in seconds.
     fn orphan_timeout<'py>(slf: PyRef<'py, Self>, secs: f64) -> PyResult<PyRef<'py, Self>> {
         let dur = duration_from_secs(secs, "secs")?;
-        let mut cfg = slf
-            .config
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
-        cfg.orphan_timeout = dur;
-        drop(cfg);
-        Ok(slf)
+        Self::update_config(slf, |cfg| cfg.orphan_timeout = dur)
+    }
+
+    /// Set the task lease heartbeat interval in seconds.
+    ///
+    /// Pass `None` to use the default (`orphan_timeout / 3`), `0.0` to disable
+    /// heartbeating, or a positive number of seconds to set an explicit interval.
+    fn heartbeat_interval<'py>(
+        slf: PyRef<'py, Self>,
+        secs: Option<f64>,
+    ) -> PyResult<PyRef<'py, Self>> {
+        let interval = secs.map(|s| duration_from_secs(s, "secs")).transpose()?;
+        Self::update_config(slf, |cfg| cfg.heartbeat_interval = interval)
     }
 
     /// Enable or disable PostgreSQL `LISTEN/NOTIFY` wakeup hints.
@@ -133,13 +131,7 @@ impl PyWorkerBuilder {
         slf: PyRef<'py, Self>,
         enabled: bool,
     ) -> PyResult<PyRef<'py, Self>> {
-        let mut cfg = slf
-            .config
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder config lock poisoned"))?;
-        cfg.enable_listen_notify = enabled;
-        drop(cfg);
-        Ok(slf)
+        Self::update_config(slf, |cfg| cfg.enable_listen_notify = enabled)
     }
 
     /// Build the configured `Worker`.

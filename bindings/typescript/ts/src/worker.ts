@@ -1,6 +1,6 @@
-import { Effect } from "effect";
+import { Duration, Effect } from "effect";
 import { fromNative, type PgBackend } from "./backend.js";
-import type { ZartTaggedError } from "./errors.js";
+import { mapNativeError, type ZartTaggedError } from "./errors.js";
 import {
 	loadNative,
 	type NativeWorker,
@@ -10,12 +10,59 @@ import { trxProviderStorage } from "./step.js";
 import type { TrxProvider } from "./trx.js";
 import type { DurableDefinition } from "./workflow.js";
 
+/** Configuration options for {@link WorkerBuilder.configure}. */
 export interface WorkerOptions {
-	pollIntervalSecs?: number;
-	maxConcurrentTasks?: number;
-	maxTasksPerPoll?: number;
-	shutdownTimeoutSecs?: number;
+	/** Fallback polling interval in seconds. Overridden by `pollInterval` if both are set. */
+	readonly pollIntervalSecs?: number;
+	/** Fallback polling interval as an Effect `Duration.Input` (takes precedence over `pollIntervalSecs`). */
+	readonly pollInterval?: Duration.Input;
+	/** Maximum number of tasks executed concurrently (must be >= 1; otherwise throws `ZartSchemaError`). */
+	readonly maxConcurrentTasks?: number;
+	/** Maximum number of tasks fetched per poll cycle (must be >= 1; otherwise throws `ZartSchemaError`). */
+	readonly maxTasksPerPoll?: number;
+	/** Graceful shutdown timeout in seconds. Overridden by `shutdownTimeout` if both are set. */
+	readonly shutdownTimeoutSecs?: number;
+	/** Graceful shutdown timeout as an Effect `Duration.Input` (takes precedence over `shutdownTimeoutSecs`). */
+	readonly shutdownTimeout?: Duration.Input;
+	/** Time in seconds after which stale `picked_up` tasks are reclaimed as orphaned. Overridden by `orphanTimeout` if both are set. */
+	readonly orphanTimeoutSecs?: number;
+	/** Orphan recovery timeout as an Effect `Duration.Input` (takes precedence over `orphanTimeoutSecs`). */
+	readonly orphanTimeout?: Duration.Input;
+	/** Lease heartbeat interval in seconds (`null` restores default `orphanTimeout / 3`; `0` disables). Overridden by `heartbeatInterval` if both are set. */
+	readonly heartbeatIntervalSecs?: number | null;
+	/** Lease heartbeat interval as an Effect `Duration.Input` (`null` restores default `orphanTimeout / 3`; `0` / `Duration.zero` disables). Takes precedence over `heartbeatIntervalSecs`. */
+	readonly heartbeatInterval?: Duration.Input | null;
+	/** Enable PostgreSQL `LISTEN/NOTIFY` wakeup hints (`true` by default). */
+	readonly enableListenNotify?: boolean;
 }
+
+/** Resolve a `Duration.Input` (preferred when defined) or raw seconds value into seconds, preserving explicit `null`. */
+function resolveSeconds(
+	duration: Duration.Input | undefined,
+	secs: number | undefined,
+): number | undefined;
+function resolveSeconds(
+	duration: Duration.Input | null | undefined,
+	secs: number | null | undefined,
+): number | null | undefined;
+function resolveSeconds(
+	duration: Duration.Input | null | undefined,
+	secs: number | null | undefined,
+): number | null | undefined {
+	if (duration === undefined) return secs;
+	return duration === null ? null : Duration.toSeconds(duration);
+}
+
+/** Re-throw already-tagged Effect errors untouched, or decode N-API JSON error payloads into `ZartTaggedError`. */
+const rethrowNativeError = (err: unknown): never => {
+	if (
+		err instanceof Error &&
+		typeof (err as { _tag?: unknown })._tag === "string"
+	) {
+		throw err;
+	}
+	throw mapNativeError(err);
+};
 
 export class WorkerBuilder {
 	private trxProvider: TrxProvider | undefined;
@@ -58,15 +105,28 @@ export class WorkerBuilder {
 	}
 
 	configure(o: WorkerOptions): WorkerBuilder {
-		if (o.pollIntervalSecs !== undefined)
-			this.native.pollIntervalSecs(o.pollIntervalSecs);
-		if (o.maxConcurrentTasks !== undefined)
-			this.native.maxConcurrentTasks(o.maxConcurrentTasks);
-		if (o.maxTasksPerPoll !== undefined)
-			this.native.maxTasksPerPoll(o.maxTasksPerPoll);
-		if (o.shutdownTimeoutSecs !== undefined)
-			this.native.shutdownTimeoutSecs(o.shutdownTimeoutSecs);
-		return this;
+		try {
+			const poll = resolveSeconds(o.pollInterval, o.pollIntervalSecs);
+			if (poll !== undefined) this.native.pollIntervalSecs(poll);
+			if (o.maxConcurrentTasks !== undefined)
+				this.native.maxConcurrentTasks(o.maxConcurrentTasks);
+			if (o.maxTasksPerPoll !== undefined)
+				this.native.maxTasksPerPoll(o.maxTasksPerPoll);
+			const shutdown = resolveSeconds(o.shutdownTimeout, o.shutdownTimeoutSecs);
+			if (shutdown !== undefined) this.native.shutdownTimeoutSecs(shutdown);
+			const orphan = resolveSeconds(o.orphanTimeout, o.orphanTimeoutSecs);
+			if (orphan !== undefined) this.native.orphanTimeoutSecs(orphan);
+			const heartbeat = resolveSeconds(
+				o.heartbeatInterval,
+				o.heartbeatIntervalSecs,
+			);
+			if (heartbeat !== undefined) this.native.heartbeatIntervalSecs(heartbeat);
+			if (o.enableListenNotify !== undefined)
+				this.native.enableListenNotify(o.enableListenNotify);
+			return this;
+		} catch (e) {
+			return rethrowNativeError(e);
+		}
 	}
 
 	build(): Worker {

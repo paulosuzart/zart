@@ -28,7 +28,8 @@ pub(crate) fn duration_from_secs(secs: f64, name: &str) -> PyResult<Duration> {
             "{name} must be a non-negative finite number"
         )));
     }
-    Ok(Duration::from_secs_f64(secs))
+    Duration::try_from_secs_f64(secs)
+        .map_err(|_| PyValueError::new_err(format!("{name} is out of range for Duration")))
 }
 
 /// Resolve cached `TaskLocals` or capture the current Python asyncio loop's locals.

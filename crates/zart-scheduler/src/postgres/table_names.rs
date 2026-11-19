@@ -72,7 +72,8 @@ impl TableNames {
 
     // ── Accessors ────────────────────────────────────────────────────────────
 
-    pub(crate) fn tasks(&self) -> &str {
+    /// Returns the resolved, double-quoted SQL identifier for the `tasks` table.
+    pub fn tasks(&self) -> &str {
         &self.tasks
     }
 

@@ -36,7 +36,7 @@ export interface NativeClientTrx extends NativeSqlExecutor {
 }
 
 export interface NativePgBackend {
-	withListenerUrl(url: string): void;
+	withListenerUrl(url: string): NativePgBackend;
 	runMigrations(): Promise<void>;
 	ping(): Promise<void>;
 	close(): Promise<void>;
@@ -139,12 +139,20 @@ export interface NativeWorkerBuilder {
 	maxConcurrentTasks(n: number): void;
 	maxTasksPerPoll(n: number): void;
 	shutdownTimeoutSecs(n: number): void;
+	orphanTimeoutSecs(n: number): void;
+	heartbeatIntervalSecs(n: number | null | undefined): void;
+	enableListenNotify(enabled: boolean): void;
 	build(): NativeWorker;
 }
 
 export interface NativeBinding {
 	PgBackend: {
-		connect(url: string, listenerUrl?: string): Promise<NativePgBackend>;
+		connect(
+			url: string,
+			listenerUrl?: string,
+			tablePrefix?: string,
+			schema?: string,
+		): Promise<NativePgBackend>;
 	};
 	DurableScheduler: { fromBackend(b: NativePgBackend): NativeDurableScheduler };
 	WorkerBuilder: { fromBackend(b: NativePgBackend): NativeWorkerBuilder };

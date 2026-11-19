@@ -58,10 +58,17 @@ export type Dispatcher = NativeDispatcher;
 export declare class NativeDispatcher {}
 /** PostgreSQL-backed storage and scheduler entry point. */
 export declare class PgBackend {
-	/** Connect to PostgreSQL. Optional `listenerUrl` is used for LISTEN/NOTIFY. */
+	/**
+	 * Connect to PostgreSQL.
+	 *
+	 * Optional `listenerUrl` sets a dedicated connection URL for `LISTEN/NOTIFY`.
+	 * Optional `tablePrefix` and `schema` customize Zart table names.
+	 */
 	static connect(
 		url: string,
 		listenerUrl?: string | undefined | null,
+		tablePrefix?: string | undefined | null,
+		schema?: string | undefined | null,
 	): Promise<PgBackend>;
 	/** New backend sharing the same pool with a dedicated LISTEN/NOTIFY URL. */
 	withListenerUrl(url: string): PgBackend;
@@ -147,10 +154,37 @@ export declare class ClientTrx {
 /** Builder for a `Worker` with configuration and durable handler registration. */
 export declare class WorkerBuilder {
 	static fromBackend(backend: PgBackend): WorkerBuilder;
+	/**
+	 * Set the fallback polling interval in seconds.
+	 *
+	 * Rejects negative or non-finite values with `ZartSchemaError`.
+	 */
 	pollIntervalSecs(secs: number): void;
+	/** Set the maximum number of concurrent tasks (must be >= 1; otherwise `ZartSchemaError`). */
 	maxConcurrentTasks(n: number): void;
+	/** Set the maximum number of tasks fetched per poll cycle (must be >= 1; otherwise `ZartSchemaError`). */
 	maxTasksPerPoll(n: number): void;
+	/**
+	 * Set the graceful shutdown timeout in seconds.
+	 *
+	 * Rejects negative or non-finite values with `ZartSchemaError`.
+	 */
 	shutdownTimeoutSecs(secs: number): void;
+	/**
+	 * Set the orphan recovery timeout in seconds.
+	 *
+	 * Rejects negative or non-finite values with `ZartSchemaError`.
+	 */
+	orphanTimeoutSecs(secs: number): void;
+	/**
+	 * Set the lease heartbeat interval in seconds.
+	 *
+	 * Pass `None` (`null`/`undefined`) to restore the default (`orphanTimeout / 3`), or `0` to
+	 * disable heartbeating. Rejects negative or non-finite values with `ZartSchemaError`.
+	 */
+	heartbeatIntervalSecs(secs?: number | undefined | null): void;
+	/** Enable or disable PostgreSQL `LISTEN/NOTIFY` wakeup hints. */
+	enableListenNotify(enabled: boolean): void;
 	/** Register a JS durable handler: `handler(dispatcher, data) => Promise<json>`. */
 	registerDurable(
 		name: string,

@@ -21,6 +21,17 @@ fn dur(s: f64, name: &str) -> Result<Duration> {
     Duration::try_from_secs_f64(s).map_err(|e| schema_err(format!("invalid {name}: {e}")))
 }
 
+fn validate_min_one(n: u32, name: &str) -> Result<usize> {
+    if n == 0 {
+        return Err(schema_err(format!("{name} must be at least 1")));
+    }
+    Ok(n as usize)
+}
+
+fn heartbeat_dur(secs: Option<f64>) -> Result<Option<Duration>> {
+    secs.map(|s| dur(s, "heartbeatIntervalSecs")).transpose()
+}
+
 #[napi]
 impl WorkerBuilder {
     #[napi(factory)]
@@ -41,26 +52,61 @@ impl WorkerBuilder {
         Ok(())
     }
 
+    /// Set the fallback polling interval in seconds.
+    ///
+    /// Rejects negative or non-finite values with `ZartSchemaError`.
     #[napi]
     pub fn poll_interval_secs(&self, secs: f64) -> Result<()> {
         let d = dur(secs, "pollIntervalSecs")?;
         self.with_cfg(|c| c.poll_interval = d)
     }
 
+    /// Set the maximum number of concurrent tasks (must be >= 1; otherwise `ZartSchemaError`).
     #[napi]
     pub fn max_concurrent_tasks(&self, n: u32) -> Result<()> {
-        self.with_cfg(|c| c.max_concurrent_tasks = n as usize)
+        let v = validate_min_one(n, "maxConcurrentTasks")?;
+        self.with_cfg(|c| c.max_concurrent_tasks = v)
     }
 
+    /// Set the maximum number of tasks fetched per poll cycle (must be >= 1; otherwise `ZartSchemaError`).
     #[napi]
     pub fn max_tasks_per_poll(&self, n: u32) -> Result<()> {
-        self.with_cfg(|c| c.max_tasks_per_poll = n as usize)
+        let v = validate_min_one(n, "maxTasksPerPoll")?;
+        self.with_cfg(|c| c.max_tasks_per_poll = v)
     }
 
+    /// Set the graceful shutdown timeout in seconds.
+    ///
+    /// Rejects negative or non-finite values with `ZartSchemaError`.
     #[napi]
     pub fn shutdown_timeout_secs(&self, secs: f64) -> Result<()> {
         let d = dur(secs, "shutdownTimeoutSecs")?;
         self.with_cfg(|c| c.shutdown_timeout = d)
+    }
+
+    /// Set the orphan recovery timeout in seconds.
+    ///
+    /// Rejects negative or non-finite values with `ZartSchemaError`.
+    #[napi]
+    pub fn orphan_timeout_secs(&self, secs: f64) -> Result<()> {
+        let d = dur(secs, "orphanTimeoutSecs")?;
+        self.with_cfg(|c| c.orphan_timeout = d)
+    }
+
+    /// Set the lease heartbeat interval in seconds.
+    ///
+    /// Pass `None` (`null`/`undefined`) to restore the default (`orphanTimeout / 3`), or `0` to
+    /// disable heartbeating. Rejects negative or non-finite values with `ZartSchemaError`.
+    #[napi]
+    pub fn heartbeat_interval_secs(&self, secs: Option<f64>) -> Result<()> {
+        let d = heartbeat_dur(secs)?;
+        self.with_cfg(|c| c.heartbeat_interval = d)
+    }
+
+    /// Enable or disable PostgreSQL `LISTEN/NOTIFY` wakeup hints.
+    #[napi]
+    pub fn enable_listen_notify(&self, enabled: bool) -> Result<()> {
+        self.with_cfg(|c| c.enable_listen_notify = enabled)
     }
 
     /// Register a JS durable handler: `handler(dispatcher, data) => Promise<json>`.
@@ -133,5 +179,55 @@ impl Worker {
     #[napi]
     pub fn stop(&self) {
         self.inner.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_schema_err<T: std::fmt::Debug>(res: Result<T>, needle: &str) {
+        let err = res.expect_err("expected ZartSchemaError");
+        let v: serde_json::Value = serde_json::from_str(&err.reason).unwrap();
+        assert_eq!(v["_tag"], "ZartSchemaError");
+        assert!(
+            v["message"].as_str().unwrap().contains(needle),
+            "expected '{}' to contain '{}'",
+            v["message"],
+            needle
+        );
+    }
+
+    #[test]
+    fn validates_zero_concurrency_and_poll_limits() {
+        assert_schema_err(
+            validate_min_one(0, "maxConcurrentTasks"),
+            "maxConcurrentTasks must be at least 1",
+        );
+        assert_schema_err(
+            validate_min_one(0, "maxTasksPerPoll"),
+            "maxTasksPerPoll must be at least 1",
+        );
+        assert_eq!(validate_min_one(12, "maxConcurrentTasks").unwrap(), 12);
+        assert_eq!(validate_min_one(4, "maxTasksPerPoll").unwrap(), 4);
+    }
+
+    #[test]
+    fn validates_durations_and_heartbeat_option() {
+        assert_eq!(
+            dur(120.0, "orphanTimeoutSecs").unwrap(),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            heartbeat_dur(Some(20.0)).unwrap(),
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(heartbeat_dur(Some(0.0)).unwrap(), Some(Duration::ZERO));
+        assert_eq!(heartbeat_dur(None).unwrap(), None);
+
+        assert_schema_err(dur(-1.0, "orphanTimeoutSecs"), "orphanTimeoutSecs");
+        assert_schema_err(dur(f64::NAN, "orphanTimeoutSecs"), "orphanTimeoutSecs");
+        assert_schema_err(heartbeat_dur(Some(-0.5)), "heartbeatIntervalSecs");
+        assert_schema_err(heartbeat_dur(Some(f64::INFINITY)), "heartbeatIntervalSecs");
     }
 }

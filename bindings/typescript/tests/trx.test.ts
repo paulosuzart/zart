@@ -185,8 +185,8 @@ describe("Zart-Managed Zart.Trx", () => {
 describe("backend.withTransaction + scheduler.startInTx", () => {
 	const makeFakeBackendAndScheduler = (store: FakeTxStore) => {
 		let lastTx: ReturnType<typeof makeFakeNativeTrx> | undefined;
-		const nativeBackend = {
-			withListenerUrl: () => {},
+		const nativeBackend: NativePgBackend = {
+			withListenerUrl: () => nativeBackend,
 			runMigrations: async () => {},
 			ping: async () => {},
 			close: async () => {},
@@ -194,7 +194,7 @@ describe("backend.withTransaction + scheduler.startInTx", () => {
 				lastTx = makeFakeNativeTrx(store);
 				return lastTx;
 			},
-		} satisfies NativePgBackend;
+		};
 
 		const nativeScheduler: NativeDurableScheduler = {
 			start: async () => ({
@@ -383,6 +383,9 @@ describe("User-Managed TrxProvider", () => {
 			maxConcurrentTasks: () => {},
 			maxTasksPerPoll: () => {},
 			shutdownTimeoutSecs: () => {},
+			orphanTimeoutSecs: () => {},
+			heartbeatIntervalSecs: () => {},
+			enableListenNotify: () => {},
 			build: () => ({ run: async () => {}, stop: () => {} }),
 		};
 		const builder = new (

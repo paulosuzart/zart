@@ -28,16 +28,47 @@ export class ClientTrx extends TrxHandle {
 	}
 }
 
+/** Connection options for {@link PgBackend.connect} and {@link PgBackend.scoped}. */
+export interface PgBackendConnectOptions {
+	/** Dedicated PostgreSQL connection URL for `LISTEN/NOTIFY` (e.g. bypassing a transaction pooler). */
+	readonly listenerUrl?: string;
+	/** Validated custom prefix for Zart tables (defaults to `"zart_"`). Rejects invalid identifiers with `ZartSchemaError`. */
+	readonly tablePrefix?: string;
+	/** Validated PostgreSQL schema qualifier for Zart tables. Rejects invalid identifiers with `ZartSchemaError`. */
+	readonly schema?: string;
+}
+
 export class PgBackend {
 	private constructor(readonly native: NativePgBackend) {}
 
+	/**
+	 * Connect to PostgreSQL and construct a {@link PgBackend}.
+	 *
+	 * @param url PostgreSQL connection URL.
+	 * @param opts Connection options, or a legacy `listenerUrl` string shorthand.
+	 */
 	static connect(
 		url: string,
-		listenerUrl?: string,
+		opts?: string | PgBackendConnectOptions,
 	): Effect.Effect<PgBackend, ZartTaggedError> {
+		const options: PgBackendConnectOptions =
+			typeof opts === "string" ? { listenerUrl: opts } : (opts ?? {});
 		return fromNative(() =>
-			loadNative().PgBackend.connect(url, listenerUrl),
+			loadNative().PgBackend.connect(
+				url,
+				options.listenerUrl,
+				options.tablePrefix,
+				options.schema,
+			),
 		).pipe(Effect.map((n) => new PgBackend(n)));
+	}
+
+	/** Return a new `PgBackend` sharing the same pool with a dedicated `LISTEN/NOTIFY` URL. */
+	withListenerUrl(url: string): Effect.Effect<PgBackend, ZartTaggedError> {
+		return Effect.try({
+			try: () => new PgBackend(this.native.withListenerUrl(url)),
+			catch: mapNativeError,
+		});
 	}
 
 	runMigrations(): Effect.Effect<void, ZartTaggedError> {
@@ -73,9 +104,14 @@ export class PgBackend {
 		);
 	}
 
-	/** Scoped acquisition: connects and closes on scope exit. */
-	static scoped(url: string, listenerUrl?: string) {
-		return Effect.acquireRelease(PgBackend.connect(url, listenerUrl), (b) =>
+	/**
+	 * Scoped acquisition: connects and closes on scope exit.
+	 *
+	 * @param url PostgreSQL connection URL.
+	 * @param opts Connection options, or a legacy `listenerUrl` string shorthand.
+	 */
+	static scoped(url: string, opts?: string | PgBackendConnectOptions) {
+		return Effect.acquireRelease(PgBackend.connect(url, opts), (b) =>
 			Effect.ignore(b.close()),
 		);
 	}

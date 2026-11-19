@@ -23,25 +23,6 @@
 //! let worker = WorkerBuilder::from_backend(&pg).build();
 //! # }
 //! ```
-//! [`PostgresStorage`] implements `StorageBackend`, covering all execution-side
-//! tables (`zart_executions`, `zart_execution_runs`, `zart_steps`,
-//! `zart_step_attempts`, `zart_wait_groups`, `zart_events`, `zart_pause_rules`).
-//!
-//! # Usage
-//!
-//! ```rust,no_run
-//! # async fn example() {
-//! use sqlx::PgPool;
-//! use zart::{DurableScheduler, WorkerBuilder, postgres::PgBackend};
-//!
-//! let pool = PgPool::connect("postgres://localhost/mydb").await.unwrap();
-//! let pg = PgBackend::new(pool);
-//! pg.run_migrations().await.unwrap();
-//!
-//! let durable = DurableScheduler::from_backend(&pg);
-//! let worker = WorkerBuilder::from_backend(&pg).build();
-//! # }
-//! ```
 
 mod admin_storage_impl;
 mod event_storage_impl;
@@ -84,17 +65,23 @@ pub struct PostgresStorage {
 }
 
 impl PostgresStorage {
+    /// Build a [`PostgresTaskScheduler`] sharing `pool` and resolving its table
+    /// names from `table_names.config()`.
+    fn new_scheduler_for(pool: &PgPool, table_names: &TableNames) -> Arc<PostgresTaskScheduler> {
+        let sched_names =
+            zart_scheduler::postgres::TableNames::from_config(table_names.config().clone());
+        Arc::new(PostgresTaskScheduler::with_table_names(
+            pool.clone(),
+            sched_names,
+        ))
+    }
+
     /// Create a new storage using the default `zart_*` table names.
     ///
     /// An internal [`PostgresTaskScheduler`] is created from the same pool
     /// to handle task-queue operations via delegation.
     pub fn new(pool: PgPool) -> Self {
-        let task_scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
-        Self {
-            pool,
-            table_names: TableNames::default(),
-            task_scheduler,
-        }
+        Self::with_table_names(pool, TableNames::default())
     }
 
     /// Create a new storage with explicit table-name configuration.
@@ -107,12 +94,12 @@ impl PostgresStorage {
     /// use zart::postgres::{PostgresStorage, TableNames};
     ///
     /// let pool = PgPool::connect("postgres://...").await.unwrap();
-    /// let config = zart_core::table_names::TableNameConfig::with_prefix("myapp_").unwrap();
-    /// let storage = PostgresStorage::with_table_names(pool, TableNames::from_config(config));
+    /// let names = TableNames::with_prefix("myapp_").unwrap();
+    /// let storage = PostgresStorage::with_table_names(pool, names);
     /// # }
     /// ```
     pub fn with_table_names(pool: PgPool, table_names: TableNames) -> Self {
-        let task_scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
+        let task_scheduler = Self::new_scheduler_for(&pool, &table_names);
         Self {
             pool,
             table_names,
@@ -184,6 +171,7 @@ impl PostgresStorage {
 ///     .register_durable_task("my-task", MyHandler)
 ///     .build();
 /// ```
+#[derive(Clone)]
 pub struct PgBackend {
     storage: Arc<PostgresStorage>,
     scheduler: Arc<PostgresTaskScheduler>,
@@ -192,20 +180,14 @@ pub struct PgBackend {
 impl PgBackend {
     /// Create a new `PgBackend` using the default `zart_*` table names.
     pub fn new(pool: PgPool) -> Self {
-        let scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
-        let storage = Arc::new(PostgresStorage {
-            pool: pool.clone(),
-            table_names: TableNames::default(),
-            task_scheduler: scheduler.clone(),
-        });
-        Self { storage, scheduler }
+        Self::with_table_names(pool, TableNames::default())
     }
 
     /// Create a new `PgBackend` with explicit table-name configuration.
     pub fn with_table_names(pool: PgPool, names: TableNames) -> Self {
-        let scheduler = Arc::new(PostgresTaskScheduler::new(pool.clone()));
+        let scheduler = PostgresStorage::new_scheduler_for(&pool, &names);
         let storage = Arc::new(PostgresStorage {
-            pool: pool.clone(),
+            pool,
             table_names: names,
             task_scheduler: scheduler.clone(),
         });
@@ -282,6 +264,19 @@ impl PgBackend {
         &self.storage.pool
     }
 
+    /// Verify database connectivity by executing `SELECT 1`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Database`] if executing the health-check query fails.
+    pub async fn ping(&self) -> Result<(), StorageError> {
+        sqlx::query("SELECT 1")
+            .execute(&self.storage.pool)
+            .await
+            .map(|_| ())
+            .map_err(|e| StorageError::Database(Box::new(e)))
+    }
+
     /// Run all database migrations against the connected database.
     ///
     /// Applies `zart/migrations/` as a single sequential set: `0001_scheduler.sql`
@@ -345,6 +340,111 @@ mod tests {
         assert_eq!(Arc::strong_count(&backend.scheduler), 2);
 
         let err = PgBackend::new(pool).with_listener_url("not a valid url");
+        assert!(matches!(err, Err(StorageError::Database(_))));
+    }
+
+    #[tokio::test]
+    async fn pg_backend_with_table_names_propagates_to_storage_and_scheduler() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart")
+            .expect("lazy pool creation should succeed");
+        let names = TableNames::with_prefix("svc_")
+            .unwrap()
+            .with_schema("tenant_a")
+            .unwrap();
+
+        let backend = PgBackend::with_table_names(pool, names);
+        assert_eq!(
+            backend.storage.table_names.tasks(),
+            "\"tenant_a\".\"svc_tasks\""
+        );
+        assert_eq!(
+            backend.storage.table_names.executions(),
+            "\"tenant_a\".\"svc_executions\""
+        );
+        assert_eq!(
+            backend.scheduler.table_names().tasks(),
+            "\"tenant_a\".\"svc_tasks\""
+        );
+        assert_eq!(
+            backend.scheduler.table_names().wakeup_channel(),
+            "tenant_a_svc_tasks_wakeup"
+        );
+        assert_eq!(Arc::strong_count(&backend.scheduler), 2);
+    }
+
+    #[tokio::test]
+    async fn pg_backend_clone_with_listener_url_preserves_custom_table_names() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@pgbouncer:6432/zart")
+            .expect("lazy pool creation should succeed");
+        let names = TableNames::with_prefix("app_")
+            .unwrap()
+            .with_schema("custom_schema")
+            .unwrap();
+
+        let backend = PgBackend::with_table_names(pool, names);
+        let with_listener = backend
+            .clone()
+            .with_listener_url("postgres://user:pass@pg-direct.internal:5435/zart_db")
+            .expect("valid listener URL should parse");
+
+        assert!(backend.scheduler.listener_options().is_none());
+        assert_eq!(
+            with_listener
+                .scheduler
+                .listener_options()
+                .expect("listener options should be configured")
+                .get_host(),
+            "pg-direct.internal"
+        );
+        assert_eq!(
+            with_listener.storage.table_names.tasks(),
+            "\"custom_schema\".\"app_tasks\""
+        );
+        assert_eq!(
+            with_listener.storage.table_names.steps(),
+            "\"custom_schema\".\"app_steps\""
+        );
+        assert_eq!(
+            with_listener.scheduler.table_names().tasks(),
+            "\"custom_schema\".\"app_tasks\""
+        );
+        assert_eq!(
+            with_listener.scheduler.table_names().wakeup_channel(),
+            "custom_schema_app_tasks_wakeup"
+        );
+        assert_eq!(Arc::strong_count(&with_listener.scheduler), 2);
+    }
+
+    #[tokio::test]
+    async fn postgres_storage_with_table_names_configures_storage_names() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart")
+            .expect("lazy pool creation should succeed");
+        let names = TableNames::with_prefix("store_")
+            .unwrap()
+            .with_schema("tenant_b")
+            .unwrap();
+
+        let storage = PostgresStorage::with_table_names(pool, names);
+        assert_eq!(storage.table_names.tasks(), "\"tenant_b\".\"store_tasks\"");
+        assert_eq!(
+            storage.table_names.executions(),
+            "\"tenant_b\".\"store_executions\""
+        );
+        assert_eq!(storage.table_names.steps(), "\"tenant_b\".\"store_steps\"");
+        assert_eq!(
+            storage.table_names.config().resolve("tasks"),
+            "\"tenant_b\".\"store_tasks\""
+        );
+    }
+
+    #[tokio::test]
+    async fn pg_backend_ping_returns_database_error_when_pool_closed() {
+        let pool = PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/zart")
+            .expect("lazy pool creation should succeed");
+        let backend = PgBackend::new(pool.clone());
+        pool.close().await;
+
+        let err = backend.ping().await;
         assert!(matches!(err, Err(StorageError::Database(_))));
     }
 }
