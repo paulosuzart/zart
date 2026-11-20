@@ -16,23 +16,32 @@ use crate::utils::{extract_ok_type, parse_duration_str, snake_to_pascal};
 /// Accepted forms:
 /// - `#[zart_durable("my-task")]`
 /// - `#[zart_durable("my-task", timeout = "5m")]`
+/// - `#[zart_durable("my-task", max_retries = 3)]`
 /// - `#[zart_durable("my-task", on_failure = my_failure_handler)]`
-/// - `#[zart_durable("my-task", timeout = "5m", on_failure = my_failure_handler)]`
+/// - `#[zart_durable("my-task", max_retries = 3, timeout = "5m", on_failure = my_failure_handler)]`
 pub struct DurableAttr {
+    /// Task name string literal exposed as `TASK_NAME` on the generated struct.
+    pub task_name: syn::LitStr,
+    /// Optional wall-clock execution timeout in seconds.
     pub timeout_secs: Option<u64>,
+    /// Optional maximum number of execution-level retries.
+    pub max_retries: Option<usize>,
+    /// Optional failure handler function identifier.
     pub on_failure_fn: Option<syn::Ident>,
 }
 
 impl Parse for DurableAttr {
     fn parse(input: ParseStream) -> SynResult<Self> {
-        // The task-name string is required (parsed but not used for code generation;
-        // the struct name is derived from the function name instead).
-        let _task_name: syn::LitStr = input.parse()?;
+        let task_name: syn::LitStr = input.parse()?;
         let mut timeout_secs = None;
+        let mut max_retries = None;
         let mut on_failure_fn = None;
 
         while input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
+            if input.is_empty() {
+                break;
+            }
             let key: syn::Ident = input.parse()?;
             let _: syn::Token![=] = input.parse()?;
 
@@ -41,6 +50,10 @@ impl Parse for DurableAttr {
                     let value: syn::LitStr = input.parse()?;
                     timeout_secs = Some(parse_duration_str(&value.value(), value.span())?);
                 }
+                "max_retries" => {
+                    let value: syn::LitInt = input.parse()?;
+                    max_retries = Some(value.base10_parse::<usize>()?);
+                }
                 "on_failure" => {
                     on_failure_fn = Some(input.parse()?);
                 }
@@ -48,7 +61,7 @@ impl Parse for DurableAttr {
                     return Err(syn::Error::new(
                         key.span(),
                         format!(
-                            "unknown attribute key '{key}'; expected 'timeout' or 'on_failure'"
+                            "unknown attribute key '{key}'; expected 'timeout', 'max_retries', or 'on_failure'"
                         ),
                     ));
                 }
@@ -56,7 +69,9 @@ impl Parse for DurableAttr {
         }
 
         Ok(DurableAttr {
+            task_name,
             timeout_secs,
+            max_retries,
             on_failure_fn,
         })
     }
@@ -67,24 +82,25 @@ impl Parse for DurableAttr {
 /// Annotate an async function as a Zart durable execution handler.
 ///
 /// Generates a unit struct (named by converting the function name from
-/// `snake_case` to `PascalCase`) that implements
-/// `DurableExecution`.
+/// `snake_case` to `PascalCase`) that implements `DurableExecution` and
+/// exposes `pub const TASK_NAME: &'static str`.
 ///
 /// The generated struct can then be registered with a `TaskRegistry`:
 ///
 /// ```rust,ignore
-/// registry.register("my-task", MyTask);
+/// registry.register(MyTask::TASK_NAME, MyTask);
 /// ```
 ///
-/// # Parameters
+/// # Attributes
 ///
-/// - First argument: `data` — the deserialized input type
+/// - First argument: `"task-name"` — the task name string literal exposed as `Struct::TASK_NAME`
 /// - `timeout = "..."`: optional wall-clock timeout (`"5m"`, `"30s"`, `"2h"`)
+/// - `max_retries = N`: optional maximum number of execution-level retries (`usize`)
 /// - `on_failure = fn_name`: optional centralized failure handler
 ///
 /// # Function signature
 ///
-/// The annotated function must have exactly this shape:
+/// The annotated function must have `data` as its parameter and return `Result<OutputType, TaskError>`:
 ///
 /// ```rust,ignore
 /// async fn fn_name(data: DataType) -> Result<OutputType, TaskError>
@@ -99,21 +115,22 @@ impl Parse for DurableAttr {
 /// # Example
 ///
 /// ```rust,ignore
-/// #[zart_durable("send-report", timeout = "10m")]
+/// #[zart_durable("send-report", max_retries = 3, timeout = "10m")]
 /// async fn send_report(data: ReportRequest) -> Result<ReportId, TaskError> {
 ///     // Use zart::step(), zart::schedule(), zart::wait(), etc.
 ///     let id = generate_report(&data).await?;
 ///     Ok(id)
 /// }
 ///
-/// // Generated struct: SendReport
-/// // registry.register("send-report", SendReport);
+/// // Generated struct: SendReport with SendReport::TASK_NAME == "send-report"
+/// // registry.register(SendReport::TASK_NAME, SendReport);
 /// ```
 pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynResult<TokenStream2> {
     let fn_name = &func.sig.ident;
     let struct_name = snake_to_pascal(&fn_name.to_string());
     let struct_ident = format_ident!("{}", struct_name);
     let vis = &func.vis;
+    let task_name = &args.task_name;
 
     // ── Validate and extract parameters ──────────────────────────────────────
     let inputs: Vec<_> = func.sig.inputs.iter().collect();
@@ -139,6 +156,17 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
     let ok_type = extract_ok_type(&func.sig.output)?;
 
     let body = &func.block;
+
+    // ── Optional max_retries method ───────────────────────────────────────────
+    let max_retries_method = if let Some(max_retries) = args.max_retries {
+        quote! {
+            fn max_retries(&self) -> usize {
+                #max_retries
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     // ── Optional timeout method ───────────────────────────────────────────────
     let timeout_method = if let Some(secs) = args.timeout_secs {
@@ -169,6 +197,11 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
     Ok(quote! {
         #vis struct #struct_ident;
 
+        impl #struct_ident {
+            /// Task name registered with `#[zart_durable]`.
+            pub const TASK_NAME: &'static str = #task_name;
+        }
+
         #[::async_trait::async_trait]
         impl ::zart::registry::DurableExecution for #struct_ident {
             type Data = #data_type;
@@ -181,9 +214,48 @@ pub(crate) fn expand_zart_durable(args: DurableAttr, func: syn::ItemFn) -> SynRe
                 #body
             }
 
+            #max_retries_method
+
             #timeout_method
 
             #on_failure_method
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_task_name_and_all_attributes() {
+        let attr: DurableAttr =
+            syn::parse_str(r#""onboard", max_retries = 3, timeout = "5m", on_failure = handle"#)
+                .expect("should parse valid durable attributes");
+        assert_eq!(attr.task_name.value(), "onboard");
+        assert_eq!(attr.max_retries, Some(3));
+        assert_eq!(attr.timeout_secs, Some(300));
+        assert_eq!(
+            attr.on_failure_fn.as_ref().map(ToString::to_string),
+            Some("handle".to_string())
+        );
+    }
+
+    #[test]
+    fn unknown_attribute_mentions_max_retries_in_error() {
+        let err = syn::parse_str::<DurableAttr>(r#""onboard", bogus = 1"#)
+            .err()
+            .expect("unknown key should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'timeout', 'max_retries', or 'on_failure'"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn non_integer_max_retries_is_rejected() {
+        assert!(syn::parse_str::<DurableAttr>(r#""onboard", max_retries = "3""#).is_err());
+        assert!(syn::parse_str::<DurableAttr>(r#""onboard", max_retries = -1"#).is_err());
+    }
 }

@@ -3,13 +3,16 @@ title: Durable Loops
 description: Iterate over a collection durably — each item is processed in its own persisted step with a unique name.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example processes a batch of reports. It fetches the list inside a step for stable replay, then iterates over it with two uniqueness mechanisms: the `{index}` template and `.named()`.
 
 **Features demonstrated:** `#[zart_step("name-{field}")]`, `.named()`, step calls in a loop, fetch-inside-step pattern, `DurableExecution` trait.
 
 ## Data types
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +43,73 @@ struct BatchOutput {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Report:
+    id: int
+    title: str
+    value: float
+
+@dataclass
+class ProcessedReport:
+    id: int
+    title: str
+    score: int
+    flagged: bool
+
+@dataclass
+class BatchInput:
+    batch_name: str
+
+@dataclass
+class BatchOutput:
+    batch_name: str
+    total: int
+    flagged: int
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Schema } from "effect";
+
+const Report = Schema.Struct({
+  id: Schema.Number,
+  title: Schema.String,
+  value: Schema.Number,
+});
+
+const ProcessedReport = Schema.Struct({
+  id: Schema.Number,
+  title: Schema.String,
+  score: Schema.Number,
+  flagged: Schema.Boolean,
+});
+
+const BatchInput = Schema.Struct({
+  batchName: Schema.String,
+});
+
+const BatchOutput = Schema.Struct({
+  batchName: Schema.String,
+  total: Schema.Number,
+  flagged: Schema.Number,
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## Step definitions
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -77,7 +146,71 @@ async fn notify_stakeholder(email: String, report_title: String) -> Result<(), S
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("fetch-reports")
+async def fetch_reports(batch_name: str) -> list[Report]:
+    return [
+        Report(id=1, title="Q1 Sales", value=84.5),
+        Report(id=2, title="Q2 Sales", value=91.2),
+        Report(id=3, title="Q3 Sales", value=72.0),
+        Report(id=4, title="Q4 Sales", value=110.8),
+    ]
+
+@zart.step("process-report")
+async def process_report(report: Report) -> ProcessedReport:
+    score = int(report.value * 10)
+    flagged = report.value < 80.0
+    return ProcessedReport(id=report.id, title=report.title, score=score, flagged=flagged)
+
+@zart.step("notify-stakeholder")
+async def notify_stakeholder(email: str, report_title: str) -> None:
+    print(f"Sent alert for '{report_title}' to {email}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const fetchReports = Zart.step("fetch-reports", (batchName: string) =>
+  Effect.succeed([
+    { id: 1, title: "Q1 Sales", value: 84.5 },
+    { id: 2, title: "Q2 Sales", value: 91.2 },
+    { id: 3, title: "Q3 Sales", value: 72.0 },
+    { id: 4, title: "Q4 Sales", value: 110.8 },
+  ]),
+);
+
+const processReport = Zart.step("process-report", (report: typeof Report.Type) =>
+  Effect.succeed({
+    id: report.id,
+    title: report.title,
+    score: Math.floor(report.value * 10),
+    flagged: report.value < 80.0,
+  }),
+);
+
+const notifyStakeholder = Zart.step("notify-stakeholder", (email: string, reportTitle: string) =>
+  Effect.sync(() => {
+    console.log(`Sent alert for '${reportTitle}' to ${email}`);
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## The workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 struct ReportBatchTask;
@@ -113,7 +246,70 @@ impl DurableExecution for ReportBatchTask {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("report-batch")
+async def report_batch(data: BatchInput) -> BatchOutput:
+    # Fetch inside a step so the same list is used on replay.
+    reports = await fetch_reports(data.batch_name)
+
+    # .named() gives each loop iteration a unique durable step key.
+    processed: list[ProcessedReport] = []
+    for i, report in enumerate(reports):
+        result = await process_report(report).named(f"process-report-{i}")
+        processed.append(result)
+
+    for i, p in enumerate(processed):
+        if p.flagged:
+            await notify_stakeholder("team@example.com", p.title).named(
+                f"notify-stakeholder-{i}"
+            )
+
+    flagged = sum(1 for p in processed if p.flagged)
+    return BatchOutput(batch_name=data.batch_name, total=len(processed), flagged=flagged)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const reportBatch = Zart.durable(
+  "report-batch",
+  (data) =>
+    Effect.gen(function* () {
+      // Fetch inside a step so the same list is used on replay.
+      const reports = yield* fetchReports(data.batchName);
+
+      // .named() gives each loop iteration a unique durable step key.
+      const processed: Array<typeof ProcessedReport.Type> = [];
+      for (let i = 0; i < reports.length; i++) {
+        const result = yield* processReport(reports[i]!).named(`process-report-${i}`);
+        processed.push(result);
+      }
+
+      for (let i = 0; i < processed.length; i++) {
+        const p = processed[i]!;
+        if (p.flagged) {
+          yield* notifyStakeholder("team@example.com", p.title).named(`notify-stakeholder-${i}`);
+        }
+      }
+
+      const flagged = processed.filter((p) => p.flagged).length;
+      return { batchName: data.batchName, total: processed.length, flagged };
+    }),
+  { inputSchema: BatchInput, outputSchema: BatchOutput },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Running the workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let durable = DurableScheduler::from_backend(&pg);
@@ -126,6 +322,38 @@ durable
 let output = durable.wait_for::<ReportBatchTask>(&execution_id, Duration::from_secs(60)).await?;
 println!("Processed {} reports, {} flagged", output.total, output.flagged);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+scheduler = zart.DurableScheduler(backend)
+await scheduler.start(
+    execution_id,
+    "report-batch",
+    zart.to_json_value(BatchInput(batch_name="2024-annual")),
+)
+
+raw = await scheduler.wait_completion(execution_id, timeout_secs=60.0)
+output = zart.from_json_value(raw, BatchOutput)
+print(f"Processed {output.total} reports, {output.flagged} flagged")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+yield* scheduler.start(executionId, "report-batch", BatchInput, {
+  batchName: "2024-annual",
+});
+
+const output = yield* scheduler.waitCompletion(executionId, BatchOutput, 60);
+console.log(`Processed ${output.total} reports, ${output.flagged} flagged`);
+```
+
+</TabItem>
+</Tabs>
 
 ## What you'll see
 

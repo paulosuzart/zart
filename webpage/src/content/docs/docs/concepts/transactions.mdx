@@ -3,7 +3,7 @@ title: Transactions
 description: How to include durable execution in your database transactions for atomic business writes and step completion.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Why Transaction Participation Matters
 
@@ -26,6 +26,9 @@ Zart solves this with two opt-in mechanisms that let your code share transaction
 Use `start_in_tx` to start a durable execution **within your own transaction**. The execution record, initial run row, and root body task are all inserted in the same transaction as your business writes.
 
 ### Basic Usage
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -62,11 +65,74 @@ async fn register_user(
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+async def register_user(
+    backend: zart.PgBackend,
+    scheduler: zart.DurableScheduler,
+    user_id: str,
+    email: str,
+) -> None:
+    async with await backend.begin() as tx:
+        # Your business write.
+        await tx.execute(
+            "INSERT INTO users (id, email) VALUES ($1::uuid, $2)",
+            user_id,
+            email,
+        )
+
+        # Durable execution — same transaction.
+        await scheduler.start_in_tx(
+            tx,
+            f"onboard-{user_id}",
+            "onboarding",
+            {"user_id": user_id},
+        )
+        # Both commit atomically on exit — or roll back on exception.
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { DurableScheduler, PgBackend } from "@zart/effect";
+
+const registerUser = (
+  backend: PgBackend,
+  scheduler: DurableScheduler,
+  userId: string,
+  email: string,
+) =>
+  backend.withTransaction((tx) =>
+    Effect.gen(function* () {
+      // Your business write.
+      yield* tx.execute("INSERT INTO users (id, email) VALUES ($1::uuid, $2)", [userId, email]);
+
+      // Durable execution — same transaction.
+      yield* scheduler.startInTx(tx, {
+        executionId: `onboard-${userId}`,
+        taskName: "onboarding",
+        payload: { user_id: userId },
+      });
+      // Both commit atomically — or roll back on error.
+    }),
+  );
+```
+
+</TabItem>
+</Tabs>
+
 If the transaction rolls back, neither the user row nor the execution record will exist.
 
-### Typed Variant: `start_for_in_tx`
+### Typed Variant: `start_for_in_tx` / `inputSchema`
 
-`start_for_in_tx` infers the input type from the handler, just like `start_for`:
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 sched.start_for_in_tx::<OnboardingHandler>(
@@ -77,15 +143,69 @@ sched.start_for_in_tx::<OnboardingHandler>(
 ).await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+await scheduler.start_in_tx(
+    tx,
+    f"onboard-{user_id}",
+    "onboarding",
+    zart.to_json_value(OnboardingInput(user_id=user_id)),
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* scheduler.startInTx(tx, {
+  executionId: `onboard-${userId}`,
+  taskName: "onboarding",
+  inputSchema: OnboardingInput,
+  input: { userId },
+});
+```
+
+</TabItem>
+</Tabs>
+
 ### Why No `start_and_wait_for_in_tx`?
 
 The transaction must commit before the worker can poll the task. Waiting inside the transaction would deadlock. The correct pattern is:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 sched.start_for_in_tx::<H>(&mut tx, id, task, &input).await?;
 tx.commit().await?;                    // worker can now poll the task
 let result = sched.wait_for::<H>(id, timeout).await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async with await backend.begin() as tx:
+    await scheduler.start_in_tx(tx, execution_id, task_name, payload)
+# Committed here — worker can now poll the task
+result = await scheduler.wait_completion(execution_id, timeout_secs=60.0)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* backend.withTransaction((tx) =>
+  scheduler.startInTx(tx, { executionId, taskName, inputSchema: OnboardingInput, input }),
+);
+// Committed here — worker can now poll the task
+const result = yield* scheduler.waitCompletion(executionId, OnboardingOutput, 60);
+```
+
+</TabItem>
+</Tabs>
 
 ### Edge Cases
 
@@ -119,6 +239,9 @@ Framework (after run returns):
 If `run()` returns `Err`, the framework rolls back the transaction instead.
 
 ### Usage
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -158,23 +281,82 @@ impl ZartStep for DeductBalanceStep {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("deduct-balance")
+async def deduct_balance(account_id: str, amount: int, trx: zart.Trx) -> int:
+    row = await trx.fetch_one(
+        "UPDATE accounts SET balance = balance - $1 WHERE id = $2::uuid RETURNING balance",
+        amount,
+        account_id,
+    )
+    return int(row["balance"])
+    # Framework commits tx after this returns, or rolls back on exception.
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const deductBalance = Zart.step("deduct-balance", (accountId: string, amount: number) =>
+  Effect.gen(function* () {
+    const row = yield* Zart.Trx.fetchOne<{ balance: number | string }>(
+      "UPDATE accounts SET balance = balance - $1 WHERE id = $2::uuid RETURNING balance",
+      [amount, accountId],
+    );
+    return Number(row.balance);
+    // Framework commits tx after this succeeds, or rolls back on failure.
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### Contract
 
 | Rule | Why |
 |---|---|
-| Call `zart::trx` at most once per step | Multiple transactions can't be atomically committed together |
+| Call `zart::trx` at most once per step (Rust) | Multiple transactions can't be atomically committed together |
 | Do **not** call `tx.commit()` yourself | The framework owns the lifecycle after `trx()` returns |
 | Do **not** call `tx.rollback()` yourself | On error, the framework rolls back automatically |
 | Keep `trx()` → `return` fast | Holding a transaction across HTTP calls risks long-lived locks |
 
-### Deref Ergonomics
+### Deref / Query Ergonomics
 
-`ZartTrx` implements `Deref` and `DerefMut` targeting `sqlx::Transaction`. Use `&mut **tx` to pass it to sqlx:
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 sqlx::query("UPDATE ...").execute(&mut **tx).await?;
 sqlx::query_as("SELECT ...").fetch_one(&mut **tx).await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+await trx.execute("UPDATE ...", arg1)
+row = await trx.fetch_one("SELECT ...", arg1)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* Zart.Trx.execute("UPDATE ...", [arg1]);
+const row = yield* Zart.Trx.fetchOne("SELECT ...", [arg1]);
+```
+
+</TabItem>
+</Tabs>
 
 ### Error Behavior
 

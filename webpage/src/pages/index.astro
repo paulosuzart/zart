@@ -538,6 +538,54 @@ import { ZART_VERSION } from "../lib/version";
       border-radius: 2px;
     }
 
+    .hero-lang-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+      background: oklch(11% 0.012 275);
+    }
+
+    .hero-lang-btn {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 0.14rem 0.48rem;
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .hero-lang-btn:hover {
+      color: var(--text);
+    }
+
+    .hero-lang-btn.active {
+      background: var(--emerald-dim);
+      color: var(--emerald);
+    }
+
+    .tab-panel-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 0.65rem 1.25rem;
+      border-top: 1px solid var(--border);
+      background: oklch(11% 0.012 275);
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+    }
+
+    .tab-panel-footer a {
+      color: var(--emerald);
+      text-decoration: none;
+    }
+
+    .tab-panel-footer a:hover {
+      text-decoration: underline;
+    }
+
     .hero-code-stack {
       display: grid;
       min-width: 0;
@@ -1702,14 +1750,19 @@ import { ZART_VERSION } from "../lib/version";
         <div class="console-header">
           <span class="console-file" id="hero-filename">brewery_finder.rs</span>
           <div class="console-meta">
-            <span>tokio · sqlx</span>
+            <span id="hero-runtime">tokio · sqlx</span>
+            <div class="hero-lang-toggle" role="tablist" aria-label="Hero code language">
+              <button class="hero-lang-btn active" type="button" role="tab" aria-selected="true" data-hero-lang="rust">Rust</button>
+              <button class="hero-lang-btn" type="button" role="tab" aria-selected="false" data-hero-lang="python">Python</button>
+              <button class="hero-lang-btn" type="button" role="tab" aria-selected="false" data-hero-lang="typescript">TypeScript</button>
+            </div>
             <span class="console-badge">PgBackend</span>
           </div>
         </div>
 
         <div class="hero-code-stack">
-          <!-- Agents -->
-          <div class="hero-code-variant active" data-variant="agents">
+          <!-- Agents (Rust) -->
+          <div class="hero-code-variant active" data-variant="agents" data-lang="rust">
             <pre><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
@@ -1731,8 +1784,57 @@ import { ZART_VERSION } from "../lib/version";
 &#125;</code></pre>
           </div>
 
-          <!-- Payments -->
-          <div class="hero-code-variant" data-variant="payments">
+          <!-- Agents (Python) -->
+          <div class="hero-code-variant" data-variant="agents" data-lang="python">
+            <pre><code><span class="kw">import</span> zart
+<span class="kw">from</span> zart <span class="kw">import</span> <span class="ty">Retry</span>
+
+<span class="attr">@zart.step("extract", retry=Retry.exponential(3, "2s"))</span>
+<span class="kw">async def</span> <span class="fn">extract_city</span>(query: <span class="ty">str</span>) -&gt; <span class="ty">City</span>:
+    <span class="kw">return await</span> llm.extract(<span class="ty">City</span>, query)
+
+<span class="attr">@zart.step("fetch", retry=Retry.exponential(3, "1s"))</span>
+<span class="kw">async def</span> <span class="fn">fetch_breweries</span>(city: <span class="ty">str</span>) -&gt; <span class="ty">list</span>[<span class="ty">Brewery</span>]:
+    <span class="kw">return await</span> http.get_json(api_url(city))
+
+<span class="attr">@zart.durable("ai-brewery-finder", timeout="10m")</span>
+<span class="kw">async def</span> <span class="fn">brewery_finder</span>(query: <span class="ty">str</span>) -&gt; <span class="ty">Report</span>:
+    city = <span class="kw">await</span> <span class="fn">extract_city</span>(query)
+    data = <span class="kw">await</span> <span class="fn">fetch_breweries</span>(city.name)
+    <span class="kw">return</span> <span class="ty">Report</span>.<span class="fn">summarize</span>(data)</code></pre>
+          </div>
+
+          <!-- Agents (TypeScript) -->
+          <div class="hero-code-variant" data-variant="agents" data-lang="typescript">
+            <pre><code><span class="kw">import</span> &#123; Effect &#125; <span class="kw">from</span> <span class="str">"effect"</span>;
+<span class="kw">import</span> &#123; <span class="ty">Retry</span>, <span class="ty">Zart</span> &#125; <span class="kw">from</span> <span class="str">"@zart/effect"</span>;
+
+<span class="kw">const</span> <span class="fn">extractCity</span> = Zart.<span class="fn">step</span>(
+  <span class="str">"extract"</span>,
+  (query: <span class="ty">string</span>) =&gt; llm.<span class="fn">extract</span>(City, query),
+  &#123; retry: Retry.<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="str">"2 seconds"</span>) &#125;,
+);
+
+<span class="kw">const</span> <span class="fn">fetchBreweries</span> = Zart.<span class="fn">step</span>(
+  <span class="str">"fetch"</span>,
+  (city: <span class="ty">string</span>) =&gt; http.<span class="fn">getJson</span>(<span class="fn">apiUrl</span>(city)),
+  &#123; retry: Retry.<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="str">"1 second"</span>) &#125;,
+);
+
+<span class="kw">const</span> <span class="fn">breweryFinder</span> = Zart.<span class="fn">durable</span>(
+  <span class="str">"ai-brewery-finder"</span>,
+  (query: <span class="ty">string</span>) =&gt;
+    Effect.<span class="fn">gen</span>(<span class="kw">function*</span> () &#123;
+      <span class="kw">const</span> city = <span class="kw">yield*</span> <span class="fn">extractCity</span>(query);
+      <span class="kw">const</span> data = <span class="kw">yield*</span> <span class="fn">fetchBreweries</span>(city.name);
+      <span class="kw">return</span> Report.<span class="fn">summarize</span>(data);
+    &#125;),
+  &#123; timeout: <span class="str">"10 minutes"</span> &#125;,
+);</code></pre>
+          </div>
+
+          <!-- Payments (Rust) -->
+          <div class="hero-code-variant" data-variant="payments" data-lang="rust">
             <pre><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
@@ -1755,8 +1857,56 @@ import { ZART_VERSION } from "../lib/version";
 &#125;</code></pre>
           </div>
 
-          <!-- Onboarding -->
-          <div class="hero-code-variant" data-variant="onboarding">
+          <!-- Payments (Python) -->
+          <div class="hero-code-variant" data-variant="payments" data-lang="python">
+            <pre><code><span class="kw">import</span> zart
+
+<span class="attr">@zart.step("deduct")</span>
+<span class="kw">async def</span> <span class="fn">deduct_balance</span>(order: <span class="ty">Order</span>, tx: zart.<span class="ty">Trx</span> = zart.<span class="fn">trx</span>()) -&gt; <span class="ty">int</span>:
+    row = <span class="kw">await</span> tx.<span class="fn">fetch_one</span>(
+        <span class="str">"UPDATE accounts SET balance = balance - $1 WHERE id = $2 RETURNING balance"</span>,
+        order.total, order.account_id,
+    )
+    <span class="kw">return</span> row[<span class="str">"balance"</span>]
+
+<span class="attr">@zart.durable("checkout", timeout="10m")</span>
+<span class="kw">async def</span> <span class="fn">checkout</span>(order: <span class="ty">Order</span>) -&gt; <span class="ty">Receipt</span>:
+    balance = <span class="kw">await</span> <span class="fn">deduct_balance</span>(order)
+    shipped = <span class="kw">await</span> zart.<span class="fn">wait_for_event</span>(<span class="str">"shipped"</span>, timeout=<span class="str">"24h"</span>)
+    <span class="kw">return</span> <span class="ty">Receipt</span>(balance=balance, tracking=shipped[<span class="str">"tracking"</span>])</code></pre>
+          </div>
+
+          <!-- Payments (TypeScript) -->
+          <div class="hero-code-variant" data-variant="payments" data-lang="typescript">
+            <pre><code><span class="kw">import</span> &#123; Effect &#125; <span class="kw">from</span> <span class="str">"effect"</span>;
+<span class="kw">import</span> &#123; <span class="ty">Zart</span> &#125; <span class="kw">from</span> <span class="str">"@zart/effect"</span>;
+
+<span class="kw">const</span> <span class="fn">deductBalance</span> = Zart.<span class="fn">step</span>(<span class="str">"deduct"</span>, (order: <span class="ty">Order</span>) =&gt;
+  Effect.<span class="fn">gen</span>(<span class="kw">function*</span> () &#123;
+    <span class="kw">const</span> row = <span class="kw">yield*</span> Zart.Trx.<span class="fn">fetchOne</span>&lt;&#123; balance: <span class="ty">number</span> &#125;&gt;(
+      <span class="str">"UPDATE accounts SET balance = balance - $1 WHERE id = $2 RETURNING balance"</span>,
+      [order.total, order.accountId],
+    );
+    <span class="kw">return</span> row.balance;
+  &#125;),
+);
+
+<span class="kw">const</span> <span class="fn">checkout</span> = Zart.<span class="fn">durable</span>(
+  <span class="str">"checkout"</span>,
+  (order: <span class="ty">Order</span>) =&gt;
+    Effect.<span class="fn">gen</span>(<span class="kw">function*</span> () &#123;
+      <span class="kw">const</span> balance = <span class="kw">yield*</span> <span class="fn">deductBalance</span>(order);
+      <span class="kw">const</span> shipped = <span class="kw">yield*</span> Zart.<span class="fn">waitForEvent</span>&lt;&#123; tracking: <span class="ty">string</span> &#125;&gt;(<span class="str">"shipped"</span>, &#123;
+        timeout: <span class="str">"24 hours"</span>,
+      &#125;);
+      <span class="kw">return</span> &#123; balance, tracking: shipped.tracking &#125;;
+    &#125;),
+  &#123; timeout: <span class="str">"10 minutes"</span> &#125;,
+);</code></pre>
+          </div>
+
+          <!-- Onboarding (Rust) -->
+          <div class="hero-code-variant" data-variant="onboarding" data-lang="rust">
             <pre><code><span class="kw">use</span> zart::prelude::*;
 <span class="kw">use</span> zart::&#123;<span class="mac">zart_durable</span>, <span class="mac">zart_step</span>&#125;;
 
@@ -1778,6 +1928,55 @@ import { ZART_VERSION } from "../lib/version";
     <span class="fn">provision</span>(&amp;user).<span class="kw">await</span>?;
     <span class="ty">Ok</span>(<span class="ty">Welcome</span>::<span class="fn">for_user</span>(&amp;user))
 &#125;</code></pre>
+          </div>
+
+          <!-- Onboarding (Python) -->
+          <div class="hero-code-variant" data-variant="onboarding" data-lang="python">
+            <pre><code><span class="kw">import</span> zart
+<span class="kw">from</span> zart <span class="kw">import</span> <span class="ty">Retry</span>
+
+<span class="attr">@zart.step("welcome")</span>
+<span class="kw">async def</span> <span class="fn">send_welcome</span>(email: <span class="ty">str</span>) -&gt; <span class="ty">None</span>:
+    <span class="kw">await</span> mailer.send(email, <span class="str">"Welcome!"</span>)
+
+<span class="attr">@zart.step("billing", retry=Retry.exponential(3, "2s"))</span>
+<span class="kw">async def</span> <span class="fn">setup_billing</span>(user: <span class="ty">NewUser</span>) -&gt; <span class="ty">str</span>:
+    <span class="kw">return await</span> stripe.create_customer(user)
+
+<span class="attr">@zart.durable("onboarding", timeout="30m")</span>
+<span class="kw">async def</span> <span class="fn">onboard</span>(user: <span class="ty">NewUser</span>) -&gt; <span class="ty">Welcome</span>:
+    <span class="kw">await</span> <span class="fn">send_welcome</span>(user.email)
+    <span class="kw">await</span> <span class="fn">setup_billing</span>(user)
+    <span class="kw">await</span> zart.<span class="fn">wait_for_event</span>(<span class="str">"email-confirmed"</span>, timeout=<span class="str">"48h"</span>)
+    <span class="kw">return</span> <span class="ty">Welcome</span>.<span class="fn">for_user</span>(user)</code></pre>
+          </div>
+
+          <!-- Onboarding (TypeScript) -->
+          <div class="hero-code-variant" data-variant="onboarding" data-lang="typescript">
+            <pre><code><span class="kw">import</span> &#123; Effect &#125; <span class="kw">from</span> <span class="str">"effect"</span>;
+<span class="kw">import</span> &#123; <span class="ty">Retry</span>, <span class="ty">Zart</span> &#125; <span class="kw">from</span> <span class="str">"@zart/effect"</span>;
+
+<span class="kw">const</span> <span class="fn">sendWelcome</span> = Zart.<span class="fn">step</span>(<span class="str">"welcome"</span>, (email: <span class="ty">string</span>) =&gt;
+  mailer.<span class="fn">send</span>(email, <span class="str">"Welcome!"</span>),
+);
+
+<span class="kw">const</span> <span class="fn">setupBilling</span> = Zart.<span class="fn">step</span>(
+  <span class="str">"billing"</span>,
+  (user: <span class="ty">NewUser</span>) =&gt; stripe.<span class="fn">createCustomer</span>(user),
+  &#123; retry: Retry.<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="str">"2 seconds"</span>) &#125;,
+);
+
+<span class="kw">const</span> <span class="fn">onboard</span> = Zart.<span class="fn">durable</span>(
+  <span class="str">"onboarding"</span>,
+  (user: <span class="ty">NewUser</span>) =&gt;
+    Effect.<span class="fn">gen</span>(<span class="kw">function*</span> () &#123;
+      <span class="kw">yield*</span> <span class="fn">sendWelcome</span>(user.email);
+      <span class="kw">yield*</span> <span class="fn">setupBilling</span>(user);
+      <span class="kw">yield*</span> Zart.<span class="fn">waitForEvent</span>(<span class="str">"email-confirmed"</span>, &#123; timeout: <span class="str">"48 hours"</span> &#125;);
+      <span class="kw">return</span> Welcome.<span class="fn">forUser</span>(user);
+    &#125;),
+  &#123; timeout: <span class="str">"30 minutes"</span> &#125;,
+);</code></pre>
           </div>
         </div>
 
@@ -2062,9 +2261,9 @@ import { ZART_VERSION } from "../lib/version";
   <div class="container">
     <div class="section-header">
       <span class="section-label">Ergonomics</span>
-      <h2 class="section-title">Two APIs. Same durability.</h2>
+      <h2 class="section-title">Three APIs. Same durability.</h2>
       <p class="section-sub">
-        Start with ergonomic attribute macros that read like plain async Rust, or drop down to explicit traits when you want manual struct dependency injection.
+        Start with ergonomic Rust attribute macros, drop down to explicit traits, or write workflows in Python or TypeScript (Effect v4) with native async ergonomics and atomic Postgres transactions.
       </p>
     </div>
 
@@ -2073,8 +2272,10 @@ import { ZART_VERSION } from "../lib/version";
         <ul class="tab-list" role="tablist">
           <li><button class="tab-btn active" role="tab" aria-selected="true" data-tab="macros">#[zart_durable] Macros</button></li>
           <li><button class="tab-btn" role="tab" aria-selected="false" data-tab="task-handler">DurableExecution Trait</button></li>
+          <li><button class="tab-btn" role="tab" aria-selected="false" data-tab="python">Python SDK</button></li>
+          <li><button class="tab-btn" role="tab" aria-selected="false" data-tab="typescript">TypeScript (Effect v4)</button></li>
         </ul>
-        <span class="tab-hint">onboarding.rs</span>
+        <span class="tab-hint" id="code-tab-hint">onboarding.rs</span>
       </div>
 
       <!-- Macros tab -->
@@ -2145,6 +2346,75 @@ import { ZART_VERSION } from "../lib/version";
         <span class="ty">Ok</span>(())
     &#125;
 &#125;</code></pre>
+      </div>
+
+      <!-- Python SDK tab -->
+      <div class="tab-panel" id="tab-python">
+        <pre><code><span class="kw">import</span> zart
+<span class="kw">from</span> zart <span class="kw">import</span> <span class="ty">Retry</span>
+
+<span class="cmt"># Define each step with retries and optional atomic Postgres transaction</span>
+<span class="attr">@zart.step("send-welcome", retry=Retry.exponential(3, "2s"))</span>
+<span class="kw">async def</span> <span class="fn">send_welcome</span>(email: <span class="ty">str</span>) -&gt; <span class="ty">None</span>:
+    <span class="kw">await</span> send_email(email)
+
+<span class="attr">@zart.step("credit-account")</span>
+<span class="kw">async def</span> <span class="fn">credit_account</span>(user_id: <span class="ty">str</span>, tx: zart.<span class="ty">Trx</span> = zart.<span class="fn">trx</span>()) -&gt; <span class="ty">int</span>:
+    row = <span class="kw">await</span> tx.<span class="fn">fetch_one</span>(
+        <span class="str">"UPDATE accounts SET balance = balance + 100 WHERE id = $1 RETURNING balance"</span>,
+        user_id,
+    )
+    <span class="kw">return</span> row[<span class="str">"balance"</span>]
+
+<span class="cmt"># Compose steps — direct await, dataclasses/Pydantic serde, powered by Rust</span>
+<span class="attr">@zart.durable("onboarding", timeout="30m")</span>
+<span class="kw">async def</span> <span class="fn">onboarding</span>(data: <span class="ty">OnboardingData</span>) -&gt; <span class="ty">int</span>:
+    <span class="kw">await</span> <span class="fn">send_welcome</span>(data.email)
+    balance = <span class="kw">await</span> <span class="fn">credit_account</span>(data.user_id)
+    <span class="kw">await</span> zart.<span class="fn">wait_for_event</span>(<span class="str">"email-verified"</span>, timeout=<span class="str">"48h"</span>)
+    <span class="kw">return</span> balance</code></pre>
+        <div class="tab-panel-footer">
+          <a href="/docs/python/">Explore Python SDK docs &rarr;</a>
+        </div>
+      </div>
+
+      <!-- TypeScript (Effect v4) tab -->
+      <div class="tab-panel" id="tab-typescript">
+        <pre><code><span class="kw">import</span> &#123; Effect &#125; <span class="kw">from</span> <span class="str">"effect"</span>;
+<span class="kw">import</span> &#123; <span class="ty">Retry</span>, <span class="ty">Zart</span> &#125; <span class="kw">from</span> <span class="str">"@zart/effect"</span>;
+
+<span class="cmt">// Define each step with retries and optional atomic Postgres transaction</span>
+<span class="kw">const</span> <span class="fn">sendWelcome</span> = Zart.<span class="fn">step</span>(
+  <span class="str">"send-welcome"</span>,
+  (email: <span class="ty">string</span>) =&gt; sendEmail(email),
+  &#123; retry: Retry.<span class="fn">exponential</span>(<span class="lit">3</span>, <span class="str">"2 seconds"</span>) &#125;,
+);
+
+<span class="kw">const</span> <span class="fn">creditAccount</span> = Zart.<span class="fn">step</span>(<span class="str">"credit-account"</span>, (userId: <span class="ty">string</span>) =&gt;
+  Effect.<span class="fn">gen</span>(<span class="kw">function*</span> () &#123;
+    <span class="kw">const</span> row = <span class="kw">yield*</span> Zart.Trx.<span class="fn">fetchOne</span>&lt;&#123; balance: <span class="ty">number</span> &#125;&gt;(
+      <span class="str">"UPDATE accounts SET balance = balance + 100 WHERE id = $1 RETURNING balance"</span>,
+      [userId],
+    );
+    <span class="kw">return</span> row.balance;
+  &#125;),
+);
+
+<span class="cmt">// Compose steps — Effect v4 generators, Schema serde, powered by Rust</span>
+<span class="kw">const</span> <span class="fn">onboarding</span> = Zart.<span class="fn">durable</span>(
+  <span class="str">"onboarding"</span>,
+  (data: <span class="ty">OnboardingData</span>) =&gt;
+    Effect.<span class="fn">gen</span>(<span class="kw">function*</span> () &#123;
+      <span class="kw">yield*</span> <span class="fn">sendWelcome</span>(data.email);
+      <span class="kw">const</span> balance = <span class="kw">yield*</span> <span class="fn">creditAccount</span>(data.userId);
+      <span class="kw">yield*</span> Zart.<span class="fn">waitForEvent</span>(<span class="str">"email-verified"</span>, &#123; timeout: <span class="str">"48 hours"</span> &#125;);
+      <span class="kw">return</span> balance;
+    &#125;),
+  &#123; timeout: <span class="str">"30 minutes"</span> &#125;,
+);</code></pre>
+        <div class="tab-panel-footer">
+          <a href="/docs/typescript/">Explore TypeScript SDK docs &rarr;</a>
+        </div>
       </div>
     </div>
   </div>
@@ -2308,6 +2578,14 @@ import { ZART_VERSION } from "../lib/version";
   });
 
   // ── Code section tabs ────────────────────────────────────
+  const TAB_HINTS = {
+    macros: 'onboarding.rs',
+    'task-handler': 'onboarding.rs',
+    python: 'onboarding.py',
+    typescript: 'onboarding.ts',
+  };
+  const tabHintEl = document.getElementById('code-tab-hint');
+
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const tabId = btn.getAttribute('data-tab');
@@ -2320,20 +2598,62 @@ import { ZART_VERSION } from "../lib/version";
       btn.classList.add('active');
       btn.setAttribute('aria-selected', 'true');
       document.getElementById('tab-' + tabId)?.classList.add('active');
+      if (tabHintEl && TAB_HINTS[tabId]) {
+        tabHintEl.textContent = TAB_HINTS[tabId];
+      }
     });
   });
 
   // ── Interactive Hero Domain Switcher + Auto-rotation ─────
   const DOMAINS = [
-    { id: 'agents',     word: 'Agents',      file: 'brewery_finder.rs' },
-    { id: 'payments',   word: 'Payments',    file: 'checkout_flow.rs' },
-    { id: 'onboarding', word: 'Onboardings', file: 'onboarding.rs' },
+    { id: 'agents',     word: 'Agents',      file: 'brewery_finder.rs', pyFile: 'brewery_finder.py', tsFile: 'brewery_finder.ts' },
+    { id: 'payments',   word: 'Payments',    file: 'checkout_flow.rs',  pyFile: 'checkout_flow.py',  tsFile: 'checkout_flow.ts' },
+    { id: 'onboarding', word: 'Onboardings', file: 'onboarding.rs',     pyFile: 'onboarding.py',     tsFile: 'onboarding.ts' },
   ];
 
   let currentIdx = 0;
+  let currentLang = 'rust';
   let autoTimer = null;
   const wordEl = document.getElementById('hero-word');
   const fileEl = document.getElementById('hero-filename');
+  const runtimeEl = document.getElementById('hero-runtime');
+
+  function syncHeroCode() {
+    const next = DOMAINS[currentIdx];
+    if (!next) return;
+    document.querySelectorAll('.hero-code-variant').forEach(el => {
+      const match =
+        el.getAttribute('data-variant') === next.id &&
+        el.getAttribute('data-lang') === currentLang;
+      el.classList.toggle('active', match);
+    });
+    if (fileEl) {
+      fileEl.textContent =
+        currentLang === 'python' ? next.pyFile :
+        currentLang === 'typescript' ? next.tsFile :
+        next.file;
+    }
+    if (runtimeEl) {
+      runtimeEl.textContent =
+        currentLang === 'python' ? 'asyncio · pyo3' :
+        currentLang === 'typescript' ? 'effect v4 · napi' :
+        'tokio · sqlx';
+    }
+  }
+
+  document.querySelectorAll('.hero-lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const lang = btn.getAttribute('data-hero-lang');
+      if (!lang || lang === currentLang) return;
+      currentLang = lang;
+      document.querySelectorAll('.hero-lang-btn').forEach(b => {
+        const isMatch = b.getAttribute('data-hero-lang') === lang;
+        b.classList.toggle('active', isMatch);
+        b.setAttribute('aria-selected', String(isMatch));
+      });
+      syncHeroCode();
+    });
+  });
 
   function setDomain(idx, animateWord = true) {
     const next = DOMAINS[idx];
@@ -2346,11 +2666,11 @@ import { ZART_VERSION } from "../lib/version";
       btn.setAttribute('aria-selected', String(isMatch));
     });
 
-    document.querySelectorAll('.hero-sub-variant, .hero-code-variant, .trace-variant').forEach(el => {
+    document.querySelectorAll('.hero-sub-variant, .trace-variant').forEach(el => {
       el.classList.toggle('active', el.getAttribute('data-variant') === next.id);
     });
 
-    if (fileEl) fileEl.textContent = next.file;
+    syncHeroCode();
 
     if (!wordEl) return;
     if (!animateWord) {

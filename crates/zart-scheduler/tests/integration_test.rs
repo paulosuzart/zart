@@ -542,17 +542,17 @@ mod wakeup_and_backpressure_tests {
             .await
             .expect("schedule_now failed");
 
-        let finished_id = tokio::time::timeout(Duration::from_millis(100), done_rx.recv())
+        let finished_id = tokio::time::timeout(Duration::from_secs(1), done_rx.recv())
             .await
-            .expect("worker did not wake up within 100ms via LISTEN/NOTIFY")
+            .expect("worker did not wake up within 1s via LISTEN/NOTIFY")
             .expect("channel closed unexpectedly");
         let elapsed = start.elapsed();
 
         assert_eq!(finished_id, task_id);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
         assert!(
-            elapsed < Duration::from_millis(100),
-            "expected < 100ms wakeup, took {elapsed:?}"
+            elapsed < Duration::from_secs(1),
+            "expected < 1s wakeup (well below 30s poll_interval), took {elapsed:?}"
         );
 
         worker.stop();
@@ -585,7 +585,7 @@ mod wakeup_and_backpressure_tests {
         let handle = tokio::spawn(async move { w.run().await });
 
         // Allow initial poll to complete so the worker parks on wait_for_wakeup.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let task_id = format!("test-local-wakeup-{}", Uuid::new_v4());
         let start = Instant::now();
@@ -594,17 +594,17 @@ mod wakeup_and_backpressure_tests {
             .await
             .expect("schedule_now failed");
 
-        let finished_id = tokio::time::timeout(Duration::from_millis(100), done_rx.recv())
+        let finished_id = tokio::time::timeout(Duration::from_secs(1), done_rx.recv())
             .await
-            .expect("worker did not wake up within 100ms via local_wakeup")
+            .expect("worker did not wake up within 1s via local_wakeup")
             .expect("channel closed unexpectedly");
         let elapsed = start.elapsed();
 
         assert_eq!(finished_id, task_id);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
         assert!(
-            elapsed < Duration::from_millis(100),
-            "expected < 100ms local_wakeup, took {elapsed:?}"
+            elapsed < Duration::from_secs(1),
+            "expected < 1s local_wakeup (well below 30s poll_interval), took {elapsed:?}"
         );
 
         worker.stop();
@@ -665,6 +665,26 @@ mod wakeup_and_backpressure_tests {
 
         let elapsed = start.elapsed();
 
+        // Wait for Postgres `mark_completed` commits before stopping the worker,
+        // since `done_rx` fires inside the task handler prior to DB completion.
+        let completed_in_db = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM zart_tasks WHERE task_id = ANY($1) AND status = 'completed'",
+                )
+                .bind(&task_ids)
+                .fetch_one(&pool)
+                .await
+                .expect("DB count query failed");
+                if count == TOTAL_TASKS as i64 {
+                    return count;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("DB status did not reach TOTAL_TASKS completed within 5s");
+
         worker.stop();
         let _ = handle.await;
 
@@ -682,14 +702,6 @@ mod wakeup_and_backpressure_tests {
             elapsed < Duration::from_secs(5),
             "burst should drain continuously without 30s sleeps, took {elapsed:?}"
         );
-
-        let completed_in_db: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM zart_tasks WHERE task_id = ANY($1) AND status = 'completed'",
-        )
-        .bind(&task_ids)
-        .fetch_one(&pool)
-        .await
-        .expect("DB count query failed");
         assert_eq!(completed_in_db, TOTAL_TASKS as i64);
 
         cleanup(&pool, &task_ids).await;

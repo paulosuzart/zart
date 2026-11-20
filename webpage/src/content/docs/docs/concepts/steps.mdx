@@ -3,7 +3,7 @@ title: Steps
 description: What steps are, how to define them with #[zart_step], and the built-in types: sleep, capture, and wait_for_event.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## What Is a Step?
 
@@ -16,6 +16,9 @@ A **step** is the fundamental unit of durable work in Zart. Each step:
 
 Steps are just async functions with an attribute. No special context objects to thread through your code.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 use zart::prelude::*;
 use zart::zart_step;
@@ -26,7 +29,36 @@ async fn send_welcome_email(user_email: &str) -> Result<(), StepError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("send-welcome-email")
+async def send_welcome_email(user_email: str) -> None:
+    await mailer.send(user_email, "Welcome to Zart!")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const sendWelcomeEmail = Zart.step("send-welcome-email", (userEmail: string) =>
+  Effect.tryPromise(() => mailer.send(userEmail, "Welcome to Zart!")),
+);
+```
+
+</TabItem>
+</Tabs>
+
 Call it from your durable handler like any other async function:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_durable("onboarding")]
@@ -36,6 +68,31 @@ async fn onboarding(data: OnboardingData) -> Result<(), TaskError> {
     Ok(())
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("onboarding")
+async def onboarding(data: OnboardingData) -> None:
+    await send_welcome_email(data.email)
+    # ──✓── result persisted to DB
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const onboarding = Zart.durable("onboarding", (data: { email: string }) =>
+  Effect.gen(function* () {
+    yield* sendWelcomeEmail(data.email);
+    // ──✓── result persisted to DB
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
 
 ## Defining Steps with `#[zart_step]`
 
@@ -49,6 +106,9 @@ The `#[zart_step]` attribute transforms an `async fn` into a type that implement
 
 Steps can accept any arguments and return `Result<T, E>` where `T: Serialize` and `E: Serialize + std::error::Error`.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 #[zart_step("charge-card")]
 async fn charge_card(
@@ -59,11 +119,35 @@ async fn charge_card(
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.step("charge-card")
+async def charge_card(card_token: str, amount_cents: int) -> PaymentResult:
+    return await stripe.create_charge(card_token, amount_cents)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const chargeCard = Zart.step("charge-card", (cardToken: string, amountCents: number) =>
+  Effect.tryPromise(() => stripe.createCharge(cardToken, amountCents)),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ### Step Name Uniqueness
 
 Every step name must be unique **within a single execution**. Zart uses `(execution_id, step_name)` as the lookup key for replay. If two steps share a name, the second one will incorrectly receive the first one's cached result.
 
-For steps in loops, use the `{index}` template or `.named()`:
+For steps in loops, use the `{index}` template (Rust) or `.named()` (all SDKs):
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 // Template form — {index} expands at runtime
@@ -80,9 +164,32 @@ for (i, item) in items.iter().enumerate() {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+for i, item in enumerate(items):
+    await notify_stakeholder(item.email).named(f"notify-{i}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+for (let i = 0; i < items.length; i++) {
+  yield* notifyStakeholder(items[i]!.email).named(`notify-${i}`);
+}
+```
+
+</TabItem>
+</Tabs>
+
 ## Retry Policies
 
 Steps can be configured with automatic retries via the `retry` parameter:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 // 3 retries, exponential backoff starting at 2 seconds
@@ -94,7 +201,41 @@ async fn fetch_api() -> Result<Response, StepError> { /* ... */ }
 async fn send_notification() -> Result<(), StepError> { /* ... */ }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+# 3 retries, exponential backoff starting at 2 seconds
+@zart.step("fetch-api", retry=zart.Retry.exponential(3, "2s"))
+async def fetch_api() -> dict: ...
+
+# 3 retries, fixed 1-second delay between attempts
+@zart.step("send-notification", retry=zart.Retry.fixed(3, "1s"))
+async def send_notification() -> None: ...
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// 3 retries, exponential backoff starting at 2 seconds
+const fetchApi = Zart.step("fetch-api", () => Effect.succeed({ ok: true }), {
+  retry: Zart.Retry.exponential(3, "2 seconds"),
+});
+
+// 3 retries, fixed 1-second delay between attempts
+const sendNotification = Zart.step("send-notification", () => Effect.void, {
+  retry: Zart.Retry.fixed(3, "1 seconds"),
+});
+```
+
+</TabItem>
+</Tabs>
+
 Each retry attempt is tracked independently. You can inspect the current attempt number from within the step:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_step("charge-card", retry = "fixed(2, 1s)")]
@@ -105,9 +246,40 @@ async fn charge_card() -> Result<(), PaymentError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.step("charge-card", retry=zart.Retry.fixed(2, "1s"))
+async def charge_card() -> None:
+    attempt = zart.context().current_attempt  # 0, 1, 2, …
+    print(f"Attempt {attempt + 1}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const chargeCardWithRetry = Zart.step(
+  "charge-card-with-retry",
+  () =>
+    Effect.gen(function* () {
+      const ctx = yield* Zart.context; // currentAttempt: 0, 1, 2, …
+      console.log(`Attempt ${ctx.currentAttempt + 1} (isRetry=${ctx.isRetry})`);
+    }),
+  { retry: Zart.Retry.fixed(2, "1 seconds") },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Sleep — Durable Delays
 
 `zart::sleep` suspends a workflow without blocking a thread. The execution is checkpointed and the continuation is scheduled for `now + duration`.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use std::time::Duration;
@@ -124,29 +296,128 @@ async fn delayed_notification(data: NotificationData) -> Result<(), TaskError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("delayed-notification")
+async def delayed_notification(data: NotificationData) -> None:
+    await send_confirmation(data.email)
+
+    # Durable sleep — survives restarts, zero threads blocked
+    await zart.sleep("wait-24h", "24h")
+
+    await send_followup(data.email)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const delayedNotification = Zart.durable(
+  "delayed-notification",
+  (data: { email: string }) =>
+    Effect.gen(function* () {
+      yield* sendConfirmation(data.email);
+
+      // Durable sleep — survives restarts, zero fibers blocked
+      yield* Zart.sleep("wait-24h", "24 hours");
+
+      yield* sendFollowup(data.email);
+    }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 The `name` must be stable and unique within the execution body. Treat it like a migration name — don't change it after the execution has started.
 
 ### `sleep_until` — Absolute Time
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let next_monday = compute_next_monday();
 zart::sleep_until("wait-for-monday", next_monday).await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+next_monday = compute_next_monday()
+await zart.sleep_until("wait-for-monday", next_monday.isoformat())
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const nextMonday = computeNextMonday();
+yield* Zart.sleepUntil("wait-for-monday", nextMonday);
+```
+
+</TabItem>
+</Tabs>
+
 ## `capture` and `now` — Durable Values
 
-Sometimes you need to persist a pure value (like a timestamp or a computed ID) so it survives restarts. `zart::capture` stores the result of a synchronous closure as a completed step row:
+Sometimes you need to persist a pure value (like a timestamp or a computed ID) so it survives restarts. `capture` stores the result of a closure as a completed step row:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let started_at = zart::capture!("started-at", chrono::Utc::now());
 // On replay: returns the cached DateTime — Utc::now() is never called again.
 ```
 
-`zart::now` is a shorthand:
+</TabItem>
+<TabItem label="Python">
+
+```python
+from datetime import UTC, datetime
+
+started_at = await zart.capture("started-at", lambda: datetime.now(UTC).isoformat())
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const startedAt = yield* Zart.capture("started-at", () => new Date().toISOString());
+```
+
+</TabItem>
+</Tabs>
+
+`now` is a shorthand:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let created_at = zart::now("created-at").await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+created_at = await zart.now("created-at")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const createdAt = yield* Zart.now("created-at");
+```
+
+</TabItem>
+</Tabs>
 
 The value is durably stored and returned identically on every replay. This is useful for:
 
@@ -157,6 +428,9 @@ The value is durably stored and returned identically on every replay. This is us
 ## `wait_for_event` — External Signals
 
 `zart::wait_for_event` suspends an execution until an external signal arrives. The event can come from another Rust process, an HTTP webhook, or the CLI.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use std::time::Duration;
@@ -186,7 +460,63 @@ async fn approval_workflow(req: ApprovalRequest) -> Result<ApprovalOutput, TaskE
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("approval-workflow")
+async def approval_workflow(req: ApprovalRequest) -> ApprovalOutput:
+    await validate_request(req)
+
+    # Park until a manager responds
+    decision = await zart.wait_for_event(
+        "manager-approval",
+        timeout="24h",
+        target_type=ApprovalDecision,
+    )
+
+    if decision.approved:
+        await provision_resource(req.resource)
+
+    return ApprovalOutput(...)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const ApprovalDecision = Schema.Struct({
+  approved: Schema.Boolean,
+  reviewer: Schema.String,
+  comment: Schema.String,
+});
+
+const approvalWorkflow = Zart.durable("approval-workflow", (req: ApprovalRequest) =>
+  Effect.gen(function* () {
+    yield* validateRequest(req);
+
+    // Park until a manager responds
+    const decision = yield* Zart.waitForEvent("manager-approval", {
+      schema: ApprovalDecision,
+      timeout: "24 hours",
+    });
+
+    if (decision.approved) {
+      yield* provisionResource(req.resource);
+    }
+
+    return { approved: decision.approved, reviewer: decision.reviewer };
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
 Deliver an event from anywhere with access to the `DurableScheduler`:
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 durable
@@ -197,6 +527,31 @@ durable
     )
     .await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+await scheduler.offer_event(
+    execution_id,
+    "manager-approval",
+    zart.to_json_value(decision),
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* scheduler.offerEvent(executionId, "manager-approval", ApprovalDecision, {
+  approved: true,
+  reviewer: "Alice",
+  comment: "Approved",
+});
+```
+
+</TabItem>
+</Tabs>
 
 Or via the HTTP API:
 
@@ -213,6 +568,9 @@ If no event arrives before the timeout, `wait_for_event` returns an error — us
 
 `zart::context()` returns read-only metadata about the current execution. It's callable from **anywhere** — the handler body or inside a step body.
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 let info = zart::context();
 println!("Execution: {}", info.execution_id);
@@ -221,6 +579,33 @@ println!("Attempt:   {}", info.current_attempt);
 println!("Is retry:  {}", info.is_retry());
 println!("Payload:   {}", info.data);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+info = zart.context()
+print(f"Execution: {info.execution_id}")
+print(f"Task:      {info.task_name}")
+print(f"Attempt:   {info.current_attempt}")
+print(f"Is retry:  {info.is_retry()}")
+print(f"Payload:   {info.data}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const info = yield* Zart.context;
+console.log("Execution:", info.executionId);
+console.log("Task:     ", info.taskName);
+console.log("Attempt:  ", info.currentAttempt);
+console.log("Is retry: ", info.currentAttempt > 0);
+console.log("Payload:  ", info.data);
+```
+
+</TabItem>
+</Tabs>
 
 Fields:
 

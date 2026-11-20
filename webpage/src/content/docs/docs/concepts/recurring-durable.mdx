@@ -3,7 +3,7 @@ title: Recurring Durable Executions
 description: Schedule durable workflows on a recurring basis with configurable overlap policies.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Motivation
 
@@ -53,6 +53,9 @@ executions when you need steps, retries, and observability.
 
 ## Quick Start
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 use zart::prelude::*;
 use zart::OverlapPolicy;
@@ -89,6 +92,79 @@ let worker = WorkerBuilder::from_backend(&pg)
     )
     .build();
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+# 1. Define your durable workflow as usual
+@zart.durable("nightly-report")
+async def nightly_report(data: dict) -> dict:
+    await fetch_inventory(data["warehouse"])
+    await write_report(data["warehouse"])
+    return {"status": "ok"}
+
+# 2. Register and schedule on a fixed-delay or 6-field cron schedule
+worker = (
+    zart.WorkerBuilder(backend)
+    .register_durable(nightly_report)
+    .register_recurring_durable(
+        nightly_report,
+        id_template="report-{occurrence}",
+        recurrence=zart.Recurrence.fixed_delay("5s"),
+        # Cron for production (6-field: sec min hour dom month dow):
+        # recurrence=zart.Recurrence.cron("0 0 2 * * *", timezone="UTC"),
+        overlap=zart.OverlapPolicy.SkipIfRunning,
+        initial_data={"warehouse": "EU-1"},
+    )
+    .build()
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect, Schema } from "effect";
+import {
+  OverlapPolicy,
+  Recurrence,
+  WorkerBuilder,
+  Zart,
+} from "@zart/effect";
+
+const ReportInput = Schema.Struct({ warehouse: Schema.String });
+
+// 1. Define your durable workflow as usual
+const nightlyReport = Zart.durable(
+  "nightly-report",
+  (data) =>
+    Effect.gen(function* () {
+      yield* fetchInventory(data.warehouse);
+      yield* writeReport(data.warehouse);
+      return { status: "ok" };
+    }),
+  { inputSchema: ReportInput },
+);
+
+// 2. Register and schedule on a fixed-delay or 6-field cron schedule
+const worker = (yield* WorkerBuilder.fromBackend(backend))
+  .registerDurable(nightlyReport)
+  .registerRecurringDurable(nightlyReport, {
+    idTemplate: "report-{occurrence}",
+    recurrence: Recurrence.fixedDelay("5 seconds"),
+    // Cron for production (6-field: sec min hour dom month dow):
+    // recurrence: Recurrence.cron("0 0 2 * * *", "UTC"),
+    overlap: OverlapPolicy.SkipIfRunning,
+    initialData: { warehouse: "EU-1" },
+  })
+  .build();
+```
+
+</TabItem>
+</Tabs>
 
 <Aside type="tip">
 `register_recurring_durable` schedules the first occurrence immediately and
@@ -155,6 +231,9 @@ database or use the same template for two different recurring tasks.
 
 Use `DurableScheduler::wait` to block until a specific occurrence finishes:
 
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
 let record = durable
     .wait("report-3", Duration::from_secs(30), None)
@@ -164,14 +243,55 @@ println!("Status: {:?}", record.status);
 println!("Result: {:?}", record.result);
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+record = await scheduler.wait("report-3", timeout_secs=30.0)
+print(f"Status: {record.status}")
+print(f"Result: {record.result}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const record = yield* scheduler.wait("report-3", 30);
+console.log("Status:", record.status);
+console.log("Result:", record.result);
+```
+
+</TabItem>
+</Tabs>
+
 ## Stopping a Recurring Task
 
-To cancel a recurring task entirely, use `DurableScheduler::stop_recurring`:
+To cancel a recurring task entirely, use `DurableScheduler::stop_recurring` (Rust/Python) or `scheduler.stopRecurring` (TypeScript):
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let durable = DurableScheduler::from_backend(&pg);
 durable.stop_recurring("nightly-report").await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+await scheduler.stop_recurring("nightly-report")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* scheduler.stopRecurring("nightly-report");
+```
+
+</TabItem>
+</Tabs>
 
 This marks the recurring task as inactive. No new occurrences will be scheduled,
 but executions that are already running will complete normally.

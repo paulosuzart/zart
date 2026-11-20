@@ -135,6 +135,11 @@ impl PostgresTaskScheduler {
         &self.pool
     }
 
+    /// Returns a reference to the resolved table-name configuration.
+    pub fn table_names(&self) -> &TableNames {
+        &self.table_names
+    }
+
     /// Returns a reference to the in-process wakeup notifier.
     pub fn local_wakeup(&self) -> &Arc<Notify> {
         &self.local_wakeup

@@ -1,0 +1,35 @@
+{
+	"name": "@zart/effect",
+	"version": "0.1.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"scripts": {
+		"build:native": "napi build --platform --release",
+		"build": "tsc -p tsconfig.build.json",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"lint": "biome check ts tests examples package.json tsconfig.json tsconfig.build.json vitest.config.ts biome.json",
+		"lint:fix": "biome check --write ts tests examples package.json tsconfig.json tsconfig.build.json vitest.config.ts biome.json",
+		"format": "biome format --write ts tests examples package.json tsconfig.json tsconfig.build.json vitest.config.ts biome.json",
+		"example:transactions": "npm run build && node --experimental-strip-types examples/transactions.ts",
+		"example:approval": "npm run build && node --experimental-strip-types examples/approval_workflow.ts",
+		"example:parallel-saga": "npm run build && node --experimental-strip-types examples/parallel_saga.ts"
+	},
+	"napi": {
+		"name": "zart-ts",
+		"binaryName": "zart-ts"
+	},
+	"dependencies": {
+		"effect": "^4.1.4"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.8",
+		"@napi-rs/cli": "^2.18.0",
+		"@types/node": "^22.0.0",
+		"typescript": "^5.5.0",
+		"vitest": "^2.0.0"
+	}
+}
