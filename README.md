@@ -7,7 +7,7 @@
 
 # Zart
 
-> **Durable execution for Rust.** Write workflows that survive crashes, restarts, and redeployments — without losing progress or repeating work.
+> **Durable execution for Rust, Python, and TypeScript.** Write workflows that survive crashes, restarts, and redeployments — without losing progress or repeating work.
 
 **⚠️ Alpha — Work in Progress.** Zart is actively developed and not yet production-ready. Expect API changes and missing features.
 
@@ -21,15 +21,15 @@ The tools that solve this — Temporal, Cadence, and similar platforms — are p
 
 **Zart exists so you don't have to learn that lesson.**
 
-It's a Rust library designed for **high ergonomics and zero orchestration overhead**. You get durable execution using your existing PostgreSQL database — no new infrastructure, no distributed systems primitives, no paradigm shift.
+It's a Rust-powered durable execution library with native SDKs for **Rust**, **Python**, and **TypeScript (Effect v4)**, designed for **high ergonomics and zero orchestration overhead**. You get durable execution using your existing PostgreSQL database — no new infrastructure, no distributed systems primitives, no paradigm shift.
 
 ---
 
 ## What is Durable Execution?
 
-Durable execution lets you write long-running workflows as ordinary async Rust code. Each step is checkpointed to the database. If your process crashes, times out, or gets redeployed, Zart resumes from the last successful step — no work is lost, no step is repeated.
+Durable execution lets you write long-running workflows as ordinary async code. Each step is checkpointed to the database. If your process crashes, times out, or gets redeployed, Zart resumes from the last successful step — no work is lost, no step is repeated.
 
-Think of it like GitHub Actions: your workflow has multiple steps, and if the infrastructure fails mid-run, it resumes where it left off. No one configures durability as a non-functional requirement — it's just how the platform works. Zart brings that same default-reliable experience to your Rust backend.
+Think of it like GitHub Actions: your workflow has multiple steps, and if the infrastructure fails mid-run, it resumes where it left off. No one configures durability as a non-functional requirement — it's just how the platform works. Zart brings that same default-reliable experience to your Rust, Python, and TypeScript backends.
 
 ## Complete Example
 
@@ -141,8 +141,8 @@ If the process crashes after `process_payment` completes, a restart skips that s
 - **Reliability from day one** — Every step persists its result. Failures resume, not restart.
 - **No new infrastructure** — Uses the PostgreSQL database you already have.
 - **Progressive complexity** — Start simple. Add retries, parallel steps, and events only when you need them.
-- **Rust-native** — Built on `tokio`, `serde`, and standard Rust patterns. No alien mental models.
-- **Zero vendor lock-in** — It's a library, not a platform. Your workflows are just Rust code.
+- **Language-native** — Idiomatic APIs for Rust (`tokio` + `serde`), Python 3.15 (`asyncio` via PyO3), and TypeScript ([Effect v4](https://effect.website/) via `napi-rs`), all backed by the same Rust core.
+- **Zero vendor lock-in** — It's a library, not a platform. Your workflows are just code.
 
 ## Who Zart Is For
 
@@ -166,7 +166,7 @@ Full documentation, examples, and API reference live at **[zart.run](http://zart
 - **[Examples](http://zart.run/examples/)** — real-world patterns (brewery finder, approval workflows, parallel steps)
 - **[Rust API](http://zart.run/rust-api/overview/)** — `#[zart_step]`, `#[zart_durable]`, macros, and loops
 
-### In Your Project
+### Rust
 
 ```toml
 [dependencies]
@@ -185,15 +185,58 @@ just migrate
 just example-sleep
 ```
 
+### Python
+
+Python 3.15 bindings (`zart`), powered by PyO3 and Tokio — see [bindings/python/README.md](bindings/python/README.md) for setup, step patterns, and examples.
+
+```python
+import zart
+
+
+@zart.step("charge-card", retry=zart.Retry.fixed(3, "1s"))
+async def charge_card(order_id: str, amount: float) -> str:
+    return f"charged:{order_id}:{amount}"
+
+
+@zart.durable("checkout")
+async def checkout(order_id: str) -> str:
+    return await charge_card(order_id, 49.99)
+```
+
+### TypeScript (Effect v4)
+
+TypeScript / Effect v4 bindings (`@zart/effect`), powered by `napi-rs` and Tokio — see [bindings/typescript/README.md](bindings/typescript/README.md) for setup, step/error patterns, and examples.
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const chargeCard = Zart.step(
+	"charge-card",
+	(orderId: string, amount: number) =>
+		Effect.succeed(`charged:${orderId}:${amount}`),
+	{ retry: Zart.Retry.fixed(3, "1 second") },
+);
+
+const checkout = Zart.durable("checkout", (orderId: string) =>
+	Effect.gen(function* () {
+		return yield* chargeCard(orderId, 49.99);
+	}),
+);
+```
+
 ## Project Structure
 
-| Crate | Description |
-|---|---|
-| `zart` | Core durable execution library |
-| `scheduler` | PostgreSQL-backed task scheduler & worker |
-| `zart-cli` | Command-line tools |
-| `zart-api` | HTTP API for external event delivery |
-| `zart-macros` | Procedural macros (`#[zart_step]`, `#[zart_durable]`) |
+| Path | Package / Crate | Description |
+|---|---|---|
+| `crates/zart` | `zart` | Core durable execution library |
+| `crates/zart-core` | `zart-core` | Shared core primitives, types, and backend traits |
+| `crates/zart-scheduler` | `zart-scheduler` | PostgreSQL-backed task scheduler & worker |
+| `crates/zart-cli` | `zart-cli` | Command-line tools |
+| `crates/zart-api` | `zart-api` | HTTP API for external event delivery & admin |
+| `crates/zart-macros` | `zart-macros` | Procedural macros (`#[zart_step]`, `#[zart_durable]`) |
+| `bindings/python` | `zart` | Python 3.15 bindings (PyO3 + Tokio) — [Python README](bindings/python/README.md) |
+| `bindings/typescript` | `@zart/effect` | TypeScript / Effect v4 bindings (napi-rs + Tokio) — [TypeScript README](bindings/typescript/README.md) |
 
 ## Architecture
 

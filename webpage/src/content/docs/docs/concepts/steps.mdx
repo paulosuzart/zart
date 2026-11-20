@@ -260,13 +260,14 @@ async def charge_card() -> None:
 <TabItem label="TypeScript">
 
 ```ts
-// Zart.context requires ZartWorkflow and is available inside Zart.durable workflows:
-const chargeCardWorkflow = Zart.durable("charge-card-workflow", () =>
-  Effect.gen(function* () {
-    const ctx = yield* Zart.context; // currentAttempt: 0, 1, 2, …
-    console.log(`Attempt ${ctx.currentAttempt + 1}`);
-    return yield* chargeCard("tok_visa", 1000);
-  }),
+const chargeCardWithRetry = Zart.step(
+  "charge-card-with-retry",
+  () =>
+    Effect.gen(function* () {
+      const ctx = yield* Zart.context; // currentAttempt: 0, 1, 2, …
+      console.log(`Attempt ${ctx.currentAttempt + 1} (isRetry=${ctx.isRetry})`);
+    }),
+  { retry: Zart.Retry.fixed(2, "1 seconds") },
 );
 ```
 

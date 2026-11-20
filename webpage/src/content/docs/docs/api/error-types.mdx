@@ -1,15 +1,18 @@
 ---
 title: Error Types
-description: Reference for every error type in Zart — StepOutcome, StepError, TaskError, ZartStepError, ExecutionFailure, and SchedulerError.
+description: Reference for error types across Rust, Python, and TypeScript — StepOutcome, StepError, TaskError, ZartStepError, ExecutionFailure, and SchedulerError.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Zart uses a typed error hierarchy that separates business decisions from framework failures. This document is a reference — for the conceptual walkthrough see [**Error Handling**](/docs/concepts/error-handling/).
 
-## `StepOutcome<T, E>`
+## `StepOutcome`
 
-The three-way result of `zart::step()`.
+The three-way result returned when inspecting a step outcome explicitly (`zart::step()`, `zart.step()`, `Zart.outcome()`).
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 pub enum StepOutcome<T, E> {
@@ -19,13 +22,52 @@ pub enum StepOutcome<T, E> {
 }
 ```
 
-| Variant | Meaning |
-|---|---|
-| `Ok(T)` | The step succeeded; `T` is the result. |
-| `BusinessErr(E)` | The step failed with its own error type. This is a **business decision** (e.g., `PaymentError::InsufficientFunds`). |
-| `ZartErr(ZartStepError)` | The framework could not complete the step (retry exhausted, timeout). This is **not** a business decision. |
+</TabItem>
+<TabItem label="Python">
 
-## `StepError`
+```python
+# Returned by `await zart.step(my_step(...))`
+outcome = await zart.step(check_balance(account_id))
+if outcome.is_ok:
+    value = outcome.value
+elif outcome.is_business_err:
+    err = outcome.error
+elif outcome.is_zart_err:
+    zart_err = outcome.error
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import type { ZartTaggedError } from "@zart/effect";
+
+export type StepOutcome<A = unknown> =
+  | { readonly _tag: "ok"; readonly value: A }
+  | {
+      readonly _tag: "business_err";
+      readonly errorType: string;
+      readonly message: string;
+      readonly data?: unknown;
+    }
+  | { readonly _tag: "zart_err"; readonly error: ZartTaggedError };
+```
+
+</TabItem>
+</Tabs>
+
+| Variant / State | Meaning |
+|---|---|
+| `Ok` / `is_ok` / `"ok"` | The step succeeded; carries the result value. |
+| `BusinessErr` / `is_business_err` / `"business_err"` | The step failed with a domain/business error (e.g., `PaymentError::InsufficientFunds`). |
+| `ZartErr` / `is_zart_err` / `"zart_err"` | The framework could not complete the step (retry exhausted, timeout, deadline exceeded). |
+
+## Step & Workflow Errors
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
+### `StepError`
 
 Used in `zart::wait` results and for control-flow signalling.
 
@@ -41,17 +83,7 @@ pub enum StepError {
 }
 ```
 
-| Variant | When it appears |
-|---|---|
-| `Scheduled` | Control-flow: the step has been registered but not yet executed. Propagated internally, never matched by users. |
-| `StepExecuted` | Control-flow: the step was executed and its result was persisted. Propagated internally, never matched by users. |
-| `Failed` | The step's `run()` returned `Err(E)`. The `reason` is the error message. |
-| `RetryExhausted` | All retry attempts failed. `attempts` is the total count. |
-| `Timeout` | The step exceeded its configured timeout. |
-| `DeadlineExceeded` | The execution-level timeout was exceeded. |
-| `Other` | An opaque framework error. |
-
-## `TaskError`
+### `TaskError`
 
 The top-level error type returned by `run()` and by `zart::require()`.
 
@@ -65,15 +97,34 @@ pub enum TaskError {
 }
 ```
 
-| Variant | When it appears |
-|---|---|
-| `StepFailed` | A step returned a non-Ok outcome that propagated to the top. |
-| `MaxRetriesExhausted` | The execution-level retry policy exhausted all attempts. |
-| `Timeout` | The execution-level `timeout` was exceeded. |
-| `Cancelled` | The execution was cancelled via `cancel()`. |
-| `HandlerPanic` | The handler body panicked. The `String` contains the panic message. |
+</TabItem>
+<TabItem label="Python">
 
-## `ZartStepError`
+Python exposes typed exceptions inheriting from `zart.ZartError`:
+
+- `ZartStepFailedError` — raised when a required step fails with a business or framework error.
+- `ZartRetryExhaustedError` — raised when a step exhausts all configured retry attempts.
+- `ZartStepTimeoutError` — raised when a step exceeds its configured timeout.
+- `ZartDeadlineExceededError` — raised when a step or event deadline is exceeded.
+- `ZartControlFlowSignal` — inherits from `BaseException` (not `Exception`), so `except Exception:` never swallows durable replay or suspension.
+
+</TabItem>
+<TabItem label="TypeScript">
+
+TypeScript exposes Effect `Data.TaggedError` classes (`ZartTaggedError`), so you can match them with `Effect.catchTag`:
+
+- `StepFailedError` (`stepName`, `errorType?`, `message`, `data?`)
+- `RetryExhaustedError` (`stepName`, `attempts`, `lastError?`)
+- `StepTimeoutError` (`stepName`, `timeoutMs?`)
+- `DeadlineExceededError` (`message?`)
+- `ZartBackendError` (`message`)
+- `ZartSchemaError` (`message`)
+- `ControlFlowDefect` — lifted into an Effect defect via `Effect.die`, so `Effect.catch` never swallows durable replay or suspension.
+
+</TabItem>
+</Tabs>
+
+## `ZartStepError` (Rust)
 
 The framework-level error type inside `StepOutcome::ZartErr`.
 
@@ -91,7 +142,7 @@ pub enum ZartStepError {
 | `TimedOut` | The step's deadline was exceeded. Under `global` scope, this means the total budget across all attempts ran out. Under `per_attempt` scope, this single attempt exceeded its budget. **Timeout is always terminal — it never triggers a retry.** |
 | `DeadlineExceeded` | A `wait_for_event` call exceeded its event-wait deadline. Independent of step/execution deadlines. |
 
-### Inspecting the Last Error
+### Inspecting the Last Error (Rust)
 
 When a step exhausts retries, the last error is preserved as JSON. You can deserialize it back into the step's error type:
 
@@ -107,7 +158,10 @@ if let Some(Ok(last)) = err.last_error::<PaymentError>() {
 
 ## `ExecutionFailure`
 
-Passed to the `on_failure` handler.
+Passed to the `on_failure` (Rust/Python) or `onFailure` (TypeScript) recovery callback.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 pub enum ExecutionFailure {
@@ -117,15 +171,42 @@ pub enum ExecutionFailure {
 }
 ```
 
-| Variant | When it appears |
+</TabItem>
+<TabItem label="Python">
+
+```python
+# zart.ExecutionFailure properties:
+# - failure.kind: "step_failed" | "execution_deadline_exceeded" | "retries_exhausted"
+# - failure.step: str | None      (set when kind == "step_failed")
+# - failure.raw: Any | None       (set when kind == "step_failed")
+# - failure.attempts: int | None  (set when kind == "retries_exhausted")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+export type ExecutionFailure =
+  | { readonly kind: "step_failed"; readonly step: string; readonly raw: unknown }
+  | { readonly kind: "execution_deadline_exceeded" }
+  | { readonly kind: "retries_exhausted"; readonly attempts: number };
+```
+
+</TabItem>
+</Tabs>
+
+| Variant / `kind` | When it appears |
 |---|---|
-| `StepFailed` | A step returned a non-Ok outcome. `raw` is the JSON-serialized error — deserialize it into the step's typed error for precise matching. |
-| `ExecutionDeadlineExceeded` | The execution-level timeout (set via `#[zart_durable(..., timeout = "...")]`) was exceeded. The deadline is calculated from when the execution was first scheduled. |
-| `RetriesExhausted` | The execution-level retry policy exhausted all attempts. |
+| `StepFailed` / `"step_failed"` | A step returned a non-Ok outcome. `raw` is the JSON-serialized error. |
+| `ExecutionDeadlineExceeded` / `"execution_deadline_exceeded"` | The execution-level timeout was exceeded. |
+| `RetriesExhausted` / `"retries_exhausted"` | The execution-level retry policy exhausted all attempts. |
 
 ## `SchedulerError`
 
-Errors from `DurableScheduler` operations (start, wait, cancel, offer_event).
+Errors from `DurableScheduler` operations (`start`, `wait`, `cancel`, `offer_event`, etc.).
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 pub enum SchedulerError {
@@ -135,10 +216,31 @@ pub enum SchedulerError {
 }
 ```
 
-| Variant | When it appears |
+</TabItem>
+<TabItem label="Python">
+
+`DurableScheduler` raises `zart.ZartError` subclasses (or `zart.ZartError` with a descriptive message when an execution is not found, already exists, or `wait` times out).
+
+</TabItem>
+<TabItem label="TypeScript">
+
+`DurableScheduler` returns typed Effect errors in the `E` channel:
+
+- `ExecutionNotFound`
+- `ExecutionAlreadyExists`
+- `WaitTimedOut`
+- `ZartBackendError`
+- `ZartSchemaError`
+- `ZartError`
+
+</TabItem>
+</Tabs>
+
+| Error | When it appears |
 |---|---|
-| `ExecutionAlreadyExists(id, status)` | `start` or `start_for` was called with an ID that already exists. `status` is the current status of the existing execution. |
-| `WaitTimedOut(id)` | `wait` or `wait_with_timeout` exceeded its timeout without the execution completing. |
+| `ExecutionAlreadyExists` | `start` or `start_for` was called with an ID that already exists in a non-terminal state. |
+| `WaitTimedOut` | `wait` or `wait_completion` exceeded its timeout without the execution completing. |
+| `ExecutionNotFound` | An operation targeted an `execution_id` that does not exist. |
 
 ## Next Steps
 

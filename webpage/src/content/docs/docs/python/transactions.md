@@ -27,7 +27,7 @@ async with await backend.begin() as tx:
 
 ## Zart-Managed Step Transactions (`tx: zart.Trx = zart.trx()`)
 
-When a `@zart.step` declares `tx: zart.Trx = zart.trx()`, Zart opens a `ZartTrx` and passes `tx` into your step automatically (callers omit `tx` when calling the step). Your SQL write and Zart's step completion record commit atomically:
+When a `@zart.step` declares `tx: zart.Trx = zart.trx()` (or simply `tx: zart.Trx` without a default), Zart opens a `ZartTrx` and passes `tx` into your step automatically (callers omit `tx` when calling the step). Your SQL write and Zart's step completion record commit atomically:
 
 ```python
 @zart.step("deduct-balance")

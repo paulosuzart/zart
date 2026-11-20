@@ -57,9 +57,8 @@ async def main() -> None:
 
     try:
         exec_id = f"onboard-{uuid4()}"
-        payload = zart.to_json_value(OnboardingInput(user_id=uuid4(), email="ada@example.com"))
-        await scheduler.start(exec_id, "onboard-user", payload)
-        result = await scheduler.wait_completion(exec_id, timeout_secs=30.0)
+        payload = OnboardingInput(user_id=uuid4(), email="ada@example.com")
+        result = await scheduler.start_and_wait(exec_id, onboard_user, payload, timeout="30s")
         print("Completed:", result)
     finally:
         worker.stop()
@@ -94,3 +93,18 @@ asyncio.run(main())
 ## Typed Serialization
 
 `zart.serde` (`to_json_value` / `from_json_value`) automatically serializes and reconstructs `dataclasses`, optional `pydantic.BaseModel`, `UUID`, `datetime`, `Enum`, `list[T]`, `dict[K, V]`, and `Optional[T]` / `T | None` across the FFI boundary.
+
+## Backend, Worker & Recurring Configuration
+
+- **Backend options (`PgBackend`)**: pass `listener_url`, `table_prefix`, and `schema` (for custom table names/schemas) to `PgBackend.connect(...)`, switch the listener URL with `backend.with_listener_url(url)`, and check connectivity with `await backend.ping()`.
+- **Worker configuration (`WorkerBuilder`)**: configure polling and lease behavior with `.poll_interval(secs)`, `.max_concurrent_tasks(n)`, `.max_tasks_per_poll(n)`, `.shutdown_timeout(secs)`, `.orphan_timeout(secs)`, `.heartbeat_interval(secs | None)`, and `.enable_listen_notify(enabled)`.
+- **Centralized failure recovery**: pass `on_failure=handler` to `@zart.durable(...)` to handle `zart.ExecutionFailure` (`"step_failed"`, `"execution_deadline_exceeded"`, `"retries_exhausted"`).
+- **Recurring durable workflows**: schedule cron or fixed-delay durable tasks with `WorkerBuilder.register_recurring_durable(task, id_template="job-{occurrence}", recurrence=zart.Recurrence.fixed_delay("5s"), overlap=zart.OverlapPolicy.SkipIfRunning)` and stop them via `await scheduler.stop_recurring(...)`.
+
+## Querying, Admin Recovery & Pause/Resume
+
+`DurableScheduler` also provides full introspection, recovery, and pause/resume controls:
+
+- **Querying**: `list_executions(...)`, `stats()`, `get_current_run_id(execution_id)`, `list_runs(execution_id)`, `execution_detail(execution_id, run_id=None)`
+- **Admin recovery**: `retry_step(run_id, step_name)`, `retry_step_current_run(execution_id, step_name)`, `restart(execution_id)`, `rerun_steps(execution_id, force_rerun=[...], preserve=[...])`
+- **Pause & resume**: `pause(PauseScope(...))`, `resume(PauseScope(...))`, `resume_rule_by_id(rule_id)`, `list_pause_rules(filter=None)`

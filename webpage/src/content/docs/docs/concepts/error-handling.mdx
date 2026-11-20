@@ -184,9 +184,9 @@ const cachedConfig = yield* Zart.stepOr(fetchRemoteConfig(), defaultConfig);
 </TabItem>
 </Tabs>
 
-### 4. `step_or_else()` — Computed Fallback
+### 4. `step_or_else()` / `Zart.stepOrElse()` — Computed Fallback
 
-The closure receives the step's error — framework errors (`ZartErr`) still propagate and are not silently swallowed.
+The closure receives the step's business error — framework errors (`ZartErr` / `ZartTaggedError`) still propagate and are not silently swallowed.
 
 <Tabs syncKey="sdk">
 <TabItem label="Rust">
@@ -216,8 +216,9 @@ payment = await zart.step_or_else(
 <TabItem label="TypeScript">
 
 ```ts
-const payment = yield* chargeCard(accountId, data.amount).pipe(
-  Effect.catch((_err) => Effect.succeed({ transactionId: "fallback", amount: 0 })),
+const payment = yield* Zart.stepOrElse(
+  chargeCard(accountId, data.amount),
+  (_err) => ({ transactionId: "fallback", amount: 0 }),
 );
 ```
 
@@ -228,7 +229,7 @@ If `charge_card` returns `BusinessErr(PaymentError::CardDeclined)`, the closure 
 
 ## Centralized Recovery with `on_failure`
 
-When any propagated failure reaches the top of the workflow, the `on_failure` handler (Rust/Python) or `Effect.catch` (TypeScript) is invoked.
+When any propagated failure reaches the top of the workflow, the `on_failure` handler (Rust/Python) or `onFailure` option (TypeScript) is invoked.
 
 <Tabs syncKey="sdk">
 <TabItem label="Rust">
@@ -314,16 +315,40 @@ async def process_order(data: OrderInput) -> OrderOutput:
 <TabItem label="TypeScript">
 
 ```ts
-const processOrder = Zart.durable("order-processing", (data: OrderInput) =>
-  Effect.gen(function* () {
-    const inventory = yield* reserveInventory(data.orderId);
-    const payment = yield* chargeCard(data.accountId, data.amount);
-    return { status: "completed", inventory, payment };
-  }).pipe(
-    Effect.catch((err) =>
-      Effect.succeed({ status: "failed", message: String(err) }),
-    ),
-  ),
+const processOrder = Zart.durable(
+  "order-processing",
+  (data: OrderInput) =>
+    Effect.gen(function* () {
+      const inventory = yield* reserveInventory(data.orderId);
+      const payment = yield* chargeCard(data.accountId, data.amount);
+      return { status: "completed", message: `charged ${payment.transactionId}` };
+    }),
+  {
+    onFailure: (_data, failure) => {
+      if (failure.kind === "step_failed" && failure.step === "charge-card") {
+        return Effect.succeed({
+          status: "payment_failed",
+          message: `Payment failed: ${JSON.stringify(failure.raw)}`,
+        });
+      }
+      if (failure.kind === "execution_deadline_exceeded") {
+        return Effect.succeed({
+          status: "timed_out",
+          message: "Execution deadline exceeded",
+        });
+      }
+      if (failure.kind === "retries_exhausted") {
+        return Effect.succeed({
+          status: "retries_exhausted",
+          message: `Gave up after ${failure.attempts} attempts`,
+        });
+      }
+      return Effect.succeed({
+        status: "failed",
+        message: `Step ${failure.step} failed`,
+      });
+    },
+  },
 );
 ```
 

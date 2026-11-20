@@ -99,17 +99,28 @@ let worker = WorkerBuilder::from_backend(&pg)
 ```python
 import zart
 
-# Recurring cron/fixed-delay registration (`register_recurring_durable`) is currently
-# available in the Rust SDK. In Python, trigger occurrences from your scheduler/cron
-# using idempotent execution IDs:
+# 1. Define your durable workflow as usual
 @zart.durable("nightly-report")
 async def nightly_report(data: dict) -> dict:
     await fetch_inventory(data["warehouse"])
     await write_report(data["warehouse"])
     return {"status": "ok"}
 
-# Trigger an occurrence idempotently:
-await scheduler.start("report-0", "nightly-report", {"warehouse": "EU-1"})
+# 2. Register and schedule on a fixed-delay or 6-field cron schedule
+worker = (
+    zart.WorkerBuilder(backend)
+    .register_durable(nightly_report)
+    .register_recurring_durable(
+        nightly_report,
+        id_template="report-{occurrence}",
+        recurrence=zart.Recurrence.fixed_delay("5s"),
+        # Cron for production (6-field: sec min hour dom month dow):
+        # recurrence=zart.Recurrence.cron("0 0 2 * * *", timezone="UTC"),
+        overlap=zart.OverlapPolicy.SkipIfRunning,
+        initial_data={"warehouse": "EU-1"},
+    )
+    .build()
+)
 ```
 
 </TabItem>
@@ -117,13 +128,16 @@ await scheduler.start("report-0", "nightly-report", {"warehouse": "EU-1"})
 
 ```ts
 import { Effect, Schema } from "effect";
-import { DurableScheduler, Zart } from "@zart/effect";
+import {
+  OverlapPolicy,
+  Recurrence,
+  WorkerBuilder,
+  Zart,
+} from "@zart/effect";
 
-// Recurring cron/fixed-delay registration (`register_recurring_durable`) is currently
-// available in the Rust SDK. In TypeScript, trigger occurrences from your scheduler/cron
-// using idempotent execution IDs:
 const ReportInput = Schema.Struct({ warehouse: Schema.String });
 
+// 1. Define your durable workflow as usual
 const nightlyReport = Zart.durable(
   "nightly-report",
   (data) =>
@@ -135,8 +149,18 @@ const nightlyReport = Zart.durable(
   { inputSchema: ReportInput },
 );
 
-// Trigger an occurrence idempotently:
-yield* scheduler.start("report-0", "nightly-report", ReportInput, { warehouse: "EU-1" });
+// 2. Register and schedule on a fixed-delay or 6-field cron schedule
+const worker = (yield* WorkerBuilder.fromBackend(backend))
+  .registerDurable(nightlyReport)
+  .registerRecurringDurable(nightlyReport, {
+    idTemplate: "report-{occurrence}",
+    recurrence: Recurrence.fixedDelay("5 seconds"),
+    // Cron for production (6-field: sec min hour dom month dow):
+    // recurrence: Recurrence.cron("0 0 2 * * *", "UTC"),
+    overlap: OverlapPolicy.SkipIfRunning,
+    initialData: { warehouse: "EU-1" },
+  })
+  .build();
 ```
 
 </TabItem>
@@ -242,7 +266,7 @@ console.log("Result:", record.result);
 
 ## Stopping a Recurring Task
 
-To cancel a recurring task entirely, use `DurableScheduler::stop_recurring` (Rust), or `cancel` for an individual occurrence in Python / TypeScript:
+To cancel a recurring task entirely, use `DurableScheduler::stop_recurring` (Rust/Python) or `scheduler.stopRecurring` (TypeScript):
 
 <Tabs syncKey="sdk">
 <TabItem label="Rust">
@@ -256,14 +280,14 @@ durable.stop_recurring("nightly-report").await?;
 <TabItem label="Python">
 
 ```python
-await scheduler.cancel("report-3")
+await scheduler.stop_recurring("nightly-report")
 ```
 
 </TabItem>
 <TabItem label="TypeScript">
 
 ```ts
-yield* scheduler.cancel("report-3");
+yield* scheduler.stopRecurring("nightly-report");
 ```
 
 </TabItem>

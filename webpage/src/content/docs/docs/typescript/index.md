@@ -82,13 +82,16 @@ const main = Effect.scoped(
     const workerFiber = yield* Effect.forkChild(worker.runScoped());
 
     const execId = `onboard-${randomUUID()}`;
-    yield* scheduler.start(execId, "onboard-user", OnboardingInput, {
-      userId: randomUUID(),
-      email: "ada@example.com",
-    });
-
     const result = yield* scheduler
-      .waitCompletion(execId, OnboardingOutput, 30)
+      .startAndWait(
+        execId,
+        onboardUser,
+        {
+          userId: randomUUID(),
+          email: "ada@example.com",
+        },
+        "30 seconds",
+      )
       .pipe(Effect.ensuring(Fiber.interrupt(workerFiber)));
 
     console.log("Completed:", result);
@@ -106,6 +109,7 @@ await Effect.runPromise(main);
 | `yield* myStep(...).named("item-0")` | Inside loops or dynamic branches where each invocation needs a distinct durable step ID. |
 | `yield* Zart.outcome(myStep(...))` | Inspect the `StepOutcome<A>` (`_tag`: `"ok"`, `"business_err"`, or `"zart_err"`) without failing the workflow. |
 | `yield* Zart.stepOr(myStep(...), fallback)` | Recover from any typed step error with a fallback value instead of failing the workflow. |
+| `yield* Zart.stepOrElse(myStep(...), fn)` | Compute a fallback on **business errors only** (`ZartTaggedError` framework failures still propagate). |
 | `Zart.schedule(myStep(...))` + `yield* Zart.wait(h)` / `yield* Zart.waitAll([...])` | Parallel fan-out / fan-in across multiple independent steps, preserving handle order. |
 | `yield* Zart.require(myStep(...))` | Explicit equivalent of `yield* myStep(...)` (optional; never needed for normal sequential steps). |
 
@@ -113,7 +117,7 @@ await Effect.runPromise(main);
 
 Workflow orchestration primitives (`Zart.step`, `Zart.sleep`, `Zart.waitForEvent`, `Zart.schedule`, `Zart.capture`, `Zart.now`, `Zart.context`) require the `ZartWorkflow` service in Effect's `R` type parameter, which is provided by `Zart.durable`.
 
-By contrast, `Zart.step` functions may only require `StepAllowedServices` (`ZartTrx | SqlClient.SqlClient | TrxSessionService`), never `ZartWorkflow`. Calling `Zart.sleep(...)`, `Zart.waitForEvent(...)`, or another `Zart.step(...)` inside a step body is rejected at compile time by `tsc`.
+By contrast, `Zart.step` functions may only require `StepAllowedServices` (`ZartTrx | SqlClient.SqlClient | TrxSessionService | ZartContext`), never `ZartWorkflow`. Calling `Zart.sleep(...)`, `Zart.waitForEvent(...)`, or another `Zart.step(...)` inside a step body is rejected at compile time by `tsc`.
 
 ## Control Flow, Timers & Events
 
@@ -122,7 +126,7 @@ By contrast, `Zart.step` functions may only require `StepAllowedServices` (`Zart
 - `yield* Zart.waitForEvent("manager-approval", { schema: ApprovalDecision, timeout: "2 minutes" })` — Suspend until an external event is delivered via `scheduler.offerEvent(...)`.
 - `yield* Zart.capture("random-seed", () => ...)` — Durably record a non-deterministic computation (with optional `Schema.Codec`).
 - `yield* Zart.now("ts")` — Deterministic, durably recorded `Date`.
-- `yield* Zart.context` — Returns `ExecutionInfo` (`executionId`, `taskName`, `data`, `currentAttempt`).
+- `yield* Zart.context` — Returns `ExecutionInfo` (`executionId`, `taskName`, `data`, `currentAttempt`, `isRetry`) inside both `Zart.durable` and `Zart.step`.
 
 > **Note:** Zart's replay/suspension signals are lifted into Effect defects (`ControlFlowDefect` via `Effect.die`), so `Effect.catch` and `Zart.stepOr` in workflow code never accidentally swallow durable control flow.
 
@@ -136,3 +140,18 @@ Built-in wire-aware schemas are exported on `Zart`:
 - `Zart.DateFromRfc3339` — `Date` encoded as RFC 3339 string
 - `Zart.BigIntFromDecimal` — `bigint` encoded as decimal string
 - `Zart.BytesFromBase64` — `Uint8Array` encoded as base64 string
+
+## Backend, Worker & Recurring Configuration
+
+- **Backend options (`PgBackend`)**: pass `{ listenerUrl, tablePrefix, schema }` to `PgBackend.connect(...)` / `PgBackend.scoped(...)`, switch the listener URL with `backend.withListenerUrl(url)`, and check connectivity with `yield* backend.ping()`.
+- **Worker configuration (`WorkerBuilder.configure`)**: configure `pollInterval`, `maxConcurrentTasks`, `maxTasksPerPoll`, `shutdownTimeout`, `orphanTimeout`, `heartbeatInterval`, and `enableListenNotify` (accepting Effect `Duration.Input`).
+- **Centralized failure recovery**: pass `onFailure: (input, failure) => ...` in `Zart.durable` options to handle `ExecutionFailure` (`"step_failed"`, `"execution_deadline_exceeded"`, `"retries_exhausted"`).
+- **Recurring durable workflows**: schedule cron or fixed-delay workflows with `WorkerBuilder.registerRecurringDurable(def, { idTemplate: "job-{occurrence}", recurrence: Recurrence.fixedDelay("5 seconds"), overlap: OverlapPolicy.SkipIfRunning })` and stop them via `yield* scheduler.stopRecurring(...)`.
+
+## Querying, Admin Recovery & Pause/Resume
+
+`DurableScheduler` exposes full introspection, recovery, and pause/resume controls:
+
+- **Querying**: `listExecutions(params?)`, `stats()`, `getCurrentRunId(executionId)`, `listRuns(executionId)`, `executionDetail(executionId, runId?)`
+- **Admin recovery**: `retryStep(runId, stepName, triggeredBy?)`, `retryStepCurrentRun(executionId, stepName, triggeredBy?)`, `restart(executionId, newPayload?, triggeredBy?)`, `rerunSteps(executionId, spec)`
+- **Pause & resume**: `pause(scope)`, `resume(scope, deletedBy?)`, `resumeRuleById(ruleId, deletedBy?)`, `listPauseRules(filter?)`

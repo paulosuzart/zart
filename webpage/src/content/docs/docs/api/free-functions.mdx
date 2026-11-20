@@ -1,17 +1,20 @@
 ---
 title: Free Functions
-description: Reference for all zart free functions — step, require, schedule, wait, sleep, capture, and more.
+description: Reference for all zart workflow functions — step, require, schedule, wait, sleep, capture, and more across Rust, Python, and TypeScript.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-All user-facing workflow operations are exposed as free functions under the `zart::` namespace. There is no `ctx` to thread through your code — the framework uses task-local storage to make the current execution context available wherever you are in the call stack.
+All user-facing workflow operations are exposed as free functions under `zart::` (Rust), `zart.*` (Python), and `Zart.*` (TypeScript / Effect). There is no `ctx` to thread through your code — each runtime makes the current execution context available automatically.
 
 ## Step Execution
 
-### `zart::require`
+### `require`
 
-Execute a step and fail the execution on any non-`Ok` outcome.
+Execute a step and fail the execution on any non-`Ok` outcome. This is the **default path** — use it when a step's failure means the whole workflow cannot proceed.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 pub async fn require<S>(s: S) -> Result<S::Output, TaskError>
@@ -20,25 +23,37 @@ where
     S::Error: std::error::Error + Send + Sync + 'static,
 ```
 
-This is the **default path** — use it when a step's failure means the whole workflow cannot proceed.
-
 ```rust
 let inventory = reserve_inventory(order_id.clone()).await?;
 ```
 
-Both `BusinessErr` and `ZartErr` result in `TaskError::StepFailed`, preserving the step name for `on_failure` inspection.
+</TabItem>
+<TabItem label="Python">
 
-### `zart::step`
-
-Execute a step and return the three-way [`StepOutcome`](/docs/api/error-types/#stepoutcome).
-
-```rust
-pub async fn step<S: ZartStep + Send>(
-    s: S,
-) -> Result<StepOutcome<S::Output, S::Error>, StepError>
+```python
+# Direct await uses require() semantics; zart.require(...) is the explicit equivalent
+inventory = await reserve_inventory(order_id)
 ```
 
-Use this when the handler body genuinely needs to branch on a specific step's outcome.
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Direct yield* uses require() semantics; Zart.require(...) is the explicit equivalent
+const inventory = yield* reserveInventory(orderId);
+```
+
+</TabItem>
+</Tabs>
+
+Both `BusinessErr` and `ZartErr` result in `TaskError::StepFailed` (or `ZartStepFailedError` / `StepFailedError`), preserving the step name for `on_failure` / `onFailure` inspection.
+
+### `step` / `Zart.outcome`
+
+Execute a step and inspect the three-way [`StepOutcome`](/docs/api/error-types/#stepoutcome). Use this when the handler body genuinely needs to branch on a specific step's business error.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 match zart::step(check_balance(account_id.clone())).await? {
@@ -51,38 +66,70 @@ match zart::step(check_balance(account_id.clone())).await? {
 
 The outer `?` propagates control-flow signals (`Scheduled`, `StepExecuted`) — never matched by user code.
 
-### `zart::step_or`
+</TabItem>
+<TabItem label="Python">
 
-Execute a step, returning `default` on any failure (business or framework).
-
-```rust
-pub async fn step_or<S: ZartStep + Send>(
-    s: S,
-    default: S::Output,
-) -> Result<S::Output, StepError>
+```python
+outcome = await zart.step(check_balance(account_id))
+if outcome.is_ok:
+    balance = outcome.value
+elif outcome.is_business_err:
+    print("Business error:", outcome.error)
+else:
+    raise outcome.error
 ```
 
-A blind fallback — the error is discarded. Use only when the specific failure reason does not matter.
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const balanceOutcome = yield* Zart.outcome(checkBalance(accountId));
+if (balanceOutcome._tag === "ok") {
+  const balance = balanceOutcome.value;
+} else if (balanceOutcome._tag === "business_err") {
+  console.log("Business error:", balanceOutcome.message);
+} else {
+  return yield* Effect.fail(balanceOutcome.error);
+}
+```
+
+</TabItem>
+</Tabs>
+
+### `step_or` / `Zart.stepOr`
+
+Execute a step, returning a default value on any failure (business or framework). Use only when the specific failure reason does not matter.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let cached = zart::step_or(fetch_remote_config(), Config::default()).await?;
 ```
 
-### `zart::step_or_else`
+</TabItem>
+<TabItem label="Python">
 
-Execute a step, computing a fallback on business error only.
-
-```rust
-pub async fn step_or_else<S, F>(
-    s: S,
-    f: F,
-) -> Result<S::Output, StepError>
-where
-    S: ZartStep + Send,
-    F: FnOnce(S::Error) -> S::Output,
+```python
+cached = await zart.step_or(fetch_remote_config(), default_config)
 ```
 
-The closure receives `S::Error` only — `ZartStepError` (retry exhausted, timeout) is **not** passed to `f` and still propagates as a framework error. This is intentional: framework-level failures are not business decisions and should not be silently swallowed.
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const cached = yield* Zart.stepOr(fetchRemoteConfig(), defaultConfig);
+```
+
+</TabItem>
+</Tabs>
+
+### `step_or_else` / `Zart.stepOrElse`
+
+Execute a step, computing a fallback on **business errors only**. Framework-level failures (`RetryExhausted`, `TimedOut`, `DeadlineExceeded`) are **not** passed to the fallback and continue to propagate.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let payment = zart::step_or_else(
@@ -94,41 +141,43 @@ let payment = zart::step_or_else(
 .await?;
 ```
 
-## Parallel Execution
+</TabItem>
+<TabItem label="Python">
 
-### `zart::schedule`
-
-Register a step for parallel execution without waiting for it to complete.
-
-```rust
-pub fn schedule<S: ZartStep + Send + 'static>(
-    s: S,
-) -> StepHandle<S::Output>
+```python
+payment = await zart.step_or_else(
+    charge_card(account_id, data.amount),
+    lambda err: PaymentResult(transaction_id="fallback", amount=0.0),
+)
 ```
 
-The returned handle can be passed to [`zart::wait`](#zartwait) to collect results.
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const payment = yield* Zart.stepOrElse(
+  chargeCard(accountId, data.amount),
+  (_err) => ({ transactionId: "fallback", amount: 0 }),
+);
+```
+
+</TabItem>
+</Tabs>
+
+## Parallel Execution
+
+### `schedule` and `wait` / `Zart.waitAll`
+
+Register multiple steps for parallel execution without waiting, then collect their results in handle order.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let h1 = zart::schedule(check_service("auth-api".into()));
 let h2 = zart::schedule(check_service("payments".into()));
 let h3 = zart::schedule(check_service("users-db".into()));
-```
 
-### `zart::wait`
-
-Wait for all handles returned by `zart::schedule` to complete.
-
-```rust
-pub async fn wait<T>(
-    handles: Vec<StepHandle<T>>,
-) -> Result<Vec<Result<T, StepError>>, StepError>
-where
-    T: Serialize + for<'de> Deserialize<'de>,
-```
-
-Returns `Ok(results)` where each element corresponds to one handle in order. An individual step failure appears as `Err(StepError)` inside the `Vec`.
-
-```rust
 let results = zart::wait(vec![h1, h2, h3]).await?;
 for result in results {
     let svc = result?;  // fail-fast on any step failure
@@ -136,51 +185,103 @@ for result in results {
 }
 ```
 
-## Time and Events
+</TabItem>
+<TabItem label="Python">
 
-### `zart::sleep`
+```python
+h1 = zart.schedule(check_service("auth-api"))
+h2 = zart.schedule(check_service("payments"))
+h3 = zart.schedule(check_service("users-db"))
 
-Suspend execution for `duration`, resuming at `now + duration`.
-
-```rust
-pub async fn sleep(
-    name: &str,
-    duration: Duration,
-) -> Result<(), StepError>
+outcomes = await zart.wait([h1, h2, h3])
+for outcome in outcomes:
+    svc = outcome.unwrap()
+    print(f"{svc.name}: {svc.status}")
 ```
 
-The `name` must be a stable, unique string within this execution body. Treat it like a migration name — do not change it after the execution has started.
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const h1 = yield* Zart.schedule(checkService("auth-api"));
+const h2 = yield* Zart.schedule(checkService("payments"));
+const h3 = yield* Zart.schedule(checkService("users-db"));
+
+const services = yield* Zart.waitAll([h1, h2, h3]);
+for (const svc of services) {
+  console.log(`${svc.name}: ${svc.status}`);
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Time and Events
+
+### `sleep`
+
+Suspend execution for a duration, resuming at `now + duration`. The `name` must be a stable, unique string within this execution body.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 zart::sleep("warehouse-settle", Duration::from_secs(60)).await?;
 ```
 
-### `zart::sleep_until`
+</TabItem>
+<TabItem label="Python">
+
+```python
+await zart.sleep("warehouse-settle", "60s")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+yield* Zart.sleep("warehouse-settle", "60 seconds");
+```
+
+</TabItem>
+</Tabs>
+
+### `sleep_until` / `Zart.sleepUntil`
 
 Suspend execution until an absolute UTC timestamp.
 
-```rust
-pub async fn sleep_until(
-    name: &str,
-    wake_time: chrono::DateTime<chrono::Utc>,
-) -> Result<(), StepError>
-```
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let next_monday = compute_next_monday();
 zart::sleep_until("wait-for-monday", next_monday).await?;
 ```
 
-### `zart::wait_for_event`
+</TabItem>
+<TabItem label="Python">
 
-Wait for an external event to be delivered to this execution.
-
-```rust
-pub async fn wait_for_event<T: DeserializeOwned>(
-    name: &str,
-    timeout: Option<Duration>,
-) -> Result<T, StepError>
+```python
+await zart.sleep_until("wait-for-monday", next_monday)
 ```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const nextMonday = new Date("2026-11-23T09:00:00Z");
+yield* Zart.sleepUntil("wait-for-monday", nextMonday);
+```
+
+</TabItem>
+</Tabs>
+
+### `wait_for_event` / `Zart.waitForEvent`
+
+Wait for an external event to be delivered to this execution via `offer_event` / `offerEvent`.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let decision: ApprovalDecision = zart::wait_for_event(
@@ -189,23 +290,41 @@ let decision: ApprovalDecision = zart::wait_for_event(
 ).await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+decision = await zart.wait_for_event(
+    "manager-approval",
+    timeout="24h",
+    target_type=ApprovalDecision,
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const ApprovalDecision = Schema.Struct({ approved: Schema.Boolean });
+const decision = yield* Zart.waitForEvent("manager-approval", {
+  schema: ApprovalDecision,
+  timeout: "24 hours",
+});
+```
+
+</TabItem>
+</Tabs>
+
 See [**Steps → wait_for_event**](/docs/concepts/steps/#wait_for_event--external-signals) for the full walkthrough.
 
 ## Durable Values
 
-### `zart::capture`
+### `capture`
 
-Capture a synchronous, pure value durably. On first body run: evaluates `f()`, writes the result as a completed step row, returns the value. On replay: returns the cached DB value; `f` is never called.
+Capture a non-deterministic value durably. On the first run, the function is evaluated and its result is persisted; on replay, the cached value is returned without re-evaluating.
 
-```rust
-pub async fn capture<T, F>(
-    name: &str,
-    f: F,
-) -> Result<T, StepError>
-where
-    T: Serialize + for<'de> Deserialize<'de>,
-    F: FnOnce() -> T,
-```
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let started_at = zart::capture!("started-at", chrono::Utc::now());
@@ -214,29 +333,59 @@ let started_at = zart::capture!("started-at", chrono::Utc::now());
 
 The macro form `zart_capture!` (re-exported as `zart::capture!`) expands to `::zart::capture(name, || expr).await?`.
 
-### `zart::now`
+</TabItem>
+<TabItem label="Python">
 
-Shorthand for `capture(name, chrono::Utc::now)`.
-
-```rust
-pub async fn now(
-    name: &str,
-) -> Result<chrono::DateTime<chrono::Utc>, StepError>
+```python
+seed = await zart.capture("random-seed", lambda: str(uuid4()))
 ```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const seed = yield* Zart.capture("random-seed", () => randomUUID());
+```
+
+</TabItem>
+</Tabs>
+
+### `now`
+
+Shorthand for durably capturing the current UTC timestamp.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let created_at = zart::now("created-at").await?;
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+created_at = await zart.now("created-at")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const createdAt = yield* Zart.now("created-at");
+```
+
+</TabItem>
+</Tabs>
+
 ## Introspection
 
-### `zart::context`
+### `context`
 
-Returns read-only information about the current execution. Callable from **anywhere** — handler body or step body.
+Returns read-only metadata (`ExecutionInfo`) about the current execution. Accessible from both workflow bodies and step bodies.
 
-```rust
-pub fn context() -> ExecutionInfo
-```
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let info = zart::context();
@@ -246,14 +395,39 @@ println!("Attempt:   {}", info.current_attempt);
 println!("Is retry:  {}", info.is_retry());
 ```
 
-| Field | Type | Description |
-|---|---|---|
-| `execution_id` | `String` | Unique identifier of this execution |
-| `task_name` | `String` | Registered name of the handler |
-| `data` | `serde_json::Value` | The original input payload (read-only) |
-| `current_attempt` | `usize` | 0-indexed retry count |
-| `max_retries` | `Option<usize>` | Maximum configured retries |
-| `is_retry()` | `bool` | `current_attempt > 0` |
+</TabItem>
+<TabItem label="Python">
+
+```python
+info = zart.context()
+print(f"Execution: {info.execution_id}")
+print(f"Task:      {info.task_name}")
+print(f"Attempt:   {info.current_attempt}")
+print(f"Is retry:  {info.is_retry()}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const info = yield* Zart.context;
+console.log("Execution:", info.executionId);
+console.log("Task:", info.taskName);
+console.log("Attempt:", info.currentAttempt);
+console.log("Is retry:", info.isRetry);
+```
+
+</TabItem>
+</Tabs>
+
+| Rust / Python Field | TypeScript Field | Type | Description |
+|---|---|---|---|
+| `execution_id` | `executionId` | `String` / `str` / `string` | Unique identifier of this execution |
+| `task_name` | `taskName` | `String` / `str` / `string` | Registered name of the handler |
+| `data` | `data` | `Value` / `Any` / `unknown` | The original input payload (read-only) |
+| `current_attempt` | `currentAttempt` | `usize` / `int` / `number` | 0-indexed retry count |
+| `max_retries` | `maxRetries` | `Option<usize>` / `int \| None` / `number \| undefined` | Maximum configured retries |
+| `is_retry()` | `isRetry` | `bool` / `boolean` | `current_attempt > 0` |
 
 ## Next Steps
 
