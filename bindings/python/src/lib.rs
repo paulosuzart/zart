@@ -18,7 +18,12 @@ mod worker;
 use backend::PyPgBackend;
 use durable::{PyDurableTask, PyExecutionFailure};
 use recurring::{PyOverlapPolicy, PyRecurrence};
-use scheduler::{PyDurableScheduler, PyExecutionRecord, PyScheduleResult};
+use scheduler::{
+    PyDurableScheduler, PyExecutionDetail, PyExecutionRecord, PyExecutionRunRecord,
+    PyExecutionStats, PyListExecutionsParams, PyPauseRule, PyPauseRuleFilter, PyPauseScope,
+    PyPotentiallyStaleDep, PyRerunResult, PyRerunSpec, PyResumeResult, PyScheduleResult,
+    PyStepAttemptRow, PyStepRow, PyStepWithAttempts,
+};
 use step::{PyRetryPolicy, PyStep};
 use trx::{PyClientTrx, PyTrx};
 use worker::{PyWorker, PyWorkerBuilder};
@@ -55,6 +60,20 @@ fn _zart(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDurableScheduler>()?;
     m.add_class::<PyScheduleResult>()?;
     m.add_class::<PyExecutionRecord>()?;
+    m.add_class::<PyListExecutionsParams>()?;
+    m.add_class::<PyExecutionStats>()?;
+    m.add_class::<PyExecutionRunRecord>()?;
+    m.add_class::<PyStepAttemptRow>()?;
+    m.add_class::<PyStepRow>()?;
+    m.add_class::<PyStepWithAttempts>()?;
+    m.add_class::<PyExecutionDetail>()?;
+    m.add_class::<PyRerunSpec>()?;
+    m.add_class::<PyPotentiallyStaleDep>()?;
+    m.add_class::<PyRerunResult>()?;
+    m.add_class::<PyPauseScope>()?;
+    m.add_class::<PyPauseRule>()?;
+    m.add_class::<PyResumeResult>()?;
+    m.add_class::<PyPauseRuleFilter>()?;
     m.add_class::<PyWorkerBuilder>()?;
     m.add_class::<PyWorker>()?;
     m.add_class::<PyRetryPolicy>()?;

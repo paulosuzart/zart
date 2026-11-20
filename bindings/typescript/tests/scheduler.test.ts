@@ -64,6 +64,148 @@ function makeMockScheduler(opts?: { completionResult?: unknown }): {
 		stopRecurring: async (taskId) => {
 			calls.push({ method: "stopRecurring", args: [taskId] });
 		},
+		listExecutions: async (params) => {
+			calls.push({ method: "listExecutions", args: [params] });
+			return [
+				{
+					executionId: "exec-1",
+					taskName: "t",
+					payload: null,
+					status: "completed",
+					scheduledAt: "2026-01-01T00:00:00Z",
+					version: 1,
+				},
+			];
+		},
+		stats: async () => {
+			calls.push({ method: "stats", args: [] });
+			return {
+				scheduled: 1,
+				running: 2,
+				completed: 3,
+				failed: 4,
+				cancelled: 5,
+			};
+		},
+		getCurrentRunId: async (executionId) => {
+			calls.push({ method: "getCurrentRunId", args: [executionId] });
+			return executionId === "missing" ? null : "run-1";
+		},
+		listRuns: async (executionId) => {
+			calls.push({ method: "listRuns", args: [executionId] });
+			return [
+				{
+					runId: "run-1",
+					executionId,
+					runIndex: 0,
+					payload: { ok: true },
+					status: "completed",
+					result: { done: true },
+					startedAt: "2026-01-01T00:00:00Z",
+					completedAt: "2026-01-01T00:00:01Z",
+					trigger: "initial",
+				},
+			];
+		},
+		executionDetail: async (executionId, runId) => {
+			calls.push({ method: "executionDetail", args: [executionId, runId] });
+			return {
+				execution: {
+					executionId,
+					taskName: "t",
+					payload: null,
+					status: "completed",
+					scheduledAt: "2026-01-01T00:00:00Z",
+					version: 1,
+				},
+				runs: [
+					{
+						runId: runId ?? "run-1",
+						executionId,
+						runIndex: 0,
+						payload: null,
+						status: "completed",
+						startedAt: "2026-01-01T00:00:00Z",
+						trigger: "initial",
+					},
+				],
+				steps: [
+					{
+						step: {
+							stepId: "step-1",
+							runId: runId ?? "run-1",
+							stepName: "s1",
+							stepKind: "step",
+							status: "completed",
+							retryAttempt: 0,
+							scheduledAt: "2026-01-01T00:00:00Z",
+						},
+						attempts: [
+							{
+								attemptId: "att-1",
+								stepId: "step-1",
+								attemptNumber: 1,
+								startedAt: "2026-01-01T00:00:00Z",
+								completedAt: "2026-01-01T00:00:01Z",
+								status: "completed",
+								result: 42,
+							},
+						],
+						retryable: false,
+					},
+				],
+			};
+		},
+		retryStep: async (runId, stepName, triggeredBy) => {
+			calls.push({
+				method: "retryStep",
+				args: [runId, stepName, triggeredBy],
+			});
+			return "task-retry-1";
+		},
+		retryStepCurrentRun: async (executionId, stepName, triggeredBy) => {
+			calls.push({
+				method: "retryStepCurrentRun",
+				args: [executionId, stepName, triggeredBy],
+			});
+			return "task-retry-2";
+		},
+		restart: async (executionId, newPayload, triggeredBy) => {
+			calls.push({
+				method: "restart",
+				args: [executionId, newPayload, triggeredBy],
+			});
+			return `${executionId}:run:1`;
+		},
+		rerunSteps: async (executionId, spec) => {
+			calls.push({ method: "rerunSteps", args: [executionId, spec] });
+			return {
+				newRunNumber: 1,
+				effectiveRerun: spec.forceRerun ?? [],
+				potentiallyStale: [],
+			};
+		},
+		pause: async (scope) => {
+			calls.push({ method: "pause", args: [scope] });
+			return {
+				ruleId: "rule-1",
+				scope,
+				createdAt: "2026-01-01T00:00:00Z",
+				reason: scope.reason,
+			};
+		},
+		resume: async (scope, deletedBy) => {
+			calls.push({ method: "resume", args: [scope, deletedBy] });
+			return { rulesDeleted: 1 };
+		},
+		resumeRuleById: async (ruleId, deletedBy) => {
+			calls.push({ method: "resumeRuleById", args: [ruleId, deletedBy] });
+			return { rulesDeleted: 1 };
+		},
+		listPauseRules: async (filter) => {
+			calls.push({ method: "listPauseRules", args: [filter] });
+			return [];
+		},
 	};
 	const scheduler = new (
 		DurableScheduler as unknown as {
@@ -245,5 +387,191 @@ describe("DurableScheduler ergonomic overloads", () => {
 				args: [tx.native, "exec-tx-def", "tx-wf", { amount: "900" }],
 			},
 		]);
+	});
+
+	it("listExecutions, stats, getCurrentRunId, listRuns, and executionDetail forward params and return typed results", async () => {
+		const { scheduler, calls } = makeMockScheduler();
+		const from = new Date("2026-01-01T00:00:00.000Z");
+
+		const out = await Effect.runPromise(
+			Effect.gen(function* () {
+				const list1 = yield* scheduler.listExecutions();
+				const list2 = yield* scheduler.listExecutions({
+					status: "completed",
+					taskName: "order",
+					from,
+					to: "2026-01-02T00:00:00.000Z",
+					search: "exec-",
+					sortBy: "task_name",
+					sortOrder: "asc",
+					limit: 10,
+					offset: 5,
+				});
+				const stats = yield* scheduler.stats();
+				const runId = yield* scheduler.getCurrentRunId("exec-1");
+				const missingRunId = yield* scheduler.getCurrentRunId("missing");
+				const runs = yield* scheduler.listRuns("exec-1");
+				const detail = yield* scheduler.executionDetail("exec-1", "run-1");
+				return { list1, list2, stats, runId, missingRunId, runs, detail };
+			}),
+		);
+
+		expect(out.list1).toHaveLength(1);
+		expect(out.list2).toHaveLength(1);
+		expect(out.stats).toEqual({
+			scheduled: 1,
+			running: 2,
+			completed: 3,
+			failed: 4,
+			cancelled: 5,
+		});
+		expect(out.runId).toBe("run-1");
+		expect(out.missingRunId).toBeNull();
+		expect(out.runs[0]?.trigger).toBe("initial");
+		expect(out.detail.steps[0]?.attempts[0]?.attemptNumber).toBe(1);
+
+		expect(calls).toEqual([
+			{ method: "listExecutions", args: [undefined] },
+			{
+				method: "listExecutions",
+				args: [
+					{
+						status: "completed",
+						taskName: "order",
+						from: "2026-01-01T00:00:00.000Z",
+						to: "2026-01-02T00:00:00.000Z",
+						search: "exec-",
+						sortBy: "task_name",
+						sortOrder: "asc",
+						limit: 10,
+						offset: 5,
+					},
+				],
+			},
+			{ method: "stats", args: [] },
+			{ method: "getCurrentRunId", args: ["exec-1"] },
+			{ method: "getCurrentRunId", args: ["missing"] },
+			{ method: "listRuns", args: ["exec-1"] },
+			{ method: "executionDetail", args: ["exec-1", "run-1"] },
+		]);
+	});
+
+	it("listExecutions rejects invalid Date with ZartSchemaError", async () => {
+		const { scheduler } = makeMockScheduler();
+		const err = await Effect.runPromise(
+			Effect.flip(scheduler.listExecutions({ from: new Date("invalid") })),
+		);
+		expect(err._tag).toBe("ZartSchemaError");
+	});
+
+	it("admin and pause/resume methods forward args, encode restart schema, and validate expiresAt", async () => {
+		const { scheduler, calls } = makeMockScheduler();
+		const expiresAt = new Date("2026-12-01T00:00:00.000Z");
+
+		const out = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t1 = yield* scheduler.retryStep("exec-1:run:0", "step-a", "ops");
+				const t2 = yield* scheduler.retryStepCurrentRun("exec-1", "step-a");
+				const r1 = yield* scheduler.restart("exec-1", undefined, "ops");
+				const r2 = yield* scheduler.restart(
+					"exec-1",
+					Schema.Struct({ count: Schema.BigIntFromString }),
+					{ count: 42n },
+					"ops",
+				);
+				const rr = yield* scheduler.rerunSteps("exec-1", {
+					forceRerun: ["step-b"],
+					preserve: ["step-a"],
+					triggeredBy: "ops",
+				});
+				const rule = yield* scheduler.pause({
+					executionId: "exec-1",
+					stepPattern: "send-*",
+					expiresAt,
+					triggeredBy: "ops",
+					reason: "maintenance",
+				});
+				const res1 = yield* scheduler.resume({ executionId: "exec-1" }, "ops");
+				const res2 = yield* scheduler.resumeRuleById("rule-1", "ops");
+				const rules = yield* scheduler.listPauseRules({
+					executionId: "exec-1",
+					includeDeleted: true,
+				});
+				return { t1, t2, r1, r2, rr, rule, res1, res2, rules };
+			}),
+		);
+
+		expect(out.t1).toBe("task-retry-1");
+		expect(out.t2).toBe("task-retry-2");
+		expect(out.r1).toBe("exec-1:run:1");
+		expect(out.r2).toBe("exec-1:run:1");
+		expect(out.rr.newRunNumber).toBe(1);
+		expect(out.rule.ruleId).toBe("rule-1");
+		expect(out.res1.rulesDeleted).toBe(1);
+		expect(out.res2.rulesDeleted).toBe(1);
+		expect(out.rules).toEqual([]);
+
+		expect(calls).toEqual([
+			{ method: "retryStep", args: ["exec-1:run:0", "step-a", "ops"] },
+			{
+				method: "retryStepCurrentRun",
+				args: ["exec-1", "step-a", undefined],
+			},
+			{ method: "restart", args: ["exec-1", undefined, "ops"] },
+			{ method: "restart", args: ["exec-1", { count: "42" }, "ops"] },
+			{
+				method: "rerunSteps",
+				args: [
+					"exec-1",
+					{
+						forceRerun: ["step-b"],
+						preserve: ["step-a"],
+						triggeredBy: "ops",
+					},
+				],
+			},
+			{
+				method: "pause",
+				args: [
+					{
+						executionId: "exec-1",
+						taskName: undefined,
+						stepPattern: "send-*",
+						expiresAt: "2026-12-01T00:00:00.000Z",
+						triggeredBy: "ops",
+						reason: "maintenance",
+					},
+				],
+			},
+			{
+				method: "resume",
+				args: [
+					{
+						executionId: "exec-1",
+						taskName: undefined,
+						stepPattern: undefined,
+						expiresAt: undefined,
+						triggeredBy: undefined,
+						reason: undefined,
+					},
+					"ops",
+				],
+			},
+			{ method: "resumeRuleById", args: ["rule-1", "ops"] },
+			{
+				method: "listPauseRules",
+				args: [{ executionId: "exec-1", includeDeleted: true }],
+			},
+		]);
+
+		const badDateErr = await Effect.runPromise(
+			Effect.flip(
+				scheduler.pause({
+					executionId: "exec-1",
+					expiresAt: new Date("invalid"),
+				}),
+			),
+		);
+		expect(badDateErr._tag).toBe("ZartSchemaError");
 	});
 });

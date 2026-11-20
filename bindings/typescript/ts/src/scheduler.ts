@@ -1,13 +1,163 @@
 import { Duration, Effect, Schema } from "effect";
 import { type ClientTrx, fromNative, type PgBackend } from "./backend.js";
-import type { ZartSchemaError, ZartTaggedError } from "./errors.js";
+import { ZartSchemaError, type ZartTaggedError } from "./errors.js";
 import {
 	loadNative,
 	type NativeDurableScheduler,
+	type NativeExecutionDetail,
 	type NativeExecutionRecord,
+	type NativeExecutionRunRecord,
+	type NativeExecutionSortField,
+	type NativeExecutionStats,
+	type NativeExecutionStatus,
+	type NativeExecutionTrigger,
+	type NativeListExecutionsParams,
+	type NativePauseRule,
+	type NativePauseRuleFilter,
+	type NativePauseScope,
+	type NativePotentiallyStaleDep,
+	type NativeRerunResult,
+	type NativeRerunSpec,
+	type NativeResumeResult,
+	type NativeSortOrder,
+	type NativeStepAttemptRow,
+	type NativeStepAttemptStatus,
+	type NativeStepKind,
+	type NativeStepRow,
+	type NativeStepStatus,
+	type NativeStepWithAttempts,
 } from "./native.js";
 import { decodeOutput, encodeInput, encodeJsonValue } from "./schema.js";
 import type { DurableDefinition } from "./workflow.js";
+
+/** Lifecycle status of a durable execution. */
+export type ExecutionStatus = NativeExecutionStatus;
+/** What triggered a run of a durable execution. */
+export type ExecutionTrigger = NativeExecutionTrigger;
+/** Field to sort execution listings by. */
+export type ExecutionSortField = NativeExecutionSortField;
+/** Sort direction for execution listings. */
+export type SortOrder = NativeSortOrder;
+/** Kind of step stored in `zart_steps`. */
+export type StepKind = NativeStepKind;
+/** Lifecycle status of a step row. */
+export type StepStatus = NativeStepStatus;
+/** Lifecycle status of a step attempt. */
+export type StepAttemptStatus = NativeStepAttemptStatus;
+/** A durable execution record. */
+export type ExecutionRecord = NativeExecutionRecord;
+/** Execution count statistics grouped by status. */
+export type ExecutionStats = NativeExecutionStats;
+/** A single run of a durable execution. */
+export type ExecutionRunRecord = NativeExecutionRunRecord;
+/** A step record from `zart_steps`. */
+export type StepRow = NativeStepRow;
+/** A single attempt record from `zart_step_attempts`. */
+export type StepAttemptRow = NativeStepAttemptRow;
+/** A step with its attempts and retryability flag. */
+export type StepWithAttempts = NativeStepWithAttempts;
+/** Full execution detail: record, runs, and steps with attempt history. */
+export type ExecutionDetail = NativeExecutionDetail;
+/** Specification for which steps to rerun vs preserve in `rerunSteps`. */
+export type RerunSpec = NativeRerunSpec;
+/** A preserved step that may have a stale dependency on a rerun step. */
+export type PotentiallyStaleDep = NativePotentiallyStaleDep;
+/** Result of a selective rerun operation. */
+export type RerunResult = NativeRerunResult;
+/** A pause rule stored in the database. */
+export type PauseRule = NativePauseRule;
+/** Result of a resume operation. */
+export type ResumeResult = NativeResumeResult;
+/** Filter for listing pause rules. */
+export type PauseRuleFilter = NativePauseRuleFilter;
+
+/** Scope of a pause or resume operation. */
+export interface PauseScope {
+	/** Target a specific execution. */
+	readonly executionId?: string;
+	/** Target all executions of a given task name. */
+	readonly taskName?: string;
+	/** Glob pattern for step names (e.g. `"send-*"`). */
+	readonly stepPattern?: string;
+	/** Optional auto-expiry for the pause rule (`Date` or RFC3339 string). */
+	readonly expiresAt?: Date | string;
+	/** Optional operator identifier for audit logging. */
+	readonly triggeredBy?: string;
+	/** Optional human-readable reason for this pause. */
+	readonly reason?: string;
+}
+
+const toNativePauseScope = (
+	scope: PauseScope,
+): Effect.Effect<NativePauseScope, ZartSchemaError> =>
+	toIsoOpt(scope.expiresAt, "expiresAt").pipe(
+		Effect.map((expiresAt) => ({
+			executionId: scope.executionId,
+			taskName: scope.taskName,
+			stepPattern: scope.stepPattern,
+			expiresAt,
+			triggeredBy: scope.triggeredBy,
+			reason: scope.reason,
+		})),
+	);
+
+/** Parameters for filtered, paginated execution listing (`DurableScheduler.listExecutions`). */
+export interface ListExecutionsParams {
+	/** Filter by execution status. */
+	readonly status?: ExecutionStatus;
+	/** Case-insensitive substring filter on `taskName`. */
+	readonly taskName?: string;
+	/** Lower bound on `startedAt` (`Date` or RFC3339 string). */
+	readonly from?: Date | string;
+	/** Upper bound on `startedAt` (`Date` or RFC3339 string). */
+	readonly to?: Date | string;
+	/** Prefix filter on `executionId`. */
+	readonly search?: string;
+	/** Sort field (default: `"scheduled_at"`). */
+	readonly sortBy?: ExecutionSortField;
+	/** Sort direction (default: `"desc"`). */
+	readonly sortOrder?: SortOrder;
+	/** Maximum number of records to return (default: `20`). */
+	readonly limit?: number;
+	/** Number of records to skip (default: `0`). */
+	readonly offset?: number;
+}
+
+const toIsoOpt = (
+	value: Date | string | undefined,
+	field: string,
+): Effect.Effect<string | undefined, ZartSchemaError> => {
+	if (value === undefined) return Effect.succeed(undefined);
+	if (typeof value === "string") return Effect.succeed(value);
+	if (Number.isNaN(value.getTime())) {
+		return Effect.fail(
+			new ZartSchemaError({ message: `Invalid Date for '${field}'` }),
+		);
+	}
+	return Effect.succeed(value.toISOString());
+};
+
+const toNativeListParams = (
+	params: ListExecutionsParams | undefined,
+): Effect.Effect<NativeListExecutionsParams | undefined, ZartSchemaError> => {
+	if (params === undefined) return Effect.succeed(undefined);
+	return Effect.all({
+		from: toIsoOpt(params.from, "from"),
+		to: toIsoOpt(params.to, "to"),
+	}).pipe(
+		Effect.map(({ from, to }) => ({
+			status: params.status,
+			taskName: params.taskName,
+			from,
+			to,
+			search: params.search,
+			sortBy: params.sortBy,
+			sortOrder: params.sortOrder,
+			limit: params.limit,
+			offset: params.offset,
+		})),
+	);
+};
 
 /** Options for {@link DurableScheduler.startInTx}. */
 export type StartInTxOptions<A = unknown, I = A, B = unknown, O = B> =
@@ -367,5 +517,155 @@ export class DurableScheduler {
 	): Effect.Effect<void, ZartTaggedError> {
 		const taskId = typeof taskOrDef === "string" ? taskOrDef : taskOrDef.name;
 		return fromNative(() => this.native.stopRecurring(taskId));
+	}
+
+	/** List durable execution records with optional filters, sorting, and pagination. */
+	listExecutions(
+		params?: ListExecutionsParams,
+	): Effect.Effect<ReadonlyArray<ExecutionRecord>, ZartTaggedError> {
+		return toNativeListParams(params).pipe(
+			Effect.flatMap((nativeParams) =>
+				fromNative(() => this.native.listExecutions(nativeParams)),
+			),
+		);
+	}
+
+	/** Return aggregate execution counts grouped by status. */
+	stats(): Effect.Effect<ExecutionStats, ZartTaggedError> {
+		return fromNative(() => this.native.stats());
+	}
+
+	/** Return the current `runId` for a durable execution, or `null` if never started. */
+	getCurrentRunId(
+		executionId: string,
+	): Effect.Effect<string | null, ZartTaggedError> {
+		return fromNative(() => this.native.getCurrentRunId(executionId));
+	}
+
+	/** List all runs for a durable execution. */
+	listRuns(
+		executionId: string,
+	): Effect.Effect<ReadonlyArray<ExecutionRunRecord>, ZartTaggedError> {
+		return fromNative(() => this.native.listRuns(executionId));
+	}
+
+	/**
+	 * Return full execution detail: the execution record, all runs, and the steps
+	 * (with attempt history) for the specified run (or the current run if omitted).
+	 */
+	executionDetail(
+		executionId: string,
+		runId?: string,
+	): Effect.Effect<ExecutionDetail, ZartTaggedError> {
+		return fromNative(() => this.native.executionDetail(executionId, runId));
+	}
+
+	/** Retry a single dead step within the specified run, returning the new `taskId`. */
+	retryStep(
+		runId: string,
+		stepName: string,
+		triggeredBy?: string,
+	): Effect.Effect<string, ZartTaggedError> {
+		return fromNative(() =>
+			this.native.retryStep(runId, stepName, triggeredBy),
+		);
+	}
+
+	/** Retry a single dead step within the current run of an execution, returning the new `taskId`. */
+	retryStepCurrentRun(
+		executionId: string,
+		stepName: string,
+		triggeredBy?: string,
+	): Effect.Effect<string, ZartTaggedError> {
+		return fromNative(() =>
+			this.native.retryStepCurrentRun(executionId, stepName, triggeredBy),
+		);
+	}
+
+	/** Restart an execution from scratch with a typed `Schema.Codec` payload, returning the new `runId`. */
+	restart<A, I>(
+		executionId: string,
+		inputSchema: Schema.Codec<A, I>,
+		input: A,
+		triggeredBy?: string,
+	): Effect.Effect<string, ZartTaggedError | ZartSchemaError>;
+	/** Restart an execution from scratch (optionally replacing the raw payload), returning the new `runId`. */
+	restart(
+		executionId: string,
+		newPayload?: unknown,
+		triggeredBy?: string,
+	): Effect.Effect<string, ZartTaggedError | ZartSchemaError>;
+	restart(
+		executionId: string,
+		schemaOrPayload?: unknown,
+		inputOrTriggeredBy?: unknown,
+		maybeTriggeredBy?: string,
+	): Effect.Effect<string, ZartTaggedError | ZartSchemaError> {
+		let encoded: Effect.Effect<unknown, ZartSchemaError>;
+		let triggeredBy: string | undefined;
+
+		if (isSchemaCodec(schemaOrPayload)) {
+			encoded = encodeInput(schemaOrPayload, inputOrTriggeredBy);
+			triggeredBy = maybeTriggeredBy;
+		} else {
+			encoded =
+				schemaOrPayload === undefined
+					? Effect.succeed(undefined)
+					: Effect.succeed(encodeJsonValue(schemaOrPayload));
+			triggeredBy =
+				typeof inputOrTriggeredBy === "string" ? inputOrTriggeredBy : undefined;
+		}
+
+		return encoded.pipe(
+			Effect.flatMap((payload) =>
+				fromNative(() =>
+					this.native.restart(executionId, payload, triggeredBy),
+				),
+			),
+		);
+	}
+
+	/** Selectively rerun a subset of steps while preserving others. */
+	rerunSteps(
+		executionId: string,
+		spec: RerunSpec,
+	): Effect.Effect<RerunResult, ZartTaggedError> {
+		return fromNative(() => this.native.rerunSteps(executionId, spec));
+	}
+
+	/** Create a pause rule. */
+	pause(scope: PauseScope): Effect.Effect<PauseRule, ZartTaggedError> {
+		return toNativePauseScope(scope).pipe(
+			Effect.flatMap((nativeScope) =>
+				fromNative(() => this.native.pause(nativeScope)),
+			),
+		);
+	}
+
+	/** Resume execution by soft-deleting matching pause rules. */
+	resume(
+		scope: PauseScope,
+		deletedBy?: string,
+	): Effect.Effect<ResumeResult, ZartTaggedError> {
+		return toNativePauseScope(scope).pipe(
+			Effect.flatMap((nativeScope) =>
+				fromNative(() => this.native.resume(nativeScope, deletedBy)),
+			),
+		);
+	}
+
+	/** Resume by soft-deleting a specific pause rule by ID. */
+	resumeRuleById(
+		ruleId: string,
+		deletedBy?: string,
+	): Effect.Effect<ResumeResult, ZartTaggedError> {
+		return fromNative(() => this.native.resumeRuleById(ruleId, deletedBy));
+	}
+
+	/** List pause rules (active only by default, or including soft-deleted when `includeDeleted` is true). */
+	listPauseRules(
+		filter?: PauseRuleFilter,
+	): Effect.Effect<ReadonlyArray<PauseRule>, ZartTaggedError> {
+		return fromNative(() => this.native.listPauseRules(filter));
 	}
 }

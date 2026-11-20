@@ -45,6 +45,155 @@ export interface ExecutionRecord {
 	completedAt?: string;
 	version: number;
 }
+/** Execution count statistics grouped by status. */
+export interface ExecutionStats {
+	scheduled: number;
+	running: number;
+	completed: number;
+	failed: number;
+	cancelled: number;
+}
+/** Parameters for filtered, paginated execution listing. */
+export interface ListExecutionsParams {
+	/** Filter by status: `scheduled | running | completed | failed | cancelled`. */
+	status?: string;
+	/** Case-insensitive substring filter on `taskName`. */
+	taskName?: string;
+	/** Lower bound on `startedAt` (RFC3339 timestamp). */
+	from?: string;
+	/** Upper bound on `startedAt` (RFC3339 timestamp). */
+	to?: string;
+	/** Prefix filter on `executionId`. */
+	search?: string;
+	/** Sort field: `scheduled_at | status | task_name` (default: `scheduled_at`). */
+	sortBy?: string;
+	/** Sort direction: `asc | desc` (default: `desc`). */
+	sortOrder?: string;
+	/** Maximum number of records to return (default: `20`). */
+	limit?: number;
+	/** Number of records to skip (default: `0`). */
+	offset?: number;
+}
+/** A single run of a durable execution. */
+export interface ExecutionRunRecord {
+	runId: string;
+	executionId: string;
+	runIndex: number;
+	payload: any;
+	/** scheduled | running | completed | failed | cancelled */
+	status: string;
+	result?: any;
+	/** RFC3339 timestamp. */
+	startedAt: string;
+	/** RFC3339 timestamp. */
+	completedAt?: string;
+	/** initial | restart | selective_rerun */
+	trigger: string;
+}
+/** A step record from `zart_steps`. */
+export interface StepRow {
+	stepId: string;
+	runId: string;
+	stepName: string;
+	/** step | sleep | wait_all | wait_for_event | wait_group | capture */
+	stepKind: string;
+	taskId?: string;
+	/** scheduled | running | completed | dead */
+	status: string;
+	retryAttempt: number;
+	retryConfig?: any;
+	result?: any;
+	lastError?: string;
+	wgTotal?: number;
+	wgRemaining?: number;
+	wgThreshold?: number;
+	wgFirstFailed?: boolean;
+	/** RFC3339 timestamp. */
+	scheduledAt: string;
+	/** RFC3339 timestamp. */
+	completedAt?: string;
+}
+/** A single attempt record from `zart_step_attempts`. */
+export interface StepAttemptRow {
+	attemptId: string;
+	stepId: string;
+	attemptNumber: number;
+	/** RFC3339 timestamp. */
+	startedAt: string;
+	/** RFC3339 timestamp. */
+	completedAt?: string;
+	/** completed | failed */
+	status: string;
+	result?: any;
+	error?: string;
+}
+/** A step with its attempts and retryability flag. */
+export interface StepWithAttempts {
+	step: StepRow;
+	attempts: Array<StepAttemptRow>;
+	retryable: boolean;
+}
+/** Full execution detail: record, runs, and steps with attempt history. */
+export interface ExecutionDetail {
+	execution: ExecutionRecord;
+	runs: Array<ExecutionRunRecord>;
+	steps: Array<StepWithAttempts>;
+}
+/** Specification for which steps to rerun vs preserve in `rerunSteps`. */
+export interface RerunSpec {
+	/** Steps to force-rerun even if currently completed. */
+	forceRerun?: Array<string>;
+	/** Completed steps to explicitly preserve (ignored for failed/dead steps). */
+	preserve?: Array<string>;
+	/** Optional operator identifier for audit logging. */
+	triggeredBy?: string;
+}
+/** A preserved step that may have a stale dependency on a rerun step. */
+export interface PotentiallyStaleDep {
+	preservedStep: string;
+	possiblyDependsOn: Array<string>;
+}
+/** Result of a selective rerun operation. */
+export interface RerunResult {
+	newRunNumber: number;
+	effectiveRerun: Array<string>;
+	potentiallyStale: Array<PotentiallyStaleDep>;
+}
+/** Scope of a pause or resume operation. */
+export interface PauseScope {
+	/** Target a specific execution. */
+	executionId?: string;
+	/** Target all executions of a given task name. */
+	taskName?: string;
+	/** Glob pattern for step names (e.g. `"send-*"`). */
+	stepPattern?: string;
+	/** Optional auto-expiry for the pause rule (RFC3339 timestamp). */
+	expiresAt?: string;
+	/** Optional operator identifier for audit logging. */
+	triggeredBy?: string;
+	/** Optional human-readable reason for this pause. */
+	reason?: string;
+}
+/** A pause rule stored in the database. */
+export interface PauseRule {
+	ruleId: string;
+	scope: PauseScope;
+	/** RFC3339 timestamp. */
+	createdAt: string;
+	/** RFC3339 timestamp (`undefined` if active). */
+	deletedAt?: string;
+	reason?: string;
+}
+/** Result of a resume operation. */
+export interface ResumeResult {
+	rulesDeleted: number;
+}
+/** Filter for listing pause rules. */
+export interface PauseRuleFilter {
+	executionId?: string;
+	taskName?: string;
+	includeDeleted?: boolean;
+}
 /** Retry policy: `kind` is `none | fixed | linear | exponential`. */
 export interface RetrySpec {
 	kind: string;
@@ -72,9 +221,36 @@ export interface NativeRecurrence {
 	/** IANA timezone name for `"cron"` (e.g. `"UTC"`, `"America/Sao_Paulo"`). */
 	timezone?: string;
 }
-export type Dispatcher = NativeDispatcher;
 /** Handle given to JS durable handlers. */
-export declare class NativeDispatcher {}
+export declare class NativeDispatcher {
+	/** Execution metadata (synchronous). */
+	context(): ExecutionInfo;
+	/** Run a step; failures are returned as `StepOutcome` (`business_err` / `zart_err`). */
+	step(spec: StepSpec, run: RunFn): Promise<StepOutcome>;
+	/** Run a step and reject on any failure. */
+	require(spec: StepSpec, run: RunFn): Promise<Json>;
+	/** Run a step, falling back to `default` on business error. */
+	stepOr(spec: StepSpec, run: RunFn, defaultVal: Json): Promise<Json>;
+	/** Schedule a step for parallel execution; resolves to a handle id. */
+	schedule(spec: StepSpec, run: RunFn): Promise<number>;
+	/** Wait for one scheduled step. */
+	wait(handle: number): Promise<StepOutcome>;
+	/** Wait for several scheduled steps concurrently, preserving order. */
+	waitAll(handles: Array<number>): Promise<Array<StepOutcome>>;
+	sleep(name: string, ms: number): Promise<void>;
+	sleepUntil(name: string, wakeTime: string): Promise<void>;
+	waitForEvent(
+		name: string,
+		timeoutMs?: number | undefined | null,
+	): Promise<Json>;
+	/**
+	 * Capture a value durably. `run` may be synchronous or return a `Promise`, and is
+	 * only invoked the first time (never on replay).
+	 */
+	capture(name: string, run: () => any): Promise<Json>;
+	/** Durable timestamp (RFC3339). */
+	now(name: string): Promise<string>;
+}
 /** PostgreSQL-backed storage and scheduler entry point. */
 export declare class PgBackend {
 	/**
@@ -131,6 +307,57 @@ export declare class DurableScheduler {
 	): Promise<void>;
 	/** Stop a recurring durable execution from scheduling future ticks (idempotent). */
 	stopRecurring(taskId: string): Promise<void>;
+	/** List durable execution records with optional filters, sorting, and pagination. */
+	listExecutions(
+		params?: ListExecutionsParams | undefined | null,
+	): Promise<Array<ExecutionRecord>>;
+	/** Return aggregate execution counts grouped by status. */
+	stats(): Promise<ExecutionStats>;
+	/** Return the current `runId` for a durable execution, or `null` if never started. */
+	getCurrentRunId(executionId: string): Promise<string | null>;
+	/** List all runs for a durable execution. */
+	listRuns(executionId: string): Promise<Array<ExecutionRunRecord>>;
+	/** Return full execution detail: record, runs, and steps with attempt history. */
+	executionDetail(
+		executionId: string,
+		runId?: string | undefined | null,
+	): Promise<ExecutionDetail>;
+	/** Retry a single dead step within the specified run, returning the new `taskId`. */
+	retryStep(
+		runId: string,
+		stepName: string,
+		triggeredBy?: string | undefined | null,
+	): Promise<string>;
+	/** Retry a single dead step within the current run of an execution, returning the new `taskId`. */
+	retryStepCurrentRun(
+		executionId: string,
+		stepName: string,
+		triggeredBy?: string | undefined | null,
+	): Promise<string>;
+	/** Restart an entire execution from scratch, returning the new `runId`. */
+	restart(
+		executionId: string,
+		newPayload?: any | undefined | null,
+		triggeredBy?: string | undefined | null,
+	): Promise<string>;
+	/** Selectively rerun a subset of steps while preserving others. */
+	rerunSteps(executionId: string, spec: RerunSpec): Promise<RerunResult>;
+	/** Create a pause rule. */
+	pause(scope: PauseScope): Promise<PauseRule>;
+	/** Resume execution by soft-deleting matching pause rules. */
+	resume(
+		scope: PauseScope,
+		deletedBy?: string | undefined | null,
+	): Promise<ResumeResult>;
+	/** Resume by soft-deleting a specific pause rule by ID. */
+	resumeRuleById(
+		ruleId: string,
+		deletedBy?: string | undefined | null,
+	): Promise<ResumeResult>;
+	/** List pause rules (active only by default, or including soft-deleted when `includeDeleted` is true). */
+	listPauseRules(
+		filter?: PauseRuleFilter | undefined | null,
+	): Promise<Array<PauseRule>>;
 }
 /** Zart-managed step transaction handle (`zart::ZartTrx`). */
 export declare class NativeTrx {

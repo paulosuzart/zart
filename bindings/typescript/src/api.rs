@@ -94,14 +94,16 @@ impl From<zart::ExecutionInfo> for ExecutionInfo {
 }
 
 /// Handle given to JS durable handlers.
-#[napi(js_name = "NativeDispatcher")]
-pub struct Dispatcher {
+#[napi]
+pub struct NativeDispatcher {
     tx: mpsc::UnboundedSender<Command>,
     info: ExecutionInfo,
     pool: sqlx::PgPool,
 }
 
-impl Dispatcher {
+pub type Dispatcher = NativeDispatcher;
+
+impl NativeDispatcher {
     pub fn new(
         tx: mpsc::UnboundedSender<Command>,
         info: ExecutionInfo,
@@ -121,7 +123,7 @@ impl Dispatcher {
 }
 
 #[napi]
-impl Dispatcher {
+impl NativeDispatcher {
     /// Execution metadata (synchronous).
     #[napi]
     pub fn context(&self) -> ExecutionInfo {
@@ -144,11 +146,11 @@ impl Dispatcher {
 
     /// Run a step, falling back to `default` on business error.
     #[napi]
-    pub async fn step_or(&self, spec: StepSpec, run: RunFn, default: Json) -> Result<Json> {
+    pub async fn step_or(&self, spec: StepSpec, run: RunFn, default_val: Json) -> Result<Json> {
         let step = TsStep::new(spec, run, self.pool.clone())?;
         self.ask(|reply| Command::StepOr {
             step,
-            default,
+            default: default_val,
             reply,
         })
         .await

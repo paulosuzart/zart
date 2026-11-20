@@ -7,8 +7,18 @@ from typing import Any, overload
 from zart._zart import (
     ClientTrx,
     DurableTask,
+    ExecutionDetail,
     ExecutionRecord,
+    ExecutionRunRecord,
+    ExecutionStats,
+    ListExecutionsParams,
+    PauseRule,
+    PauseRuleFilter,
+    PauseScope,
     PgBackend,
+    RerunResult,
+    RerunSpec,
+    ResumeResult,
     ScheduleResult,
 )
 from zart._zart import (
@@ -263,3 +273,134 @@ class DurableScheduler:
         """
         resolved_id = _resolve_task_name(task_id)
         await self._native.stop_recurring(resolved_id)
+
+    async def list_executions(
+        self,
+        params: ListExecutionsParams | None = None,
+        **kwargs: Any,
+    ) -> list[ExecutionRecord]:
+        """List durable execution records with optional filters and pagination.
+
+        Args:
+            params: Optional :class:`ListExecutionsParams` filter/pagination object.
+            **kwargs: Filter/pagination keyword arguments forwarded to
+                :class:`ListExecutionsParams` (``status``, ``task_name``, ``from_``,
+                ``to``, ``search``, ``sort_by``, ``sort_order``, ``limit``, ``offset``).
+                Cannot be combined with ``params``.
+        """
+        if params is not None and kwargs:
+            raise TypeError("Cannot specify both 'params' and keyword filter arguments")
+        if params is None and kwargs:
+            if "from" in kwargs:
+                if "from_" in kwargs:
+                    raise TypeError("Specify either 'from_' or 'from', not both")
+                kwargs["from_"] = kwargs.pop("from")
+            params = ListExecutionsParams(**kwargs)
+        return await self._native.list_executions(params)
+
+    async def stats(self) -> ExecutionStats:
+        """Return aggregate execution counts grouped by status."""
+        return await self._native.stats()
+
+    async def get_current_run_id(self, execution_id: str) -> str | None:
+        """Return the current ``run_id`` for a durable execution, or ``None`` if never started."""
+        return await self._native.get_current_run_id(execution_id)
+
+    async def list_runs(self, execution_id: str) -> list[ExecutionRunRecord]:
+        """List all runs for a durable execution."""
+        return await self._native.list_runs(execution_id)
+
+    async def execution_detail(
+        self,
+        execution_id: str,
+        run_id: str | None = None,
+    ) -> ExecutionDetail:
+        """Return full execution detail: the record, all runs, and steps with attempts.
+
+        Args:
+            execution_id: Execution identifier to inspect.
+            run_id: Optional run identifier; defaults to the current (latest) run.
+        """
+        return await self._native.execution_detail(execution_id, run_id)
+
+    async def retry_step(
+        self,
+        run_id: str,
+        step_name: str,
+        triggered_by: str | None = None,
+    ) -> str:
+        """Retry a single dead step within ``run_id`` and return the new task ID."""
+        return await self._native.retry_step(run_id, step_name, triggered_by)
+
+    async def retry_step_current_run(
+        self,
+        execution_id: str,
+        step_name: str,
+        triggered_by: str | None = None,
+    ) -> str:
+        """Retry a single dead step within the current run of ``execution_id``."""
+        return await self._native.retry_step_current_run(execution_id, step_name, triggered_by)
+
+    async def restart(
+        self,
+        execution_id: str,
+        new_payload: Any = None,
+        triggered_by: str | None = None,
+    ) -> str:
+        """Restart an entire execution from scratch and return the new ``run_id``.
+
+        Args:
+            execution_id: Stable execution identifier.
+            new_payload: Optional replacement payload (normalized via :func:`to_json_value`).
+                When ``None``, the existing payload is preserved.
+            triggered_by: Optional operator identifier for audit logging.
+        """
+        normalized = to_json_value(new_payload) if new_payload is not None else None
+        return await self._native.restart(execution_id, normalized, triggered_by)
+
+    async def rerun_steps(
+        self,
+        execution_id: str,
+        spec: RerunSpec | None = None,
+        **kwargs: Any,
+    ) -> RerunResult:
+        """Selectively rerun a subset of steps while preserving others.
+
+        Args:
+            execution_id: Stable execution identifier.
+            spec: Optional :class:`RerunSpec` specification.
+            **kwargs: Ergonomic keyword arguments forwarded to :class:`RerunSpec`
+                (``force_rerun``, ``preserve``, ``triggered_by``). Cannot be combined with ``spec``.
+        """
+        if spec is not None and kwargs:
+            raise TypeError("Cannot specify both 'spec' and keyword arguments")
+        if spec is None and kwargs:
+            spec = RerunSpec(**kwargs)
+        return await self._native.rerun_steps(execution_id, spec)
+
+    async def pause(self, scope: PauseScope) -> PauseRule:
+        """Create a pause rule for the given :class:`PauseScope`."""
+        return await self._native.pause(scope)
+
+    async def resume(
+        self,
+        scope: PauseScope,
+        deleted_by: str | None = None,
+    ) -> ResumeResult:
+        """Resume execution by soft-deleting pause rules matching ``scope``."""
+        return await self._native.resume(scope, deleted_by)
+
+    async def resume_rule_by_id(
+        self,
+        rule_id: str,
+        deleted_by: str | None = None,
+    ) -> ResumeResult:
+        """Resume by soft-deleting a specific pause rule by ``rule_id``."""
+        return await self._native.resume_rule_by_id(rule_id, deleted_by)
+
+    async def list_pause_rules(
+        self,
+        filter: PauseRuleFilter | None = None,
+    ) -> list[PauseRule]:
+        """List pause rules matching the optional :class:`PauseRuleFilter`."""
+        return await self._native.list_pause_rules(filter)

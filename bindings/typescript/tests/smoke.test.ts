@@ -2,6 +2,7 @@ import { Effect, Fiber, Schedule, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
 	DurableScheduler,
+	ExecutionNotFound,
 	isNativeAvailable,
 	PgBackend,
 	WorkerBuilder,
@@ -295,6 +296,330 @@ describe.skipIf(!run)("postgres smoke", () => {
 						// Idempotent stopRecurring
 						yield* sched.stopRecurring(recurringWf);
 						yield* sched.stopRecurring(recurringName);
+					}).pipe(Effect.ensuring(Fiber.interrupt(workerFiber)));
+				}),
+			),
+		);
+	}, 30000);
+
+	it("supports introspection: listExecutions, stats, getCurrentRunId, listRuns, executionDetail", async () => {
+		const uid = (prefix: string) =>
+			`${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+		const wfName = uid("smoke-introspect-wf");
+		const stepName = uid("smoke-introspect-step");
+		const execId1 = uid("smoke-introspect-1");
+		const execId2 = uid("smoke-introspect-2");
+
+		const step = Zart.step(stepName, (n: number) => Effect.succeed(n * 2));
+		const wf = Zart.durable(wfName, (input: { n: number }) =>
+			Zart.require(step(input.n)),
+		);
+
+		await Effect.runPromise(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const b = yield* PgBackend.scoped(url ?? "");
+					yield* b.runMigrations();
+
+					const sched = yield* DurableScheduler.fromBackend(b);
+					const worker = (yield* WorkerBuilder.fromBackend(b))
+						.configure({
+							pollInterval: "20 millis",
+							enableListenNotify: false,
+						})
+						.registerDurable(wf)
+						.build();
+
+					const workerFiber = yield* Effect.forkChild(worker.runScoped());
+					yield* Effect.yieldNow;
+
+					yield* Effect.gen(function* () {
+						const out1 = yield* sched.startAndWait(
+							execId1,
+							wf,
+							{ n: 21 },
+							"15 seconds",
+							"20 millis",
+						);
+						expect(out1).toBe(42);
+
+						const out2 = yield* sched.startAndWait(
+							execId2,
+							wf,
+							{ n: 5 },
+							"15 seconds",
+							"20 millis",
+						);
+						expect(out2).toBe(10);
+
+						// listExecutions with filters, sorting, pagination
+						const listed = yield* sched.listExecutions({
+							status: "completed",
+							taskName: wfName,
+							sortBy: "scheduled_at",
+							sortOrder: "asc",
+							limit: 10,
+							offset: 0,
+						});
+						expect(listed.map((e) => e.executionId)).toEqual([
+							execId1,
+							execId2,
+						]);
+
+						const paged = yield* sched.listExecutions({
+							taskName: wfName,
+							sortBy: "scheduled_at",
+							sortOrder: "asc",
+							limit: 1,
+							offset: 1,
+						});
+						expect(paged.map((e) => e.executionId)).toEqual([execId2]);
+
+						const byPrefix = yield* sched.listExecutions({
+							search: execId1,
+						});
+						expect(byPrefix.map((e) => e.executionId)).toEqual([execId1]);
+
+						// stats
+						const stats = yield* sched.stats();
+						expect(stats.completed).toBeGreaterThanOrEqual(2);
+						expect(typeof stats.scheduled).toBe("number");
+						expect(typeof stats.running).toBe("number");
+						expect(typeof stats.failed).toBe("number");
+						expect(typeof stats.cancelled).toBe("number");
+
+						// getCurrentRunId
+						const runId = yield* sched.getCurrentRunId(execId1);
+						expect(typeof runId).toBe("string");
+						expect(runId).not.toBeNull();
+						const missingRunId = yield* sched.getCurrentRunId(
+							uid("missing-exec"),
+						);
+						expect(missingRunId).toBeNull();
+
+						// listRuns
+						const runs = yield* sched.listRuns(execId1);
+						expect(runs).toHaveLength(1);
+						expect(runs[0]?.runId).toBe(runId);
+						expect(runs[0]?.executionId).toBe(execId1);
+						expect(runs[0]?.runIndex).toBe(0);
+						expect(runs[0]?.status).toBe("completed");
+						expect(runs[0]?.trigger).toBe("initial");
+
+						// executionDetail
+						const detail = yield* sched.executionDetail(execId1);
+						expect(detail.execution.executionId).toBe(execId1);
+						expect(detail.runs).toHaveLength(1);
+						expect(detail.steps).toHaveLength(1);
+						expect(detail.steps[0]?.step.stepName).toBe(stepName);
+						expect(detail.steps[0]?.step.stepKind).toBe("step");
+						expect(detail.steps[0]?.step.status).toBe("completed");
+						expect(detail.steps[0]?.retryable).toBe(false);
+						expect(detail.steps[0]?.attempts).toHaveLength(1);
+						expect(detail.steps[0]?.attempts[0]?.attemptNumber).toBe(1);
+						expect(detail.steps[0]?.attempts[0]?.status).toBe("completed");
+						expect(detail.steps[0]?.attempts[0]?.result).toBe(42);
+
+						// executionDetail with explicit runId
+						const detailWithRun = yield* sched.executionDetail(
+							execId1,
+							runId ?? undefined,
+						);
+						expect(detailWithRun.steps).toHaveLength(1);
+
+						// executionDetail on missing execution -> ExecutionNotFound
+						const notFound = yield* Effect.flip(
+							sched.executionDetail(uid("missing-detail")),
+						);
+						expect(notFound).toBeInstanceOf(ExecutionNotFound);
+					}).pipe(Effect.ensuring(Fiber.interrupt(workerFiber)));
+				}),
+			),
+		);
+	}, 30000);
+
+	it("supports admin operations: restart, rerunSteps, retryStep, retryStepCurrentRun, and pause/resume", async () => {
+		const uid = (prefix: string) =>
+			`${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+		const wfName = uid("smoke-admin-wf");
+		const stepAName = uid("smoke-admin-step-a");
+		const stepBName = uid("smoke-admin-step-b");
+
+		let stepACount = 0;
+		let stepBCount = 0;
+		let shouldFailB = true;
+
+		const stepA = Zart.step(stepAName, (n: number) =>
+			Effect.sync(() => {
+				stepACount += 1;
+				return n + 1;
+			}),
+		);
+		const stepB = Zart.step(stepBName, (n: number) =>
+			Effect.gen(function* () {
+				stepBCount += 1;
+				if (shouldFailB) {
+					return yield* Effect.fail(new Error("boom-admin"));
+				}
+				return n * 10;
+			}),
+		);
+
+		const wf = Zart.durable(wfName, (input: { n: number }) =>
+			Effect.gen(function* () {
+				const a = yield* Zart.require(stepA(input.n));
+				const b = yield* Zart.require(stepB(a));
+				return { a, b };
+			}),
+		);
+
+		const execId = uid("smoke-admin-exec");
+
+		await Effect.runPromise(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const b = yield* PgBackend.scoped(url ?? "");
+					yield* b.runMigrations();
+
+					const sched = yield* DurableScheduler.fromBackend(b);
+					const worker = (yield* WorkerBuilder.fromBackend(b))
+						.configure({
+							pollInterval: "20 millis",
+							enableListenNotify: false,
+						})
+						.registerDurable(wf)
+						.build();
+
+					const workerFiber = yield* Effect.forkChild(worker.runScoped());
+					yield* Effect.yieldNow;
+
+					yield* Effect.gen(function* () {
+						// 1. Initial run fails on stepB -> execution fails
+						yield* sched.start(execId, wf, { n: 2 });
+						const failedRec = yield* sched.wait(
+							execId,
+							"15 seconds",
+							"20 millis",
+						);
+						expect(failedRec.status).toBe("failed");
+						expect(stepACount).toBe(1);
+						expect(stepBCount).toBe(1);
+
+						const run0 = yield* sched.getCurrentRunId(execId);
+						expect(run0).not.toBeNull();
+
+						// 2. Verify retryStep & retryStepCurrentRun against PostgreSQL
+						const statusMismatch = yield* Effect.flip(
+							sched.retryStep(run0 ?? "", stepBName, "admin-test"),
+						);
+						expect(statusMismatch).toBeInstanceOf(ZartBackendError);
+						expect(statusMismatch.message).toContain("expected 'Dead'");
+
+						const statusMismatchCurrent = yield* Effect.flip(
+							sched.retryStepCurrentRun(execId, stepBName, "admin-test"),
+						);
+						expect(statusMismatchCurrent).toBeInstanceOf(ZartBackendError);
+						expect(statusMismatchCurrent.message).toContain("expected 'Dead'");
+
+						const retryMissingExec = yield* Effect.flip(
+							sched.retryStepCurrentRun(
+								uid("missing-retry"),
+								stepBName,
+								"admin-test",
+							),
+						);
+						expect(retryMissingExec).toBeInstanceOf(ExecutionNotFound);
+
+						// 3. Selective rerun: preserve stepA, forceRerun stepB (now succeeding)
+						shouldFailB = false;
+
+						// 4. Selective rerun: preserve stepA, forceRerun stepB
+						const rerunRes = yield* sched.rerunSteps(execId, {
+							forceRerun: [stepBName],
+							preserve: [stepAName],
+							triggeredBy: "admin-test",
+						});
+						expect(rerunRes.newRunNumber).toBe(1);
+						expect(rerunRes.effectiveRerun).toContain(stepBName);
+						const rerunRec = yield* sched.wait(
+							execId,
+							"15 seconds",
+							"20 millis",
+						);
+						expect(rerunRec.status).toBe("completed");
+						expect(rerunRec.result).toEqual({ a: 3, b: 30 });
+
+						// 5. Full restart with new payload
+						const newRunId = yield* sched.restart(
+							execId,
+							{ n: 5 },
+							"admin-test",
+						);
+						expect(newRunId).toContain(":run:2");
+						const restartedRec = yield* sched.wait(
+							execId,
+							"15 seconds",
+							"20 millis",
+						);
+						expect(restartedRec.status).toBe("completed");
+						expect(restartedRec.result).toEqual({ a: 6, b: 60 });
+
+						const runs = yield* sched.listRuns(execId);
+						expect(runs.map((r) => r.trigger)).toEqual([
+							"initial",
+							"selective_rerun",
+							"restart",
+						]);
+
+						// 6. Pause / listPauseRules / resumeRuleById / resume
+						const rule1 = yield* sched.pause({
+							executionId: execId,
+							stepPattern: `${stepBName}*`,
+							triggeredBy: "admin-test",
+							reason: "maintenance",
+						});
+						expect(rule1.ruleId.length).toBeGreaterThan(0);
+						expect(rule1.scope.executionId).toBe(execId);
+						expect(rule1.reason).toBe("maintenance");
+
+						const activeRules = yield* sched.listPauseRules({
+							executionId: execId,
+						});
+						expect(activeRules.some((r) => r.ruleId === rule1.ruleId)).toBe(
+							true,
+						);
+
+						const resById = yield* sched.resumeRuleById(
+							rule1.ruleId,
+							"admin-test",
+						);
+						expect(resById.rulesDeleted).toBe(1);
+
+						const afterDelete = yield* sched.listPauseRules({
+							executionId: execId,
+						});
+						expect(afterDelete.some((r) => r.ruleId === rule1.ruleId)).toBe(
+							false,
+						);
+
+						const withDeleted = yield* sched.listPauseRules({
+							executionId: execId,
+							includeDeleted: true,
+						});
+						expect(withDeleted.some((r) => r.ruleId === rule1.ruleId)).toBe(
+							true,
+						);
+
+						// Pause again and resume by scope
+						yield* sched.pause({
+							taskName: wfName,
+							triggeredBy: "admin-test",
+						});
+						const resByScope = yield* sched.resume(
+							{ taskName: wfName },
+							"admin-test",
+						);
+						expect(resByScope.rulesDeleted).toBeGreaterThanOrEqual(1);
 					}).pipe(Effect.ensuring(Fiber.interrupt(workerFiber)));
 				}),
 			),

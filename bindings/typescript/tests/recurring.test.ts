@@ -116,6 +116,37 @@ describe("WorkerBuilder.registerRecurringDurable & DurableScheduler.stopRecurrin
 			stopRecurring: async (taskId) => {
 				stopped.push(taskId);
 			},
+			listExecutions: async () => [],
+			stats: async () => ({
+				scheduled: 0,
+				running: 0,
+				completed: 0,
+				failed: 0,
+				cancelled: 0,
+			}),
+			getCurrentRunId: async () => null,
+			listRuns: async () => [],
+			executionDetail: async (id) => ({
+				execution: await nativeScheduler.status(id),
+				runs: [],
+				steps: [],
+			}),
+			retryStep: async () => "task-1",
+			retryStepCurrentRun: async () => "task-1",
+			restart: async () => "run-1",
+			rerunSteps: async () => ({
+				newRunNumber: 1,
+				effectiveRerun: [],
+				potentiallyStale: [],
+			}),
+			pause: async (scope) => ({
+				ruleId: "rule-1",
+				scope,
+				createdAt: "2026-01-01T00:00:00Z",
+			}),
+			resume: async () => ({ rulesDeleted: 1 }),
+			resumeRuleById: async () => ({ rulesDeleted: 1 }),
+			listPauseRules: async () => [],
 		};
 		const scheduler = new (
 			DurableScheduler as unknown as {
