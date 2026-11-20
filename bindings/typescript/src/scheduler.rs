@@ -172,4 +172,13 @@ impl DurableScheduler {
             .await
             .map_err(scheduler_err)
     }
+
+    /// Stop a recurring durable execution from scheduling future ticks (idempotent).
+    #[napi]
+    pub async fn stop_recurring(&self, task_id: String) -> Result<()> {
+        self.inner
+            .stop_recurring(&task_id)
+            .await
+            .map_err(scheduler_err)
+    }
 }

@@ -6,6 +6,7 @@ import functools
 import inspect
 import math
 import re
+import string
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ParamSpec, get_type_hints, overload
@@ -190,12 +191,62 @@ class StepInvocation[T]:
         return f"StepInvocation(name={self.name!r})"
 
 
-class TypedStepOutcome:
+_formatter = string.Formatter()
+
+
+def _extract_template_fields(template: str) -> list[str]:
+    """Extract format placeholder field names from a template string."""
+    try:
+        fields: list[str] = []
+        for _, field_name, _, _ in _formatter.parse(template):
+            if field_name is not None:
+                base_name = field_name.split(".")[0].split("[")[0]
+                fields.append(base_name)
+        return fields
+    except ValueError as e:
+        raise ValueError(f"Invalid step name format template {template!r}: {e}") from e
+
+
+class TypedStepHandle[T]:
+    """Handle to a scheduled step preserving its declared return type."""
+
+    def __init__(self, handle: StepHandle, return_type: Any = Any) -> None:
+        self._handle = handle
+        self._return_type = return_type
+
+    @property
+    def step_name(self) -> str:
+        """Return the name of the scheduled step."""
+        return self._handle.step_name
+
+    @property
+    def handle(self) -> StepHandle:
+        """Return the underlying native :class:`StepHandle`."""
+        return self._handle
+
+    @property
+    def return_type(self) -> Any:
+        """Return the declared return type of the step."""
+        return self._return_type
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._handle, name)
+
+    def __repr__(self) -> str:
+        return f"TypedStepHandle(step_name={self.step_name!r})"
+
+
+class TypedStepOutcome[T]:
     """Wrapper around :class:`StepOutcome` that reconstructs typed step results."""
 
     def __init__(self, inner: StepOutcome, return_type: Any = Any) -> None:
         self._inner = inner
         self._return_type = return_type
+
+    @property
+    def inner(self) -> StepOutcome:
+        """Return the underlying native :class:`StepOutcome`."""
+        return self._inner
 
     @property
     def kind(self) -> str:
@@ -214,7 +265,7 @@ class TypedStepOutcome:
         return self._inner.is_zart_err
 
     @property
-    def value(self) -> Any:
+    def value(self) -> T | Any:
         raw = self._inner.value
         if not self._inner.is_ok:
             return raw
@@ -224,9 +275,12 @@ class TypedStepOutcome:
     def error(self) -> Any:
         return self._inner.error
 
-    def unwrap(self) -> Any:
+    def unwrap(self) -> T:
         raw = self._inner.unwrap()
         return from_json_value(raw, self._return_type)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
     def __repr__(self) -> str:
         return repr(self._inner)
@@ -238,28 +292,53 @@ def _to_step_spec(invocation: StepInvocation | StepSpec) -> tuple[StepSpec, Any]
     return invocation, Any
 
 
+def _is_trx_annotation(annotation: Any) -> bool:
+    if annotation is Trx:
+        return True
+    if annotation in ("Trx", "zart.Trx"):
+        return True
+    if (
+        isinstance(annotation, type)
+        and annotation.__name__ == "Trx"
+        and getattr(annotation, "__module__", "").startswith("zart")
+    ):
+        return True
+    return False
+
+
 def _inspect_trx_param(
     fn: Callable[..., Any],
     hints: dict[str, Any],
-) -> tuple[str | None, _TrxMarker | None, bool, inspect.Signature, inspect.Signature | None]:
-    """Inspect ``fn`` for a single ``zart.trx(...)`` parameter."""
+) -> tuple[str | None, _TrxMarker | None, bool, inspect.Signature, inspect.Signature]:
+    """Inspect ``fn`` for a single transaction parameter."""
     sig = inspect.signature(fn)
     trx_param: inspect.Parameter | None = None
+    trx_marker: _TrxMarker | None = None
+    is_zart_trx_annot: bool = False
+
     for param in sig.parameters.values():
-        if isinstance(param.default, _TrxMarker):
+        annot = hints.get(param.name, param.annotation)
+        annot_is_trx = _is_trx_annotation(annot) or _is_trx_annotation(param.annotation)
+        marker_is_trx = isinstance(param.default, _TrxMarker)
+
+        if annot_is_trx or marker_is_trx:
             if trx_param is not None:
                 raise ValueError(
-                    f"@step function {fn.__name__!r} may declare at most one zart.trx() parameter"
+                    f"@step function {fn.__name__!r} may declare at most one "
+                    "transaction parameter (zart.trx() or zart.Trx)"
                 )
             trx_param = param
+            is_zart_trx_annot = annot_is_trx
+            if marker_is_trx:
+                trx_marker = param.default
+            else:
+                trx_marker = _TrxMarker(None)
 
     if trx_param is None:
-        return None, None, False, sig, None
+        return None, None, False, sig, sig
 
-    resolved_annot = hints.get(trx_param.name, trx_param.annotation)
-    is_zart_trx_annot = resolved_annot is Trx or trx_param.annotation in ("Trx", "zart.Trx")
     call_sig = inspect.Signature([p for p in sig.parameters.values() if p.name != trx_param.name])
-    return trx_param.name, trx_param.default, is_zart_trx_annot, sig, call_sig
+    return trx_param.name, trx_marker, is_zart_trx_annot, sig, call_sig
 
 
 def _bind_with_trx(
@@ -304,7 +383,7 @@ async def _invoke_step_fn(
 def _build_step_runner(
     fn: Callable[..., Any],
     sig: inspect.Signature,
-    call_sig: inspect.Signature | None,
+    call_sig: inspect.Signature,
     trx_param_name: str | None,
     trx_marker: _TrxMarker | None,
     is_zart_trx_annot: bool,
@@ -312,7 +391,7 @@ def _build_step_runner(
     kwargs: dict[str, Any],
 ) -> tuple[Callable[..., Awaitable[Any]], bool]:
     """Build the step runner coroutine factory and ``inject_trx`` flag."""
-    if trx_marker is None or trx_param_name is None or call_sig is None:
+    if trx_marker is None or trx_param_name is None:
 
         async def _run_plain() -> Any:
             return await _invoke_step_fn(fn, args, kwargs)
@@ -352,8 +431,29 @@ def _make_step_decorator(
         return_type = hints.get("return", Any)
         trx_param_name, trx_marker, is_zart_trx_annot, sig, call_sig = _inspect_trx_param(fn, hints)
 
+        template_fields = _extract_template_fields(name)
+        if template_fields:
+            for field in template_fields:
+                if not field or field not in call_sig.parameters:
+                    raise ValueError(
+                        f"@step name template {name!r} references parameter {field!r} "
+                        f"which is not in function signature"
+                    )
+
         @functools.wraps(fn)
         def invoker(*args: P.args, **kwargs: P.kwargs) -> StepInvocation:
+            bound = call_sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            if template_fields:
+                try:
+                    step_name = name.format(**bound.arguments)
+                except KeyError as e:
+                    raise KeyError(f"@step name template {name!r} missing key: {e}") from e
+                except Exception as e:
+                    raise ValueError(f"@step name template {name!r} failed to format: {e}") from e
+            else:
+                step_name = name
+
             runner, inject_trx = _build_step_runner(
                 fn,
                 sig,
@@ -365,7 +465,7 @@ def _make_step_decorator(
                 kwargs,
             )
             spec = StepSpec(
-                name=name,
+                name=step_name,
                 callable=runner,
                 retry=retry,
                 timeout_secs=timeout_secs,
@@ -511,15 +611,52 @@ async def step_or_else(
     return from_json_value(raw, return_type)
 
 
-def schedule(invocation: StepInvocation | StepSpec) -> StepHandle:
-    """Schedule a step for parallel execution and return its :class:`StepHandle`."""
-    spec, _ = _to_step_spec(invocation)
-    return _native_schedule(spec)
+@overload
+def schedule[T](invocation: StepInvocation[T]) -> TypedStepHandle[T]: ...
 
 
-async def wait(handles: Sequence[StepHandle]) -> list[StepOutcome]:
-    """Wait for all scheduled :class:`StepHandle` instances, preserving handle order."""
-    return await _native_wait(list(handles))
+@overload
+def schedule(invocation: StepSpec) -> StepHandle: ...
+
+
+def schedule[T](
+    invocation: StepInvocation[T] | StepSpec,
+) -> TypedStepHandle[T] | StepHandle:
+    """Schedule a step for parallel execution and return its handle."""
+    spec, return_type = _to_step_spec(invocation)
+    raw = _native_schedule(spec)
+    if return_type is Any:
+        return raw
+    return TypedStepHandle(raw, return_type=return_type)
+
+
+async def wait(
+    handles: Sequence[TypedStepHandle[Any] | StepHandle],
+) -> list[TypedStepOutcome[Any] | StepOutcome]:
+    """Wait for all scheduled step handles, preserving handle order."""
+    native_handles: list[StepHandle] = []
+    return_types: list[Any] = []
+    for h in handles:
+        if isinstance(h, TypedStepHandle):
+            native_handles.append(h.handle)
+            return_types.append(h.return_type)
+        elif hasattr(h, "_return_type"):
+            native_handles.append(getattr(h, "handle", h))
+            return_types.append(h._return_type)
+        elif isinstance(h, StepHandle):
+            native_handles.append(h)
+            return_types.append(Any)
+        else:
+            raise TypeError(f"Expected StepHandle or TypedStepHandle, got {type(h).__name__}")
+
+    raw_outcomes = await _native_wait(native_handles)
+    results: list[TypedStepOutcome[Any] | StepOutcome] = []
+    for outcome, ret_type in zip(raw_outcomes, return_types, strict=True):
+        if ret_type is Any:
+            results.append(outcome)
+        else:
+            results.append(TypedStepOutcome(outcome, ret_type))
+    return results
 
 
 async def sleep(name: str, duration: DurationLike) -> None:

@@ -8,6 +8,7 @@ mod api;
 mod backend;
 mod durable;
 mod errors;
+mod recurring;
 mod scheduler;
 mod serde_bridge;
 mod step;
@@ -16,6 +17,7 @@ mod worker;
 
 use backend::PyPgBackend;
 use durable::{PyDurableTask, PyExecutionFailure};
+use recurring::{PyOverlapPolicy, PyRecurrence};
 use scheduler::{PyDurableScheduler, PyExecutionRecord, PyScheduleResult};
 use step::{PyRetryPolicy, PyStep};
 use trx::{PyClientTrx, PyTrx};
@@ -56,6 +58,8 @@ fn _zart(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorkerBuilder>()?;
     m.add_class::<PyWorker>()?;
     m.add_class::<PyRetryPolicy>()?;
+    m.add_class::<PyRecurrence>()?;
+    m.add_class::<PyOverlapPolicy>()?;
     m.add_class::<PyStep>()?;
     m.add_class::<PyDurableTask>()?;
     m.add_class::<PyExecutionFailure>()?;

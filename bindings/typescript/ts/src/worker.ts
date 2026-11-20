@@ -3,9 +3,12 @@ import { fromNative, type PgBackend } from "./backend.js";
 import { mapNativeError, type ZartTaggedError } from "./errors.js";
 import {
 	loadNative,
+	type NativeRecurrence,
 	type NativeWorker,
 	type NativeWorkerBuilder,
 } from "./native.js";
+import type { OverlapPolicy, Recurrence } from "./recurring.js";
+import { encodeInput, encodeJsonValue } from "./schema.js";
 import { trxProviderStorage } from "./step.js";
 import type { TrxProvider } from "./trx.js";
 import type { DurableDefinition } from "./workflow.js";
@@ -64,6 +67,23 @@ const rethrowNativeError = (err: unknown): never => {
 	throw mapNativeError(err);
 };
 
+/** Options for {@link WorkerBuilder.registerRecurringDurable}. */
+export interface RecurringDurableOptions<A = unknown> {
+	/** Execution ID template; must contain `"{occurrence}"` (defaults to `` `${def.name}-{occurrence}` ``). */
+	readonly idTemplate?: string;
+	/** Recurrence schedule (`Recurrence.fixedDelay(...)` or `Recurrence.cron(...)`). */
+	readonly recurrence: Recurrence;
+	/** Policy for overlapping executions (defaults to `"SkipIfRunning"`). */
+	readonly overlap?: OverlapPolicy;
+	/** Optional initial input passed to each tick (encoded with `def.inputSchema` if present). */
+	readonly initialData?: A;
+}
+
+const toNativeRecurrence = (r: Recurrence): NativeRecurrence =>
+	r.type === "fixed_delay"
+		? { kind: "fixed_delay", durationMs: r.durationMs }
+		: { kind: "cron", expression: r.expression, timezone: r.timezone };
+
 export class WorkerBuilder {
 	private trxProvider: TrxProvider | undefined;
 
@@ -84,24 +104,62 @@ export class WorkerBuilder {
 		return this;
 	}
 
-	/** Register a `Zart.durable` workflow with the native worker. */
-	registerDurable<A, B>(def: DurableDefinition<A, B>): WorkerBuilder {
-		const handler = (
-			dispatcher: Parameters<typeof def.handler>[0],
-			data: unknown,
-		) =>
+	private wrapHandler<A, B, I, O>(
+		def: DurableDefinition<A, B, I, O>,
+	): DurableDefinition<A, B, I, O>["handler"] {
+		return (dispatcher, data) =>
 			this.trxProvider
 				? trxProviderStorage.run(this.trxProvider, () =>
 						def.handler(dispatcher, data),
 					)
 				: def.handler(dispatcher, data);
+	}
+
+	/** Register a `Zart.durable` workflow with the native worker. */
+	registerDurable<A, B, I, O>(
+		def: DurableDefinition<A, B, I, O>,
+	): WorkerBuilder {
 		this.native.registerDurable(
 			def.name,
-			handler,
-			def.timeoutSecs,
+			this.wrapHandler(def),
+			def.timeoutMs,
 			def.maxRetries,
+			def.onFailure,
 		);
 		return this;
+	}
+
+	/**
+	 * Register a `Zart.durable` workflow as a recurring task on a fixed-delay or
+	 * cron schedule.
+	 */
+	registerRecurringDurable<A, B, I, O>(
+		def: DurableDefinition<A, B, I, O>,
+		opts: RecurringDurableOptions<A>,
+	): WorkerBuilder {
+		try {
+			const idTemplate = opts.idTemplate ?? `${def.name}-{occurrence}`;
+			const initialData =
+				opts.initialData === undefined
+					? null
+					: def.inputSchema
+						? Effect.runSync(encodeInput(def.inputSchema, opts.initialData))
+						: encodeJsonValue(opts.initialData);
+			this.native.registerRecurringDurable(
+				def.name,
+				this.wrapHandler(def),
+				idTemplate,
+				toNativeRecurrence(opts.recurrence),
+				opts.overlap,
+				initialData,
+				def.timeoutMs,
+				def.maxRetries,
+				def.onFailure,
+			);
+			return this;
+		} catch (e) {
+			return rethrowNativeError(e);
+		}
 	}
 
 	configure(o: WorkerOptions): WorkerBuilder {
@@ -142,8 +200,8 @@ export class Worker {
 	}
 
 	stop(): Effect.Effect<void> {
-		return Effect.promise(async () => {
-			await this.native.stop();
+		return Effect.sync(() => {
+			this.native.stop();
 		});
 	}
 

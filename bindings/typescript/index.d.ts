@@ -10,6 +10,14 @@ export interface ExecutionInfo {
 	data: Json;
 	currentAttempt: number;
 	maxRetries?: number;
+	isRetry: boolean;
+}
+/** Description of why `on_failure` was invoked on a `DurableTask`. */
+export interface NativeExecutionFailure {
+	kind: string;
+	step?: string;
+	raw?: any;
+	attempts?: number;
 }
 /** Result of a step body: `kind` is `"ok" | "business_err" | "zart_err"`. */
 export interface StepOutcome {
@@ -52,6 +60,17 @@ export interface StepSpec {
 	timeoutMs?: number;
 	timeoutScope?: string;
 	needsTrx?: boolean;
+}
+/** Recurrence specification passed from JS to `WorkerBuilder.registerRecurringDurable`. */
+export interface NativeRecurrence {
+	/** `"fixed_delay"` or `"cron"`. */
+	kind: string;
+	/** Delay in milliseconds for `"fixed_delay"`. */
+	durationMs?: number;
+	/** 6-field cron expression for `"cron"`. */
+	expression?: string;
+	/** IANA timezone name for `"cron"` (e.g. `"UTC"`, `"America/Sao_Paulo"`). */
+	timezone?: string;
 }
 export type Dispatcher = NativeDispatcher;
 /** Handle given to JS durable handlers. */
@@ -110,6 +129,8 @@ export declare class DurableScheduler {
 		eventName: string,
 		payload: any,
 	): Promise<void>;
+	/** Stop a recurring durable execution from scheduling future ticks (idempotent). */
+	stopRecurring(taskId: string): Promise<void>;
 }
 /** Zart-managed step transaction handle (`zart::ZartTrx`). */
 export declare class NativeTrx {
@@ -185,12 +206,28 @@ export declare class WorkerBuilder {
 	heartbeatIntervalSecs(secs?: number | undefined | null): void;
 	/** Enable or disable PostgreSQL `LISTEN/NOTIFY` wakeup hints. */
 	enableListenNotify(enabled: boolean): void;
-	/** Register a JS durable handler: `handler(dispatcher, data) => Promise<json>`. */
+	/**
+	 * Register a JS durable task with handler, sub-second timeout (ms), max retries,
+	 * and optional failure recovery callback: `on_failure(data, failure) => Promise<json>`.
+	 */
 	registerDurable(
 		name: string,
 		handler: (dispatcher: NativeDispatcher, data: any) => Promise<any>,
-		timeoutSecs?: number | undefined | null,
+		timeoutMs?: number | undefined | null,
 		maxRetries?: number | undefined | null,
+		onFailure?: ((data: any, failure: any) => Promise<any>) | undefined | null,
+	): void;
+	/** Register a recurring durable task with schedule, overlap policy, and optional initial data. */
+	registerRecurringDurable(
+		name: string,
+		handler: (dispatcher: NativeDispatcher, data: any) => Promise<any>,
+		idTemplate: string,
+		recurrence: NativeRecurrence,
+		overlap?: string | undefined | null,
+		initialData?: any,
+		timeoutMs?: number | undefined | null,
+		maxRetries?: number | undefined | null,
+		onFailure?: ((data: any, failure: any) => Promise<any>) | undefined | null,
 	): void;
 	build(): Worker;
 }

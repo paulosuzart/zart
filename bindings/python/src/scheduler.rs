@@ -206,6 +206,17 @@ impl PyDurableScheduler {
         })
     }
 
+    /// Stop and delete a recurring durable task schedule by its `task_id`.
+    fn stop_recurring<'py>(&self, py: Python<'py>, task_id: String) -> PyResult<Bound<'py, PyAny>> {
+        let sched = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            sched
+                .stop_recurring(&task_id)
+                .await
+                .map_err(scheduler_err_to_py)
+        })
+    }
+
     /// Start a new durable execution inside a caller-owned `ClientTrx` transaction.
     fn start_in_tx<'py>(
         &self,

@@ -59,6 +59,23 @@ export class ControlFlowDefect extends Data.TaggedError("ControlFlowDefect")<{
 	readonly message?: string;
 }> {}
 
+/**
+ * Describes why a durable execution failed and invoked its `onFailure` recovery callback.
+ *
+ * Variants:
+ * - `step_failed`: a step failed and propagated out of the durable task body.
+ * - `execution_deadline_exceeded`: the workflow's configured timeout was exceeded.
+ * - `retries_exhausted`: the execution exhausted its configured max retry attempts.
+ */
+export type ExecutionFailure =
+	| {
+			readonly kind: "step_failed";
+			readonly step: string;
+			readonly raw: unknown;
+	  }
+	| { readonly kind: "execution_deadline_exceeded" }
+	| { readonly kind: "retries_exhausted"; readonly attempts: number };
+
 export type ZartTaggedError =
 	| RetryExhaustedError
 	| StepTimeoutError

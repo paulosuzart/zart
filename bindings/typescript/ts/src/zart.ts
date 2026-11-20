@@ -24,6 +24,7 @@ export {
 export type {
 	DurableDefinition,
 	DurableOptions,
+	ExecutionFailure,
 	ExecutionInfo,
 	Scheduled,
 } from "./workflow.js";
@@ -38,8 +39,10 @@ export {
 	sleep,
 	sleepUntil,
 	stepOr,
+	stepOrElse,
 	wait,
 	waitAll,
 	waitForEvent,
+	ZartContext,
 	ZartWorkflow,
 } from "./workflow.js";

@@ -151,6 +151,7 @@ def test_public_exports() -> None:
         "now",
         "context",
         "Retry",
+        "TypedStepHandle",
         "parse_duration",
         "ZartControlFlowSignal",
     ]:

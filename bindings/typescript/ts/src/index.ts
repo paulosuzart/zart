@@ -1,7 +1,8 @@
 export * from "./backend.js";
-export { liftNative, ZartWorkflow } from "./core.js";
+export { liftNative, ZartContext, ZartWorkflow } from "./core.js";
 export * from "./errors.js";
 export * from "./native.js";
+export * from "./recurring.js";
 export * from "./scheduler.js";
 export * from "./schema.js";
 export * from "./sql-client.js";

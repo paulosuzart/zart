@@ -77,11 +77,13 @@ pub struct ExecutionInfo {
     pub data: Json,
     pub current_attempt: u32,
     pub max_retries: Option<u32>,
+    pub is_retry: bool,
 }
 
 impl From<zart::ExecutionInfo> for ExecutionInfo {
     fn from(i: zart::ExecutionInfo) -> Self {
         Self {
+            is_retry: i.is_retry(),
             execution_id: i.execution_id,
             task_name: i.task_name,
             data: i.data,

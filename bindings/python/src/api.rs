@@ -196,16 +196,83 @@ impl PyStepOutcome {
     }
 
     pub(crate) fn from_step_error(err: &zart::StepError) -> Self {
-        let msg = err.to_string();
-        let err_json = serde_json::json!({
-            "kind": "step_error",
-            "message": msg,
-        });
-        Self {
-            kind: "zart_err".to_string(),
-            value_json: None,
-            error_json: Some(err_json),
-            error_message: Some(msg),
+        match err {
+            zart::StepError::Failed { step, reason } => {
+                let err_json = if let Ok(val) = serde_json::from_str::<serde_json::Value>(reason) {
+                    val
+                } else {
+                    let (error_type, message) = if let Some((t, m)) = reason.split_once(": ") {
+                        (t.to_string(), m.to_string())
+                    } else {
+                        ("StepFailed".to_string(), reason.clone())
+                    };
+                    serde_json::json!({
+                        "error_type": error_type,
+                        "message": message,
+                        "step": step,
+                    })
+                };
+                Self {
+                    kind: "business_err".to_string(),
+                    value_json: None,
+                    error_json: Some(err_json),
+                    error_message: Some(reason.clone()),
+                }
+            }
+            zart::StepError::RetryExhausted { step, attempts } => {
+                let msg = err.to_string();
+                let err_json = serde_json::json!({
+                    "kind": "retry_exhausted",
+                    "step": step,
+                    "attempts": attempts,
+                });
+                Self {
+                    kind: "zart_err".to_string(),
+                    value_json: None,
+                    error_json: Some(err_json),
+                    error_message: Some(msg),
+                }
+            }
+            zart::StepError::Timeout { step, duration } => {
+                let msg = err.to_string();
+                let err_json = serde_json::json!({
+                    "kind": "timed_out",
+                    "step": step,
+                    "duration_secs": duration.as_secs_f64(),
+                });
+                Self {
+                    kind: "zart_err".to_string(),
+                    value_json: None,
+                    error_json: Some(err_json),
+                    error_message: Some(msg),
+                }
+            }
+            zart::StepError::DeadlineExceeded { step } => {
+                let msg = err.to_string();
+                let err_json = serde_json::json!({
+                    "kind": "deadline_exceeded",
+                    "step": step,
+                });
+                Self {
+                    kind: "zart_err".to_string(),
+                    value_json: None,
+                    error_json: Some(err_json),
+                    error_message: Some(msg),
+                }
+            }
+            other => {
+                let msg = other.to_string();
+                let err_json = serde_json::json!({
+                    "kind": "step_error",
+                    "message": msg,
+                });
+                Self {
+                    kind: "zart_err".to_string(),
+                    value_json: None,
+                    error_json: Some(err_json),
+                    error_message: Some(msg),
+                }
+            }
         }
     }
 }
@@ -472,7 +539,15 @@ pub(crate) async fn handle_command(
                 Ok(results) => Ok(results
                     .into_iter()
                     .map(|r| match r {
-                        Ok(v) => PyStepOutcome::ok(v),
+                        Ok(v) => {
+                            if let Ok(py_step_err) =
+                                serde_json::from_value::<PyStepError>(v.clone())
+                            {
+                                PyStepOutcome::business_err(py_step_err)
+                            } else {
+                                PyStepOutcome::ok(v)
+                            }
+                        }
                         Err(e) => PyStepOutcome::from_step_error(&e),
                     })
                     .collect()),

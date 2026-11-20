@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -6,6 +7,17 @@ use pyo3::prelude::*;
 use crate::backend::PyPgBackend;
 use crate::durable::PyDurableTask;
 use crate::duration_from_secs;
+use crate::recurring::{PyOverlapPolicy, PyRecurrence};
+use crate::serde_bridge::py_to_json;
+
+#[derive(Clone)]
+struct RecurringTaskEntry {
+    task: PyDurableTask,
+    id_template: String,
+    recurrence: zart_scheduler::Recurrence,
+    overlap: zart::OverlapPolicy,
+    initial_data: serde_json::Value,
+}
 
 /// Builder for configuring and constructing a Zart `Worker`.
 #[pyclass(name = "WorkerBuilder")]
@@ -13,6 +25,7 @@ pub struct PyWorkerBuilder {
     backend: Arc<zart::PgBackend>,
     config: Mutex<zart::WorkerConfig>,
     durable_tasks: Mutex<Vec<PyDurableTask>>,
+    recurring_tasks: Mutex<Vec<RecurringTaskEntry>>,
     trx_provider: Mutex<Option<Arc<Py<PyAny>>>>,
 }
 
@@ -41,6 +54,7 @@ impl PyWorkerBuilder {
             backend: backend.inner.clone(),
             config: Mutex::new(zart::WorkerConfig::default()),
             durable_tasks: Mutex::new(Vec::new()),
+            recurring_tasks: Mutex::new(Vec::new()),
             trx_provider: Mutex::new(None),
         }
     }
@@ -67,6 +81,48 @@ impl PyWorkerBuilder {
             .map_err(|_| PyRuntimeError::new_err("WorkerBuilder tasks lock poisoned"))?;
         tasks.push(task);
         drop(tasks);
+        Ok(slf)
+    }
+
+    /// Register a recurring `DurableTask` that fires on a `Recurrence` schedule.
+    ///
+    /// `id_template` must contain `{occurrence}` (e.g. `"daily-report-{occurrence}"`).
+    /// Automatically registers `task` as a durable handler if not already registered.
+    #[pyo3(signature = (task, id_template, recurrence, overlap = PyOverlapPolicy::SkipIfRunning, initial_data = None))]
+    fn register_recurring_durable<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+        task: PyDurableTask,
+        id_template: String,
+        recurrence: PyRecurrence,
+        overlap: PyOverlapPolicy,
+        initial_data: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<PyRef<'py, Self>> {
+        if !id_template.contains("{occurrence}") {
+            return Err(PyValueError::new_err(format!(
+                "id_template must contain {{occurrence}} placeholder, got: {id_template:?}"
+            )));
+        }
+        let payload_json = match initial_data {
+            Some(obj) => {
+                let serde_mod = py.import("zart.serde")?;
+                let normalized = serde_mod.call_method1("to_json_value", (obj,))?;
+                py_to_json(&normalized)?
+            }
+            None => serde_json::Value::Null,
+        };
+        let mut recurring = slf
+            .recurring_tasks
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder recurring_tasks lock poisoned"))?;
+        recurring.push(RecurringTaskEntry {
+            task,
+            id_template,
+            recurrence: recurrence.inner,
+            overlap: overlap.into(),
+            initial_data: payload_json,
+        });
+        drop(recurring);
         Ok(slf)
     }
 
@@ -146,6 +202,11 @@ impl PyWorkerBuilder {
             .lock()
             .map_err(|_| PyRuntimeError::new_err("WorkerBuilder tasks lock poisoned"))?
             .clone();
+        let recurring = self
+            .recurring_tasks
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("WorkerBuilder recurring_tasks lock poisoned"))?
+            .clone();
         let trx_provider = self
             .trx_provider
             .lock()
@@ -154,7 +215,9 @@ impl PyWorkerBuilder {
 
         let pool = self.backend.pool().clone();
         let mut builder = zart::WorkerBuilder::from_backend(&*self.backend).config(cfg);
-        let mut task_locals = Vec::with_capacity(tasks.len());
+        let mut task_locals = Vec::with_capacity(tasks.len() + recurring.len());
+        let mut registered_names = HashSet::with_capacity(tasks.len() + recurring.len());
+
         for task in tasks {
             let _ = task.pool.set(pool.clone());
             if let Some(ref prov) = trx_provider {
@@ -162,7 +225,28 @@ impl PyWorkerBuilder {
             }
             task_locals.push(task.locals.clone());
             let name = task.name.clone();
+            registered_names.insert(name.clone());
             builder = builder.register_durable_task(&name, task);
+        }
+
+        for entry in recurring {
+            let name = entry.task.name.clone();
+            if !registered_names.contains(&name) {
+                let _ = entry.task.pool.set(pool.clone());
+                if let Some(ref prov) = trx_provider {
+                    let _ = entry.task.trx_provider.set(prov.clone());
+                }
+                task_locals.push(entry.task.locals.clone());
+                registered_names.insert(name.clone());
+                builder = builder.register_durable_task(&name, entry.task);
+            }
+            builder = builder.register_recurring_durable::<PyDurableTask>(
+                &name,
+                &entry.id_template,
+                entry.recurrence,
+                entry.overlap,
+                entry.initial_data,
+            );
         }
 
         let worker = builder.build();

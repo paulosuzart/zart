@@ -29,6 +29,7 @@ const makeRecordingBuilder = () => {
 
 	const native: NativeWorkerBuilder = {
 		registerDurable: () => {},
+		registerRecurringDurable: () => {},
 		pollIntervalSecs: (n) => {
 			if (!Number.isFinite(n) || n < 0) {
 				throw new Error(

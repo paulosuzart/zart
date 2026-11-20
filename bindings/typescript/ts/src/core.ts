@@ -4,13 +4,19 @@ import {
 	mapNativeError,
 	type ZartTaggedError,
 } from "./errors.js";
-import type { NativeDispatcher } from "./native.js";
+import type { NativeDispatcher, NativeExecutionInfo } from "./native.js";
 
 /** Service available only inside `Zart.durable` bodies (never inside `Zart.step` functions). */
 export class ZartWorkflow extends Context.Service<
 	ZartWorkflow,
 	{ readonly dispatcher: NativeDispatcher }
 >()("@zart/effect/ZartWorkflow") {}
+
+/** Service available inside both `Zart.durable` bodies and `Zart.step` functions. */
+export class ZartContext extends Context.Service<
+	ZartContext,
+	NativeExecutionInfo
+>()("@zart/effect/ZartContext") {}
 
 /** Run an Effect using the `ZartWorkflow` dispatcher from context. */
 export const withWorkflow = <A, E>(

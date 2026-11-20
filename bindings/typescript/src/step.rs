@@ -10,11 +10,12 @@ use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction};
 use napi_derive::napi;
 use tokio::sync::Mutex;
 
+use crate::api::ExecutionInfo;
 use crate::errors::{StepOutcome, TsStepError, reason_message, schema_err};
 use crate::trx::NativeTrx;
 
 /// JS callback invoked once per attempt; resolves to a `StepOutcome`.
-pub type RunFn = ThreadsafeFunction<Option<NativeTrx>, ErrorStrategy::Fatal>;
+pub type RunFn = ThreadsafeFunction<(Option<NativeTrx>, ExecutionInfo), ErrorStrategy::Fatal>;
 
 /// Retry policy: `kind` is `none | fixed | linear | exponential`.
 #[napi(object)]
@@ -179,7 +180,10 @@ impl zart::ZartStep for TsStep {
                 None
             };
 
-            let promise_res = run.call_async::<Promise<StepOutcome>>(native_trx).await;
+            let info: ExecutionInfo = zart::context().into();
+            let promise_res = run
+                .call_async::<Promise<StepOutcome>>((native_trx, info))
+                .await;
             let promise = match promise_res {
                 Ok(p) => p,
                 Err(e) => {

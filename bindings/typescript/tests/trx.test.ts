@@ -135,7 +135,13 @@ class FakeTrxDispatcher {
 		return new Date().toISOString();
 	}
 	context() {
-		return { executionId: "e1", taskName: "t", data: null, currentAttempt: 1 };
+		return {
+			executionId: "e1",
+			taskName: "t",
+			data: null,
+			currentAttempt: 1,
+			isRetry: false,
+		};
 	}
 }
 
@@ -219,6 +225,7 @@ describe("backend.withTransaction + scheduler.startInTx", () => {
 			waitCompletion: async () => null,
 			cancel: async () => true,
 			offerEvent: async () => {},
+			stopRecurring: async () => {},
 		};
 
 		const backend = new (
@@ -379,6 +386,7 @@ describe("User-Managed TrxProvider", () => {
 					handler as (d: FakeTrxDispatcher, data: unknown) => Promise<unknown>,
 				);
 			},
+			registerRecurringDurable: () => {},
 			pollIntervalSecs: () => {},
 			maxConcurrentTasks: () => {},
 			maxTasksPerPoll: () => {},

@@ -1,14 +1,24 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Cause, Duration, Effect, Exit, Layer, Option, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
-import { liftNative, withWorkflow, type ZartWorkflow } from "./core.js";
+import {
+	liftNative,
+	withWorkflow,
+	ZartContext,
+	type ZartWorkflow,
+} from "./core.js";
 import {
 	type NativeStepOutcome,
 	StepFailedError,
 	toStepOutcome,
 	type ZartTaggedError,
 } from "./errors.js";
-import type { NativeStepRun, NativeStepSpec, NativeTrx } from "./native.js";
+import type {
+	NativeExecutionInfo,
+	NativeStepRun,
+	NativeStepSpec,
+	NativeTrx,
+} from "./native.js";
 import { decodeOutput, encodeJsonValue } from "./schema.js";
 import { ZartSqlClientLive } from "./sql-client.js";
 import {
@@ -24,11 +34,22 @@ export const trxProviderStorage = new AsyncLocalStorage<
 	TrxProvider | undefined
 >();
 
+/**
+ * Ambient `NativeExecutionInfo` storage.
+ *
+ * Serves as fallback execution context when callers or mocks invoke `NativeStepRun`
+ * without the `[trx, info]` tuple.
+ */
+export const zartContextStorage = new AsyncLocalStorage<
+	NativeExecutionInfo | undefined
+>();
+
 /** Services permitted inside a `Zart.step` body (`ZartWorkflow` is intentionally excluded). */
 export type StepAllowedServices =
 	| ZartTrx
 	| SqlClient.SqlClient
-	| TrxSessionService;
+	| TrxSessionService
+	| ZartContext;
 
 export interface RetryPolicy {
 	readonly kind: "none" | "fixed" | "linear" | "exponential";
@@ -117,28 +138,30 @@ const messageOfError = (e: unknown): string =>
 		? (e as { message: string }).message
 		: String(e);
 
-const provideNativeTrx = <A, E>(
+const provideStepServices = <A, E>(
 	eff: Effect.Effect<A, E, StepAllowedServices>,
 	trx: NativeTrx | undefined,
+	info: NativeExecutionInfo,
 ): Effect.Effect<A, E, never> => {
+	const withContext = eff.pipe(Effect.provideService(ZartContext, info));
 	const provider = trxProviderStorage.getStore();
 	if (provider) {
 		return runWithTrxProvider(
 			provider,
 			(session) =>
-				eff.pipe(
+				withContext.pipe(
 					Effect.provideService(TrxSessionService, session),
 				) as Effect.Effect<A, E, never>,
 		) as Effect.Effect<A, E, never>;
 	}
 	if (!trx) {
-		return eff as Effect.Effect<A, E, never>;
+		return withContext as Effect.Effect<A, E, never>;
 	}
 	const layer = Layer.merge(
 		Layer.succeed(ZartTrx, new TrxHandle(trx)),
 		ZartSqlClientLive(trx),
 	);
-	return eff.pipe(Effect.provide(layer)) as Effect.Effect<A, E, never>;
+	return withContext.pipe(Effect.provide(layer)) as Effect.Effect<A, E, never>;
 };
 
 const build = <A, E>(
@@ -187,8 +210,8 @@ const build = <A, E>(
 };
 
 /**
- * Define a durable step. `fn` may use `ZartTrx`, `SqlClient`, or `TrxSessionService`,
- * but CANNOT use `ZartWorkflow` primitives (`Zart.sleep`, `Zart.step`, ...) — enforced by `tsc`.
+ * Define a durable step. `fn` may use `ZartTrx`, `SqlClient`, `TrxSessionService`, or `ZartContext`
+ * (`Zart.context`), but CANNOT use `ZartWorkflow` primitives (`Zart.sleep`, `Zart.step`, ...) — enforced by `tsc`.
  */
 export const step = <
 	Args extends ReadonlyArray<unknown>,
@@ -214,10 +237,30 @@ export const step = <
 			needsTrx: opts?.trx !== false && !trxProviderStorage.getStore(),
 		};
 		const run: NativeStepRun = async (
-			trx?: NativeTrx,
+			arg?: [trx: NativeTrx | undefined, info: NativeExecutionInfo] | NativeTrx,
+			maybeInfo?: NativeExecutionInfo,
 		): Promise<NativeStepOutcome> => {
-			const provided = provideNativeTrx(fn(...args), trx);
-			const exit = await Effect.runPromiseExit(provided);
+			let trx: NativeTrx | undefined;
+			let info: NativeExecutionInfo | undefined;
+			if (Array.isArray(arg)) {
+				trx = arg[0];
+				info = arg[1];
+			} else {
+				trx = arg;
+				info = maybeInfo;
+			}
+			const executionInfo: NativeExecutionInfo = info ??
+				zartContextStorage.getStore() ?? {
+					executionId: "unknown",
+					taskName: name,
+					data: null,
+					currentAttempt: 0,
+					isRetry: false,
+				};
+			const provided = provideStepServices(fn(...args), trx, executionInfo);
+			const exit = await zartContextStorage.run(executionInfo, () =>
+				Effect.runPromiseExit(provided),
+			);
 			if (Exit.isSuccess(exit)) {
 				const v = opts?.outputSchema
 					? await Effect.runPromise(

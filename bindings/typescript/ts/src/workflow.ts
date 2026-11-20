@@ -1,7 +1,8 @@
 import { Cause, Duration, Effect, Exit, Option, type Schema } from "effect";
-import { liftNative, withWorkflow, ZartWorkflow } from "./core.js";
+import { liftNative, withWorkflow, ZartContext, ZartWorkflow } from "./core.js";
 import {
 	ControlFlowDefect,
+	type ExecutionFailure,
 	type NativeStepOutcome,
 	StepFailedError,
 	type StepOutcome,
@@ -13,12 +14,19 @@ import {
 import type {
 	NativeDispatcher,
 	NativeDurableHandler,
+	NativeExecutionFailure,
 	NativeExecutionInfo,
 } from "./native.js";
 import { decodeOutput, encodeInput, encodeJsonValue } from "./schema.js";
-import { type StepEffect, type StepError, StepMeta } from "./step.js";
+import {
+	type StepEffect,
+	type StepError,
+	StepMeta,
+	zartContextStorage,
+} from "./step.js";
 
-export { ZartWorkflow } from "./core.js";
+export { ZartContext, ZartWorkflow } from "./core.js";
+export type { ExecutionFailure } from "./errors.js";
 
 /** Execute a step, failing the workflow Effect on any step error (same as `yield* step(...)`). */
 export const require_ = <A, E>(call: StepEffect<A, E>): StepEffect<A, E> =>
@@ -130,12 +138,54 @@ const isZartTagged = (e: unknown): boolean =>
 	e !== null &&
 	ZART_TAGS.has((e as { _tag?: string })._tag ?? "");
 
+/**
+ * Test whether an error is a framework-level `ZartTaggedError` rather than a business failure.
+ *
+ * `StepFailedError` and user domain errors `E` return `false`.
+ */
+export const isFrameworkError = (e: unknown): boolean => {
+	if (e instanceof StepFailedError) return false;
+	if (
+		e instanceof ZartError ||
+		e instanceof ZartBackendError ||
+		e instanceof ZartSchemaError ||
+		isZartTagged(e)
+	) {
+		return true;
+	}
+	return false;
+};
+
 /** Run a step; on any typed failure yield `fallback`. Defects (replay signals) still propagate. */
 export const stepOr = <A, E, B>(
 	call: StepEffect<A, E>,
 	fallback: B,
 ): Effect.Effect<A | B, never, ZartWorkflow> =>
 	call.pipe(Effect.catch(() => Effect.succeed<A | B>(fallback)));
+
+/**
+ * Execute a step, computing a fallback on business error.
+ *
+ * Intercepts ONLY business errors (`E | StepFailedError`); NEVER swallows
+ * framework `ZartTaggedError` (`RetryExhaustedError`, `StepTimeoutError`,
+ * `DeadlineExceededError`, `ZartBackendError`, `ZartSchemaError`, etc.) or
+ * `ControlFlowDefect`!
+ */
+export const stepOrElse = <A, E, B, E2 = never, R = never>(
+	call: StepEffect<A, E>,
+	fallback: (err: E | StepFailedError) => Effect.Effect<B, E2, R> | B,
+): Effect.Effect<A | B, ZartTaggedError | E2, ZartWorkflow | R> =>
+	Effect.catch(call, (err: StepError<E>) => {
+		if (isFrameworkError(err)) {
+			return Effect.fail<ZartTaggedError | E2>(err as ZartTaggedError);
+		}
+		const res = fallback(err as E | StepFailedError);
+		return (Effect.isEffect(res) ? res : Effect.succeed(res)) as Effect.Effect<
+			B,
+			E2,
+			R
+		>;
+	});
 
 export const sleep = (
 	name: string,
@@ -206,24 +256,47 @@ export const now = (
 
 export type ExecutionInfo = NativeExecutionInfo;
 
-export const context: Effect.Effect<ExecutionInfo, never, ZartWorkflow> =
-	withWorkflow((dispatcher) => Effect.sync(() => dispatcher.context()));
+/**
+ * Read-only view of the current execution metadata (`ExecutionInfo`).
+ *
+ * Accessible inside both `Zart.durable` workflows and `Zart.step` bodies.
+ * Reflects live retry metadata (`currentAttempt`, `isRetry`) during step retries.
+ */
+export const context: Effect.Effect<ExecutionInfo, never, ZartContext> =
+	ZartContext;
 
-export interface DurableOptions<A, B, I = A, O = B> {
+export interface DurableOptions<A, B, I = A, O = B, E = never> {
 	readonly inputSchema?: Schema.Codec<A, I>;
 	readonly outputSchema?: Schema.Codec<B, O>;
 	readonly timeout?: Duration.Input;
 	readonly maxRetries?: number;
+	/**
+	 * Centralized failure handler invoked if step retries exhaust, execution timeout expires,
+	 * or an unhandled step error escapes the workflow body.
+	 *
+	 * Receives the original workflow input and failure descriptor (`ExecutionFailure`),
+	 * returning a fallback result encoded with `outputSchema`.
+	 */
+	readonly onFailure?: (
+		input: A,
+		failure: ExecutionFailure,
+	) => Effect.Effect<B, E, never>;
 }
 
-export interface DurableDefinition<A, B> {
+export interface DurableDefinition<A, B, I = unknown, O = unknown> {
 	readonly _tag: "DurableDefinition";
 	/** Phantom: workflow output type. */
 	readonly _output?: B;
 	readonly name: string;
-	readonly timeoutSecs?: number;
+	readonly inputSchema?: Schema.Codec<A, I>;
+	readonly outputSchema?: Schema.Codec<B, O>;
+	readonly timeoutMs?: number;
 	readonly maxRetries?: number;
 	readonly handler: NativeDurableHandler;
+	readonly onFailure?: (
+		data: unknown,
+		failure: NativeExecutionFailure,
+	) => Promise<unknown>;
 	/** Run directly against a dispatcher (used by tests and custom hosts). */
 	readonly run: (dispatcher: NativeDispatcher, input: A) => Promise<unknown>;
 }
@@ -241,19 +314,22 @@ const signalError = (kind: string, message?: string) =>
  * Define a durable workflow. Replay suspensions (`ControlFlowDefect`) are extracted at this
  * boundary and re-raised to the native layer as `ControlFlowSignal` errors.
  */
-export const durable = <A, B, E, I = A, O = B>(
+export const durable = <A, B, E, I = A, O = B, E2 = never>(
 	name: string,
-	fn: (input: A) => Effect.Effect<B, E, ZartWorkflow>,
-	opts?: DurableOptions<A, B, I, O>,
-): DurableDefinition<A, B> => {
+	fn: (input: A) => Effect.Effect<B, E, ZartWorkflow | ZartContext>,
+	opts?: DurableOptions<A, B, I, O, E2>,
+): DurableDefinition<A, B, I, O> => {
 	const run = async (
 		dispatcher: NativeDispatcher,
 		input: A,
 	): Promise<unknown> => {
 		const program = fn(input).pipe(
 			Effect.provideService(ZartWorkflow, { dispatcher }),
+			Effect.provideService(ZartContext, dispatcher.context()),
 		);
-		const exit = await Effect.runPromiseExit(program);
+		const exit = await zartContextStorage.run(dispatcher.context(), () =>
+			Effect.runPromiseExit(program),
+		);
 		if (Exit.isSuccess(exit)) {
 			return opts?.outputSchema
 				? Effect.runPromise(encodeInput(opts.outputSchema, exit.value))
@@ -287,14 +363,45 @@ export const durable = <A, B, E, I = A, O = B>(
 			: (data as A);
 		return run(dispatcher, input);
 	};
+	const onFailureFn = opts?.onFailure;
+	const onFailure = onFailureFn
+		? async (
+				data: unknown,
+				failure: NativeExecutionFailure,
+			): Promise<unknown> => {
+				const input = opts?.inputSchema
+					? await Effect.runPromise(decodeOutput(opts.inputSchema, data))
+					: (data as A);
+				const execFailure: ExecutionFailure =
+					failure.kind === "step_failed"
+						? {
+								kind: "step_failed",
+								step: failure.step ?? "",
+								raw: failure.raw,
+							}
+						: failure.kind === "retries_exhausted"
+							? {
+									kind: "retries_exhausted",
+									attempts: failure.attempts ?? 0,
+								}
+							: { kind: "execution_deadline_exceeded" };
+				const result = await Effect.runPromise(onFailureFn(input, execFailure));
+				return opts?.outputSchema
+					? await Effect.runPromise(encodeInput(opts.outputSchema, result))
+					: encodeJsonValue(result);
+			}
+		: undefined;
 	return {
 		_tag: "DurableDefinition",
 		name,
+		...(opts?.inputSchema ? { inputSchema: opts.inputSchema } : {}),
+		...(opts?.outputSchema ? { outputSchema: opts.outputSchema } : {}),
 		...(opts?.timeout !== undefined
-			? { timeoutSecs: Math.ceil(Duration.toMillis(opts.timeout) / 1000) }
+			? { timeoutMs: Duration.toMillis(opts.timeout) }
 			: {}),
 		...(opts?.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
 		handler,
+		onFailure,
 		run,
 	};
 };

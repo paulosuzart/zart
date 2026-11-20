@@ -7,10 +7,69 @@ use async_trait::async_trait;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction};
 use napi::{JsUnknown, NapiValue};
+use napi_derive::napi;
 use tokio::sync::mpsc;
 
 use crate::api::{Command, Dispatcher, LoopState, handle_command};
 use crate::errors::{is_control_flow_reason, reason_message};
+
+/// Description of why `on_failure` was invoked on a `DurableTask`.
+#[napi(object)]
+#[derive(Clone, serde::Serialize)]
+pub struct NativeExecutionFailure {
+    pub kind: String,
+    pub step: Option<String>,
+    pub raw: Option<serde_json::Value>,
+    pub attempts: Option<u32>,
+}
+
+impl From<zart::ExecutionFailure> for NativeExecutionFailure {
+    fn from(f: zart::ExecutionFailure) -> Self {
+        match f {
+            zart::ExecutionFailure::StepFailed { step, raw } => Self {
+                kind: "step_failed".to_string(),
+                step: Some(step),
+                raw: Some(raw),
+                attempts: None,
+            },
+            zart::ExecutionFailure::ExecutionDeadlineExceeded => Self {
+                kind: "execution_deadline_exceeded".to_string(),
+                step: None,
+                raw: None,
+                attempts: None,
+            },
+            zart::ExecutionFailure::RetriesExhausted { attempts } => Self {
+                kind: "retries_exhausted".to_string(),
+                step: None,
+                raw: None,
+                attempts: Some(attempts as u32),
+            },
+        }
+    }
+}
+
+/// Arguments passed to a registered `on_failure` handler invocation.
+pub struct OnFailureCall {
+    pub input: serde_json::Value,
+    pub failure: NativeExecutionFailure,
+}
+
+/// Threadsafe callback for durable task failure recovery: `on_failure(input, failure)`.
+pub type OnFailureFn = ThreadsafeFunction<OnFailureCall, ErrorStrategy::Fatal>;
+
+/// Create the threadsafe `on_failure` handler: JS is invoked as `on_failure(input, failure)`.
+pub fn make_on_failure_handler(env: &Env, func: &JsFunction) -> Result<OnFailureFn> {
+    let mut tsfn: OnFailureFn = func.create_threadsafe_function(
+        0,
+        |ctx: napi::threadsafe_function::ThreadSafeCallContext<OnFailureCall>| {
+            let input = ctx.env.to_js_value(&ctx.value.input)?;
+            let failure = ctx.env.to_js_value(&ctx.value.failure)?;
+            Ok(vec![input.into_unknown(), failure.into_unknown()])
+        },
+    )?;
+    tsfn.unref(env)?;
+    Ok(tsfn)
+}
 
 /// Arguments for one handler invocation.
 pub struct DurableCall {
@@ -45,6 +104,7 @@ pub struct TsDurableTask {
     pub timeout: Option<Duration>,
     pub max_retries: usize,
     pub pool: sqlx::PgPool,
+    pub on_failure: Option<Arc<OnFailureFn>>,
 }
 
 fn reject_to_task_err(e: napi::Error, cf: &Mutex<Option<zart::StepError>>) -> zart::TaskError {
@@ -107,5 +167,31 @@ impl zart::DurableExecution for TsDurableTask {
             return Err(zart::TaskError::from(step_err));
         }
         result.map_err(|e| reject_to_task_err(e, &cf))
+    }
+
+    async fn on_failure(
+        &self,
+        data: Self::Data,
+        failure: zart::ExecutionFailure,
+    ) -> std::result::Result<Self::Output, zart::TaskError> {
+        let Some(ref cb) = self.on_failure else {
+            return Err(zart::TaskError::Cancelled);
+        };
+        let call = OnFailureCall {
+            input: data,
+            failure: failure.into(),
+        };
+        let cb = cb.clone();
+        let fut = async move {
+            let promise = cb.call_async::<Promise<serde_json::Value>>(call).await?;
+            promise.await
+        };
+        fut.await.map_err(|e| zart::TaskError::StepFailed {
+            step: "on_failure".into(),
+            source: zart::StepError::Failed {
+                step: "on_failure".into(),
+                reason: reason_message(&e.reason),
+            },
+        })
     }
 }

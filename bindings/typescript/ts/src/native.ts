@@ -68,6 +68,7 @@ export interface NativeDurableScheduler {
 	): Promise<unknown>;
 	cancel(id: string): Promise<boolean>;
 	offerEvent(id: string, eventName: string, payload: unknown): Promise<void>;
+	stopRecurring(taskId: string): Promise<void>;
 }
 
 export interface NativeWorker {
@@ -90,7 +91,10 @@ export interface NativeStepSpec {
 	needsTrx?: boolean;
 }
 
-export type NativeStepRun = (trx?: NativeTrx) => Promise<NativeStepOutcome>;
+export type NativeStepRun = (
+	args?: [trx: NativeTrx | undefined, info: NativeExecutionInfo] | NativeTrx,
+	maybeInfo?: NativeExecutionInfo,
+) => Promise<NativeStepOutcome>;
 
 export interface NativeExecutionInfo {
 	executionId: string;
@@ -98,6 +102,20 @@ export interface NativeExecutionInfo {
 	data: unknown;
 	currentAttempt: number;
 	maxRetries?: number;
+	/** Whether this execution attempt is a retry (`currentAttempt > 0`). */
+	isRetry: boolean;
+}
+
+/** Low-level failure descriptor passed by the native runtime to `on_failure`. */
+export interface NativeExecutionFailure {
+	/** Failure category: `"step_failed"` | `"execution_deadline_exceeded"` | `"retries_exhausted"`. */
+	kind: string;
+	/** Name of the failed step when `kind === "step_failed"`. */
+	step?: string;
+	/** Serialized error payload when `kind === "step_failed"`. */
+	raw?: unknown;
+	/** Number of completed attempts when `kind === "retries_exhausted"`. */
+	attempts?: number;
 }
 
 /** Handle passed by the native worker into each durable handler invocation. */
@@ -128,12 +146,37 @@ export type NativeDurableHandler = (
 	data: unknown,
 ) => Promise<unknown>;
 
+export interface NativeRecurrence {
+	kind: string;
+	durationMs?: number;
+	expression?: string;
+	timezone?: string;
+}
+
 export interface NativeWorkerBuilder {
 	registerDurable(
 		name: string,
 		handler: NativeDurableHandler,
-		timeoutSecs?: number,
+		timeoutMs?: number,
 		maxRetries?: number,
+		onFailure?: (
+			data: unknown,
+			failure: NativeExecutionFailure,
+		) => Promise<unknown>,
+	): void;
+	registerRecurringDurable(
+		name: string,
+		handler: NativeDurableHandler,
+		idTemplate: string,
+		recurrence: NativeRecurrence,
+		overlap?: string,
+		initialData?: unknown,
+		timeoutMs?: number,
+		maxRetries?: number,
+		onFailure?: (
+			data: unknown,
+			failure: NativeExecutionFailure,
+		) => Promise<unknown>,
 	): void;
 	pollIntervalSecs(n: number): void;
 	maxConcurrentTasks(n: number): void;

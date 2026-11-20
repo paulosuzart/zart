@@ -1,5 +1,9 @@
 import type { NativeStepOutcome } from "../ts/src/errors.js";
-import type { NativeDispatcher, NativeStepSpec } from "../ts/src/native.js";
+import type {
+	NativeDispatcher,
+	NativeStepRun,
+	NativeStepSpec,
+} from "../ts/src/native.js";
 
 const signal = (kind: string) =>
 	new Error(JSON.stringify({ _tag: "ControlFlowSignal", kind }));
@@ -13,7 +17,7 @@ export class FakeDispatcher implements NativeDispatcher {
 
 	async step(
 		spec: NativeStepSpec,
-		run: () => Promise<NativeStepOutcome>,
+		run: NativeStepRun,
 	): Promise<NativeStepOutcome> {
 		const key = `step:${spec.name}`;
 		if (this.journal.has(key))
@@ -25,10 +29,18 @@ export class FakeDispatcher implements NativeDispatcher {
 		};
 		for (let attempt = 1; attempt <= max; attempt++) {
 			this.runs[spec.name] = (this.runs[spec.name] ?? 0) + 1;
+			const stepInfo = {
+				executionId: "e1",
+				taskName: "t",
+				data: null,
+				currentAttempt: attempt - 1,
+				maxRetries: max > 1 ? max - 1 : undefined,
+				isRetry: attempt > 1,
+			};
 			if (spec.timeoutMs !== undefined) {
 				const timedOut = Symbol("timeout");
 				const res = await Promise.race([
-					run(),
+					run([undefined, stepInfo]),
 					new Promise<typeof timedOut>((r) =>
 						setTimeout(() => r(timedOut), spec.timeoutMs),
 					),
@@ -46,7 +58,7 @@ export class FakeDispatcher implements NativeDispatcher {
 				}
 				last = res;
 			} else {
-				last = await run();
+				last = await run([undefined, stepInfo]);
 			}
 			if (last.kind === "ok") break;
 			if (attempt < max)
@@ -66,10 +78,7 @@ export class FakeDispatcher implements NativeDispatcher {
 		this.journal.set(key, last);
 		return last;
 	}
-	async require(
-		spec: NativeStepSpec,
-		run: () => Promise<NativeStepOutcome>,
-	): Promise<unknown> {
+	async require(spec: NativeStepSpec, run: NativeStepRun): Promise<unknown> {
 		const out = await this.step(spec, run);
 		if (out.kind === "ok") return out.value;
 		throw new Error(
@@ -83,16 +92,13 @@ export class FakeDispatcher implements NativeDispatcher {
 	}
 	async stepOr(
 		spec: NativeStepSpec,
-		run: () => Promise<NativeStepOutcome>,
+		run: NativeStepRun,
 		defaultVal: unknown,
 	): Promise<unknown> {
 		const out = await this.step(spec, run);
 		return out.kind === "ok" ? out.value : defaultVal;
 	}
-	async schedule(
-		spec: NativeStepSpec,
-		run: () => Promise<NativeStepOutcome>,
-	): Promise<number> {
+	async schedule(spec: NativeStepSpec, run: NativeStepRun): Promise<number> {
 		this.handles.push(this.step(spec, run));
 		return this.handles.length - 1;
 	}
@@ -132,6 +138,12 @@ export class FakeDispatcher implements NativeDispatcher {
 		return "2024-01-01T00:00:00.000Z";
 	}
 	context() {
-		return { executionId: "e1", taskName: "t", data: null, currentAttempt: 1 };
+		return {
+			executionId: "e1",
+			taskName: "t",
+			data: null,
+			currentAttempt: 1,
+			isRetry: false,
+		};
 	}
 }

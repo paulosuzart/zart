@@ -243,4 +243,172 @@ describe("parallelism, capture, context", () => {
 			at: "2024-01-02T00:00:00.000Z",
 		});
 	});
+
+	it("Zart.context is accessible inside Zart.step and reflects isRetry/currentAttempt on retry", async () => {
+		const attemptsSeen: Array<{ attempt: number; isRetry: boolean }> = [];
+		let calls = 0;
+		const retryStep = Zart.step(
+			"retry-step",
+			() =>
+				Effect.gen(function* () {
+					const ctx = yield* Zart.context;
+					attemptsSeen.push({
+						attempt: ctx.currentAttempt,
+						isRetry: ctx.isRetry,
+					});
+					if (++calls < 3) {
+						return yield* Effect.fail(new Boom({ message: "try again" }));
+					}
+					return ctx;
+				}),
+			{ retry: Zart.Retry.fixed(3, "10 millis") },
+		);
+
+		const wf = Zart.durable("wf-step-ctx", () => retryStep());
+		const d = new FakeDispatcher();
+		const finalCtx = await wf.run(d, undefined);
+		expect(finalCtx).toBeDefined();
+		expect(calls).toBe(3);
+		expect(attemptsSeen).toEqual([
+			{ attempt: 0, isRetry: false },
+			{ attempt: 1, isRetry: true },
+			{ attempt: 2, isRetry: true },
+		]);
+	});
+
+	it("stepOrElse intercepts business error and falls back to value or effect", async () => {
+		const failStep = Zart.step("fail-step", () =>
+			Effect.fail(new Boom({ message: "business failure" })),
+		);
+		const wf = Zart.durable("wf-or-else", () =>
+			Effect.gen(function* () {
+				const valFallback = yield* Zart.stepOrElse(
+					failStep(),
+					(err) => `handled:${err.message}`,
+				);
+				const effFallback = yield* Zart.stepOrElse(
+					failStep().named("fail-step-2"),
+					(err) => Effect.succeed(`eff:${err.message}`),
+				);
+				return [valFallback, effFallback];
+			}),
+		);
+		const d = new FakeDispatcher();
+		const res = await wf.run(d, undefined);
+		expect(res).toEqual(["handled:business failure", "eff:business failure"]);
+	});
+
+	it("stepOrElse does NOT intercept framework errors (RetryExhaustedError, StepTimeoutError)", async () => {
+		const exhaustedStep = Zart.step(
+			"exhausted",
+			() => Effect.fail(new Boom({ message: "always fails" })),
+			{ retry: Zart.Retry.fixed(2, "5 millis") },
+		);
+		const wfExhausted = Zart.durable("wf-exhausted", () =>
+			Zart.stepOrElse(exhaustedStep(), () => "should-not-catch"),
+		);
+		const d = new FakeDispatcher();
+		const err = await wfExhausted.run(d, undefined).catch((e: Error) => e);
+		expect(err).toBeInstanceOf(Error);
+		const parsed = JSON.parse((err as Error).message);
+		expect(parsed._tag).toBe("RetryExhaustedError");
+
+		const timeoutStep = Zart.step(
+			"timed-out",
+			() =>
+				Effect.promise(
+					() => new Promise<string>((r) => setTimeout(() => r("late"), 80)),
+				),
+			{ timeout: "10 millis", timeoutScope: "attempt" },
+		);
+		const wfTimeout = Zart.durable("wf-timeout", () =>
+			Zart.stepOrElse(timeoutStep(), () => "should-not-catch"),
+		);
+		const err2 = await wfTimeout
+			.run(new FakeDispatcher(), undefined)
+			.catch((e: Error) => e);
+		expect(err2).toBeInstanceOf(Error);
+		const parsed2 = JSON.parse((err2 as Error).message);
+		expect(parsed2._tag).toBe("StepTimeoutError");
+	});
+
+	it("Zart.durable preserves sub-second timeout precision and invokes onFailure callback", async () => {
+		let failureReceived: unknown;
+		let inputReceived: unknown;
+
+		const wf = Zart.durable(
+			"failing-task",
+			(input: { count: number }) => Effect.succeed({ total: input.count * 10 }),
+			{
+				timeout: "50 millis",
+				inputSchema: Schema.Struct({ count: Schema.Number }),
+				outputSchema: Schema.Struct({ total: Schema.Number }),
+				onFailure: (input, failure) => {
+					inputReceived = input;
+					failureReceived = failure;
+					return Effect.succeed({ total: 999 });
+				},
+			},
+		);
+
+		// Sub-second precision check:
+		expect(wf.timeoutMs).toBe(50);
+
+		// onFailure invocation check with step_failed:
+		expect(wf.onFailure).toBeDefined();
+		const fallbackResult = await wf.onFailure?.(
+			{ count: 5 },
+			{
+				kind: "step_failed",
+				step: "charge_step",
+				raw: { reason: "insufficient_funds" },
+			},
+		);
+
+		expect(inputReceived).toEqual({ count: 5 });
+		expect(failureReceived).toEqual({
+			kind: "step_failed",
+			step: "charge_step",
+			raw: { reason: "insufficient_funds" },
+		});
+		expect(fallbackResult).toEqual({ total: 999 });
+
+		// onFailure with retries_exhausted:
+		await wf.onFailure?.(
+			{ count: 7 },
+			{ kind: "retries_exhausted", attempts: 3 },
+		);
+		expect(failureReceived).toEqual({
+			kind: "retries_exhausted",
+			attempts: 3,
+		});
+
+		// onFailure with execution_deadline_exceeded:
+		await wf.onFailure?.({ count: 8 }, { kind: "execution_deadline_exceeded" });
+		expect(failureReceived).toEqual({
+			kind: "execution_deadline_exceeded",
+		});
+	});
+
+	it("onFailure runs outputSchema transformation on recovered result", async () => {
+		const wf = Zart.durable(
+			"transforming-on-failure",
+			() =>
+				Effect.succeed({ recoveredAt: new Date("2024-01-01T00:00:00.000Z") }),
+			{
+				outputSchema: Schema.Struct({ recoveredAt: Schema.DateFromString }),
+				onFailure: (_input, _failure) =>
+					Effect.succeed({
+						recoveredAt: new Date("2025-06-15T12:00:00.000Z"),
+					}),
+			},
+		);
+
+		const encoded = await wf.onFailure?.(null, {
+			kind: "execution_deadline_exceeded",
+		});
+		expect(encoded).toEqual({
+			recoveredAt: "2025-06-15T12:00:00.000Z",
+		});
+	});
 });

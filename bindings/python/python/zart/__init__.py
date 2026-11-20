@@ -2,12 +2,13 @@
 
 from zart._zart import (
     ClientTrx,
-    DurableScheduler,
     DurableTask,
     ExecutionFailure,
     ExecutionInfo,
     ExecutionRecord,
+    OverlapPolicy,
     PgBackend,
+    Recurrence,
     RetryPolicy,
     ScheduleResult,
     StepHandle,
@@ -27,6 +28,7 @@ from zart.decorators import (
     DurationLike,
     Retry,
     StepInvocation,
+    TypedStepHandle,
     TypedStepOutcome,
     capture,
     context,
@@ -43,6 +45,7 @@ from zart.decorators import (
     wait,
     wait_for_event,
 )
+from zart.scheduler import DurableScheduler
 from zart.serde import from_json_value, to_json_value
 from zart.trx import trx
 
@@ -54,7 +57,9 @@ __all__ = [
     "ExecutionFailure",
     "ExecutionInfo",
     "ExecutionRecord",
+    "OverlapPolicy",
     "PgBackend",
+    "Recurrence",
     "Retry",
     "RetryPolicy",
     "ScheduleResult",
@@ -63,6 +68,7 @@ __all__ = [
     "StepOutcome",
     "StepSpec",
     "Trx",
+    "TypedStepHandle",
     "TypedStepOutcome",
     "Worker",
     "WorkerBuilder",
