@@ -3,7 +3,7 @@ title: AutoAgents LLM Agent SDK
 description: Combine durable execution with AI agents using AutoAgents for natural language processing and summarization.
 ---
 
-import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
 This example integrates [AutoAgents](https://github.com/liquidos-ai/AutoAgents) — a Rust-native framework for building multi-agent systems — with Zart's durable execution. The workflow takes a natural language query like *"Find breweries in Portland, Oregon"*, uses an LLM agent to extract the location, fetches brewery data from an API, and generates a conversational summary.
 
@@ -12,9 +12,6 @@ Because the task needs an LLM provider as a dependency, this example uses the ma
 **Features demonstrated:** Manual `DurableExecution` trait with dependency injection, AutoAgents `BasicAgent` + `AgentOutput` structured outputs, `LLMProvider::chat` summarization, `#[zart_step]`, mixed AI + API workflows.
 
 ## Data types
-
-<Tabs syncKey="sdk">
-<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,71 +42,6 @@ struct AgentOutput {
     generated_at: String,
 }
 ```
-
-</TabItem>
-<TabItem label="Python">
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class AgentInput:
-    query: str
-
-@dataclass
-class ExtractedLocation:
-    city: str
-    state: str
-
-@dataclass
-class BreweryInfo:
-    name: str
-    brewery_type: str
-    city: str
-    state: str
-
-@dataclass
-class AgentOutput:
-    query: str
-    location: ExtractedLocation
-    breweries: list[BreweryInfo]
-    summary: str
-    generated_at: str
-```
-
-</TabItem>
-<TabItem label="TypeScript">
-
-```ts
-import { Schema } from "effect";
-
-const AgentInput = Schema.Struct({
-  query: Schema.String,
-});
-
-const ExtractedLocation = Schema.Struct({
-  city: Schema.String,
-  state: Schema.String,
-});
-
-const BreweryInfo = Schema.Struct({
-  name: Schema.String,
-  breweryType: Schema.String,
-  city: Schema.String,
-  state: Schema.String,
-});
-
-const AgentOutput = Schema.Struct({
-  query: Schema.String,
-  location: ExtractedLocation,
-  breweries: Schema.Array(BreweryInfo),
-  summary: Schema.String,
-  generatedAt: Schema.String,
-});
-```
-
-</TabItem>
-</Tabs>
 
 ## LLM schema and agent types
 
@@ -152,10 +84,7 @@ struct AutoAgentsAgent {
 }
 ```
 
-Step functions use `@zart_step` / `@zart.step` / `Zart.step` to wrap each LLM and HTTP call:
-
-<Tabs syncKey="sdk">
-<TabItem label="Rust">
+Step functions use `#[zart_step]` to wrap each LLM and HTTP call:
 
 ```rust
 #[zart_step("extract-location", retry = "exponential(3, 2s)")]
@@ -266,152 +195,7 @@ async fn generate_summary(
 }
 ```
 
-</TabItem>
-<TabItem label="Python">
-
-```python
-import json
-import httpx
-import zart
-
-@zart.step("extract-location", retry=zart.Retry.exponential(3, "2s"))
-async def extract_location(query: str) -> ExtractedLocation:
-    print(f"[extract-location] Attempt {zart.context().current_attempt + 1}")
-    # Call your LLM SDK (e.g. google-genai) to extract JSON {"city": ..., "state": ...}
-    raw = await call_llm(
-        f'Extract the city and state from this query as JSON {{"city": ..., "state": ...}}: "{query}"'
-    )
-    parsed = json.loads(raw)
-    if not parsed.get("city") or not parsed.get("state"):
-        raise ValueError(f"LLM returned incomplete location: {parsed}")
-    return ExtractedLocation(city=parsed["city"], state=parsed["state"])
-
-@zart.step("find-breweries", retry=zart.Retry.exponential(3, "1s"))
-async def find_breweries(city: str) -> list[dict]:
-    print(f"[find-breweries] Attempt {zart.context().current_attempt + 1}")
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            "https://api.openbrewerydb.org/v1/breweries",
-            params={"by_city": city},
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-@zart.step("transform-results")
-async def transform_results(raw: list[dict], city: str, state: str) -> list[BreweryInfo]:
-    return [
-        BreweryInfo(
-            name=b["name"],
-            brewery_type=b.get("brewery_type") or "unknown",
-            city=b.get("city") or city,
-            state=b.get("state") or state,
-        )
-        for b in raw
-    ]
-
-@zart.step("generate-summary", retry=zart.Retry.exponential(3, "2s"))
-async def generate_summary(
-    query: str, location: ExtractedLocation, breweries: list[BreweryInfo]
-) -> str:
-    print(f"[generate-summary] Attempt {zart.context().current_attempt + 1}")
-    brewery_list = "\n".join(f"- {b.name} ({b.brewery_type})" for b in breweries[:5])
-    prompt = (
-        f"You're a friendly beer enthusiast. Write a short summary about: {query}\n"
-        f"Found {len(breweries)} breweries in {location.city}, {location.state}.\n{brewery_list}"
-    )
-    return await call_llm(prompt)
-```
-
-</TabItem>
-<TabItem label="TypeScript">
-
-```ts
-import { Effect } from "effect";
-import { Zart } from "@zart/effect";
-
-declare function callLlm(prompt: string): Promise<string>;
-
-const extractLocation = Zart.step(
-  "extract-location",
-  (query: string) =>
-    Effect.gen(function* () {
-      console.log(`[extract-location] Extracting location from: ${query}`);
-      const parsed = yield* Effect.tryPromise(async () => {
-        const text = await callLlm(
-          `Extract the city and state from this query as JSON {"city": ..., "state": ...}: "${query}"`,
-        );
-        return JSON.parse(text) as { city?: string; state?: string };
-      });
-      if (!parsed.city?.trim() || !parsed.state?.trim()) {
-        return yield* Effect.fail(new Error("LLM returned incomplete location"));
-      }
-      return { city: parsed.city, state: parsed.state };
-    }),
-  { retry: Zart.Retry.exponential(3, "2 seconds") },
-);
-
-const findBreweries = Zart.step(
-  "find-breweries",
-  (city: string) =>
-    Effect.gen(function* () {
-      console.log(`[find-breweries] Querying city ${city}`);
-      return yield* Effect.tryPromise(async () => {
-        const url = new URL("https://api.openbrewerydb.org/v1/breweries");
-        url.searchParams.set("by_city", city);
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        return (await resp.json()) as Array<{
-          name: string;
-          brewery_type?: string;
-          city?: string;
-          state?: string;
-        }>;
-      });
-    }),
-  { retry: Zart.Retry.exponential(3, "1 seconds") },
-);
-
-const transformResults = Zart.step(
-  "transform-results",
-  (
-    raw: Array<{ name: string; brewery_type?: string; city?: string; state?: string }>,
-    city: string,
-    state: string,
-  ) =>
-    Effect.succeed(
-      raw.map((b) => ({
-        name: b.name,
-        breweryType: b.brewery_type ?? "unknown",
-        city: b.city ?? city,
-        state: b.state ?? state,
-      })),
-    ),
-);
-
-const generateSummary = Zart.step(
-  "generate-summary",
-  (
-    query: string,
-    location: typeof ExtractedLocation.Type,
-    breweries: ReadonlyArray<typeof BreweryInfo.Type>,
-  ) =>
-    Effect.gen(function* () {
-      console.log(`[generate-summary] Generating summary for ${location.city}, ${location.state}`);
-      const list = breweries.slice(0, 5).map((b) => `- ${b.name} (${b.breweryType})`).join("\n");
-      const prompt = `You're a friendly beer enthusiast. Write a short summary about: ${query}\nFound ${breweries.length} breweries in ${location.city}, ${location.state}.\n${list}`;
-      return yield* Effect.tryPromise(() => callLlm(prompt));
-    }),
-  { retry: Zart.Retry.exponential(3, "2 seconds") },
-);
-```
-
-</TabItem>
-</Tabs>
-
 The durable workflow composes steps by calling them directly:
-
-<Tabs syncKey="sdk">
-<TabItem label="Rust">
 
 ```rust
 #[async_trait::async_trait]
@@ -449,67 +233,13 @@ impl DurableExecution for AutoAgentsAgent {
 }
 ```
 
-</TabItem>
-<TabItem label="Python">
-
-```python
-from datetime import UTC, datetime
-
-@zart.durable("autoagents-agent")
-async def autoagents_agent(data: AgentInput) -> AgentOutput:
-    location = await extract_location(data.query)
-    raw_breweries = await find_breweries(location.city)
-    breweries = await transform_results(raw_breweries, location.city, location.state)
-    summary = await generate_summary(data.query, location, breweries)
-
-    return AgentOutput(
-        query=data.query,
-        location=location,
-        breweries=breweries,
-        summary=summary,
-        generated_at=datetime.now(UTC).isoformat(),
-    )
-```
-
-</TabItem>
-<TabItem label="TypeScript">
-
-```ts
-const autoagentsAgent = Zart.durable(
-  "autoagents-agent",
-  (data) =>
-    Effect.gen(function* () {
-      const location = yield* extractLocation(data.query);
-      const rawBreweries = yield* findBreweries(location.city);
-      const breweries = yield* transformResults(rawBreweries, location.city, location.state);
-      const summary = yield* generateSummary(data.query, location, breweries);
-      const generatedAt = yield* Zart.now("generated-at");
-
-      return {
-        query: data.query,
-        location,
-        breweries,
-        summary,
-        generatedAt: generatedAt.toISOString(),
-      };
-    }),
-  { inputSchema: AgentInput, outputSchema: AgentOutput },
-);
-```
-
-</TabItem>
-</Tabs>
-
 ## Registering and running
-
-<Tabs syncKey="sdk">
-<TabItem label="Rust">
 
 ```rust
 let api_key = std::env::var("GEMINI_API_KEY")
     .or_else(|_| std::env::var("GOOGLE_API_KEY"))
     .expect("GEMINI_API_KEY or GOOGLE_API_KEY must be set");
-let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
+let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".to_string());
 
 let llm: Arc<dyn LLMProvider> = LLMBuilder::<Google>::new()
     .api_key(api_key)
@@ -523,31 +253,6 @@ durable
     })
     .await?;
 ```
-
-</TabItem>
-<TabItem label="Python">
-
-```python
-scheduler = zart.DurableScheduler(backend)
-await scheduler.start(
-    execution_id,
-    "autoagents-agent",
-    zart.to_json_value(AgentInput(query="Find breweries in Portland, Oregon")),
-)
-```
-
-</TabItem>
-<TabItem label="TypeScript">
-
-```ts
-const scheduler = yield* DurableScheduler.fromBackend(backend);
-yield* scheduler.start(executionId, "autoagents-agent", AgentInput, {
-  query: "Find breweries in Portland, Oregon",
-});
-```
-
-</TabItem>
-</Tabs>
 
 ## Running the example
 
@@ -563,7 +268,7 @@ just example-autoagents-agent
 ```
 
 <Aside type="tip">
-The example exits immediately if neither `GEMINI_API_KEY` nor `GOOGLE_API_KEY` is set, with a clear error message. You can also set `GEMINI_MODEL` to override the default `gemini-2.5-flash` model.
+The example exits immediately if neither `GEMINI_API_KEY` nor `GOOGLE_API_KEY` is set, with a clear error message. You can also set `GEMINI_MODEL` to override the default `gemini-3.8-flash` model.
 </Aside>
 
 ## What you'll see

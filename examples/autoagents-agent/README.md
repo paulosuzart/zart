@@ -24,10 +24,10 @@ Requires a Google Gemini API key (`GEMINI_API_KEY` or `GOOGLE_API_KEY`):
 export GEMINI_API_KEY="your-key-here"
 ```
 
-Optionally override the model (defaults to `gemini-2.5-flash`):
+Optionally override the model (defaults to `gemini-3.8-flash`):
 
 ```bash
-export GEMINI_MODEL="gemini-2.5-flash"
+export GEMINI_MODEL="gemini-3.8-flash"
 ```
 
 The example exits immediately with a clear error message if the key is not set.
@@ -152,7 +152,7 @@ struct AutoAgentsAgent {
 // Registration:
 let llm: Arc<dyn LLMProvider> = LLMBuilder::<Google>::new()
     .api_key(api_key)
-    .model("gemini-2.5-flash")
+    .model("gemini-3.8-flash")
     .build()?;
 worker_builder.register_durable_task("autoagents-agent", AutoAgentsAgent { llm });
 ```
