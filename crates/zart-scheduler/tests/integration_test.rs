@@ -219,7 +219,6 @@ mod postgres_tests {
     #[ignore = "requires PostgreSQL — run with: just test-integration"]
     async fn postgres_recurring_cron_task_reschedules() {
         // Schema-level smoke test: validates a recurrence value is accepted.
-        // Full recurring task logic is implemented in M4.
         let (pool, scheduler) = setup().await;
         let task_id = format!("test-recurring-{}", Uuid::new_v4());
         let recurrence = zart_scheduler::Recurrence::FixedDelay {

@@ -23,7 +23,7 @@ pub struct WakeupOptions {
     /// Whether to subscribe to cross-process backend hints (e.g. Postgres `LISTEN/NOTIFY`).
     /// In-process wakeups remain active regardless when supported.
     pub enable_listen_notify: bool,
-    /// Optional queue filter for Spec 0054 forward compatibility.
+    /// Optional queue filter for forward compatibility.
     /// Empty means wake on notifications for any queue.
     pub subscribed_queues: Vec<String>,
 }

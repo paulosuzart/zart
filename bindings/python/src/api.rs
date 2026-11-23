@@ -830,7 +830,7 @@ fn _get_worker_trx_provider(py: Python<'_>) -> PyResult<Py<PyAny>> {
     Ok(val.unbind())
 }
 
-/// Register Phase 2 API classes and functions on `_zart`.
+/// Register API classes and functions on `_zart`.
 pub fn register_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExecutionInfo>()?;
     m.add_class::<PyStepOutcome>()?;

@@ -12,8 +12,7 @@ use std::pin::Pin;
 /// A boxed, one-shot async function that yields a JSON-serialized step result.
 /// Used internally by [`StepHandle`] to store a pending step lambda.
 ///
-/// After Phase 3, the step context lives in task-local storage, so the lambda
-/// takes no arguments.
+/// The step context lives in task-local storage, so the lambda takes no arguments.
 pub(crate) type PendingFn = Box<
     dyn FnOnce() -> Pin<
             Box<dyn Future<Output = Result<serde_json::Value, StepError>> + Send + 'static>,

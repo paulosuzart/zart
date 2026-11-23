@@ -20,7 +20,7 @@ use crate::context::TaskContext;
 /// | `Body` | Handler body code is running | All (`step`, `schedule`, `sleep`, `wait`, …) |
 /// | `Step(StepContext)` | A step's user body is running | Only `zart::context()` |
 #[derive(Clone)]
-#[allow(dead_code)] // variants are constructed by the worker in Phase 4
+#[allow(dead_code)] // variants are constructed by the worker
 pub(crate) enum Phase {
     Body,
     Step(StepContext),
@@ -29,7 +29,7 @@ pub(crate) enum Phase {
 tokio::task_local! {
     /// The task-local holding the current `TaskContext` (inside an `Arc`).
     ///
-    /// After Phase 1, `TaskContext` has no interior mutability (no `Mutex`,
+    /// `TaskContext` has no interior mutability (no `Mutex`,
     /// no `RefCell`), so it is `Send + Sync` and safe inside `Arc`.
     pub(crate) static ZART_CTX: Arc<TaskContext>;
 

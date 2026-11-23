@@ -1,4 +1,4 @@
-//! Integration tests for recurring durable executions (spec 0053).
+//! Integration tests for recurring durable executions.
 //!
 //! Tests marked `#[ignore]` require a running PostgreSQL instance.
 //! Start it with `just up`, then run: `just test-integration`

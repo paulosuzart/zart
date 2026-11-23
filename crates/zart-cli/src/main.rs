@@ -2,21 +2,21 @@
 //!
 //! # Commands
 //!
-//! | Command | Milestone | Description |
-//! |---------|-----------|-------------|
-//! | `zart migrate` | M1 | Apply database migrations |
-//! | `zart schedule` | M2 | Schedule a task immediately |
-//! | `zart status` | M2 | Inspect an execution's status |
-//! | `zart cancel` | M4 | Cancel a running execution |
-//! | `zart wait` | M4 | Block until an execution completes |
-//! | `zart retry-step` | Admin | Retry a dead step |
-//! | `zart restart` | Admin | Restart entire execution |
-//! | `zart rerun` | Admin | Selective rerun of steps |
-//! | `zart pause` | Admin | Create a pause rule |
-//! | `zart resume` | Admin | Soft-delete pause rules (by scope) |
-//! | `zart delete-pause-rule` | Admin | Soft-delete a pause rule by ID |
-//! | `zart pause-list` | Admin | List pause rules |
-//! | `zart detail` | Admin | Full execution detail with steps and attempts |
+//! | Command | Description |
+//! |---------|-------------|
+//! | `zart migrate` | Apply database migrations |
+//! | `zart schedule` | Schedule a task immediately |
+//! | `zart status` | Inspect an execution's status |
+//! | `zart cancel` | Cancel a running execution |
+//! | `zart wait` | Block until an execution completes |
+//! | `zart retry-step` | Retry a dead step |
+//! | `zart restart` | Restart entire execution |
+//! | `zart rerun` | Selective rerun of steps |
+//! | `zart pause` | Create a pause rule |
+//! | `zart resume` | Soft-delete pause rules (by scope) |
+//! | `zart delete-pause-rule` | Soft-delete a pause rule by ID |
+//! | `zart pause-list` | List pause rules |
+//! | `zart detail` | Full execution detail with steps and attempts |
 //!
 //! # Configuration
 //!

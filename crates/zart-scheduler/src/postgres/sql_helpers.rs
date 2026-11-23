@@ -14,7 +14,7 @@ use sqlx::PgConnection;
 
 use super::table_names::TableNames;
 
-/// Lightweight JSON wakeup payload emitted via `pg_notify` (D8).
+/// Lightweight JSON wakeup payload emitted via `pg_notify`.
 pub(crate) const DEFAULT_WAKEUP_PAYLOAD: &str = r#"{"queue":"default"}"#;
 
 /// Returns `true` when `execution_time` is due immediately (`<= now`).

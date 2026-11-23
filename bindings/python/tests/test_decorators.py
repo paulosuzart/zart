@@ -1,4 +1,4 @@
-"""Unit tests for zart.decorators, Retry, duration parsing, and Phase 2 bindings."""
+"""Unit tests for zart.decorators, Retry, duration parsing, and Python bindings."""
 
 from __future__ import annotations
 

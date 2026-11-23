@@ -1,5 +1,4 @@
-/// Phase 6: Spec 0023 — Transaction participation tests.
-/// Phase 8: Spec 0042 — ZartTask Path 2 (wait-group child) atomicity test.
+//! Transaction participation and wait-group child atomicity tests.
 use super::helpers::*;
 use std::borrow::Cow;
 use std::time::Duration;
