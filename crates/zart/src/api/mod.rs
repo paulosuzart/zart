@@ -4,16 +4,16 @@
 //! `TaskContext` methods that users ever call — the type is a framework
 //! implementation detail.
 
-use crate::context::{StepHandle, ZartStep};
+use crate::context::{NamedStep, StepHandle, ZartStep};
 use crate::error::{StepError, StepOutcome, TaskError};
-use crate::execution_model::ExecutionMode;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::local::{Phase, ZART_CTX, ZART_PHASE, body_ctx};
+use crate::local::{ZART_CTX, body_ctx};
+use crate::phase::{Phase, ZART_PHASE};
 
 // ── Free functions ─────────────────────────────────────────────────────────────
 
@@ -235,17 +235,7 @@ pub fn context() -> ExecutionInfo {
     let ctx = ZART_CTX.with(Arc::clone);
     let (current_attempt, max_retries) = ZART_PHASE.with(|phase| match phase {
         Phase::Step(sc) => (sc.current_attempt(), sc.max_retries()),
-        Phase::Body => match &ctx.execution_mode {
-            ExecutionMode::Step {
-                retry_attempt,
-                retry_config,
-                ..
-            } => (
-                *retry_attempt,
-                retry_config.as_ref().map(|rc| rc.max_attempts),
-            ),
-            _ => (0, None),
-        },
+        Phase::Body => ctx.retry_info(),
     });
     ExecutionInfo {
         execution_id: ctx.execution_id().to_string(),
@@ -253,5 +243,17 @@ pub fn context() -> ExecutionInfo {
         data: ctx.data().clone(),
         current_attempt,
         max_retries,
+    }
+}
+
+impl<S: ZartStep + Send + Sync + 'static> std::future::IntoFuture for NamedStep<S>
+where
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    type Output = Result<S::Output, TaskError>;
+    type IntoFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(require(self))
     }
 }

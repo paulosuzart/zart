@@ -97,26 +97,6 @@ pub trait ZartStep {
     /// or use the `{field}` template syntax in `#[zart_step]` which generates this automatically.
     fn step_name(&self) -> Cow<'static, str>;
 
-    /// Override the step's tracking identity at the call site.
-    ///
-    /// Useful when the same step definition is called multiple times within a single durable
-    /// handler and each call must be uniquely identified in the database.
-    ///
-    /// ```rust,ignore
-    /// for page in 0..num_pages {
-    ///     let items = zart::step(fetch_page(page).named(format!("fetch-page-{page}"))).await?;
-    /// }
-    /// ```
-    fn named(self, id: impl Into<String>) -> NamedStep<Self>
-    where
-        Self: Sized,
-    {
-        NamedStep {
-            inner: self,
-            id: id.into(),
-        }
-    }
-
     /// Optional retry configuration for this step.
     ///
     /// Returns `None` for steps without retry, or `Some(config)` to enable retries.
@@ -195,14 +175,24 @@ where
     }
 }
 
-impl<S: ZartStep + Send + Sync + 'static> std::future::IntoFuture for NamedStep<S>
-where
-    S::Error: std::error::Error + Send + Sync + 'static,
-{
-    type Output = Result<S::Output, crate::error::TaskError>;
-    type IntoFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Self::Output> + Send>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(crate::api::require(self))
+/// Extension trait providing [`ZartStepExt::named`] for any [`ZartStep`].
+pub trait ZartStepExt: ZartStep + Sized {
+    /// Override the step's tracking identity at the call site.
+    ///
+    /// Useful when the same step definition is called multiple times within a single durable
+    /// handler and each call must be uniquely identified in the database.
+    ///
+    /// ```rust,ignore
+    /// for page in 0..num_pages {
+    ///     let items = zart::step(fetch_page(page).named(format!("fetch-page-{page}"))).await?;
+    /// }
+    /// ```
+    fn named(self, id: impl Into<String>) -> NamedStep<Self> {
+        NamedStep {
+            inner: self,
+            id: id.into(),
+        }
     }
 }
+
+impl<S: ZartStep> ZartStepExt for S {}

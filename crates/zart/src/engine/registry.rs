@@ -159,9 +159,9 @@ impl<T: DurableExecution> RegisteredTask for DurableExecutionAdapter<T> {
 
         let output = crate::local::ZART_CTX
             .scope(ctx, async move {
-                crate::local::ZART_PHASE
+                crate::phase::ZART_PHASE
                     .scope(
-                        crate::local::Phase::Body,
+                        crate::phase::Phase::Body,
                         async move { self.0.run(data).await },
                     )
                     .await

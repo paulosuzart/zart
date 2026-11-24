@@ -8,7 +8,6 @@
 //! - `task_context` — `TaskContext` (the primary execution interface)
 
 mod state;
-mod step_context;
 mod step_trait;
 mod task_context;
 
@@ -16,6 +15,5 @@ mod task_context;
 mod tests;
 
 pub use state::{AttemptStatus, ExecutionState, StepAttempt, StepHandle, StepRecord, StepStatus};
-pub(crate) use step_context::StepContext;
-pub use step_trait::{NamedStep, ZartStep};
+pub use step_trait::{NamedStep, ZartStep, ZartStepExt};
 pub use task_context::TaskContext;

@@ -157,21 +157,15 @@ struct RecurringCompletion {
 impl CompletionHandler for RecurringCompletion {
     async fn complete(
         self: Box<Self>,
-        mut ops: zart_scheduler::ExecutionOps,
+        ops: zart_scheduler::ExecutionOps,
         recurrence: Option<&zart_scheduler::Recurrence>,
         execution_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), zart_scheduler::StorageError> {
-        // Merge the incremented occurrence into the task metadata.
-        ops.set_metadata(json!({ "occurrence": self.next_occurrence }));
-
-        // Delegate to the standard OnComplete behaviour (auto-reschedule if
-        // recurrence is set).
-        let inner = OnComplete {
-            result: None,
-            schedule_next: vec![],
-        };
-        Box::new(inner)
-            .complete(ops, recurrence, execution_time)
-            .await
+        if let Some(next_time) = recurrence.and_then(|r| r.next_after(execution_time)) {
+            return ops
+                .reschedule_with_metadata(next_time, json!({ "occurrence": self.next_occurrence }))
+                .await;
+        }
+        ops.complete(None, vec![]).await
     }
 }

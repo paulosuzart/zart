@@ -121,7 +121,7 @@ tokio::task_local! {
 /// returns an error, the framework will roll back automatically.
 pub async fn trx(pool: &sqlx::PgPool) -> Result<ZartTrx, StepError> {
     // Guard: must be in step phase.
-    if !crate::local::is_step_phase() {
+    if !crate::phase::is_step_phase() {
         return Err(StepError::Failed {
             step: "zart::trx".to_string(),
             reason: "trx() can only be called from within a step's run() method".to_string(),

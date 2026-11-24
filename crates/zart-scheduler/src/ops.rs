@@ -30,7 +30,6 @@ pub struct ExecutionOps {
     scheduler: Arc<dyn TaskScheduler>,
     task_id: String,
     lock_token: String,
-    pending_metadata: Option<Value>,
 }
 
 impl ExecutionOps {
@@ -39,25 +38,7 @@ impl ExecutionOps {
             scheduler,
             task_id: task_id.to_string(),
             lock_token: lock_token.to_string(),
-            pending_metadata: None,
         }
-    }
-
-    /// Merge `v` into the task's `metadata` column on the next reschedule.
-    ///
-    /// New keys in `v` are added to existing metadata; existing keys are
-    /// overwritten. The merge happens atomically with the reschedule SQL update
-    /// using the Postgres `||` operator.
-    ///
-    /// This is a pure setter — calling it multiple times replaces the previous
-    /// value. The metadata is only applied when `reschedule` or `reschedule_in_tx`
-    /// is called.
-    ///
-    /// **Note:** calling `set_metadata` before `complete` or `complete_in_tx`
-    /// has **no effect** — the pending metadata is only flushed on the
-    /// `reschedule`/`reschedule_in_tx` paths.
-    pub fn set_metadata(&mut self, v: Value) {
-        self.pending_metadata = Some(v);
     }
 
     /// Complete the task: opens a fresh transaction, marks complete,
@@ -99,12 +80,21 @@ impl ExecutionOps {
 
     /// Reschedule the task: opens a fresh transaction, updates task state,
     /// then commits.
-    ///
-    /// If [`set_metadata`](Self::set_metadata) was called, the new metadata is
-    /// merged into the task's `metadata` column using the Postgres `||` operator.
     pub async fn reschedule(&self, at: DateTime<Utc>) -> Result<(), StorageError> {
         let tx = self.scheduler.begin().await?;
-        self.reschedule_in_tx(tx, at).await
+        self.reschedule_in_tx_with_metadata(tx, at, None).await
+    }
+
+    /// Reschedule the task while merging `metadata` into the task's `metadata`
+    /// column using the Postgres `||` operator.
+    pub async fn reschedule_with_metadata(
+        &self,
+        at: DateTime<Utc>,
+        metadata: Value,
+    ) -> Result<(), StorageError> {
+        let tx = self.scheduler.begin().await?;
+        self.reschedule_in_tx_with_metadata(tx, at, Some(&metadata))
+            .await
     }
 
     /// Reschedule using a provided transaction.
@@ -112,8 +102,19 @@ impl ExecutionOps {
     /// Appends the state update then commits.
     pub async fn reschedule_in_tx(
         &self,
+        tx: sqlx::Transaction<'static, Postgres>,
+        at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        self.reschedule_in_tx_with_metadata(tx, at, None).await
+    }
+
+    /// Reschedule using a provided transaction, optionally merging `metadata`
+    /// into the task's `metadata` column.
+    pub async fn reschedule_in_tx_with_metadata(
+        &self,
         mut tx: sqlx::Transaction<'static, Postgres>,
         at: DateTime<Utc>,
+        metadata: Option<&Value>,
     ) -> Result<(), StorageError> {
         self.scheduler
             .update_task_state_in_tx(
@@ -122,7 +123,7 @@ impl ExecutionOps {
                 Value::Null,
                 at,
                 &self.lock_token,
-                self.pending_metadata.as_ref(),
+                metadata,
             )
             .await?;
         tx.commit()
