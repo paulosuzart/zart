@@ -138,7 +138,7 @@ pub trait ZartStep {
 
 /// Wraps any [`ZartStep`] and overrides its tracking identity.
 ///
-/// Created by [`ZartStep::named`]. Delegates all behaviour to the inner step
+/// Created by [`ZartStepExt::named`]. Delegates all behaviour to the inner step
 /// but reports a different name to the durable execution engine, enabling the
 /// same step definition to be called multiple times (e.g. in a loop) with a
 /// unique database key per call.
