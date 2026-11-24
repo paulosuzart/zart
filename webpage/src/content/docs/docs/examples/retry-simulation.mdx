@@ -3,13 +3,16 @@ title: Retry Simulation
 description: Observe automatic step retries in action — a step intentionally fails on the first attempt and succeeds on the retry.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example simulates a transient failure to show how Zart automatically retries steps. The first attempt always fails; the framework retries and the second attempt succeeds. All retry metadata is accessible inside the step via `zart::context()`.
 
 **Features demonstrated:** `#[zart_step]` with `retry = "fixed(n, delay)"`, `zart::context().current_attempt`, `zart::context().is_retry()`, `zart::context().max_retries`, `DurableExecution` trait.
 
 ## Data types
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +35,58 @@ struct RetryStepResult {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class RetrySimulationInput:
+    name: str
+
+@dataclass
+class RetrySimulationOutput:
+    name: str
+    total_attempts: int
+    message: str
+    attempts_log: list[str]
+
+@dataclass
+class RetryStepResult:
+    message: str
+    attempt_number: int
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Data, Schema } from "effect";
+
+class TransientError extends Data.TaggedError("TransientError")<{
+  readonly message: string;
+}> {}
+
+const RetrySimulationInput = Schema.Struct({
+  name: Schema.String,
+});
+
+const RetrySimulationOutput = Schema.Struct({
+  name: Schema.String,
+  totalAttempts: Schema.Number,
+  message: Schema.String,
+  attemptsLog: Schema.Array(Schema.String),
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## Step definitions
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::prelude::*;
@@ -70,7 +124,76 @@ async fn normal_step(name: String) -> Result<String, StepError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("intentional-failure", retry=zart.Retry.fixed(3, "1s"))
+async def intentional_failure_step(name: str) -> RetryStepResult:
+    ctx = zart.context()
+    print(
+        f"[intentional-failure] Attempt #{ctx.current_attempt} "
+        f"| is_retry={ctx.is_retry()} | max_retries={ctx.max_retries}"
+    )
+
+    if ctx.current_attempt == 0:
+        raise RuntimeError(f"Simulated transient error on attempt {ctx.current_attempt + 1}")
+
+    return RetryStepResult(
+        message=f"Succeeded for '{name}' on retry attempt #{ctx.current_attempt}",
+        attempt_number=ctx.current_attempt,
+    )
+
+@zart.step("normal-step")
+async def normal_step(name: str) -> str:
+    return f"Normal step completed for '{name}'"
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+let attemptCount = 0;
+
+// Fails on attempt 0; succeeds on retry.
+const intentionalFailureStep = Zart.step(
+  "intentional-failure",
+  (name: string) =>
+    Effect.sync(() => attemptCount++).pipe(
+      Effect.flatMap((attempt) => {
+        if (attempt === 0) {
+          return Effect.fail(
+            new TransientError({
+              message: `Simulated transient error on attempt ${attempt + 1}`,
+            }),
+          );
+        }
+        return Effect.succeed({
+          message: `Succeeded for '${name}' on retry attempt #${attempt}`,
+          attemptNumber: attempt,
+        });
+      }),
+    ),
+  { retry: Zart.Retry.fixed(3, "1 seconds") },
+);
+
+const normalStep = Zart.step("normal-step", (name: string) =>
+  Effect.succeed(`Normal step completed for '${name}'`),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## The workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 struct RetrySimulationTask;
@@ -107,7 +230,68 @@ impl DurableExecution for RetrySimulationTask {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("retry-simulation")
+async def retry_simulation(data: RetrySimulationInput) -> RetrySimulationOutput:
+    # Step 1: fails first, then retries automatically.
+    result = await intentional_failure_step(data.name)
+
+    attempts_log = [
+        f"intentional-failure: succeeded on attempt #{result.attempt_number} ({result.attempt_number} retries)"
+    ]
+
+    # Step 2: always succeeds on the first try.
+    normal = await normal_step(data.name)
+    attempts_log.append(normal)
+
+    return RetrySimulationOutput(
+        name=data.name,
+        total_attempts=result.attempt_number + 1,
+        message=f"Completed after {result.attempt_number + 1} attempt(s), succeeded on retry #{result.attempt_number}",
+        attempts_log=attempts_log,
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const retrySimulation = Zart.durable(
+  "retry-simulation",
+  (data) =>
+    Effect.gen(function* () {
+      // Step 1: fails first, then retries automatically.
+      const result = yield* intentionalFailureStep(data.name);
+
+      const attemptsLog = [
+        `intentional-failure: succeeded on attempt #${result.attemptNumber} (${result.attemptNumber} retries)`,
+      ];
+
+      // Step 2: always succeeds on the first try.
+      const normal = yield* normalStep(data.name);
+      attemptsLog.push(normal);
+
+      return {
+        name: data.name,
+        totalAttempts: result.attemptNumber + 1,
+        message: `Completed after ${result.attemptNumber + 1} attempt(s), succeeded on retry #${result.attemptNumber}`,
+        attemptsLog,
+      };
+    }),
+  { inputSchema: RetrySimulationInput, outputSchema: RetrySimulationOutput },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Running the workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let durable = DurableScheduler::from_backend(&pg);
@@ -120,6 +304,38 @@ durable
 let output = durable.wait_for::<RetrySimulationTask>(&execution_id, Duration::from_secs(60)).await?;
 println!("{}", output.message);
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+scheduler = zart.DurableScheduler(backend)
+await scheduler.start(
+    execution_id,
+    "retry-simulation",
+    zart.to_json_value(RetrySimulationInput(name="retry-demo")),
+)
+
+raw = await scheduler.wait_completion(execution_id, timeout_secs=60.0)
+output = zart.from_json_value(raw, RetrySimulationOutput)
+print(output.message)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+yield* scheduler.start(executionId, "retry-simulation", RetrySimulationInput, {
+  name: "retry-demo",
+});
+
+const output = yield* scheduler.waitCompletion(executionId, RetrySimulationOutput, 60);
+console.log(output.message);
+```
+
+</TabItem>
+</Tabs>
 
 ## What you'll see
 

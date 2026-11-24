@@ -50,8 +50,12 @@ mod duration_millis_opt {
 /// // Retry 3 times with a fixed 5-second delay between attempts.
 /// let fixed = RetryConfig::fixed(3, Duration::from_secs(5));
 ///
-/// // Retry 5 times with exponential backoff starting at 1 second.
-/// let exp = RetryConfig::exponential(5, Duration::from_secs(1));
+/// // Retry 3 times with a linear (constant) 2-second delay between attempts.
+/// let linear = RetryConfig::linear(3, Duration::from_secs(2));
+///
+/// // Retry 5 times with exponential backoff starting at 1 second, capped at 30 seconds.
+/// let exp = RetryConfig::exponential(5, Duration::from_secs(1))
+///     .with_max_delay(Duration::from_secs(30));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryConfig {
@@ -106,6 +110,11 @@ impl RetryConfig {
         }
     }
 
+    /// Retry `attempts` times with a linear (constant-interval) `delay` between attempts.
+    pub fn linear(attempts: usize, delay: Duration) -> Self {
+        Self::fixed(attempts, delay)
+    }
+
     /// Retry `attempts` times with exponential backoff starting at `initial_delay`.
     ///
     /// The delay doubles after each failed attempt (multiplier = 2.0).
@@ -116,6 +125,18 @@ impl RetryConfig {
             backoff_multiplier: 2.0,
             max_delay: None,
         }
+    }
+
+    /// Cap the computed retry delay at `max_delay`.
+    pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
+        self.max_delay = Some(max_delay);
+        self
+    }
+
+    /// Override the backoff multiplier applied between retry attempts.
+    pub fn with_backoff_multiplier(mut self, multiplier: f64) -> Self {
+        self.backoff_multiplier = multiplier;
+        self
     }
 
     /// Compute the delay before attempt number `attempt_number` (1-indexed).
@@ -172,5 +193,32 @@ mod tests {
     fn no_retry_returns_none_for_any_attempt() {
         let cfg = RetryConfig::none();
         assert_eq!(cfg.delay_for(1), None);
+    }
+
+    #[test]
+    fn linear_delay_matches_constant_interval() {
+        let cfg = RetryConfig::linear(3, Duration::from_secs(2));
+        assert_eq!(cfg.max_attempts, 3);
+        assert_eq!(cfg.initial_delay, Duration::from_secs(2));
+        assert_eq!(cfg.backoff_multiplier, 1.0);
+        assert_eq!(cfg.max_delay, None);
+        assert_eq!(cfg.delay_for(1), Some(Duration::from_secs(2)));
+        assert_eq!(cfg.delay_for(2), Some(Duration::from_secs(2)));
+        assert_eq!(cfg.delay_for(3), Some(Duration::from_secs(2)));
+        assert_eq!(cfg.delay_for(4), None);
+    }
+
+    #[test]
+    fn builder_helpers_override_max_delay_and_multiplier() {
+        let cfg = RetryConfig::exponential(4, Duration::from_secs(1))
+            .with_backoff_multiplier(3.0)
+            .with_max_delay(Duration::from_secs(10));
+
+        assert_eq!(cfg.backoff_multiplier, 3.0);
+        assert_eq!(cfg.max_delay, Some(Duration::from_secs(10)));
+        assert_eq!(cfg.delay_for(1), Some(Duration::from_secs(1)));
+        assert_eq!(cfg.delay_for(2), Some(Duration::from_secs(3)));
+        assert_eq!(cfg.delay_for(3), Some(Duration::from_secs(9)));
+        assert_eq!(cfg.delay_for(4), Some(Duration::from_secs(10)));
     }
 }

@@ -11,8 +11,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use zart::context::TaskContext;
-use zart::context::ZartStep;
+use zart::context::{TaskContext, ZartStep, ZartStepExt};
 use zart::error::TaskError;
 use zart::registry::DurableExecution;
 use zart::retry::RetryConfig;
@@ -423,6 +422,21 @@ fn zart_durable_no_timeout_returns_none() {
     assert_eq!(handler.timeout(), None);
 }
 
+#[zart_durable("onboard-user", max_retries = 3, timeout = "5m")]
+async fn retried_onboard_handler(data: ()) -> Result<(), TaskError> {
+    Ok(data)
+}
+
+#[test]
+fn zart_durable_max_retries_timeout_and_task_name() {
+    let handler = RetriedOnboardHandler;
+    assert_eq!(RetriedOnboardHandler::TASK_NAME, "onboard-user");
+    assert_eq!(handler.max_retries(), 3);
+    assert_eq!(handler.timeout(), Some(Duration::from_secs(300)));
+    assert_eq!(NoTimeoutHandler::TASK_NAME, "no-timeout-task");
+    assert_eq!(NoTimeoutHandler.max_retries(), 0);
+}
+
 struct ProcessStep {
     input: String,
 }
@@ -571,4 +585,23 @@ fn named_overrides_static_step_name() {
 
     let overridden = step.named("process-0");
     assert_eq!(overridden.step_name(), "process-0");
+}
+
+#[zart_macros::zart_step("charge-card", retry = "linear(3, 1s)")]
+async fn charge_card(amount: u64) -> Result<u64, TestStepError> {
+    Ok(amount)
+}
+
+#[test]
+fn zart_step_linear_retry_config() {
+    let step = charge_card(100);
+    assert_eq!(step.step_name(), "charge-card");
+    let cfg = step
+        .retry_config()
+        .expect("linear retry_config should be Some");
+    assert_eq!(cfg, RetryConfig::linear(3, Duration::from_secs(1)));
+    assert_eq!(cfg.max_attempts, 3);
+    assert_eq!(cfg.initial_delay, Duration::from_secs(1));
+    assert_eq!(cfg.backoff_multiplier, 1.0);
+    assert_eq!(cfg.max_delay, None);
 }

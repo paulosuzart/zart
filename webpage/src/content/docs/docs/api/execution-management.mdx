@@ -1,54 +1,57 @@
 ---
 title: Execution Management
-description: Reference for DurableScheduler — start, status, wait, cancel, and offer_event.
+description: Reference for DurableScheduler — start, status, wait, cancel, offer_event, querying, admin recovery, and pause/resume across Rust, Python, and TypeScript.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-`DurableScheduler` is the high-level entry point for interacting with durable executions. It wraps the underlying `TaskScheduler` and provides execution-aware operations.
+`DurableScheduler` is the control-plane entry point for starting, querying, awaiting, and managing durable executions across all Zart SDKs.
 
 ## Construction
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let pg = PgBackend::new(pool);
 let durable = DurableScheduler::from_backend(&pg);
 ```
 
-The `PgBackend` owns both execution storage and task scheduling. The `DurableScheduler` borrows both via `Arc` so it can be shared between your web server (scheduling) and the worker (executing).
+</TabItem>
+<TabItem label="Python">
+
+```python
+backend = await zart.PgBackend.connect("postgres://zart:zart@localhost:5432/zart")
+scheduler = zart.DurableScheduler(backend)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const backend = yield* PgBackend.scoped(dbUrl);
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+```
+
+</TabItem>
+</Tabs>
+
+The `PgBackend` owns both execution storage and task scheduling, so `DurableScheduler` can be shared between your web server (scheduling) and workers (executing).
 
 ## Starting an Execution
 
-### `start`
+The `execution_id` (`executionId`) serves as an **idempotency key**. If a non-terminal execution with that ID already exists, starting it fails with `ExecutionAlreadyExists`.
 
-Start a new durable execution with raw JSON data.
-
-```rust
-async fn start(
-    &self,
-    execution_id: &str,
-    task_name: &str,
-    data: serde_json::Value,
-) -> Result<ScheduleResult, SchedulerError>
-```
-
-Use this when the input is already a `serde_json::Value` or when you're building tooling on top of Zart.
-
-### `start_for` (Recommended)
-
-Start a new durable execution with typed input data, inferred from the handler.
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
-async fn start_for<H: DurableExecution>(
-    &self,
-    execution_id: &str,
-    task_name: &str,
-    input: &H::Data,
-) -> Result<ScheduleResult, SchedulerError>
-```
+// Raw JSON payload
+durable
+    .start("signup-user-42", "onboarding", serde_json::json!({ "email": "alice@example.com" }))
+    .await?;
 
-The `execution_id` serves as an **idempotency key**. If an execution with that ID already exists (and is not terminal), returns `SchedulerError::ExecutionAlreadyExists`.
-
-```rust
+// Typed input inferred from the DurableExecution handler (recommended)
 durable
     .start_for::<OnboardingTask>("signup-user-42", "onboarding", &OnboardingData {
         email: "alice@example.com".into(),
@@ -56,131 +59,185 @@ durable
     .await?;
 ```
 
-## Checking Status
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Accepts task name or DurableTask, and dicts, dataclasses, or Pydantic models
+await scheduler.start(
+    "signup-user-42",
+    "onboarding",
+    {"email": "alice@example.com"},
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Typed input with Schema.Codec
+yield* scheduler.start("signup-user-42", "onboarding", OnboardingInput, {
+  email: "alice@example.com",
+});
+```
+
+</TabItem>
+</Tabs>
+
+You can also start an execution atomically inside an application database transaction using `start_in_tx` (Rust/Python) or `startInTx` (TypeScript) — see [**Transactions**](/docs/concepts/transactions/).
+
+## Checking Status & Awaiting Results
 
 ### `status`
 
-Get the current status of a durable execution without blocking.
+Fetch the current `ExecutionRecord` without blocking.
 
-```rust
-async fn status(
-    &self,
-    execution_id: &str,
-) -> Result<ExecutionRecord, SchedulerError>
-```
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let record = durable.status("signup-user-42").await?;
 println!("Status: {:?}", record.status);
 ```
 
-### `wait`
+</TabItem>
+<TabItem label="Python">
 
-Block until the execution completes, fails, or the timeout is exceeded. Returns the full execution record.
-
-```rust
-async fn wait(
-    &self,
-    execution_id: &str,
-    timeout: Duration,
-    poll_interval: Option<Duration>,
-) -> Result<ExecutionRecord, SchedulerError>
+```python
+record = await scheduler.status("signup-user-42")
+print(f"Status: {record.status}")
 ```
 
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const record = yield* scheduler.status("signup-user-42");
+console.log("Status:", record.status);
+```
+
+</TabItem>
+</Tabs>
+
+### `wait`, `wait_completion`, and `start_and_wait`
+
+- **`wait`**: block until the execution reaches a terminal state and return `ExecutionRecord`.
+- **`wait_completion` / `waitCompletion`**: block until completion and return the decoded output.
+- **`start_and_wait_for` / `start_and_wait` / `startAndWait`**: start and wait for completion in a single call.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
 ```rust
+// Wait for ExecutionRecord
 let record = durable
     .wait("signup-user-42", Duration::from_secs(60), None)
     .await?;
-```
 
-The `poll_interval` controls how often the status is checked. Pass `None` for the default.
-
-### `wait_completion` (Recommended)
-
-Block until completion and **automatically deserialize** the result to your output type. This is the recommended way to wait for results — no manual `serde_json::from_value` needed.
-
-```rust
-async fn wait_completion<T: DeserializeOwned>(
-    &self,
-    execution_id: &str,
-    timeout: Duration,
-    poll_interval: Option<Duration>,
-) -> Result<T, SchedulerError>
-```
-
-```rust
+// Wait and deserialize output (recommended)
 let output: OnboardingOutput = durable
     .wait_completion("signup-user-42", Duration::from_secs(60), None)
     .await?;
-```
 
-Returns `Err(SchedulerError::Deserialization(_))` if the result can't be deserialized to `T`, or if the execution completed without a result.
-
-### `wait_completion_with_timeout`
-
-Same as `wait_completion` but caps the wait at 30 seconds.
-
-```rust
-let output: OnboardingOutput = durable
-    .wait_completion_with_timeout("signup-user-42", Duration::from_secs(30))
-    .await?;
-```
-
-### `wait_for`
-
-Wait for completion and **automatically deserialize** the result to the handler's output type. Use when you started an execution earlier and now want the typed result.
-
-```rust
-async fn wait_for<H: DurableExecution>(
-    &self,
-    execution_id: &str,
-    timeout: Duration,
-) -> Result<H::Output, SchedulerError>
-```
-
-```rust
+// Typed start + wait in one call
 let output = durable
-    .wait_for::<OnboardingTask>("signup-user-42", Duration::from_secs(60))
+    .start_and_wait_for::<OnboardingTask>(
+        "signup-user-42",
+        "onboarding",
+        &input,
+        Duration::from_secs(60),
+    )
     .await?;
-// output: OnboardingOutput — inferred from OnboardingTask::Output
 ```
 
-### `start_and_wait_for`
+</TabItem>
+<TabItem label="Python">
 
-Start an execution and wait for completion in a single call. Types are inferred from the handler.
+```python
+# Wait for ExecutionRecord
+record = await scheduler.wait("signup-user-42", timeout="60s")
+
+# Wait and reconstruct typed output (e.g. dataclass / BaseModel / dict)
+output = await scheduler.wait_completion(
+    "signup-user-42",
+    timeout="60s",
+    target_type=OnboardingOutput,
+)
+
+# Start + wait in one call
+output = await scheduler.start_and_wait(
+    "signup-user-42",
+    "onboarding",
+    {"email": "alice@example.com"},
+    timeout="60s",
+    target_type=OnboardingOutput,
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Wait for ExecutionRecord
+const record = yield* scheduler.wait("signup-user-42", "60 seconds");
+
+// Wait and decode output with Schema.Codec or DurableDefinition
+const output = yield* scheduler.waitCompletion(
+  "signup-user-42",
+  OnboardingOutput,
+  "60 seconds",
+);
+
+// Start + wait in one call
+const result = yield* scheduler.startAndWait(
+  "signup-user-42",
+  "onboarding",
+  OnboardingInput,
+  { email: "alice@example.com" },
+  OnboardingOutput,
+  "60 seconds",
+);
+```
+
+</TabItem>
+</Tabs>
+
+## Cancelling & Delivering Events
+
+### `cancel`
+
+Returns `true` if the execution was cancelled, or `false` if it was already in a terminal state (`completed`, `failed`, or `cancelled`).
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
-let output = durable
-    .start_and_wait_for::<OnboardingTask>("signup-user-42", "onboarding", &input, Duration::from_secs(60))
-    .await?;
-// output: OnboardingOutput — inferred from OnboardingTask::Output
+let cancelled = durable.cancel("signup-user-42").await?;
 ```
 
-## Cancelling
+</TabItem>
+<TabItem label="Python">
 
-```rust
-async fn cancel(
-    &self,
-    execution_id: &str,
-) -> Result<bool, SchedulerError>
+```python
+cancelled = await scheduler.cancel("signup-user-42")
 ```
 
-Returns `true` if the execution was successfully cancelled, `false` if it was already terminal (completed, failed, or previously cancelled).
+</TabItem>
+<TabItem label="TypeScript">
 
-## Delivering Events
-
-### `offer_event`
-
-Deliver an event to a waiting durable execution.
-
-```rust
-async fn offer_event(
-    &self,
-    execution_id: &str,
-    event_name: &str,
-    payload: serde_json::Value,
-) -> Result<(), SchedulerError>
+```ts
+const cancelled = yield* scheduler.cancel("signup-user-42");
 ```
+
+</TabItem>
+</Tabs>
+
+### `offer_event` / `offerEvent`
+
+Deliver a payload to an execution suspended on `wait_for_event` / `Zart.waitForEvent`.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 durable
@@ -192,53 +249,274 @@ durable
     .await?;
 ```
 
-The event is deserialized into the type expected by the corresponding `zart::wait_for_event` call inside the execution.
+</TabItem>
+<TabItem label="Python">
 
-## Execution Status
+```python
+await scheduler.offer_event(
+    execution_id,
+    "manager-approval",
+    {"approved": True},
+)
+```
 
-`ExecutionRecord` contains:
+</TabItem>
+<TabItem label="TypeScript">
 
-| Field | Type | Description |
-|---|---|---|
-| `execution_id` | `String` | Unique execution identifier |
-| `task_name` | `String` | Registered task name |
-| `current_run_id` | `Option<String>` | Pointer to active run |
-| `created_at` | `DateTime<Utc>` | When the execution was first scheduled |
+```ts
+yield* scheduler.offerEvent(executionId, "manager-approval", {
+  approved: true,
+});
+```
 
-`ExecutionStatus` variants:
+</TabItem>
+</Tabs>
+
+## `ExecutionRecord` & `ExecutionStatus`
+
+`ExecutionRecord` fields (snake_case in Rust/Python, camelCase in TypeScript):
+
+| Rust / Python Field | TypeScript Field | Type | Description |
+|---|---|---|---|
+| `execution_id` | `executionId` | `String` / `str` / `string` | Unique execution identifier |
+| `task_name` | `taskName` | `String` / `str` / `string` | Registered task name |
+| `payload` | `payload` | `Value` / `Any` / `unknown` | Input JSON payload |
+| `status` | `status` | `ExecutionStatus` / `str` | Current lifecycle status |
+| `result` | `result` | `Option<Value>` / `Any \| None` / `unknown` | Output JSON payload once completed |
+| `scheduled_at` | `scheduledAt` | `DateTime<Utc>` / `str` | When the execution was scheduled |
+| `completed_at` | `completedAt` | `Option<DateTime<Utc>>` / `str \| None` | When the execution reached a terminal state |
+| `version` | `version` | `i32` / `int` / `number` | Optimistic concurrency version |
+
+`ExecutionStatus` variants (`"scheduled"`, `"running"`, `"completed"`, `"failed"`, `"cancelled"`):
 
 | Variant | Meaning |
 |---|---|
-| `Scheduled` | Scheduled but not yet picked up by a worker |
-| `Running` | Actively being processed |
-| `Waiting` | Durably paused (sleep or event wait) |
+| `Scheduled` | Scheduled and waiting for a worker (or sleeping / waiting for an event) |
+| `Running` | Actively being processed by a worker |
 | `Completed` | Finished successfully |
-| `Failed` | Exhausted retries or unhandled error |
+| `Failed` | Exhausted retries or failed with an unhandled error |
 | `Cancelled` | Stopped via `cancel()` |
 
-## Listing Executions
+## Querying & Inspection
 
-```rust
-async fn list_executions(
-    &self,
-    params: ListExecutionsParams,
-) -> Result<Vec<ExecutionRecord>, SchedulerError>
-```
+### `list_executions` / `listExecutions`
 
-Query executions with optional filtering by status and task name, with pagination.
+Filter, sort, and paginate executions with `ListExecutionsParams`:
+
+- `status` — filter by `ExecutionStatus`
+- `task_name` / `taskName` — case-insensitive substring filter on `task_name`
+- `from` (`from_` in Python) / `to` — time bounds (`DateTime<Utc>`, `datetime` / ISO string, `Date` / RFC3339 string)
+- `search` — prefix filter on `execution_id`
+- `sort_by` / `sortBy` — `"scheduled_at"` (default), `"status"`, or `"task_name"`
+- `sort_order` / `sortOrder` — `"desc"` (default) or `"asc"`
+- `limit` (default `20`), `offset` (default `0`)
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 let all = durable
     .list_executions(ListExecutionsParams {
         status: Some(ExecutionStatus::Completed),
         task_name: Some("onboarding".into()),
+        sort_by: ExecutionSortField::ScheduledAt,
+        sort_order: SortOrder::Desc,
         limit: 100,
         offset: 0,
-        sort_field: Some(ExecutionSortField::ScheduledAt),
-        sort_order: Some(SortOrder::Desc),
+        ..Default::default()
+    })
+    .await?;
+
+let stats = durable.stats().await?;
+let run_id = durable.get_current_run_id("signup-user-42").await?;
+let runs = durable.list_runs("signup-user-42").await?;
+let detail = durable.execution_detail("signup-user-42", None).await?;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+all_execs = await scheduler.list_executions(
+    status="completed",
+    task_name="onboarding",
+    sort_by="scheduled_at",
+    sort_order="desc",
+    limit=100,
+    offset=0,
+)
+
+stats = await scheduler.stats()
+run_id = await scheduler.get_current_run_id("signup-user-42")
+runs = await scheduler.list_runs("signup-user-42")
+detail = await scheduler.execution_detail("signup-user-42")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const allExecs = yield* scheduler.listExecutions({
+  status: "completed",
+  taskName: "onboarding",
+  sortBy: "scheduled_at",
+  sortOrder: "desc",
+  limit: 100,
+  offset: 0,
+});
+
+const stats = yield* scheduler.stats();
+const runId = yield* scheduler.getCurrentRunId("signup-user-42");
+const runs = yield* scheduler.listRuns("signup-user-42");
+const detail = yield* scheduler.executionDetail("signup-user-42");
+```
+
+</TabItem>
+</Tabs>
+
+## Admin Recovery Operations
+
+All SDKs expose step-level and execution-level recovery operations:
+
+- **`retry_step` / `retryStep`** and **`retry_step_current_run` / `retryStepCurrentRun`**: retry a dead step in place without creating a new run.
+- **`restart`**: archive the current run and start a fresh run from scratch (optionally with a new payload).
+- **`rerun_steps` / `rerunSteps`**: start a new run that selectively reruns specified steps (`force_rerun` / `forceRerun`) while preserving completed step results (`preserve`).
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
+```rust
+// Retry a dead step in the current run
+let task_id = durable
+    .retry_step_current_run("exec-001", "charge-card", Some("ops@example.com"))
+    .await?;
+
+// Restart from scratch (keeping existing payload)
+let new_run_id = durable.restart("exec-001", None, Some("ops@example.com")).await?;
+
+// Selectively rerun specific steps
+let rerun = durable
+    .rerun_steps(
+        "exec-001",
+        RerunSpec {
+            force_rerun: vec!["charge-card".into()],
+            preserve: vec!["reserve-inventory".into()],
+            triggered_by: Some("ops@example.com".into()),
+        },
+    )
+    .await?;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+# Retry a dead step in the current run
+task_id = await scheduler.retry_step_current_run(
+    "exec-001", "charge-card", triggered_by="ops@example.com"
+)
+
+# Restart from scratch
+new_run_id = await scheduler.restart("exec-001", triggered_by="ops@example.com")
+
+# Selectively rerun specific steps
+rerun = await scheduler.rerun_steps(
+    "exec-001",
+    force_rerun=["charge-card"],
+    preserve=["reserve-inventory"],
+    triggered_by="ops@example.com",
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Retry a dead step in the current run
+const taskId = yield* scheduler.retryStepCurrentRun(
+  "exec-001",
+  "charge-card",
+  "ops@example.com",
+);
+
+// Restart from scratch
+const newRunId = yield* scheduler.restart("exec-001", undefined, "ops@example.com");
+
+// Selectively rerun specific steps
+const rerun = yield* scheduler.rerunSteps("exec-001", {
+  forceRerun: ["charge-card"],
+  preserve: ["reserve-inventory"],
+  triggeredBy: "ops@example.com",
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Pause & Resume
+
+Pause rules let operators temporarily hold executions or matching steps (by `execution_id`, `task_name`, and/or `step_pattern`) without cancelling them.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
+```rust
+let rule = durable
+    .pause(PauseScope {
+        task_name: Some("onboarding".into()),
+        step_pattern: Some("send-*".into()),
+        reason: Some("SMTP maintenance".into()),
+        ..Default::default()
+    })
+    .await?;
+
+let rules = durable.list_pause_rules(None).await?;
+
+durable
+    .resume(PauseScope {
+        task_name: Some("onboarding".into()),
+        ..Default::default()
     })
     .await?;
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+rule = await scheduler.pause(
+    zart.PauseScope(
+        task_name="onboarding",
+        step_pattern="send-*",
+        reason="SMTP maintenance",
+    )
+)
+
+rules = await scheduler.list_pause_rules()
+
+await scheduler.resume(
+    zart.PauseScope(task_name="onboarding"),
+    deleted_by="ops@example.com",
+)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const rule = yield* scheduler.pause({
+  taskName: "onboarding",
+  stepPattern: "send-*",
+  reason: "SMTP maintenance",
+});
+
+const rules = yield* scheduler.listPauseRules();
+
+yield* scheduler.resume({ taskName: "onboarding" }, "ops@example.com");
+```
+
+</TabItem>
+</Tabs>
 
 ## Next Steps
 

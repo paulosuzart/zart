@@ -3,13 +3,16 @@ title: Brewery Finder
 description: A sequential multi-step durable workflow that calls external APIs and returns structured results.
 ---
 
-import { Aside, Steps } from '@astrojs/starlight/components';
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 This example builds a durable workflow that takes a US ZIP code, resolves it to a city via the [Zippopotamus API](https://www.zippopotam.us/), then fetches breweries in that city from the [Open Brewery DB](https://www.openbrewerydb.org/). All steps are persisted — if the process crashes mid-flight, completed API calls are not retried.
 
 **Features demonstrated:** `#[zart_durable]`, `#[zart_step]`, sequential steps, structured output.
 
 ## Data types
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,9 +38,67 @@ struct FinderOutput {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class FinderInput:
+    zip_code: str
+
+@dataclass
+class BreweryInfo:
+    name: str
+    brewery_type: str
+    city: str
+    state: str
+
+@dataclass
+class FinderOutput:
+    zip_code: str
+    city: str
+    state: str
+    breweries: list[BreweryInfo]
+    found_at: str
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Schema } from "effect";
+
+const FinderInput = Schema.Struct({
+  zipCode: Schema.String,
+});
+
+const BreweryInfo = Schema.Struct({
+  name: Schema.String,
+  breweryType: Schema.String,
+  city: Schema.String,
+  state: Schema.String,
+});
+
+const FinderOutput = Schema.Struct({
+  zipCode: Schema.String,
+  city: Schema.String,
+  state: Schema.String,
+  breweries: Schema.Array(BreweryInfo),
+  foundAt: Schema.String,
+});
+```
+
+</TabItem>
+</Tabs>
+
 ## Step definitions
 
-Each step is defined as a standalone async function using `#[zart_step]`. The macro generates a step struct and implements `ZartStep` automatically.
+Each step is defined as a standalone async function. Zart persists each step's result before moving on.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 use zart::error::StepError;
@@ -107,9 +168,124 @@ async fn transform_results(
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import httpx
+import zart
+
+@zart.step("lookup-zip", retry=zart.Retry.exponential(3, "1s"))
+async def lookup_zip(zip_code: str) -> tuple[str, str]:
+    print(f"[lookup-zip] Attempt {zart.context().current_attempt + 1}")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"https://api.zippopotam.us/us/{zip_code}")
+        resp.raise_for_status()
+        places = resp.json().get("places", [])
+        if not places:
+            raise ValueError(f"no place found for ZIP {zip_code}")
+        return places[0]["place name"], places[0]["state"]
+
+@zart.step("find-breweries", retry=zart.Retry.exponential(3, "1s"))
+async def find_breweries(city: str) -> list[dict]:
+    print(f"[find-breweries] Attempt {zart.context().current_attempt + 1}")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://api.openbrewerydb.org/v1/breweries",
+            params={"by_city": city},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+@zart.step("transform-results")
+async def transform_results(
+    raw: list[dict],
+    city: str,
+    state: str,
+) -> list[BreweryInfo]:
+    return [
+        BreweryInfo(
+            name=b["name"],
+            brewery_type=b.get("brewery_type") or "unknown",
+            city=b.get("city") or city,
+            state=b.get("state") or state,
+        )
+        for b in raw
+    ]
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect } from "effect";
+import { Zart } from "@zart/effect";
+
+const lookupZip = Zart.step(
+  "lookup-zip",
+  (zipCode: string) =>
+    Effect.gen(function* () {
+      console.log(`[lookup-zip] Resolving ZIP ${zipCode}`);
+      const data = yield* Effect.tryPromise(async () => {
+        const resp = await fetch(`https://api.zippopotam.us/us/${zipCode}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return (await resp.json()) as { places: Array<{ "place name": string; state: string }> };
+      });
+      const place = data.places[0];
+      if (!place) return yield* Effect.fail(new Error(`no place found for ZIP ${zipCode}`));
+      return { city: place["place name"], state: place.state };
+    }),
+  { retry: Zart.Retry.exponential(3, "1 seconds") },
+);
+
+const findBreweries = Zart.step(
+  "find-breweries",
+  (city: string) =>
+    Effect.gen(function* () {
+      console.log(`[find-breweries] Querying city ${city}`);
+      return yield* Effect.tryPromise(async () => {
+        const url = new URL("https://api.openbrewerydb.org/v1/breweries");
+        url.searchParams.set("by_city", city);
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return (await resp.json()) as Array<{
+          name: string;
+          brewery_type?: string;
+          city?: string;
+          state?: string;
+        }>;
+      });
+    }),
+  { retry: Zart.Retry.exponential(3, "1 seconds") },
+);
+
+const transformResults = Zart.step(
+  "transform-results",
+  (
+    raw: Array<{ name: string; brewery_type?: string; city?: string; state?: string }>,
+    city: string,
+    state: string,
+  ) =>
+    Effect.succeed(
+      raw.map((b) => ({
+        name: b.name,
+        breweryType: b.brewery_type ?? "unknown",
+        city: b.city ?? city,
+        state: b.state ?? state,
+      })),
+    ),
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## The workflow
 
-The durable handler composes steps by calling them directly with `.await`. Each step call is persisted before moving on.
+The durable handler composes steps sequentially. Each step call is persisted before moving on.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[zart_durable("brewery-finder", timeout = "5m")]
@@ -135,7 +311,69 @@ async fn brewery_finder(data: FinderInput) -> Result<FinderOutput, TaskError> {
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+from datetime import UTC, datetime
+
+@zart.durable("brewery-finder", timeout="5m")
+async def brewery_finder(data: FinderInput) -> FinderOutput:
+    # Step 1: resolve ZIP → city/state, retry up to 3× with exponential backoff
+    city, state = await lookup_zip(data.zip_code)
+
+    # Step 2: find breweries in that city, retry on transient failures
+    raw_breweries = await find_breweries(city)
+
+    # Step 3: transform raw API data into structured output (no retries needed)
+    breweries = await transform_results(raw_breweries, city, state)
+
+    return FinderOutput(
+        zip_code=data.zip_code,
+        city=city,
+        state=state,
+        breweries=breweries,
+        found_at=datetime.now(UTC).isoformat(),
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const breweryFinder = Zart.durable(
+  "brewery-finder",
+  (data) =>
+    Effect.gen(function* () {
+      // Step 1: resolve ZIP → city/state, retry up to 3× with exponential backoff
+      const { city, state } = yield* lookupZip(data.zipCode);
+
+      // Step 2: find breweries in that city, retry on transient failures
+      const rawBreweries = yield* findBreweries(city);
+
+      // Step 3: transform raw API data into structured output (no retries needed)
+      const breweries = yield* transformResults(rawBreweries, city, state);
+      const foundAt = yield* Zart.now("found-at");
+
+      return {
+        zipCode: data.zipCode,
+        city,
+        state,
+        breweries,
+        foundAt: foundAt.toISOString(),
+      };
+    }),
+  { inputSchema: FinderInput, outputSchema: FinderOutput, timeout: "5 minutes" },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Running the workflow
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 // Register the macro-generated handler (struct name is PascalCase of the fn name)
@@ -156,6 +394,36 @@ println!(
     output.breweries.len(), output.city, output.state
 );
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+scheduler = zart.DurableScheduler(backend)
+await scheduler.start(
+    "my-run-1",
+    "brewery-finder",
+    zart.to_json_value(FinderInput(zip_code="97209")),
+)
+
+raw = await scheduler.wait_completion("my-run-1", timeout_secs=60.0)
+output = zart.from_json_value(raw, FinderOutput)
+print(f"Found {len(output.breweries)} breweries in {output.city}, {output.state}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const scheduler = yield* DurableScheduler.fromBackend(backend);
+yield* scheduler.start("my-run-1", "brewery-finder", FinderInput, { zipCode: "97209" });
+
+const output = yield* scheduler.waitCompletion("my-run-1", FinderOutput, 60);
+console.log(`Found ${output.breweries.length} breweries in ${output.city}, ${output.state}`);
+```
+
+</TabItem>
+</Tabs>
 
 ## What you'll see
 

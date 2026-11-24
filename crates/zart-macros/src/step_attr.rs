@@ -20,21 +20,31 @@ use crate::utils::{
 /// Accepted forms:
 /// - `#[zart_step("step-name")]`
 /// - `#[zart_step("step-name", retry = "fixed(3, 1s)")]`
+/// - `#[zart_step("step-name", retry = "linear(3, 1s)")]`
 /// - `#[zart_step("step-name", retry = "exponential(3, 1s)")]`
 /// - `#[zart_step("step-name", timeout = "5m")]`
 /// - `#[zart_step("step-name", timeout = "5m", timeout_scope = "global")]`
 /// - `#[zart_step("step-name", timeout = "30s", timeout_scope = "per_attempt")]`
 /// - `#[zart_step("step-name", retry = "...", timeout = "...")]`
 pub struct StepAttr {
+    /// Step name or `{field}` template string.
     pub step_name: String,
+    /// Optional parsed retry configuration.
     pub retry_config: Option<RetryAttr>,
+    /// Optional step timeout in seconds.
     pub timeout_secs: Option<u64>,
+    /// Optional timeout scope (`"global"` or `"per_attempt"`).
     pub timeout_scope: Option<String>,
 }
 
 /// Parsed retry attribute.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetryAttr {
+    /// Fixed-delay retries: `fixed(attempts, delay)`.
     Fixed { attempts: usize, delay_ms: u64 },
+    /// Linear (constant-interval) retries: `linear(attempts, delay)`.
+    Linear { attempts: usize, delay_ms: u64 },
+    /// Exponential-backoff retries: `exponential(attempts, initial_delay)`.
     Exponential { attempts: usize, delay_ms: u64 },
 }
 
@@ -47,6 +57,9 @@ impl Parse for StepAttr {
 
         while input.peek(syn::Token![,]) {
             let _: syn::Token![,] = input.parse()?;
+            if input.is_empty() {
+                break;
+            }
             let key: syn::Ident = input.parse()?;
             let _: syn::Token![=] = input.parse()?;
             let value: syn::LitStr = input.parse()?;
@@ -81,43 +94,47 @@ impl Parse for StepAttr {
     }
 }
 
-/// Parse retry attribute string like "fixed(3, 1s)" or "exponential(5, 2s)".
+/// Parse retry attribute string like `"fixed(3, 1s)"`, `"linear(3, 1s)"`, or
+/// `"exponential(5, 2s)"`.
 fn parse_retry_attr(s: &str, span: Span) -> SynResult<RetryAttr> {
-    if let Some(inner) = s.strip_prefix("fixed(").and_then(|s| s.strip_suffix(')')) {
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-        if parts.len() != 2 {
-            return Err(syn::Error::new(
-                span,
-                format!("fixed retry must be 'fixed(n, duration)' — got '{s}'"),
-            ));
-        }
-        let attempts: usize = parts[0]
-            .parse()
-            .map_err(|_| syn::Error::new(span, format!("invalid attempt count '{}'", parts[0])))?;
-        let delay_ms = parse_duration_to_ms(parts[1], span)?;
+    if let Some(inner) = strip_call(s, "fixed") {
+        let (attempts, delay_ms) = parse_retry_args("fixed", inner, s, span)?;
         Ok(RetryAttr::Fixed { attempts, delay_ms })
-    } else if let Some(inner) = s
-        .strip_prefix("exponential(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-        if parts.len() != 2 {
-            return Err(syn::Error::new(
-                span,
-                format!("exponential retry must be 'exponential(n, duration)' — got '{s}'"),
-            ));
-        }
-        let attempts: usize = parts[0]
-            .parse()
-            .map_err(|_| syn::Error::new(span, format!("invalid attempt count '{}'", parts[0])))?;
-        let delay_ms = parse_duration_to_ms(parts[1], span)?;
+    } else if let Some(inner) = strip_call(s, "linear") {
+        let (attempts, delay_ms) = parse_retry_args("linear", inner, s, span)?;
+        Ok(RetryAttr::Linear { attempts, delay_ms })
+    } else if let Some(inner) = strip_call(s, "exponential") {
+        let (attempts, delay_ms) = parse_retry_args("exponential", inner, s, span)?;
         Ok(RetryAttr::Exponential { attempts, delay_ms })
     } else {
         Err(syn::Error::new(
             span,
-            format!("retry must be 'fixed(n, duration)' or 'exponential(n, duration)' — got '{s}'"),
+            format!(
+                "retry must be 'fixed(n, duration)', 'linear(n, duration)', or 'exponential(n, duration)' — got '{s}'"
+            ),
         ))
     }
+}
+
+fn strip_call<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    s.strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.strip_suffix(')'))
+}
+
+fn parse_retry_args(kind: &str, inner: &str, full: &str, span: Span) -> SynResult<(usize, u64)> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if parts.len() != 2 {
+        return Err(syn::Error::new(
+            span,
+            format!("{kind} retry must be '{kind}(n, duration)' — got '{full}'"),
+        ));
+    }
+    let attempts: usize = parts[0]
+        .parse()
+        .map_err(|_| syn::Error::new(span, format!("invalid attempt count '{}'", parts[0])))?;
+    let delay_ms = parse_duration_to_ms(parts[1], span)?;
+    Ok((attempts, delay_ms))
 }
 
 // ── Macro expansion ───────────────────────────────────────────────────────────
@@ -263,6 +280,9 @@ fn generate_retry_config_expr(retry_attr: &RetryAttr) -> SynResult<TokenStream2>
         RetryAttr::Fixed { attempts, delay_ms } => Ok(quote! {
             ::zart::retry::RetryConfig::fixed(#attempts, ::std::time::Duration::from_millis(#delay_ms))
         }),
+        RetryAttr::Linear { attempts, delay_ms } => Ok(quote! {
+            ::zart::retry::RetryConfig::linear(#attempts, ::std::time::Duration::from_millis(#delay_ms))
+        }),
         RetryAttr::Exponential { attempts, delay_ms } => Ok(quote! {
             ::zart::retry::RetryConfig::exponential(#attempts, ::std::time::Duration::from_millis(#delay_ms))
         }),
@@ -313,7 +333,7 @@ fn generate_retry_config_expr(retry_attr: &RetryAttr) -> SynResult<TokenStream2>
 /// | Attribute | Required | Description |
 /// |---|---|---|
 /// | `"step-name"` | Yes | The name used for step tracking in the database. Supports `{field}` template for dynamic names. |
-/// | `retry = "..."` | No | Retry configuration. Supports `fixed(n, duration)` and `exponential(n, duration)`. |
+/// | `retry = "..."` | No | Retry configuration. Supports `fixed(n, duration)`, `linear(n, duration)`, and `exponential(n, duration)`. |
 /// | `timeout = "..."` | No | Step timeout. Supports duration strings like `"5m"`, `"30s"`, `"2h"`, `"3d"`. |
 /// | `timeout_scope = "..."` | No | Timeout scope: `"global"` (default, deadline shared across retries) or `"per_attempt"` (fresh countdown each attempt). |
 pub(crate) fn expand_zart_step(args: StepAttr, func: syn::ItemFn) -> SynResult<TokenStream2> {
@@ -544,4 +564,51 @@ pub(crate) fn expand_zart_step(args: StepAttr, func: syn::ItemFn) -> SynResult<T
 
         #inner_fn
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_fixed_linear_and_exponential_retry_attrs() {
+        assert_eq!(
+            parse_retry_attr("fixed(3, 1s)", Span::call_site()).unwrap(),
+            RetryAttr::Fixed {
+                attempts: 3,
+                delay_ms: 1_000,
+            }
+        );
+        assert_eq!(
+            parse_retry_attr("linear(4, 2s)", Span::call_site()).unwrap(),
+            RetryAttr::Linear {
+                attempts: 4,
+                delay_ms: 2_000,
+            }
+        );
+        assert_eq!(
+            parse_retry_attr("exponential(5, 1m)", Span::call_site()).unwrap(),
+            RetryAttr::Exponential {
+                attempts: 5,
+                delay_ms: 60_000,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_retry_attrs_with_clear_messages() {
+        let unknown = parse_retry_attr("jitter(3, 1s)", Span::call_site())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(unknown.contains(
+            "'fixed(n, duration)', 'linear(n, duration)', or 'exponential(n, duration)'"
+        ));
+
+        let bad_arity = parse_retry_attr("linear(3)", Span::call_site())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(bad_arity.contains("linear retry must be 'linear(n, duration)'"));
+    }
 }

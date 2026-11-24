@@ -8,7 +8,7 @@ use crate::test_helpers::{Call, RecordingScheduler};
 use std::borrow::Cow;
 
 use super::state::{AttemptStatus, ExecutionState, StepAttempt, StepRecord, StepStatus};
-use super::step_trait::ZartStep;
+use super::step_trait::{ZartStep, ZartStepExt};
 use super::task_context::TaskContext;
 use std::time::Duration;
 
@@ -705,7 +705,7 @@ async fn context_free_fn_returns_execution_id_in_body_phase() {
     let (scheduler, _) = RecordingScheduler::builder().build();
     let ctx = std::sync::Arc::new(make_body_ctx(scheduler));
 
-    let info = with_test_ctx(ctx, crate::local::Phase::Body, async {
+    let info = with_test_ctx(ctx, crate::phase::Phase::Body, async {
         crate::api::context()
     })
     .await;
@@ -716,7 +716,7 @@ async fn context_free_fn_returns_execution_id_in_body_phase() {
 /// `zart::context()` returns the correct attempt metadata when called from Step phase.
 #[tokio::test]
 async fn context_free_fn_returns_step_metadata_in_step_phase() {
-    use crate::context::StepContext;
+    use crate::phase::StepContext;
     use crate::test_helpers::with_test_ctx;
     let (scheduler, _) = RecordingScheduler::builder().build();
     let ctx = std::sync::Arc::new(make_step_ctx_with_retry(
@@ -730,7 +730,7 @@ async fn context_free_fn_returns_step_metadata_in_step_phase() {
         max_retries: Some(3),
     };
 
-    let info = with_test_ctx(ctx, crate::local::Phase::Step(step_ctx), async {
+    let info = with_test_ctx(ctx, crate::phase::Phase::Step(step_ctx), async {
         crate::api::context()
     })
     .await;

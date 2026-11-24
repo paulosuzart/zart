@@ -17,8 +17,8 @@ use tracing::instrument;
 use zart_scheduler::TaskScheduler;
 
 use super::state::{PendingFn, StepHandle};
-use super::step_context::StepContext;
 use super::step_trait::ZartStep;
+use crate::phase::StepContext;
 
 // ── TaskContext ───────────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ pub struct TaskContext {
     pub(crate) data: serde_json::Value,
     /// How this task should behave when executing steps.
     /// `Body`/`Step` use per-row tasks.
-    pub(crate) execution_mode: ExecutionMode,
+    execution_mode: ExecutionMode,
     /// The deadline for this step task (parsed from task metadata).
     /// Set when timeout_scope == Global. Absent for PerAttempt or no timeout.
     pub(crate) step_deadline: Option<chrono::DateTime<chrono::Utc>>,
@@ -130,11 +130,9 @@ impl TaskContext {
         self
     }
 
-    /// Construct a [`StepContext`] with the current execution metadata.
-    ///
-    /// This is used internally to pass read-only metadata to step closures.
-    pub(crate) fn step_context(&self) -> StepContext {
-        let (current_attempt, max_retries) = match &self.execution_mode {
+    /// Returns `(current_attempt, max_retries)` for the active execution mode.
+    pub(crate) fn retry_info(&self) -> (usize, Option<usize>) {
+        match &self.execution_mode {
             ExecutionMode::Step {
                 retry_attempt,
                 retry_config,
@@ -144,7 +142,14 @@ impl TaskContext {
                 retry_config.as_ref().map(|rc| rc.max_attempts),
             ),
             _ => (0, None),
-        };
+        }
+    }
+
+    /// Construct a [`StepContext`] with the current execution metadata.
+    ///
+    /// This is used internally to pass read-only metadata to step closures.
+    pub(crate) fn step_context(&self) -> StepContext {
+        let (current_attempt, max_retries) = self.retry_info();
         StepContext {
             current_attempt,
             max_retries,
@@ -509,8 +514,8 @@ impl TaskContext {
                 // This allows `zart::trx()` to detect it is inside a step invocation.
                 let step_ctx_for_phase = self.step_context();
                 let run_with_serialization = move || {
-                    crate::local::ZART_PHASE.scope(
-                        crate::local::Phase::Step(step_ctx_for_phase),
+                    crate::phase::ZART_PHASE.scope(
+                        crate::phase::Phase::Step(step_ctx_for_phase),
                         run_with_serialization(),
                     )
                 };
@@ -971,8 +976,8 @@ impl TaskContext {
                 for handle in handles {
                     if handle.step_name == target {
                         if let Some(pending_fn) = handle.pending {
-                            let immediate_outcome = crate::local::ZART_PHASE
-                                .scope(crate::local::Phase::Step(self.step_context()), pending_fn())
+                            let immediate_outcome = crate::phase::ZART_PHASE
+                                .scope(crate::phase::Phase::Step(self.step_context()), pending_fn())
                                 .await;
                             self.complete_target_step(true, &target, immediate_outcome)
                                 .await?;

@@ -16,7 +16,10 @@ This example shows an order-processing workflow that demonstrates all four error
 
 ## Step error types
 
-Every step declares a typed error. It must be `Serialize + Deserialize` so Zart can persist it to the database and recover it later in `on_failure`.
+Every step declares a typed error so Zart can persist it to the database and recover it later.
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -38,7 +41,64 @@ enum InventoryError {
 
 `thiserror` is the right choice here: it generates `Display` and `Error` impl from the `#[error]` attribute while keeping the type concrete and matchable. Use `anyhow` only when you have a heterogeneous mix of errors whose concrete type you don't need to inspect (e.g. in CLI glue code or LLM API wrappers).
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+class InsufficientFundsError(Exception):
+    def __init__(self, balance: float, needed: float) -> None:
+        super().__init__(f"insufficient funds: balance {balance}, needed {needed}")
+        self.balance = balance
+        self.needed = needed
+
+class CardDeclinedError(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"card declined: {reason}")
+        self.reason = reason
+
+class OutOfStockError(Exception):
+    def __init__(self, item: str) -> None:
+        super().__init__(f"item out of stock: {item}")
+        self.item = item
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Data, Schema } from "effect";
+
+class InsufficientFunds extends Data.TaggedError("InsufficientFunds")<{
+  readonly balance: number;
+  readonly needed: number;
+}> {}
+
+class CardDeclined extends Data.TaggedError("CardDeclined")<{
+  readonly reason: string;
+}> {}
+
+class OutOfStock extends Data.TaggedError("OutOfStock")<{
+  readonly item: string;
+}> {}
+
+const PaymentErrorSchema = Schema.Union([
+  Schema.TaggedStruct("InsufficientFunds", {
+    balance: Schema.Number,
+    needed: Schema.Number,
+  }),
+  Schema.TaggedStruct("CardDeclined", {
+    reason: Schema.String,
+  }),
+]);
+```
+
+</TabItem>
+</Tabs>
+
 ## Step definitions
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 /// Fail-fast example: reserve inventory or abort immediately.
@@ -67,10 +127,90 @@ async fn charge_card(account_id: String, amount: f64) -> Result<PaymentResult, P
 }
 ```
 
+</TabItem>
+<TabItem label="Python">
+
+```python
+import zart
+
+@zart.step("reserve-inventory")
+async def reserve_inventory(order_id: str) -> InventoryResult:
+    return InventoryResult(item="widget", quantity=1)
+
+@zart.step("check-balance")
+async def check_balance(account_id: str) -> float:
+    if low_balance_condition():
+        raise InsufficientFundsError(balance=5.0, needed=50.0)
+    return 100.0
+
+@zart.step("charge-card", retry=zart.Retry.fixed(2, "1s"))
+async def charge_card(account_id: str, amount: float) -> PaymentResult:
+    if zart.context().current_attempt == 0:
+        raise CardDeclinedError(reason="temporary network error")
+    return PaymentResult(transaction_id=f"txn-{amount}", amount=amount)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Effect, Schema } from "effect";
+import { Zart } from "@zart/effect";
+
+const OrderInput = Schema.Struct({
+  orderId: Schema.String,
+  accountId: Schema.String,
+  amount: Schema.Number,
+});
+
+const OrderOutput = Schema.Struct({
+  status: Schema.String,
+  message: Schema.String,
+  transactionId: Schema.optional(Schema.String),
+  balance: Schema.optional(Schema.Number),
+  inventoryItem: Schema.optional(Schema.String),
+});
+
+declare function lowBalanceCondition(): boolean;
+
+const reserveInventory = Zart.step("reserve-inventory", (_orderId: string) =>
+  Effect.succeed({ item: "widget", quantity: 1 }),
+);
+
+const checkBalance = Zart.step(
+  "check-balance",
+  (_accountId: string) =>
+    lowBalanceCondition()
+      ? Effect.fail(new InsufficientFunds({ balance: 5.0, needed: 50.0 }))
+      : Effect.succeed(100.0),
+  { errorSchema: PaymentErrorSchema },
+);
+
+let chargeAttempt = 0;
+
+const chargeCard = Zart.step(
+  "charge-card",
+  (_accountId: string, amount: number) =>
+    Effect.sync(() => chargeAttempt++).pipe(
+      Effect.flatMap((attempt) =>
+        attempt === 0
+          ? Effect.fail(new CardDeclined({ reason: "temporary network error" }))
+          : Effect.succeed({ transactionId: `txn-${amount}`, amount }),
+      ),
+    ),
+  { retry: Zart.Retry.fixed(2, "1 seconds"), errorSchema: PaymentErrorSchema },
+);
+```
+
+</TabItem>
+</Tabs>
+
 ## Defining the workflow
 
-<Tabs>
-<TabItem label="Macro">
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
+
+### Macro
 
 ```rust
 #[zart_durable("error-handling-demo", on_failure = handle_order_failure)]
@@ -115,8 +255,7 @@ async fn process_order(data: OrderInput) -> Result<OrderOutput, TaskError> {
 }
 ```
 
-</TabItem>
-<TabItem label="Trait">
+### Trait
 
 ```rust
 struct OrderProcessor;
@@ -178,15 +317,106 @@ impl DurableExecution for OrderProcessor {
 ```
 
 </TabItem>
+<TabItem label="Python">
+
+```python
+@zart.durable("error-handling-demo", on_failure=handle_order_failure)
+async def process_order(data: OrderInput) -> OrderOutput:
+    # Pattern 1 — direct await (require semantics): fail-fast on any error.
+    inventory = await reserve_inventory(data.order_id)
+
+    # Pattern 2 — zart.step(): explicit three-way outcome inspection.
+    balance_outcome = await zart.step(check_balance(data.account_id))
+    if balance_outcome.is_business_err:
+        return OrderOutput(
+            status="payment_error",
+            message=str(balance_outcome.error),
+        )
+    if balance_outcome.is_zart_err:
+        raise balance_outcome.error
+    balance = balance_outcome.value
+
+    # Pattern 3 — zart.step_or_else(): inline fallback on business error.
+    payment = await zart.step_or_else(
+        charge_card(data.account_id, data.amount),
+        lambda _err: PaymentResult(transaction_id="fallback", amount=0.0),
+    )
+
+    return OrderOutput(
+        status="completed",
+        transaction_id=payment.transaction_id,
+        balance=balance,
+        inventory_item=inventory.item,
+        message="Order processed successfully",
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const processOrderProgram = (data: typeof OrderInput.Type) =>
+  Effect.gen(function* () {
+    // Pattern 1 — yield* step(): fail-fast on any error.
+    const inventory = yield* reserveInventory(data.orderId);
+
+    // Pattern 2 — Zart.outcome(): explicit three-way match.
+    const balanceOutcome = yield* Zart.outcome(checkBalance(data.accountId));
+    if (balanceOutcome._tag === "business_err") {
+      return {
+        status: "payment_error",
+        message: balanceOutcome.message,
+      };
+    }
+    if (balanceOutcome._tag === "zart_err") {
+      return yield* Effect.fail(balanceOutcome.error);
+    }
+    const balance = balanceOutcome.value;
+
+    // Pattern 3 — Zart.stepOr(): inline fallback on failure.
+    const payment = yield* Zart.stepOr(chargeCard(data.accountId, data.amount), {
+      transactionId: "fallback",
+      amount: 0,
+    });
+
+    return {
+      status: "completed",
+      transactionId: payment.transactionId,
+      balance,
+      inventoryItem: inventory.item,
+      message: "Order processed successfully",
+    };
+  });
+
+const processOrder = Zart.durable(
+  "error-handling-demo",
+  (data) =>
+    processOrderProgram(data).pipe(
+      // Pattern 4 — Effect.catch(): workflow-level recovery.
+      Effect.catch((err) =>
+        Effect.succeed({
+          status: "failed",
+          message: String(err),
+        }),
+      ),
+    ),
+  { inputSchema: OrderInput, outputSchema: OrderOutput },
+);
+```
+
+</TabItem>
 </Tabs>
 
 <Aside type="tip">
-The macro approach (`#[zart_durable]`) generates the same `DurableExecution` impl as the trait approach. Use the macro for less boilerplate; use the trait when you need more control over generated code or want to implement the trait in a non-function context.
+In Rust, the macro (`#[zart_durable]`) generates the same `DurableExecution` impl as the trait approach. In TypeScript (`@zart/effect`), Effect's `Effect.catch` / `Effect.catchTag` handles workflow-level recovery directly in the Effect error channel.
 </Aside>
 
 ## The `on_failure` handler
 
-`on_failure` is called when any step propagates an error out of `run`, or when an execution-level failure occurs (deadline, retries exhausted). It receives the original input `data` and an `ExecutionFailure` describing what went wrong.
+In Rust and Python, `on_failure` is called when any step propagates an error out of the workflow, or when an execution-level failure occurs (deadline, retries exhausted). It receives the original input `data` and an `ExecutionFailure` describing what went wrong. In TypeScript, use `Effect.catch` or `Effect.catchTag` on the workflow `Effect` (shown above).
+
+<Tabs syncKey="sdk">
+<TabItem label="Rust">
 
 ```rust
 async fn handle_order_failure(
@@ -256,6 +486,76 @@ async fn handle_order_failure(
     }
 }
 ```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async def handle_order_failure(
+    _data: OrderInput,
+    failure: zart.ExecutionFailure,
+) -> OrderOutput:
+    if failure.kind == "step_failed" and failure.step == "charge-card":
+        return OrderOutput(
+            status="payment_failed",
+            message=f"Payment step failed: {failure.raw}",
+        )
+
+    if failure.kind == "step_failed" and failure.step == "reserve-inventory":
+        return OrderOutput(
+            status="inventory_failed",
+            message=f"Inventory reservation failed: {failure.raw}",
+        )
+
+    if failure.kind == "execution_deadline_exceeded":
+        return OrderOutput(
+            status="timed_out",
+            message="Execution deadline exceeded",
+        )
+
+    if failure.kind == "retries_exhausted":
+        return OrderOutput(
+            status="retries_exhausted",
+            message=f"Gave up after {failure.attempts} attempts",
+        )
+
+    raise RuntimeError(f"Unhandled execution failure: {failure}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// In @zart/effect, workflow-level recovery is handled directly in the Effect
+// error channel with Effect.catch / Effect.catchTag:
+const safeWorkflow = (data: typeof OrderInput.Type) =>
+  processOrderProgram(data).pipe(
+  Effect.catch((err) => {
+    switch (err._tag) {
+      case "StepFailedError":
+        return Effect.succeed({
+          status: "step_failed",
+          message: `Step ${err.stepName} failed: ${err.message}`,
+        });
+      case "DeadlineExceededError":
+        return Effect.succeed({
+          status: "timed_out",
+          message: "Execution deadline exceeded",
+        });
+      case "RetryExhaustedError":
+        return Effect.succeed({
+          status: "retries_exhausted",
+          message: `Gave up after ${err.attempts} attempts`,
+        });
+      default:
+        return Effect.fail(err);
+    }
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
 
 <Aside type="note">
 `on_failure` is a plain `async fn` — it has no dependency on the Zart runtime and can be unit-tested without any database or scheduler setup.

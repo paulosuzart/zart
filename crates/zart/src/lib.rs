@@ -121,28 +121,46 @@
 //! ```
 
 pub mod admin;
+#[path = "api/mod.rs"]
 pub mod api;
+#[path = "engine/api_trait.rs"]
 pub mod api_trait;
+#[path = "engine/builder.rs"]
 pub mod builder;
 pub mod context;
+#[path = "engine/durable.rs"]
 pub mod durable;
 pub mod error;
+#[path = "step_runtime/execution_model.rs"]
 pub mod execution_model;
+#[path = "api/local.rs"]
 pub(crate) mod local;
+#[path = "observability/logging.rs"]
 pub mod logging;
+#[path = "observability/metrics.rs"]
 pub mod metrics;
+#[path = "step_runtime/phase.rs"]
+pub(crate) mod phase;
 pub mod postgres;
+#[path = "engine/recurring.rs"]
 pub mod recurring;
+#[path = "engine/registry.rs"]
 pub mod registry;
+#[path = "step_runtime/retry.rs"]
 pub mod retry;
 pub mod service;
+#[path = "step_runtime/step_completion.rs"]
 pub(crate) mod step_completion;
+#[path = "step_runtime/step_ops.rs"]
 pub mod step_ops;
 pub mod step_types;
 pub mod store;
+#[path = "engine/task.rs"]
 pub mod task;
 pub mod task_metadata;
+#[path = "step_runtime/timeout.rs"]
 pub mod timeout;
+#[path = "step_runtime/trx_impl.rs"]
 mod trx_impl;
 pub mod types;
 
@@ -161,7 +179,7 @@ pub use api::{
 };
 pub use api_trait::{DurableApi, into_durable_api};
 pub use builder::WorkerBuilder;
-pub use context::{StepHandle, TaskContext, ZartStep};
+pub use context::{StepHandle, TaskContext, ZartStep, ZartStepExt};
 pub use durable::DurableScheduler;
 pub use error::{
     ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,
@@ -198,7 +216,7 @@ pub mod prelude {
         api_trait::DurableApi,
         builder::WorkerBuilder,
         capture, context,
-        context::{StepHandle, ZartStep},
+        context::{StepHandle, ZartStep, ZartStepExt},
         durable::DurableScheduler,
         error::{
             ExecutionFailure, SchedulerError, StepError, StepOutcome, TaskError, ZartStepError,

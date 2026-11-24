@@ -3,9 +3,6 @@
 //! These implement the orchestration currently in `ExecutionStore::retry_dead_step`,
 //! `restart_run`, and `reset_execution`. They are called by the `ExecutionStore`
 //! trait impl in `execution_storage_impl.rs`.
-//!
-//! In Phase 3, the orchestration logic will move to `ExecutionService` which
-//! will call the fine-grained `create_run`/`set_current_run` primitives.
 
 use chrono::Utc;
 use zart_core::StorageError;
