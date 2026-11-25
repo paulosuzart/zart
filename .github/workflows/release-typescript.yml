@@ -1,0 +1,143 @@
+name: Release TypeScript (npm)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (must match bindings/typescript/package.json, e.g. 0.3.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build and pack without publishing to npm'
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert version matches package.json
+        run: |
+          pkg_version=$(node -p "require('./bindings/typescript/package.json').version")
+          echo "package.json version: $pkg_version"
+          echo "Input version:        ${{ inputs.version }}"
+          if [ "$pkg_version" != "${{ inputs.version }}" ]; then
+            echo "::error::Version mismatch: package.json has '$pkg_version' but input is '${{ inputs.version }}'"
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry and build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/typescript -> target
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: bindings/typescript/package-lock.json
+
+      - name: Install dependencies
+        working-directory: bindings/typescript
+        run: npm ci
+
+      - name: Build native addon
+        working-directory: bindings/typescript
+        run: npx napi build --platform --release --target ${{ matrix.target }}
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/typescript/*.node
+
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          cache-dependency-path: bindings/typescript/package-lock.json
+
+      - name: Install dependencies
+        working-directory: bindings/typescript
+        run: npm ci
+
+      - name: Typecheck, lint, and build TypeScript
+        working-directory: bindings/typescript
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run build
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bindings-*
+          path: bindings/typescript/artifacts
+          merge-multiple: true
+
+      - name: Prepare npm platform packages
+        working-directory: bindings/typescript
+        run: |
+          npx napi create-npm-dir
+          npx napi artifacts -d artifacts
+
+      - name: Dry-run publish
+        if: ${{ inputs.dry_run }}
+        working-directory: bindings/typescript
+        run: |
+          npx napi prepublish -t npm --dry-run --skip-gh-release
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        working-directory: bindings/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx napi prepublish -t npm --skip-gh-release

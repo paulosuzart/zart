@@ -1,0 +1,121 @@
+name: Release Python (PyPI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (must match bindings/python/pyproject.toml, e.g. 0.3.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build wheels without publishing to PyPI'
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert version matches pyproject.toml
+        run: |
+          py_version=$(grep -m1 '^version' bindings/python/pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "pyproject.toml version: $py_version"
+          echo "Input version:          ${{ inputs.version }}"
+          if [ "$py_version" != "${{ inputs.version }}" ]; then
+            echo "::error::Version mismatch: pyproject.toml has '$py_version' but input is '${{ inputs.version }}'"
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: '2_28'
+            setup_python: false
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: '2_28'
+            setup_python: false
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: ''
+            setup_python: true
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            manylinux: ''
+            setup_python: true
+          - name: windows-x64
+            os: windows-latest
+            target: x64
+            manylinux: ''
+            setup_python: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.15
+        if: ${{ matrix.setup_python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.15'
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.setup_python && matrix.target != 'x64' && matrix.target || '' }}
+
+      - name: Build wheel with maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist -i python3.15
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: bindings/python/dist/*.whl
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
